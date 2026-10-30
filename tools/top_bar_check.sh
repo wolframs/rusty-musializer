@@ -31,8 +31,8 @@
 #
 # NEGATIVE CONTROLS, run 2026-10-29 on the GPU path:
 #   - the tab press calling nothing instead of `activate_mode_tab`: 11
-#     failures (each of the four tabs unselected and Direct still starred;
-#     three panels left at none), with the gap press still green;
+#     failures (each tab unselected and Direct still starred; the panels
+#     left at none), with the gap press still green;
 #   - the save word drawn in the bar's own surface colour: the ink check
 #     reads 0 against 81 and fails, the empty-stretch control still 0.
 # The same run on the CPU path (MZ_GL_LAUNCH="") reads the same 81 ink pixels
@@ -111,10 +111,11 @@ case "$(line_of 'top bar' "$OUT/plain.log")" in
 esac
 
 # 2. The tabs, by click: the window's only mouse route to these panels.
-for case_ in lyrics:lyrics export:export assist:assist look:none; do
+for case_ in lyrics:lyrics assist:assist look:none; do
     tab="${case_%%:*}"
     panel="${case_##*:}"
     point="$(centre "$base" "$tab")"
+    rm -rf "$MZ_STATE_DIR"
     run "tab-$tab" "$OUT/show.treatment.json" 30 "time=3,click=$point"
     got_panel="$(line_of panel "$OUT/tab-$tab.log")"
     got_bar="$(line_of 'top bar' "$OUT/tab-$tab.log")"
@@ -130,6 +131,14 @@ for case_ in lyrics:lyrics export:export assist:assist look:none; do
         *'direct*@'*) fail "Direct still reads selected after the $tab press" ;;
     esac
 done
+# Render… opens the Render view: the tabs lost Export to it (WX-5d).
+point="$(centre "$base" render)"
+rm -rf "$MZ_STATE_DIR"
+run tab-render "$OUT/show.treatment.json" 30 "time=3,click=$point"
+case "$(line_of panel "$OUT/tab-render.log")|$(line_of column "$OUT/tab-render.log")" in
+    *' export|'*'view=render open=1'*) ;;
+    *) fail "Render… at $point did not open the Render view" ;;
+esac
 # Control: the gap between the tabs' group and Still. A press there must
 # change nothing, or the presses above could be landing on anything.
 gap="$(python3 - "$base" <<'PY'
@@ -141,6 +150,8 @@ right = int(assist[0]) + int(assist[2])
 print(f"{(right + int(still[0])) // 2}x{int(still[1]) + int(still[3]) // 2}")
 PY
 )"
+# The column view persists, so this press starts from a fresh configuration.
+rm -rf "$MZ_STATE_DIR"
 run tab-gap "$OUT/show.treatment.json" 30 "time=3,click=$gap"
 case "$(line_of panel "$OUT/tab-gap.log")|$(line_of 'top bar' "$OUT/tab-gap.log")" in
     *' none|'*'direct*@'*) ;;

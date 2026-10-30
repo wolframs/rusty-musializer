@@ -66,10 +66,6 @@ pub enum ButtonStyle {
     /// label cut out in the surface colour, the round play button's look.
     /// **Never the accent**, so the frame's accent census stays at one: the
     /// accent fill is Render's, or the Render view's commit, and nothing else.
-    #[allow(
-        dead_code,
-        reason = "WX-5d seam: the column views' builders are the callers"
-    )]
     Strong,
     // No caller yet. It is the style for a destructive action, and the two the
     // oracle has — `Clear manual` and Cancel export — are Agents L and H's. Kept
@@ -1931,20 +1927,9 @@ pub(crate) fn alpha(color: Color, amount: f32) -> Color {
 // `draw_tooltip`): geometry nobody can check without a window is geometry
 // nobody checks.
 
-#[allow(
-    unused_imports,
-    reason = "WX-5d seam: unused until the column views call the vocabulary"
-)]
 pub use column_kit::*;
 
-/// The vocabulary in a module of its own only so one `allow` covers it while
-/// nothing calls it: the WX-5d seam lands it before the Lyrics and Look &
-/// Assist builders do. Drop the `allow` (and fold the module back into the
-/// file if you like) once the views use it.
-#[allow(
-    dead_code,
-    reason = "WX-5d seam: the column views' builders are the callers; the tests below exercise every layout"
-)]
+/// The column vocabulary, in a module of its own since the WX-5d seam.
 mod column_kit {
     use super::*;
 

@@ -19,7 +19,12 @@ pixel within a small distance of the accent must belong to one of:
   * a thin solid marker: the transport's scrub handle, or the bar beside the
     cue-list row the playhead is inside;
   * the primary action — Render — a solid button-sized fill, and only as many
-    of them as the caller says the frame has (`--primary N`, default 0).
+    of them as the caller says the frame has (`--primary N`, default 0);
+  * since WX-5d, two marks the report names by rect: the current lyric line's
+    time and tick in the Lyrics column (`lyrics column: … time@ … tick=`) and
+    the route editor's live reading on its plot (`tune layout: … plot@`).
+    Both mean *now* — the line being sung, the value being read — and both
+    are placed by the report, never by a pixel guess.
 
 Anything else is a regression: a selected tile, a slider, a heading or a
 waveform in the accent.
@@ -76,6 +81,25 @@ def components(mask):
     return out
 
 
+def permitted_marks(report):
+    """The rects the report names as marks of *now*, in pixels."""
+    text = open(report, encoding="utf-8", errors="replace").read()
+    scale = re.search(r"^ui layout:\s+scale=(\d+)", text, re.M)
+    factor = int(scale.group(1)) / 100.0 if scale else 1.0
+    rects = []
+    lyrics = re.search(r"^lyrics column:\s+(.*)$", text, re.M)
+    if lyrics:
+        for key in (r"\btime@", r"\btick="):
+            found = re.search(key + r"(\d+),(\d+),(\d+),(\d+)", lyrics.group(1))
+            if found:
+                rects.append(tuple(int(v) for v in found.groups()))
+    tune = re.search(r"^tune layout:\s+(.*)$", text, re.M)
+    if tune:
+        for found in re.finditer(r"\bplot@(\d+),(\d+),(\d+),(\d+)", tune.group(1)):
+            rects.append(tuple(int(v) for v in found.groups()))
+    return [tuple(int(round(v * factor)) for v in rect) for rect in rects]
+
+
 def census(png, report, primary=0):
     name, accent, preview = parse_report(report)
     image = np.array(Image.open(png).convert("RGB")).astype(int)
@@ -83,6 +107,8 @@ def census(png, report, primary=0):
     mask = (np.abs(image - np.array(accent)).max(axis=-1) <= TOLERANCE)
     if preview:
         x, y, w, h = preview
+        mask[max(0, y - 2):y + h + 2, max(0, x - 2):x + w + 2] = False
+    for x, y, w, h in permitted_marks(report):
         mask[max(0, y - 2):y + h + 2, max(0, x - 2):x + w + 2] = False
 
     # The playhead: the column the accent runs furthest down. It crosses every

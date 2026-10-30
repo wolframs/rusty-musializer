@@ -525,6 +525,47 @@ fn rail_record(
     *index += 1;
 }
 
+/// The right column's width rule (WX-5d, `core::ui::column_layout`): window
+/// widths from 600 to 2600, undragged and at a sweep of dragged widths
+/// including the bounds and a pixel either side. Appended after
+/// the rails, so every rail record keeps its line.
+fn dump_columns(out: &mut String) {
+    use musializer_core::ui::column_layout::{
+        column_width, COLUMN_AUTO_MAX, COLUMN_AUTO_MIN, COLUMN_DRAG_MAX, COLUMN_DRAG_MIN,
+    };
+    let mut drags: Vec<Option<f32>> = vec![None];
+    for bound in [
+        COLUMN_DRAG_MIN,
+        COLUMN_DRAG_MAX,
+        COLUMN_AUTO_MIN,
+        COLUMN_AUTO_MAX,
+    ] {
+        drags.extend([Some(bound - 1.0), Some(bound), Some(bound + 1.0)]);
+    }
+    drags.extend([Some(0.0), Some(480.0), Some(f32::NAN), Some(9000.0)]);
+    let mut index = 0usize;
+    for drag in drags {
+        let mut window = 600.0f32;
+        while window <= 2600.0 {
+            out.push_str(&format!(
+                "column {index} {} {} {}\n",
+                f(window),
+                drag.map_or_else(|| "auto".to_owned(), f),
+                f(column_width(window, drag))
+            ));
+            index += 1;
+            // Dense through the clamps' corners for the automatic rule (320
+            // at 1143, 460 at 1643, the 640 floor below 960); a 20 px grid
+            // for the drags, whose clamps do not move with the window.
+            window += if drag.is_none() && (900.0..=1700.0).contains(&window) {
+                1.0
+            } else {
+                20.0
+            };
+        }
+    }
+}
+
 fn dump_rails(out: &mut String) {
     let mut index = 0usize;
     // The window grid, at every band the window draws.
@@ -603,5 +644,6 @@ fn main() {
     dump_divergences(&mut out);
     out.push_str("--- post-legacy (no oracle) ---\n");
     dump_rails(&mut out);
+    dump_columns(&mut out);
     print!("{out}");
 }

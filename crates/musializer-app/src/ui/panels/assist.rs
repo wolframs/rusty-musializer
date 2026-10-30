@@ -65,9 +65,8 @@ use musializer_core::project::model::{
 use musializer_core::project::scene_switch::SceneSwitchCue;
 use musializer_core::scene::{SceneId, SCENE_COUNT};
 use musializer_core::ui::assist_ui_state::{
-    self, AssistArtifact, AssistConfirmationButtons, AssistJobState, AssistLyricReference,
-    AssistMode, AssistPanelContent, AssistRequest, AssistSession, AssistStartBlock,
-    AssistStatusInputs, AssistStatusTone, AssistUiLayout,
+    self, AssistArtifact, AssistJobState, AssistLyricReference, AssistMode, AssistPanelContent,
+    AssistRequest, AssistSession, AssistStartBlock, AssistStatusInputs, AssistStatusTone,
 };
 use musializer_core::ui::lyric_lane_edit::LYRIC_MIN_CUE_SECONDS;
 use musializer_core::ui::notice::Severity;
@@ -85,9 +84,7 @@ use musializer_runtime::process::reveal::{self, RevealState};
 use musializer_runtime::project_files::sha256_file_hex;
 use raylib::prelude::{RaylibDraw, RaylibDrawHandle};
 
-use super::super::column::Placement;
 use super::super::shell::{Shell, ShellCommand, ShellInput};
-use super::super::shell_layout::WorkspaceFrame;
 use super::super::theme::{color, metric};
 use super::super::widgets::{self, ButtonStyle, Widgets};
 use crate::cli::UiPanel;
@@ -1249,6 +1246,23 @@ thread_local! {
     };
 }
 
+thread_local! {
+    /// The last `assist review block:` line printed.
+    static LAST_REVIEW_BLOCK: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Prints where the review block landed in the column (WX-5d): its scrolled
+/// position is the card's, so a capture check reads it here instead of aiming
+/// at a measured point.
+fn report_review_block(line: String) {
+    LAST_REVIEW_BLOCK.with(|last| {
+        if *last.borrow() != line {
+            println!("assist review block: {line}");
+            *last.borrow_mut() = line;
+        }
+    });
+}
+
 /// Prints where the pressable review rows landed (review LT1-R, R9).
 ///
 /// A hover state nothing can photograph is a hover state nobody reviews, and the
@@ -1455,20 +1469,6 @@ fn confirmation_plan(
         *slot = Some((key, resolved.clone()));
         resolved
     })
-}
-
-/// The cached plan without resolving one.
-///
-/// `Shell::assist_timeline_height` runs *before* the panel draws, and it has the
-/// session but not the track — so it cannot ask whether an authored sheet
-/// exists, which is one of the inputs. It reads the cache instead. The
-/// consequence is exact and bounded: on the single frame a confirmation first
-/// arms, the strip is sized without the route block and the block is clipped;
-/// every frame after it is the right height. Sizing it a frame late is better
-/// than resolving the graph from a function that would have to guess one of its
-/// inputs.
-fn cached_confirmation_plan() -> Option<ExecutionPlan> {
-    CONFIRMATION_PLAN.with(|slot| slot.borrow().as_ref().map(|(_, resolved)| resolved.clone()))
 }
 
 /// Publishes the AI settings entry point's own evidence (tranche AP3).
@@ -2216,6 +2216,17 @@ fn probe_candidate(mode: AssistMode) -> Result<AnalysisCandidate, String> {
     .map_err(|error| capitalize_sentence(&error.to_string()))
 }
 
+/// `--ui-probe assist-card=` (WX-5d): opens that workflow's card, exactly as
+/// pressing it does — the workflow is proposed and its Confirmation shows.
+/// Nothing starts. The one-line call in `main.rs` is the Frame builder's.
+pub(crate) fn apply_card_probe(workspace: &Workspace, kind: execution::WorkflowKind) {
+    let mode = AssistMode::ALL
+        .into_iter()
+        .find(|mode| workflow_kind(*mode) == kind)
+        .unwrap_or(AssistMode::Lyrics);
+    workspace.assist.select_mode(mode);
+}
+
 /// Puts the Assist session into one of its four probeable states (review 4.2).
 ///
 /// The synthetic running job has a fixed elapsed value. Real jobs get their
@@ -2304,45 +2315,6 @@ pub(crate) fn apply_probe_state(
 // what follows is compared rect against rect in a unit test.
 // ---------------------------------------------------------------------------
 
-/// Where the review body's buttons and its blocking reason go (review 1.13).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct CandidateActionRow {
-    pub apply: UiRect,
-    pub discard: UiRect,
-    /// The left edge of the three Copy buttons.
-    pub artifacts_x: f32,
-    /// Where the reason naming the block goes, if there is one.
-    pub reason: ReasonSlot,
-}
-
-/// The reason's place in the row (review 1.13).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum ReasonSlot {
-    /// Apply is not blocked; there is no sentence to draw.
-    None,
-    /// Beside the buttons, in the gap the artifact strip left behind. Up to two
-    /// 13 px lines, which is what a 36 px row holds.
-    Beside(UiRect),
-    /// The row above the buttons, at full panel width, for a panel too narrow to
-    /// give the reason a readable column beside them. The caller drops the
-    /// "First staged lyric" preview when that row is where it was going to draw:
-    /// why Apply cannot be pressed outranks a preview of what it would do.
-    Above(UiRect),
-}
-
-/// Narrower than this and a two-line reason beside the buttons is shredded into
-/// three or four words a line, so it moves to its own row instead. Sized from
-/// the two reasons that exist (57 and 60 characters): at 13 px they wrap to two
-/// comfortable lines at this width.
-const REASON_MIN_WIDTH: f32 = 220.0;
-
-/// The reason row's offset from the body top, which is the "First staged lyric"
-/// line's own offset. Deliberately not a new row: `assist_ui_state::ui_layout`
-/// reserves exactly 118 px for this body and it is checked against the frozen C
-/// by `tools/differential_assist_ui.sh`, so the fix has to fit in the space the
-/// oracle's layout already allows.
-const REASON_ROW_OFFSET: f32 = 54.0;
-
 /// The 13 px text height the reason rows are sized in.
 const REASON_FONT_SIZE: f32 = 13.0;
 
@@ -2378,10 +2350,6 @@ const REVIEW_ROW_HEIGHT: f32 = 15.0;
 /// cut without saying so. `the_review_block_fits_the_height_the_panel_can
 /// _actually_get` pins that arithmetic rather than trusting this paragraph.
 const REVIEW_MAX_ROWS: usize = 4;
-
-/// Where the review block starts, measured from the review body's top: after the
-/// 36 px button row at +72 and its 10 px of slack.
-const REVIEW_BLOCK_OFFSET: f32 = 118.0;
 
 /// How many named lines the block shows in `max_rows` rows, and how many lines
 /// that leaves for the tail count.
@@ -2444,42 +2412,6 @@ fn review_block_height(candidate: Option<&AnalysisCandidate>) -> f32 {
 /// the two blocks read as one vocabulary.
 const ROUTE_FONT_SIZE: f32 = 12.0;
 
-/// Row pitch for the route list.
-const ROUTE_ROW_HEIGHT: f32 = 15.0;
-
-/// Where the route block starts, measured from the confirmation body's top:
-/// after the 36 px Start/Cancel row at +48 and its 10 px of slack. With a lyric
-/// reference row present the buttons move down by the same amount the reference
-/// row costs, and [`route_block_offset`] adds it.
-const ROUTE_BLOCK_OFFSET: f32 = 94.0;
-
-/// How far below the body top the route block starts, given the layout.
-fn route_block_offset(layout: &AssistUiLayout) -> f32 {
-    if layout.reference_y > 0.0 {
-        ROUTE_BLOCK_OFFSET + (layout.reference_y - layout.content_y) - 8.0
-    } else {
-        ROUTE_BLOCK_OFFSET
-    }
-}
-
-/// The height the route block adds, or 0 when there is nothing to draw it for.
-///
-/// Zero for every body except the confirmation, which is what keeps every
-/// pre-P4 capture's geometry where it was.
-fn route_block_height(content: AssistPanelContent, plan: Option<&ExecutionPlan>) -> f32 {
-    if content != AssistPanelContent::Confirmation {
-        return 0.0;
-    }
-    let Some(plan) = plan else {
-        return 0.0;
-    };
-    // One heading, one row per composed contract, one summary sentence, and one
-    // more when there is something extra to say: a downgraded `ask` policy, a
-    // settings file that would not load, or a refusal.
-    18.0 + (plan.snapshot.contracts.len() + 1 + route_notes(plan).len()) as f32 * ROUTE_ROW_HEIGHT
-        + 4.0
-}
-
 /// The sentences below the route rows, in the order they matter.
 ///
 /// The first is always present and is the one §5 lets the panel state as a fact
@@ -2534,118 +2466,6 @@ fn route_row(entry: &ContractSnapshot) -> String {
     )
 }
 
-/// Draws the resolved graph under the Start/Cancel row.
-///
-/// Terse on purpose: one heading that says whether anything leaves the machine,
-/// one row per composed task naming its model and its boundary, and the §5
-/// invariant stated as the measurement it is. A user deciding whether to press
-/// Start needs those four facts and nothing else — the whole matrix, the
-/// suitability overlay and the constraint editors are one button away on the
-/// AI settings dialog, which the heading row already carries.
-fn draw_route_graph(
-    d: &mut RaylibDrawHandle<'_>,
-    font: &UiFonts,
-    boundary: UiRect,
-    layout: &AssistUiLayout,
-    padding: f32,
-    plan: &ExecutionPlan,
-) {
-    let x = boundary.x + padding;
-    let mut y = boundary.y + layout.content_y + route_block_offset(layout);
-    let width = (boundary.width - padding * 2.0).max(0.0);
-    let snapshot = &plan.snapshot;
-
-    let leaves = snapshot.sends_audio_off_machine();
-    let heading = if leaves {
-        format!(
-            "Resolved routes \u{2014} audio leaves this machine for {} of {} tasks",
-            snapshot
-                .contracts
-                .iter()
-                .filter(|entry| entry.boundary_applied.rank() >= 2)
-                .count(),
-            snapshot.contracts.len(),
-        )
-    } else if snapshot.has_remote_route() {
-        "Resolved routes \u{2014} derived text leaves this machine; no audio does".to_string()
-    } else {
-        "Resolved routes \u{2014} nothing leaves this machine".to_string()
-    };
-    widgets::draw_text(
-        d,
-        font,
-        &heading,
-        x,
-        y,
-        ROUTE_FONT_SIZE,
-        if leaves {
-            color::ui_warning()
-        } else {
-            color::ui_muted()
-        },
-    );
-    y += 18.0;
-
-    let measure = |text: &str| widgets::measure(font, text, ROUTE_FONT_SIZE);
-    for entry in &snapshot.contracts {
-        widgets::draw_text(
-            d,
-            font,
-            &ellipsize(&route_row(entry), width, &measure),
-            x,
-            y,
-            ROUTE_FONT_SIZE,
-            if entry.boundary_applied.rank() >= 2 {
-                color::ui_warning()
-            } else {
-                color::ui_ink()
-            },
-        );
-        y += ROUTE_ROW_HEIGHT;
-    }
-
-    // The §5 invariant-1 sentence, and it is a measurement rather than a
-    // promise: `any_fallback_can_raise_boundary` walks the applied policies and
-    // the whole boundary ladder. If it ever answered true this line would say
-    // so, which is the only reason it is worth drawing.
-    let raises = execution::any_fallback_can_raise_boundary(&snapshot.contracts);
-    widgets::draw_text(
-        d,
-        font,
-        &ellipsize(
-            if raises {
-                "A fallback in this graph could move data to a wider boundary."
-            } else {
-                "No fallback here can widen a boundary: raising one needs a new decision, and this job takes none."
-            },
-            width,
-            &measure,
-        ),
-        x,
-        y,
-        ROUTE_FONT_SIZE,
-        if raises {
-            color::ui_danger()
-        } else {
-            color::ui_muted()
-        },
-    );
-    y += ROUTE_ROW_HEIGHT;
-
-    for (note, tint) in route_notes(plan) {
-        widgets::draw_text(
-            d,
-            font,
-            &ellipsize(&note, width, &measure),
-            x,
-            y,
-            ROUTE_FONT_SIZE,
-            tint,
-        );
-        y += ROUTE_ROW_HEIGHT;
-    }
-}
-
 /// The tint a row carries: an unplaced line is a warning, a disagreement is
 /// ordinary ink. They are different jobs — one line has no cue at all, the other
 /// has a cue that may be in the wrong place.
@@ -2654,70 +2474,6 @@ fn review_row_color(kind: LyricReviewKind) -> raylib::prelude::Color {
         color::ui_warning()
     } else {
         color::ui_ink()
-    }
-}
-
-/// The width the three Copy buttons occupy, including the gaps between them.
-fn artifact_strip_width(gap: f32) -> f32 {
-    AssistArtifact::ALL
-        .iter()
-        .enumerate()
-        .map(|(index, artifact)| artifact.width() + if index == 0 { 0.0 } else { gap })
-        .sum()
-}
-
-/// Lays out Apply, Discard, the Copy strip and the blocking reason so that no
-/// two of them share a pixel (review 1.13).
-///
-/// The Copy strip is right-aligned to the panel's inner edge **whether or not**
-/// a reason is showing. That costs a gap of empty row in the unblocked case and
-/// buys the property that matters: a reason appearing or disappearing — which it
-/// does as the user edits a lyric draft — never moves a button under the
-/// pointer. It is the same argument as `core::ui::transport_bar`'s: a layout
-/// that is stable under a state change beats one that packs tighter.
-fn candidate_action_row(
-    boundary: UiRect,
-    action_y: f32,
-    padding: f32,
-    gap: f32,
-    blocked: bool,
-) -> CandidateActionRow {
-    let x = boundary.x + padding;
-    let row_y = action_y + 72.0;
-    let apply = UiRect::new(x, row_y, 144.0, metric::UI_BUTTON_HEIGHT);
-    let discard = UiRect::new(apply.x + apply.width + gap, row_y, 100.0, apply.height);
-    let after_discard = discard.x + discard.width + gap;
-    let inner_right = boundary.x + boundary.width - padding;
-
-    // `.max` rather than a refusal: a panel this narrow already drops the Copy
-    // buttons in `assist_artifact_actions`, which will not draw a button that
-    // leaves the boundary. What must not happen is a negative-width gap being
-    // handed to the reason as if it were room.
-    let artifacts_x = (inner_right - artifact_strip_width(gap)).max(after_discard);
-    let beside_width = artifacts_x - gap - after_discard;
-
-    let reason = if !blocked {
-        ReasonSlot::None
-    } else if beside_width >= REASON_MIN_WIDTH {
-        ReasonSlot::Beside(UiRect::new(
-            after_discard,
-            row_y,
-            beside_width,
-            apply.height,
-        ))
-    } else {
-        ReasonSlot::Above(UiRect::new(
-            x,
-            action_y + REASON_ROW_OFFSET,
-            (boundary.width - padding * 2.0).max(0.0),
-            18.0,
-        ))
-    };
-    CandidateActionRow {
-        apply,
-        discard,
-        artifacts_x,
-        reason,
     }
 }
 
@@ -3148,6 +2904,13 @@ fn draw_lyrics_review(
         format!("Lines to check ({})", review.policy)
     };
     widgets::draw_text(d, font, &heading, x, y, REASON_FONT_SIZE, color::ui_ink());
+    report_review_block(format!(
+        "heading={x:.0},{y:.0},{width:.0},16 reveal={:.0},{:.0},{:.0},{:.0} sentence={x:.0},{row_y:.0},{width:.0},{REVIEW_ROW_HEIGHT:.0}",
+        x + width - REVEAL_WIDTH,
+        y - 2.0,
+        REVEAL_WIDTH,
+        REVEAL_HEIGHT,
+    ));
 
     // The Reveal control takes the heading row's right edge, and the fix hint
     // gives way to it rather than sharing: the hint is a footnote and the button
@@ -3375,475 +3138,620 @@ fn draw_lyrics_review(
     }
 }
 
-/// Draws the sentence naming why Apply is greyed out, in the slot the row gave
-/// it (review 1.13).
-fn draw_blocking_reason(
-    d: &mut RaylibDrawHandle<'_>,
-    font: &UiFonts,
-    text: &str,
-    slot: ReasonSlot,
-) {
-    let measure = |line: &str| widgets::measure(font, line, REASON_FONT_SIZE);
-    let (rect, lines) = match slot {
-        ReasonSlot::None => return,
-        // Two 13 px lines in a 36 px row: 2 + 13 + 3 + 13 + 5.
-        ReasonSlot::Beside(rect) => (rect, wrap_to_width(text, rect.width, 2, &measure)),
-        ReasonSlot::Above(rect) => (rect, vec![ellipsize(text, rect.width, &measure)]),
-    };
-    if lines.is_empty() {
-        return;
-    }
-    let line_height = REASON_FONT_SIZE + 3.0;
-    let top = rect.y + ((rect.height - lines.len() as f32 * line_height) * 0.5).max(0.0);
-    for (index, line) in lines.iter().enumerate() {
-        widgets::draw_text(
-            d,
-            font,
-            line,
-            rect.x,
-            top + index as f32 * line_height,
-            REASON_FONT_SIZE,
-            // Why a control will not press is a caution, not "now" (WX-5a).
-            color::ui_warning(),
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // The panel.
 // ---------------------------------------------------------------------------
 
-/// What Assist drew in its last frame, kept on `Shell::assist_column` for the
-/// `assist column:` line (WX-5d seam). Empty until the Look & Assist builder
-/// gives it fields; it lives in this file so that builder never edits
-/// `shell.rs`.
+// ---------------------------------------------------------------------------
+// The Assist view in the right column (WX-5d §3.4).
+// ---------------------------------------------------------------------------
+
+/// The cards' press targets and the Auto scenes switch, in [`ASSIST_WIDGETS`]
+/// past the band's own ids (0..=92 and the review rows from 60).
+const CARD_WIDGET: u32 = 100;
+const AUTO_SWITCH_WIDGET: u32 = 110;
+/// One wheel notch of the column's list.
+const ASSIST_WHEEL_STEP: f32 = 48.0;
+/// The intro sentence under the head (§3.4).
+const ASSIST_INTRO: &str =
+    "Each analysis reads this track and stages what it finds. Nothing changes until you apply it.";
+
+/// The card's word, as `assist-card=` and the `assist column:` line spell it.
+fn card_token(mode: AssistMode) -> &'static str {
+    match mode {
+        AssistMode::Lyrics => "lyrics",
+        AssistMode::Sections => "scenes",
+        AssistMode::Mimo => "feelings",
+        AssistMode::All => "full",
+    }
+}
+
+/// What a card would replace, with the numbers the track has now (§3.4:
+/// `REPLACES · 83 LYRIC CUES`). Applying a lane replaces it whole, so a
+/// count of zero is an addition, and says so.
+#[must_use]
+pub(crate) fn card_replaces(mode: AssistMode, track: Option<&Track>) -> String {
+    let lyrics = track.map_or(0, |track| track.lyrics.len());
+    let sections = track.map_or(0, |track| track.scene_switches.len());
+    let feelings = track.map_or(0, |track| track.semantic_events.len());
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    match mode {
+        AssistMode::Lyrics if lyrics > 0 => {
+            format!("Replaces \u{00b7} {lyrics} lyric cue{}", plural(lyrics))
+        }
+        AssistMode::Lyrics => "Adds \u{00b7} timed lyrics".to_string(),
+        AssistMode::Sections if sections > 0 => format!(
+            "Replaces \u{00b7} the scene plan, {sections} section{}",
+            plural(sections)
+        ),
+        AssistMode::Sections => "Adds \u{00b7} a scene plan".to_string(),
+        AssistMode::Mimo if feelings > 0 => {
+            format!(
+                "Replaces \u{00b7} {feelings} feeling cue{}",
+                plural(feelings)
+            )
+        }
+        AssistMode::Mimo => "Adds \u{00b7} feeling cues".to_string(),
+        AssistMode::All => "Replaces \u{00b7} lyrics and plan, adds feelings".to_string(),
+    }
+}
+
+/// The Auto scenes sentence (§3.4), shown at every width.
+#[must_use]
+pub(crate) fn auto_scenes_sentence(plan: Option<(bool, usize)>) -> String {
+    match plan {
+        None => "No scene plan yet \u{00b7} Scene changes makes one".to_string(),
+        Some((true, sections)) => format!("{sections} sections follow the measured plan"),
+        Some((false, sections)) => {
+            format!("Paused \u{00b7} the plan's {sections} sections wait")
+        }
+    }
+}
+
+/// `m:ss`, for the running card's clock.
+fn running_clock(seconds: f64) -> String {
+    let seconds = if seconds.is_finite() {
+        seconds.max(0.0)
+    } else {
+        0.0
+    };
+    let whole = seconds as u64;
+    format!("{}:{:02}", whole / 60, whole % 60)
+}
+
+/// What the Assist view drew last frame, kept on `Shell::assist_column`.
 #[derive(Clone, Debug, Default)]
-pub struct AssistColumn {}
+pub struct AssistColumn {
+    offset: f32,
+    report: String,
+    /// The open card and its body last frame: a change brings the card into
+    /// view once, so a state that opens below the fold is not missed.
+    shown: Option<(AssistMode, AssistPanelContent)>,
+}
 
 impl Shell {
-    /// The timeline height an open Assist panel asks for (`plug.c:7669-7677`).
-    ///
-    /// Recomputed per frame from the panel's *current* body, as the C does, which
-    /// is the layout rule this repository has already paid for: a panel that
-    /// reserves height it never draws pushes the scene preview down for nothing.
-    /// The difference is worth 96 px of preview and — at 720p — the whole tracks
-    /// rail, because the sidebar has a floor below which it cannot host the
-    /// tracks panel at all.
-    ///
-    /// The width is the workspace's, not the window's, so an open inspector at
-    /// the 960 px minimum really does wrap the mode grid and make the panel
-    /// taller.
-    #[must_use]
-    pub(crate) fn assist_timeline_height(
-        &self,
-        window: (f32, f32),
-        session: &AssistSession,
-    ) -> f32 {
-        let layout = assist_ui_state::ui_layout(
-            WorkspaceFrame::assist_panel_width(window.0, self.inspector_open),
-            session.panel_content(),
-            session.mode().uses_lyric_reference(),
-        );
-        // The LT1 review list and the P4 route block are extra height on this
-        // side of the boundary; see the notes above `REVIEW_FONT_SIZE` and
-        // `ROUTE_FONT_SIZE`. Both are zero for a panel that has neither, so a
-        // body without them asks for exactly what it asked for before.
-        let required = layout.required_height
-            + review_block_height(session.candidate.as_ref())
-            + route_block_height(session.panel_content(), cached_confirmation_plan().as_ref());
-        assist_ui_state::timeline_height(window.1, metric::HUD_BUTTON_SIZE, required)
-    }
-
-    /// The `assist column:` report line (WX-5d §5): the four cards' rects,
-    /// the open one and its body state with its buttons, and Auto scenes.
-    /// **The Look & Assist builder's**; empty until built, and an empty line
-    /// is not printed.
-    #[must_use]
-    pub(crate) fn describe_assist_column(&self, _workspace: &Workspace) -> String {
-        let AssistColumn {} = &self.assist_column;
-        String::new()
-    }
-
-    /// The Assist panel, in the timeline strip's place (`draw_assist_panel`,
-    /// `plug.c:2166-2540`).
-    ///
-    /// Reads the session through `input.workspace`; every click becomes an
-    /// [`AssistRequest`] the frame loop drains once the drawing pair has closed.
-    /// Nothing here spawns, signals, reads a file or edits a track.
-    pub(crate) fn assist_panel(
+    /// The Assist view in the column: the four workflow cards, the one waiting
+    /// on the user open in place, Auto scenes and the status footer. Every
+    /// press becomes the same [`AssistRequest`] the band's controls make.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one view, top to bottom, as the band's assist_panel is"
+    )]
+    pub(crate) fn assist_view(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
         input: &ShellInput<'_>,
-        content: UiRect,
-        strip: UiRect,
+        column: UiRect,
         commands: &mut Vec<ShellCommand>,
-        placement: Placement,
     ) {
-        // WX-5d seam: the Column branch is the Look & Assist builder's;
-        // until it lands, the column draws what the band draws.
-        let _ = placement;
-        let padding = metric::UI_PANEL_PADDING;
-        let gap = metric::UI_CONTROL_GAP;
-        let top = strip.y + strip.height + 28.0;
-        let width = content.width - padding * 2.0;
-        let available = (content.y + content.height - top - padding).max(0.0);
-        let session = &input.workspace.assist;
+        if column.is_empty() {
+            self.assist_column.report.clear();
+            return;
+        }
+        let font = input.fonts.ui();
+        let workspace = input.workspace;
+        let session = &workspace.assist;
+        let track = workspace.current();
         let panel_content = session.panel_content();
-        let layout =
-            assist_ui_state::ui_layout(width, panel_content, session.mode().uses_lyric_reference());
-        // Tranche P4: the resolved route graph the confirmation names. Resolved
-        // here rather than inside the body so both the box height and the block
-        // come from one answer, and cached so this is not four `stat`s a frame.
+        let settings_open = self.assist_settings.is_open();
+        let audio_lyrics = audio_lyric_route(settings_open);
+        let rect = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
+
+        // Head: ASSIST, and AI settings as a ghost with its sliders glyph.
+        let head = widgets::column_head(d, font, column, &[widgets::MicroRun::muted("Assist")]);
+        let icons = input.fonts.icons_available();
+        let label_width = widgets::measure(font, "AI settings", metric::UI_FONT_CAPTION);
+        let settings_rect =
+            head.trailing_right(label_width + 16.0 + if icons { 20.0 } else { 0.0 }, 28.0);
+        let settings_id = widgets::widget_id(ASSIST_WIDGETS, 91);
+        let state = self.widgets.text_button(
+            d,
+            font,
+            settings_id,
+            settings_rect,
+            "",
+            settings_open,
+            ButtonStyle::Ghost,
+            Some(metric::UI_FONT_CAPTION),
+        );
+        let ink = if settings_open || state.hovered {
+            color::ui_ink()
+        } else {
+            color::ui_muted()
+        };
+        let mut text_x = settings_rect.x + 8.0;
+        if icons {
+            d.draw_text_ex(
+                input.fonts.icons(),
+                &musializer_runtime::font::Icon::Sliders.glyph().to_string(),
+                raylib::prelude::Vector2::new(text_x, settings_rect.y + 7.0),
+                14.0,
+                0.0,
+                ink,
+            );
+            text_x += 20.0;
+        }
+        widgets::draw_text(
+            d,
+            font,
+            "AI settings",
+            text_x,
+            settings_rect.y + (settings_rect.height - metric::UI_FONT_CAPTION) * 0.5,
+            metric::UI_FONT_CAPTION,
+            ink,
+        );
+        self.widgets.hint(
+            d,
+            state,
+            settings_id,
+            settings_rect,
+            "Routing, local models, Antigravity, Codex, OpenRouter and privacy. Opening it starts nothing.",
+        );
+        if state.clicked {
+            let fingerprint = self.session_credential_fingerprint.clone();
+            self.assist_settings
+                .open(crate::ui::assist_settings::Section::Routing, fingerprint);
+        }
+        report_settings_button(&format!(
+            "visible=true label=\"AI settings\" body={:?} panel-width={:.0} icons={} rect={}",
+            panel_content,
+            column.width,
+            if icons { "on" } else { "text-only" },
+            rect(settings_rect),
+        ));
+
+        // The text each block wraps to, measured in the faces it draws with.
+        let width = (head.body.width - assist_ui_state::COLUMN_PADDING * 2.0).max(0.0);
+        let inner = (width - assist_ui_state::CARD_PADDING * 2.0).max(0.0);
+        let measure13 = |text: &str| widgets::measure(font, text, 13.0);
+        let measure14 = |text: &str| widgets::measure(font, text, 14.0);
+        let intro = wrap_to_width(ASSIST_INTRO, width, 4, &measure13);
+        let descriptions: Vec<Vec<String>> = AssistMode::ALL
+            .iter()
+            .map(|mode| {
+                wrap_to_width(
+                    workflow_description(*mode, audio_lyrics),
+                    inner,
+                    3,
+                    &measure13,
+                )
+            })
+            .collect();
         let routes = (panel_content == AssistPanelContent::Confirmation).then(|| {
             confirmation_plan(
                 session.mode(),
-                resolve_lyric_reference(input.workspace.current()).0 != AssistLyricReference::None,
-                self.assist_settings.is_open(),
+                resolve_lyric_reference(track).0 != AssistLyricReference::None,
+                settings_open,
                 self.session_credential_fingerprint.as_deref(),
             )
         });
-        // The box is the height the body needs, not the height the band happens
-        // to have. They agree when `Shell::timeline_height` asked for this panel;
-        // clamping is what keeps the panel from drawing a half-empty box when it
-        // did not — which is exactly what this build looks like until the
-        // `timeline_height` seam in Agent J's note is wired.
-        let required = layout.required_height
-            + review_block_height(session.candidate.as_ref())
-            + route_block_height(panel_content, routes.as_ref());
-        let boundary = UiRect::new(content.x + padding, top, width, available.min(required));
-        if boundary.is_empty() {
-            return;
-        }
-        let font = input.fonts.ui();
+        let open_mode =
+            assist_ui_state::open_card(panel_content, session.mode(), session.candidate_mode);
 
-        widgets::fill(d, boundary, color::ui_surface());
-        // The warning outline marks the two states that are waiting on the user
-        // (WX-5b polish): a confirmation, which is the data boundary a run is
-        // about to cross, and a candidate, which stays staged until it is
-        // applied. Every other state draws the panel's quiet rule. It used to be
-        // orange always, which on the dark workspace made an idle Assist panel
-        // the loudest outline on screen and left nothing to say when it did
-        // need attention.
-        let waiting = matches!(
-            panel_content,
-            AssistPanelContent::Confirmation | AssistPanelContent::Candidate
+        // The open card's texts.
+        let consent_text = routes.as_ref().map_or_else(
+            || session.mode().data_boundary().to_string(),
+            |plan| execution::consent_sentence(&plan.snapshot),
         );
-        d.draw_rectangle_lines_ex(
-            widgets::rectangle(boundary),
-            1.0,
-            if waiting {
-                color::ui_warning()
+        let consent = wrap_to_width(&consent_text, inner, 4, &measure14);
+        let (reference, reference_path) = resolve_lyric_reference(track);
+        let reference_name = if reference == AssistLyricReference::None {
+            "No lyric sheet chosen".to_string()
+        } else {
+            format!(
+                "Lyrics: {}",
+                Path::new(&reference_path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(&reference_path)
+            )
+        };
+        let reference_summary = if audio_lyrics && reference == AssistLyricReference::None {
+            "Uses embedded lyrics when available; otherwise suggests words heard in the audio."
+        } else if audio_lyrics {
+            "Audio helps place sung phrases; your lyric sheet stays local and supplies the caption text."
+        } else {
+            reference.summary()
+        };
+        let reference_lines = wrap_to_width(reference_summary, inner, 3, &measure13);
+        let route_lines: Vec<(String, raylib::prelude::Color)> =
+            routes.as_ref().map(column_route_lines).unwrap_or_default();
+        let running_text = wrap_to_width(
+            "No percentage is reported, so none is drawn. Playback stays available, and nothing changes until you apply a result.",
+            inner,
+            3,
+            &measure13,
+        );
+        let cancelling_text = wrap_to_width(
+            if session.job_state == AssistJobState::TimingOut {
+                "The 40:00 deadline was reached. Verifying that the whole process tree stopped."
             } else {
-                color::ui_rule()
+                "Waiting for the helper and its child processes to stop. Editor content is unchanged."
             },
+            inner,
+            3,
+            &measure13,
         );
+        let empty_text = wrap_to_width(
+            if session.job_state == AssistJobState::Succeeded {
+                session.mode().empty_result()
+            } else {
+                "Job artifacts remain available for diagnosis and support."
+            },
+            inner,
+            3,
+            &measure13,
+        );
+        let candidate = session.candidate.as_ref();
+        let target = session
+            .candidate_track
+            .and_then(|index| workspace.get(index));
+        let draft_conflict = candidate.is_some_and(|candidate| {
+            assist_ui_state::candidate_conflicts_with_lyric_draft(
+                candidate.available().lyrics,
+                session.candidate_track == workspace.current_index(),
+                false,
+            )
+        });
+        let blocked_reason = if draft_conflict {
+            Some("Finish the active lyric draft before applying this result.")
+        } else if target.is_none() {
+            Some("The target track is no longer available. Discard this result.")
+        } else {
+            None
+        };
+        let arrow = super::super::mapping_editor::arrow(font.all_loaded());
+        let lane_lines: Vec<String> = candidate.map_or_else(Vec::new, |candidate| {
+            let available = candidate.available();
+            let mut lines = Vec::new();
+            if available.lyrics {
+                let before = target.map_or(0, |track| track.lyrics.len());
+                let after = candidate.lyrics().len();
+                let note = candidate.lyrics_review().map_or_else(
+                    || {
+                        let uncertain = candidate.uncertain_lyric_count();
+                        if uncertain == 0 {
+                            "no timing flagged".to_string()
+                        } else {
+                            format!("{uncertain} to review")
+                        }
+                    },
+                    LyricsReview::summary,
+                );
+                lines.push(format!("Lyrics: {before} {arrow} {after} \u{00b7} {note}"));
+            }
+            if available.sections {
+                lines.push(format!(
+                    "Scene changes: {} {arrow} {}",
+                    target.map_or(0, |track| track.scene_switches.len()),
+                    candidate.sections().len()
+                ));
+            }
+            if available.semantics {
+                lines.push(format!(
+                    "Feeling cues: {} {arrow} {}",
+                    target.map_or(0, |track| track.semantic_events.len()),
+                    candidate.semantic_events().len()
+                ));
+            }
+            lines
+        });
+        let extra_line = candidate.and_then(|candidate| {
+            candidate
+                .lyrics_review()
+                .map(LyricsReview::source_summary)
+                .filter(|line| !line.is_empty())
+                .or_else(|| {
+                    (!session.candidate_first_lyric.is_empty())
+                        .then(|| format!("First staged lyric: {}", session.candidate_first_lyric))
+                })
+        });
+        let reason_lines = blocked_reason.map_or_else(Vec::new, |reason| {
+            wrap_to_width(reason, inner, 3, &measure13)
+        });
+        let review_height = review_block_height(candidate) as u32;
 
-        // The oracle refuses to draw below 80 px (`plug.c:3132`): a panel that
-        // cannot host its own mode row would register buttons nobody can see and
-        // claim the presses aimed at whatever is underneath. Saying so beats a
-        // blank box — and this state is reachable today, because
-        // `Shell::timeline_height` still hands Assist the plain 180 px strip.
-        if boundary.height <= 80.0 {
-            widgets::draw_text(
-                d,
-                font,
-                "ASSISTED ANALYSIS",
-                boundary.x + padding,
-                boundary.y + 6.0,
-                metric::UI_FONT_CAPTION,
-                color::ui_ink(),
+        let open_spec = open_mode.map(|mode| {
+            (
+                mode,
+                match panel_content {
+                    AssistPanelContent::Confirmation => {
+                        assist_ui_state::OpenCardSpec::Confirmation {
+                            consent_lines: consent.len(),
+                            reference_lines: session
+                                .mode()
+                                .uses_lyric_reference()
+                                .then_some(1 + reference_lines.len()),
+                            route_lines: route_lines.len(),
+                        }
+                    }
+                    AssistPanelContent::Running => assist_ui_state::OpenCardSpec::Running {
+                        lines: running_text.len(),
+                    },
+                    AssistPanelContent::Cancelling => assist_ui_state::OpenCardSpec::Cancelling {
+                        lines: cancelling_text.len(),
+                    },
+                    AssistPanelContent::Candidate => assist_ui_state::OpenCardSpec::Candidate {
+                        lanes: lane_lines.len(),
+                        extra_line: extra_line.is_some(),
+                        reason_lines: reason_lines.len(),
+                        review_height,
+                    },
+                    AssistPanelContent::Empty | AssistPanelContent::Ready => {
+                        assist_ui_state::OpenCardSpec::Empty {
+                            lines: empty_text.len(),
+                        }
+                    }
+                },
+            )
+        });
+        let spec = assist_ui_state::AssistColumnSpec {
+            intro_lines: intro.len(),
+            description_lines: [0, 1, 2, 3].map(|index| descriptions[index].len()),
+            open: open_spec,
+        };
+
+        let mouse = input.ui_scale.mouse(d);
+        let wheel = self.wheel_delta(d);
+        let mut layout =
+            assist_ui_state::assist_column_layout(head.body, &spec, self.assist_column.offset);
+        if wheel != 0.0 && layout.viewport.contains_point(mouse.x, mouse.y) {
+            layout = assist_ui_state::assist_column_layout(
+                head.body,
+                &spec,
+                layout.offset - wheel * ASSIST_WHEEL_STEP,
             );
-            widgets::draw_text(
-                d,
-                font,
-                "needs a taller timeline than this build asks for; see Agent J's note",
-                boundary.x + padding,
-                boundary.y + 24.0,
-                metric::UI_FONT_CAPTION,
-                color::ui_warning(),
-            );
-            return;
         }
+        let shown = open_mode.map(|mode| (mode, panel_content));
+        if shown != self.assist_column.shown {
+            self.assist_column.shown = shown;
+            if let Some(index) = open_mode.and_then(|mode| {
+                AssistMode::ALL
+                    .iter()
+                    .position(|candidate| *candidate == mode)
+            }) {
+                let offset = assist_ui_state::reveal_offset(&layout, layout.cards[index].card);
+                layout = assist_ui_state::assist_column_layout(head.body, &spec, offset);
+            }
+        }
+        self.assist_column.offset = layout.offset;
 
-        // One scissor around the whole body, as the C does (`plug.c:2172-2175`),
-        // so a long helper message cannot print outside the panel it belongs to.
-        let mut clip = widgets::begin_scissor(
-            d,
-            UiRect::new(
-                boundary.x + 1.0,
-                boundary.y + 1.0,
-                (boundary.width - 2.0).max(0.0),
-                (boundary.height - 2.0).max(0.0),
-            ),
-            input.ui_scale,
-        );
+        let start_block = session.start_block();
+        let mut body_report = String::from("none");
+        let old_clip = self.widgets.set_input_clip(Some(layout.viewport));
+        {
+            let mut clip = widgets::begin_scissor(d, layout.viewport, input.ui_scale);
+            let d = &mut *clip;
+            for (index, line) in intro.iter().enumerate() {
+                widgets::draw_text(
+                    d,
+                    font,
+                    line,
+                    layout.intro.x,
+                    layout.intro.y + index as f32 * assist_ui_state::COLUMN_INTRO_LINE + 3.0,
+                    13.0,
+                    color::ui_muted(),
+                );
+            }
 
-        widgets::draw_text(
-            &mut clip,
-            font,
-            "ASSISTED ANALYSIS",
-            boundary.x + padding,
-            boundary.y + padding,
-            metric::UI_FONT_HEADER,
-            color::ui_ink(),
-        );
-        // The **AI settings** entry point (tranche AP3). Drawn from the heading
-        // row rather than from a workflow card, and drawn before the body
-        // branches, so it is present in every panel state — Ready, Confirmation,
-        // Running, Cancelling, Candidate and Empty alike. A control that only
-        // exists in one state is a control a user cannot rely on finding.
-        //
-        // It keeps its text label at every width: the icon is an addition beside
-        // the words, never a replacement for them, so `Faces::icons_available`
-        // being false costs decoration rather than meaning.
-        //
-        // There is no narrow-width second header row, and that is a measurement
-        // rather than a preference: the narrowest assist panel any supported
-        // window produces is 668 px (960 logical with the inspector open, via
-        // `WorkspaceFrame::assist_panel_width`), where the heading, the subtitle
-        // and a 152 px button all fit with room to spare. A second row would be
-        // a branch nothing could reach, photograph or review. What yields
-        // instead is the auto-scenes toggle below, which is the right priority:
-        // the entry point must be present in every state, and that one need not.
-        let settings_width = 152.0f32.min((boundary.width - padding * 2.0).max(0.0));
-        let settings_row = UiRect::new(
-            boundary.x + boundary.width - padding - settings_width,
-            boundary.y + 8.0,
-            settings_width,
-            30.0,
-        );
-        if !settings_row.is_empty() {
-            let id = widgets::widget_id(ASSIST_WIDGETS, 91);
-            let state = self.widgets.text_button(
-                &mut clip,
-                font,
-                id,
-                settings_row,
-                "AI settings",
-                self.assist_settings.is_open(),
-                ButtonStyle::Neutral,
-                Some(metric::UI_FONT_CAPTION),
-            );
-            self.widgets.hint(
-                &clip,
-                state,
-                id,
-                settings_row,
-                "Routing, local models, Antigravity, Codex, OpenRouter and privacy. Opening it starts nothing.",
-            );
-            if input.fonts.icons_available() {
-                // Drawn beside the label rather than through `icon_button`,
-                // which replaces the label with a glyph. The sliders glyph is
-                // the one the Tune control already uses for "settings for what
-                // you are looking at", so the vocabulary stays one vocabulary.
-                clip.draw_text_ex(
-                    input.fonts.icons(),
-                    &musializer_runtime::font::Icon::Sliders.glyph().to_string(),
-                    raylib::prelude::Vector2::new(settings_row.x + 9.0, settings_row.y + 8.0),
-                    15.0,
-                    0.0,
-                    if self.assist_settings.is_open() {
-                        color::ui_ink()
+            for (index, mode) in AssistMode::ALL.into_iter().enumerate() {
+                let card = layout.cards[index];
+                let open = open_mode == Some(mode);
+                let waiting = open
+                    && matches!(
+                        panel_content,
+                        AssistPanelContent::Confirmation | AssistPanelContent::Candidate
+                    );
+                // A closed card is one press target: pressing it proposes the
+                // workflow (Confirmation), exactly as the band's mode button
+                // did. An open confirming card's title row closes it again.
+                let id = widgets::widget_id(ASSIST_WIDGETS, CARD_WIDGET + index as u32);
+                let press_area = if open { card.title } else { card.card };
+                let can_open = start_block == AssistStartBlock::Allowed;
+                let state = if open && panel_content != AssistPanelContent::Confirmation {
+                    widgets::ButtonState::default()
+                } else {
+                    self.widgets.button(d, id, press_area)
+                };
+                widgets::rounded_box(
+                    d,
+                    card.card,
+                    6.0,
+                    if state.hovered && !open && can_open {
+                        color::ui_hover()
                     } else {
-                        color::ui_muted()
+                        color::ui_raised()
+                    },
+                    if waiting {
+                        color::ui_warning()
+                    } else if state.hovered && can_open {
+                        color::ui_selected_edge()
+                    } else {
+                        color::ui_rule()
+                    },
+                    1.0,
+                );
+                if state.clicked && can_open {
+                    if open {
+                        session.request(AssistRequest::DismissConfirmation);
+                    } else {
+                        session.select_mode(mode);
+                    }
+                }
+                self.widgets.hint(
+                    d,
+                    state,
+                    id,
+                    press_area,
+                    if !can_open {
+                        start_block.reason()
+                    } else if open {
+                        "Close this card without starting anything"
+                    } else {
+                        "Open this workflow to see what it sends and what it replaces. Opening starts nothing."
                     },
                 );
-            }
-            if state.clicked {
-                let fingerprint = self.session_credential_fingerprint.clone();
-                self.assist_settings
-                    .open(crate::ui::assist_settings::Section::Routing, fingerprint);
-            }
-            report_settings_button(&format!(
-                "visible=true label=\"AI settings\" body={:?} panel-width={:.0} icons={} rect={:.0},{:.0},{:.0},{:.0}",
-                panel_content,
-                boundary.width,
-                if input.fonts.icons_available() {
-                    "on"
-                } else {
-                    "text-only"
-                },
-                settings_row.x,
-                settings_row.y,
-                settings_row.width,
-                settings_row.height,
-            ));
-        }
-
-        widgets::draw_text(
-            &mut clip,
-            font,
-            "Validated results stay staged until you apply them.",
-            boundary.x + padding,
-            boundary.y + 36.0,
-            metric::UI_FONT_VALUE,
-            color::ui_muted(),
-        );
-
-        // The saved/Assist-produced plan is useful only if it can be enabled
-        // again after a manual scene choice disabled it. Match the oracle's
-        // compact header control and keep it absent when there is no plan to
-        // operate on (`plug.c:2207-2226`).
-        if boundary.width >= 560.0 + settings_width {
-            if let Some((enabled, cue_count)) = input
-                .workspace
-                .current()
-                .filter(|track| !track.scene_switches.is_empty())
-                .map(|track| (track.scene_switches.enabled, track.scene_switches.len()))
-            {
-                let label = format!(
-                    "Current auto scenes: {} ({cue_count})",
-                    if enabled { "On" } else { "Off" }
+                widgets::draw_text(
+                    d,
+                    font,
+                    mode.display_name(),
+                    card.title.x,
+                    card.title.y + (card.title.height - 15.0) * 0.5,
+                    15.0,
+                    if can_open || open {
+                        color::ui_ink()
+                    } else {
+                        color::ui_disabled()
+                    },
                 );
-                let toggle = UiRect::new(
-                    boundary.x + boundary.width - padding - settings_width - 8.0 - 190.0,
-                    boundary.y + 8.0,
-                    190.0,
-                    metric::UI_BUTTON_HEIGHT,
+                let (word, sends) = assist_ui_state::card_boundary(mode, audio_lyrics);
+                let word_width = widgets::micro_width(font, &[widgets::MicroRun::muted(word)])
+                    + widgets::STATUS_DOT_SIZE
+                    + 6.0;
+                let dot_box = UiRect::new(
+                    (card.boundary.x + card.boundary.width - word_width).max(card.boundary.x),
+                    card.boundary.y,
+                    word_width.min(card.boundary.width),
+                    card.boundary.height,
                 );
-                let font_size =
-                    widgets::row_font_size(font, &[label.as_str()], &[toggle.width], toggle.height);
-                if self
-                    .widgets
-                    .text_button(
-                        &mut clip,
-                        font,
-                        widgets::widget_id(ASSIST_WIDGETS, 90),
-                        toggle,
-                        &label,
-                        enabled,
-                        ButtonStyle::Neutral,
-                        Some(font_size),
-                    )
-                    .clicked
-                {
-                    commands.push(ShellCommand::SetAutoScenes(!enabled));
-                }
-            }
-        }
-
-        let start_block = input.workspace.assist.start_block();
-        self.assist_modes(&mut clip, input, boundary, &layout, start_block);
-        self.assist_status(&mut clip, input, boundary, &layout);
-        self.assist_body(
-            &mut clip,
-            input,
-            boundary,
-            &layout,
-            panel_content,
-            padding,
-            gap,
-            routes.as_ref(),
-            commands,
-        );
-        if let Some(routes) = routes.as_ref() {
-            draw_route_graph(&mut clip, font, boundary, &layout, padding, routes);
-        }
-    }
-
-    /// The four workflow buttons, with their data-boundary badges
-    /// (`plug.c:2229-2271`).
-    ///
-    /// The badge is on the button rather than only in the confirmation step so
-    /// "this one leaves the machine" is visible **before** the click.
-    fn assist_modes(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        input: &ShellInput<'_>,
-        boundary: UiRect,
-        layout: &AssistUiLayout,
-        start_block: AssistStartBlock,
-    ) {
-        let padding = metric::UI_PANEL_PADDING;
-        let gap = metric::UI_CONTROL_GAP;
-        let font = input.fonts.ui();
-        let session = &input.workspace.assist;
-        let active = session.is_active();
-
-        let columns = layout.mode_columns.max(1);
-        let button_width =
-            (boundary.width - padding * 2.0 - gap * (columns - 1) as f32) / columns as f32;
-        if button_width <= 0.0 {
-            return;
-        }
-        let labels: Vec<&str> = AssistMode::ALL.iter().map(|m| m.display_name()).collect();
-        let widths = vec![button_width; labels.len()];
-        let font_size = widgets::row_font_size(font, &labels, &widths, metric::UI_BUTTON_HEIGHT);
-
-        for (index, mode) in AssistMode::ALL.into_iter().enumerate() {
-            let row = index / columns;
-            let column = index % columns;
-            let button = UiRect::new(
-                boundary.x + padding + column as f32 * (button_width + gap),
-                boundary.y + layout.mode_top + row as f32 * layout.mode_row_height,
-                button_width,
-                metric::UI_BUTTON_HEIGHT,
-            );
-            // The panel owns these pixels; a button drawn past its edge still
-            // claims the press aimed at whatever is underneath it.
-            if !boundary.contains(button) {
-                continue;
-            }
-            let selected = (session.candidate.is_some() && session.candidate_mode == mode)
-                || (active && session.mode() == mode);
-            let armed = session.confirmation_pending() && !active && session.mode() == mode;
-
-            if start_block == AssistStartBlock::Allowed {
-                let id = widgets::widget_id(ASSIST_WIDGETS, index as u32);
-                if self
-                    .widgets
-                    .text_button(
+                widgets::status_dot_label(
+                    d,
+                    font,
+                    dot_box,
+                    if sends {
+                        widgets::StatusTone::Warning
+                    } else {
+                        widgets::StatusTone::Success
+                    },
+                    word,
+                );
+                for (line_index, line) in descriptions[index].iter().enumerate() {
+                    widgets::draw_text(
                         d,
                         font,
-                        id,
-                        button,
-                        labels[index],
-                        selected,
-                        ButtonStyle::Neutral,
-                        Some(font_size),
-                    )
-                    .clicked
-                {
-                    // Selecting a workflow proposes it; it does not start it.
-                    session.select_mode(mode);
+                        line,
+                        card.description.x,
+                        card.description.y + line_index as f32 * assist_ui_state::CARD_LINE + 3.0,
+                        13.0,
+                        color::ui_muted(),
+                    );
                 }
-            } else {
-                // The C hangs a tooltip carrying `start_block.reason()` off the
-                // disabled button. There is no tooltip widget in this rewrite, so
-                // the reason goes on the status line instead — which is where the
-                // C also puts it when the block is a missing helper.
-                self.widgets
-                    .disabled_button(d, font, button, labels[index], Some(font_size));
+                let replaces = card_replaces(mode, track);
+                widgets::draw_micro(
+                    d,
+                    font,
+                    card.replaces.x,
+                    card.replaces.y + (card.replaces.height - metric::UI_FONT_MICRO) * 0.5,
+                    &[widgets::MicroRun::muted(&replaces)],
+                );
+                if !card.divider.is_empty() {
+                    widgets::fill(d, card.divider, color::ui_rule());
+                }
             }
-            if armed {
-                d.draw_rectangle_lines_ex(widgets::rectangle(button), 2.0, color::ui_warning());
+
+            if let Some((_, body)) = layout.open {
+                body_report = self.assist_open_body(
+                    d,
+                    input,
+                    body,
+                    &AssistOpenTexts {
+                        consent: &consent,
+                        reference_name: &reference_name,
+                        reference: reference_lines.as_slice(),
+                        reference_chosen: track
+                            .is_some_and(|track| track.lyrics_reference_path.is_some()),
+                        reference_missing: reference == AssistLyricReference::None,
+                        routes: &route_lines,
+                        refusal: start_refusal(session.helper_available, routes.as_ref()),
+                        running: &running_text,
+                        cancelling: &cancelling_text,
+                        empty: &empty_text,
+                        lanes: &lane_lines,
+                        extra: extra_line.as_deref(),
+                        reason: &reason_lines,
+                        blocked: blocked_reason.is_some(),
+                    },
+                    layout.viewport,
+                    commands,
+                );
             }
-            widgets::draw_text(
+
+            // Auto scenes, at every width.
+            widgets::section_head(
                 d,
                 font,
-                if mode == AssistMode::Lyrics && audio_lyric_route(self.assist_settings.is_open()) {
-                    "LYRICS · SENDS AUDIO"
-                } else {
-                    mode.badge()
-                },
-                button.x + 3.0,
-                button.y + 39.0,
-                11.0,
+                layout.auto_head,
+                &[widgets::MicroRun::muted("Auto scenes")],
+            );
+            let plan = track
+                .filter(|track| !track.scene_switches.is_empty())
+                .map(|track| (track.scene_switches.enabled, track.scene_switches.len()));
+            if let Some((enabled, _)) = plan {
+                let switch = self.widgets.segmented(
+                    d,
+                    font,
+                    ASSIST_WIDGETS,
+                    AUTO_SWITCH_WIDGET,
+                    layout.auto_switch,
+                    &["On", "Off"],
+                    Some(usize::from(!enabled)),
+                    widgets::SegmentedFit::Fill,
+                );
+                if let Some(pick) = switch.clicked {
+                    if (pick == 0) != enabled {
+                        commands.push(ShellCommand::SetAutoScenes(pick == 0));
+                    }
+                }
+            } else {
+                self.widgets.disabled_button(
+                    d,
+                    font,
+                    layout.auto_switch,
+                    "Off",
+                    Some(metric::UI_FONT_CAPTION),
+                );
+            }
+            widgets::draw_text_faded(
+                d,
+                font,
+                &auto_scenes_sentence(plan),
+                layout.auto_sentence.x,
+                layout.auto_sentence.y + (layout.auto_sentence.height - 13.0) * 0.5,
+                layout.auto_sentence.width,
+                24.0,
+                13.0,
                 color::ui_muted(),
             );
         }
-    }
+        self.widgets.set_input_clip(old_clip);
 
-    /// One line naming exactly what the panel is doing (`plug.c:2273-2338`).
-    fn assist_status(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        input: &ShellInput<'_>,
-        boundary: UiRect,
-        layout: &AssistUiLayout,
-    ) {
-        let workspace = input.workspace;
-        let session = &workspace.assist;
+        // The footer: the status line as a dot and micro words, whole on hover.
+        widgets::fill(d, layout.footer, color::ui_surface());
+        widgets::fill(
+            d,
+            UiRect::new(layout.footer.x, layout.footer.y, layout.footer.width, 1.0),
+            color::ui_rule(),
+        );
         let name_of = |index: Option<usize>| {
             index
                 .and_then(|index| workspace.get(index))
@@ -3853,7 +3761,7 @@ impl Shell {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("");
-        let (text, tone) = assist_ui_state::status_line(&AssistStatusInputs {
+        let (status_text, tone) = assist_ui_state::status_line(&AssistStatusInputs {
             session_mode: session.mode(),
             job_state: session.job_state,
             confirmation_pending: session.confirmation_pending(),
@@ -3866,115 +3774,220 @@ impl Shell {
             failure_detail: &session.failure_detail,
             log_file_name,
         });
-        let font = input.fonts.ui();
-        let text_x = boundary.x + metric::UI_PANEL_PADDING;
-        let available = (boundary.width - metric::UI_PANEL_PADDING * 2.0).max(0.0);
-        let measure = |value: &str| widgets::measure(font, value, 16.0);
-        let shown = ellipsize(&text, available, &measure);
-        widgets::draw_text(
+        let drawn = widgets::status_dot_label(
             d,
             font,
-            &shown,
-            text_x,
-            boundary.y + layout.status_y,
-            16.0,
+            layout.status,
             match tone {
-                AssistStatusTone::Ink => color::ui_ink(),
-                // Core still calls a running job's tone "accent"; since WX-5a
-                // the accent means *now* (the playhead), so it draws as ink.
-                AssistStatusTone::Accent => color::ui_ink(),
-                AssistStatusTone::Warning => color::ui_warning(),
-                AssistStatusTone::Danger => color::ui_danger(),
-                AssistStatusTone::Success => color::ui_success(),
+                AssistStatusTone::Warning => widgets::StatusTone::Warning,
+                AssistStatusTone::Danger => widgets::StatusTone::Danger,
+                AssistStatusTone::Success => widgets::StatusTone::Success,
+                // A running job is ink, never the accent (WX-5a).
+                AssistStatusTone::Ink | AssistStatusTone::Accent => widgets::StatusTone::Ink,
             },
+            &status_text,
         );
-        // Failure diagnostics often contain a helper location and log name.
-        // At the minimum window width that useful tail used to continue past
-        // the panel edge and disappear. Keep the row bounded, while making the
-        // complete diagnosis available without sending the user to a notice
-        // they may already have dismissed.
-        if shown != text {
-            let status = UiRect::new(text_x, boundary.y + layout.status_y - 2.0, available, 21.0);
-            let id = widgets::widget_id(ASSIST_WIDGETS, 92);
-            let state = self.widgets.button(d, id, status);
-            self.widgets.hint(d, state, id, status, &text);
-        }
+        let status_id = widgets::widget_id(ASSIST_WIDGETS, 92);
+        let status_state = self.widgets.button(d, status_id, layout.status);
+        self.widgets
+            .hint(d, status_state, status_id, layout.status, &status_text);
+
+        let cards: Vec<String> = AssistMode::ALL
+            .iter()
+            .zip(&layout.cards)
+            .map(|(mode, card)| format!("{}@{}", card_token(*mode), rect(card.card)))
+            .collect();
+        let auto = track
+            .filter(|track| !track.scene_switches.is_empty())
+            .map_or("none", |track| {
+                if track.scene_switches.enabled {
+                    "on"
+                } else {
+                    "off"
+                }
+            });
+        self.assist_column.report = format!(
+            "head={} settings@{} cards={} open={} body={:?} {} auto={}@{} status@{} tone={:?} offset={:.0}/{:.0}",
+            rect(head.head),
+            rect(settings_rect),
+            cards.join(";"),
+            open_mode.map_or("none", card_token),
+            panel_content,
+            body_report,
+            auto,
+            rect(layout.auto_switch),
+            rect(drawn),
+            tone,
+            layout.offset,
+            layout.max_offset,
+        );
     }
 
-    /// Whichever of the six bodies `panel_content` chose (`plug.c:2340-2539`).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the C's own shape: the boundary, its layout, the chosen body and the two metrics"
-    )]
-    fn assist_body(
+    /// The open card's body, by state (§3.4). Returns its part of the
+    /// `assist column:` line: every button's rect.
+    fn assist_open_body(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
         input: &ShellInput<'_>,
-        boundary: UiRect,
-        layout: &AssistUiLayout,
-        content: AssistPanelContent,
-        padding: f32,
-        gap: f32,
-        plan: Option<&ExecutionPlan>,
+        body: assist_ui_state::OpenBodyLayout,
+        texts: &AssistOpenTexts<'_>,
+        viewport: UiRect,
         commands: &mut Vec<ShellCommand>,
-    ) {
+    ) -> String {
+        use assist_ui_state::OpenBodyLayout;
         let font = input.fonts.ui();
-        let session = &input.workspace.assist;
-        let action_y = boundary.y + layout.content_y;
-        let x = boundary.x + padding;
-
-        match content {
-            AssistPanelContent::Confirmation => {
-                let mode = session.mode();
+        let workspace = input.workspace;
+        let session = &workspace.assist;
+        let rect = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
+        let micro = |d: &mut RaylibDrawHandle<'_>, row: UiRect, text: &str| {
+            widgets::draw_micro(
+                d,
+                font,
+                row.x,
+                row.y + (row.height - metric::UI_FONT_MICRO) * 0.5,
+                &[widgets::MicroRun::muted(text)],
+            );
+        };
+        let lines = |d: &mut RaylibDrawHandle<'_>,
+                     area: UiRect,
+                     lines: &[String],
+                     pitch: f32,
+                     size: f32,
+                     tint: raylib::prelude::Color| {
+            for (index, line) in lines.iter().enumerate() {
                 widgets::draw_text(
                     d,
                     font,
-                    workflow_description(mode, audio_lyric_route(self.assist_settings.is_open())),
-                    x,
-                    action_y,
-                    14.0,
-                    color::ui_ink(),
+                    line,
+                    area.x,
+                    area.y + index as f32 * pitch + (pitch - size) * 0.5,
+                    size,
+                    tint,
                 );
-                // The consent sentence comes from the graph this job actually
-                // resolved, not from the workflow's name (audit A10). The
-                // per-mode string stays as the fallback for the one frame a
-                // confirmation arms before its plan exists — it describes the
-                // built-in profile, which is what an unresolved plan would
-                // resolve to anyway.
-                let consent = plan.map_or_else(
-                    || mode.data_boundary().to_string(),
-                    |plan| execution::consent_sentence(&plan.snapshot),
-                );
-                widgets::draw_text(
-                    d,
-                    font,
-                    &consent,
-                    x,
-                    action_y + 21.0,
-                    14.0,
-                    color::ui_muted(),
-                );
-                let buttons = assist_ui_state::confirmation_buttons(
-                    boundary,
-                    layout,
-                    padding,
-                    gap,
-                    metric::UI_BUTTON_HEIGHT,
-                );
-                if layout.reference_y > 0.0 {
-                    self.assist_lyric_reference(d, input, boundary, layout, &buttons);
+            }
+        };
+        match body {
+            OpenBodyLayout::Confirmation {
+                boundary_head,
+                consent,
+                reference_head,
+                reference,
+                choose,
+                clear,
+                routes,
+                start,
+                cancel,
+                deadline,
+            } => {
+                micro(d, boundary_head, "Data boundary");
+                lines(d, consent, texts.consent, 20.0, 14.0, color::ui_ink());
+                let mut report = String::new();
+                if let (Some(head), Some(area)) = (reference_head, reference) {
+                    micro(d, head, "Lyric source");
+                    widgets::draw_text(
+                        d,
+                        font,
+                        texts.reference_name,
+                        area.x,
+                        area.y + 3.0,
+                        13.0,
+                        if texts.reference_missing {
+                            color::ui_muted()
+                        } else {
+                            color::ui_ink()
+                        },
+                    );
+                    lines(
+                        d,
+                        UiRect::new(area.x, area.y + 19.0, area.width, area.height - 19.0),
+                        texts.reference,
+                        19.0,
+                        13.0,
+                        color::ui_muted(),
+                    );
+                    if let Some(choose) = choose {
+                        let id = widgets::widget_id(ASSIST_WIDGETS, 20);
+                        if self
+                            .widgets
+                            .text_button(
+                                d,
+                                font,
+                                id,
+                                choose,
+                                if texts.reference_missing {
+                                    "Choose lyrics\u{2026}"
+                                } else {
+                                    "Replace lyrics\u{2026}"
+                                },
+                                false,
+                                ButtonStyle::Neutral,
+                                Some(metric::UI_FONT_CAPTION),
+                            )
+                            .clicked
+                        {
+                            session.request(AssistRequest::ChooseLyricSheet);
+                        }
+                        report.push_str(&format!(" choose@{}", rect(choose)));
+                    }
+                    if let (Some(clear), true) = (clear, texts.reference_chosen) {
+                        let id = widgets::widget_id(ASSIST_WIDGETS, 21);
+                        if self
+                            .widgets
+                            .text_button(
+                                d,
+                                font,
+                                id,
+                                clear,
+                                "Clear",
+                                false,
+                                ButtonStyle::Ghost,
+                                Some(metric::UI_FONT_CAPTION),
+                            )
+                            .clicked
+                        {
+                            session.request(AssistRequest::ClearLyricSheet);
+                        }
+                        report.push_str(&format!(" clear@{}", rect(clear)));
+                    }
                 }
-                let refusal = start_refusal(session.helper_available, plan);
-                if let Some(refusal) = refusal {
-                    self.widgets
-                        .disabled_button(d, font, buttons.start, "Start analysis", None);
-                    // `disabled_button` returns no state, so the reason needs a
-                    // hit target of its own — the same shape the Tune panel's
-                    // disabled Apply uses, and it also stops the press falling
-                    // through to whatever is behind it.
+                if let Some(area) = routes {
+                    micro(
+                        d,
+                        UiRect::new(
+                            area.x,
+                            area.y,
+                            area.width,
+                            assist_ui_state::CARD_MICRO_HEIGHT,
+                        ),
+                        "Resolved routes",
+                    );
+                    let measure = |text: &str| widgets::measure(font, text, ROUTE_FONT_SIZE);
+                    for (index, (line, tint)) in texts.routes.iter().enumerate() {
+                        widgets::draw_text(
+                            d,
+                            font,
+                            &ellipsize(line, area.width, &measure),
+                            area.x,
+                            area.y
+                                + assist_ui_state::CARD_MICRO_HEIGHT
+                                + 4.0
+                                + index as f32 * assist_ui_state::CARD_ROUTE_LINE,
+                            ROUTE_FONT_SIZE,
+                            *tint,
+                        );
+                    }
+                }
+                if let Some(refusal) = texts.refusal.as_deref() {
+                    self.widgets.disabled_button(
+                        d,
+                        font,
+                        start,
+                        "Start analysis",
+                        Some(metric::UI_FONT_CAPTION),
+                    );
                     let id = widgets::widget_id(ASSIST_WIDGETS, 13);
-                    let hover = self.widgets.button(d, id, buttons.start);
-                    self.widgets.hint(d, hover, id, buttons.start, &refusal);
+                    let hover = self.widgets.button(d, id, start);
+                    self.widgets.hint(d, hover, id, start, refusal);
                 } else {
                     let id = widgets::widget_id(ASSIST_WIDGETS, 10);
                     if self
@@ -3983,11 +3996,11 @@ impl Shell {
                             d,
                             font,
                             id,
-                            buttons.start,
+                            start,
                             "Start analysis",
                             false,
-                            ButtonStyle::Neutral,
-                            None,
+                            ButtonStyle::Strong,
+                            Some(metric::UI_FONT_CAPTION),
                         )
                         .clicked
                     {
@@ -4001,40 +4014,78 @@ impl Shell {
                         d,
                         font,
                         id,
-                        buttons.cancel,
+                        cancel,
                         "Cancel",
                         false,
-                        ButtonStyle::Neutral,
-                        None,
+                        ButtonStyle::Ghost,
+                        Some(metric::UI_FONT_CAPTION),
                     )
                     .clicked
                 {
                     session.request(AssistRequest::DismissConfirmation);
                 }
+                let stop = [widgets::MicroRun::muted("Stops by itself at 40:00")];
+                let stop_width = widgets::micro_width(font, &stop);
+                if stop_width <= deadline.width {
+                    widgets::draw_micro(
+                        d,
+                        font,
+                        deadline.x + deadline.width - stop_width,
+                        deadline.y + (deadline.height - metric::UI_FONT_MICRO) * 0.5,
+                        &stop,
+                    );
+                }
+                format!(
+                    "start@{}{} cancel@{}{report}",
+                    rect(start),
+                    if texts.refusal.is_some() { "!" } else { "" },
+                    rect(cancel)
+                )
             }
-            AssistPanelContent::Running => {
+            OpenBodyLayout::Running {
+                status,
+                sweep,
+                text,
+                cancel_job,
+            } => {
                 widgets::draw_text(
                     d,
                     font,
-                    workflow_description(
-                        session.mode(),
-                        audio_lyric_route(self.assist_settings.is_open()),
+                    &format!(
+                        "Running \u{00b7} {}",
+                        running_clock(session.elapsed_seconds)
                     ),
-                    x,
-                    action_y,
+                    status.x,
+                    status.y + (status.height - 14.0) * 0.5,
                     14.0,
                     color::ui_ink(),
                 );
-                widgets::draw_text(
+                let stop = [widgets::MicroRun::muted("Stops by itself at 40:00")];
+                let stop_width = widgets::micro_width(font, &stop);
+                widgets::draw_micro(
                     d,
                     font,
-                    "No percentage is reported. The complete job stops at 40:00; playback remains available.",
-                    x,
-                    action_y + 21.0,
-                    14.0,
-                    color::ui_muted(),
+                    status.x + status.width - stop_width,
+                    status.y + (status.height - metric::UI_FONT_MICRO) * 0.5,
+                    &stop,
                 );
-                let cancel = UiRect::new(x, action_y + 48.0, 130.0, metric::UI_BUTTON_HEIGHT);
+                // Indeterminate: a warm-grey segment travelling the groove,
+                // placed by the job's own clock so a probe photographs one
+                // position. No percentage exists, so none is drawn.
+                widgets::fill(d, sweep, color::ui_control_edge());
+                let segment = (sweep.width * 0.3).round();
+                let phase = (session.elapsed_seconds * 0.5).fract() as f32;
+                widgets::fill(
+                    d,
+                    UiRect::new(
+                        sweep.x + ((sweep.width - segment) * phase).round(),
+                        sweep.y,
+                        segment,
+                        sweep.height,
+                    ),
+                    color::ui_level(),
+                );
+                lines(d, text, texts.running, 19.0, 13.0, color::ui_muted());
                 let id = widgets::widget_id(ASSIST_WIDGETS, 12);
                 if self
                     .widgets
@@ -4042,443 +4093,374 @@ impl Shell {
                         d,
                         font,
                         id,
-                        cancel,
+                        cancel_job,
                         "Cancel job",
                         false,
                         ButtonStyle::Danger,
-                        None,
+                        Some(metric::UI_FONT_CAPTION),
                     )
                     .clicked
                 {
                     session.request(AssistRequest::CancelJob);
                 }
+                format!("cancel-job@{} sweep@{}", rect(cancel_job), rect(sweep))
             }
-            AssistPanelContent::Cancelling => {
+            OpenBodyLayout::Cancelling { text } => {
+                lines(d, text, texts.cancelling, 19.0, 13.0, color::ui_muted());
+                "waiting".to_string()
+            }
+            OpenBodyLayout::Candidate {
+                validated,
+                lanes,
+                extra,
+                reason,
+                review,
+                apply,
+                discard,
+                links,
+            } => {
+                widgets::status_dot_label(
+                    d,
+                    font,
+                    validated,
+                    widgets::StatusTone::Success,
+                    "Validated \u{00b7} staged until you apply it",
+                );
+                let measure14 = |text: &str| widgets::measure(font, text, 14.0);
+                let ellipsized: Vec<String> = texts
+                    .lanes
+                    .iter()
+                    .map(|line| ellipsize(line, lanes.width, &measure14))
+                    .collect();
+                lines(d, lanes, &ellipsized, 20.0, 14.0, color::ui_ink());
+                if let (Some(row), Some(line)) = (extra, texts.extra) {
+                    let measure = |text: &str| widgets::measure(font, text, REASON_FONT_SIZE);
+                    widgets::draw_text(
+                        d,
+                        font,
+                        &ellipsize(line, row.width, &measure),
+                        row.x,
+                        row.y + 3.0,
+                        REASON_FONT_SIZE,
+                        color::ui_muted(),
+                    );
+                }
+                if let Some(area) = reason {
+                    lines(d, area, texts.reason, 18.0, 13.0, color::ui_warning());
+                }
+                let apply_label = {
+                    let embedded = session
+                        .candidate
+                        .as_ref()
+                        .and_then(AnalysisCandidate::lyrics_review)
+                        .is_some_and(|review| review.reference_source.starts_with("embedded:"));
+                    if session.apply_confirmation_pending() && embedded {
+                        "Confirm embedded"
+                    } else if session.apply_confirmation_pending() {
+                        "Confirm apply"
+                    } else {
+                        "Apply changes"
+                    }
+                };
+                if texts.blocked {
+                    self.widgets.disabled_button(
+                        d,
+                        font,
+                        apply,
+                        apply_label,
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                } else {
+                    let id = widgets::widget_id(ASSIST_WIDGETS, 30);
+                    if self
+                        .widgets
+                        .text_button(
+                            d,
+                            font,
+                            id,
+                            apply,
+                            apply_label,
+                            false,
+                            ButtonStyle::Strong,
+                            Some(metric::UI_FONT_CAPTION),
+                        )
+                        .clicked
+                    {
+                        if session.apply_confirmation_pending() {
+                            session.request(AssistRequest::Apply);
+                        } else {
+                            session.set_apply_confirmation_pending(true);
+                        }
+                    }
+                }
+                let id = widgets::widget_id(ASSIST_WIDGETS, 31);
+                if self
+                    .widgets
+                    .text_button(
+                        d,
+                        font,
+                        id,
+                        discard,
+                        "Discard",
+                        false,
+                        ButtonStyle::Ghost,
+                        Some(metric::UI_FONT_CAPTION),
+                    )
+                    .clicked
+                {
+                    session.request(AssistRequest::Discard);
+                }
+                let links_report = self.assist_copy_links(d, input, &links);
+                if let (Some(area), Some(candidate)) = (review, session.candidate.as_ref()) {
+                    if let Some(review) = candidate
+                        .lyrics_review()
+                        .filter(|_| candidate.available().lyrics)
+                    {
+                        let document = workspace.current().map(|track| &track.lyrics);
+                        let mouse = input.ui_scale.mouse(d);
+                        let pointer = ReviewPointer {
+                            x: mouse.x,
+                            y: mouse.y,
+                            wheel: 0.0,
+                        };
+                        let folder = PathBuf::from(session.artifact_path(AssistArtifact::Folder));
+                        let reveal_state = reveal::reveal_state(&folder, assist_probe_run());
+                        let frame = draw_lyrics_review(
+                            d,
+                            &mut self.widgets,
+                            font,
+                            review,
+                            document,
+                            pointer,
+                            reveal_state,
+                            area.x,
+                            area.y,
+                            area.width,
+                            (area.y + area.height).min(viewport.y + viewport.height),
+                        );
+                        report_review(describe_review(Some(candidate), frame.drawn));
+                        if frame.reveal {
+                            let (severity, title, detail) =
+                                match reveal::reveal_directory(&folder, assist_probe_run()) {
+                                    Ok(()) => (
+                                        Severity::Info,
+                                        "Opening the job folder",
+                                        format!(
+                                            "{} was handed to your file manager.",
+                                            folder.display()
+                                        ),
+                                    ),
+                                    Err(error) => (
+                                        Severity::Warning,
+                                        "The job folder could not be opened",
+                                        format!(
+                                            "{error}. Copy folder puts the path on the clipboard instead."
+                                        ),
+                                    ),
+                                };
+                            self.notify(severity, title, &detail);
+                        }
+                        let pressed = frame.activated.or_else(|| {
+                            probe_activated_row()
+                                .filter(|row| *row < frame.drawn.rows)
+                                .map(|row| frame.drawn.first + row)
+                        });
+                        if let Some(entry) = pressed.and_then(|row| review.entries.get(row)) {
+                            let outcome = self.open_lyric_review_row(entry, workspace, commands);
+                            println!("assist review nav: {}", outcome.describe(entry));
+                        }
+                    }
+                }
+                format!(
+                    "apply@{}{}{} discard@{} links={links_report}",
+                    rect(apply),
+                    if texts.blocked { "!" } else { "" },
+                    if session.apply_confirmation_pending() {
+                        "*"
+                    } else {
+                        ""
+                    },
+                    rect(discard),
+                )
+            }
+            OpenBodyLayout::Empty { text, links } => {
+                lines(d, text, texts.empty, 19.0, 13.0, color::ui_ink());
+                let links_report = self.assist_copy_links(d, input, &links);
+                format!("links={links_report}")
+            }
+        }
+    }
+
+    /// The three Copy links: a word each, muted, or disabled when the job
+    /// wrote no such artifact. Returns their report entries.
+    fn assist_copy_links(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        cells: &[UiRect; 3],
+    ) -> String {
+        let font = input.fonts.ui();
+        let session = &input.workspace.assist;
+        let mut report = Vec::new();
+        for (index, (artifact, cell)) in AssistArtifact::ALL.into_iter().zip(cells).enumerate() {
+            let path = session.artifact_path(artifact);
+            let available = !path.is_empty()
+                && match artifact {
+                    AssistArtifact::Folder => Path::new(path).is_dir(),
+                    _ => Path::new(path).is_file(),
+                };
+            let label = artifact.label();
+            let width = widgets::measure(font, label, metric::UI_FONT_CAPTION);
+            let hit = UiRect::new(cell.x, cell.y, (width + 8.0).min(cell.width), cell.height);
+            if available {
+                let id = widgets::widget_id(ASSIST_WIDGETS, 40 + index as u32);
+                let state = self.widgets.button(d, id, hit);
                 widgets::draw_text(
                     d,
                     font,
-                    if session.job_state == AssistJobState::TimingOut {
-                        "The 40:00 job deadline was reached. Verifying that the complete process tree stopped."
+                    label,
+                    hit.x,
+                    hit.y + (hit.height - metric::UI_FONT_CAPTION) * 0.5,
+                    metric::UI_FONT_CAPTION,
+                    if state.hovered {
+                        color::ui_ink()
                     } else {
-                        "Waiting for the helper and its child processes to stop. Editor content is unchanged."
+                        color::ui_muted()
                     },
-                    x,
-                    action_y,
-                    14.0,
-                    color::ui_muted(),
+                );
+                if state.clicked {
+                    session.request(AssistRequest::Copy(artifact));
+                }
+            } else {
+                widgets::draw_text(
+                    d,
+                    font,
+                    label,
+                    hit.x,
+                    hit.y + (hit.height - metric::UI_FONT_CAPTION) * 0.5,
+                    metric::UI_FONT_CAPTION,
+                    color::ui_disabled(),
                 );
             }
-            AssistPanelContent::Candidate => {
-                self.assist_candidate_body(d, input, boundary, action_y, padding, gap, commands);
-            }
-            AssistPanelContent::Empty => {
-                let (line, tint) = if session.job_state == AssistJobState::Succeeded {
-                    (session.mode().empty_result(), color::ui_ink())
-                } else {
-                    (
-                        "Job artifacts remain available for diagnosis and support.",
-                        color::ui_muted(),
-                    )
-                };
-                widgets::draw_text(d, font, line, x, action_y, 14.0, tint);
-                self.assist_artifact_actions(d, input, boundary, x, action_y + 34.0, gap);
-            }
-            AssistPanelContent::Ready => {}
+            report.push(format!(
+                "{}{}@{:.0},{:.0},{:.0},{:.0}",
+                match artifact {
+                    AssistArtifact::Bridge => "result",
+                    AssistArtifact::Log => "log",
+                    AssistArtifact::Folder => "folder",
+                },
+                if available { "" } else { "!" },
+                hit.x,
+                hit.y,
+                hit.width,
+                hit.height
+            ));
         }
+        report.join(";")
     }
+}
 
-    /// The lyric-sheet row (`plug.c:2349-2384`).
-    ///
-    /// This is the panel's reason to exist: it names the file the run will
-    /// actually use, before it runs. The C's own comment is worth keeping in
-    /// mind — the aligner is the best lyric path in the product, and it used to be
-    /// reachable only by knowing that a sibling `<stem>.lyrics.txt` is what the
-    /// helper looks for.
-    fn assist_lyric_reference(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        input: &ShellInput<'_>,
-        boundary: UiRect,
-        layout: &AssistUiLayout,
-        buttons: &AssistConfirmationButtons,
-    ) {
-        let font = input.fonts.ui();
-        let session = &input.workspace.assist;
-        let track = input.workspace.current();
-        let (reference, path) = resolve_lyric_reference(track);
-        let reference_y = boundary.y + layout.reference_y;
-        let x = boundary.x + metric::UI_PANEL_PADDING;
+/// The texts the open card draws, wrapped by [`Shell::assist_view`].
+struct AssistOpenTexts<'a> {
+    consent: &'a [String],
+    reference_name: &'a str,
+    reference: &'a [String],
+    reference_chosen: bool,
+    reference_missing: bool,
+    routes: &'a [(String, raylib::prelude::Color)],
+    refusal: Option<String>,
+    running: &'a [String],
+    cancelling: &'a [String],
+    empty: &'a [String],
+    lanes: &'a [String],
+    extra: Option<&'a str>,
+    reason: &'a [String],
+    blocked: bool,
+}
 
-        let name = if reference == AssistLyricReference::None {
-            "none chosen".to_string()
+/// The P4 route block's lines for the column: the heading sentence, one row
+/// per composed contract, the boundary invariant, and the notes, each with its
+/// tint — the band's `draw_route_graph`, as a list the card can lay out.
+fn column_route_lines(plan: &ExecutionPlan) -> Vec<(String, raylib::prelude::Color)> {
+    let snapshot = &plan.snapshot;
+    let leaves = snapshot.sends_audio_off_machine();
+    let heading = if leaves {
+        format!(
+            "Audio leaves this machine for {} of {} tasks",
+            snapshot
+                .contracts
+                .iter()
+                .filter(|entry| entry.boundary_applied.rank() >= 2)
+                .count(),
+            snapshot.contracts.len(),
+        )
+    } else if snapshot.has_remote_route() {
+        "Derived text leaves this machine; no audio does".to_string()
+    } else {
+        "Nothing leaves this machine".to_string()
+    };
+    let mut lines = vec![(
+        heading,
+        if leaves {
+            color::ui_warning()
         } else {
-            Path::new(&path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(&path)
-                .to_string()
-        };
-        widgets::draw_text(
-            d,
-            font,
-            &format!("Lyrics: {name}"),
-            x,
-            reference_y,
-            14.0,
-            if reference == AssistLyricReference::None {
-                color::ui_muted()
+            color::ui_muted()
+        },
+    )];
+    for entry in &snapshot.contracts {
+        lines.push((
+            route_row(entry),
+            if entry.boundary_applied.rank() >= 2 {
+                color::ui_warning()
             } else {
                 color::ui_ink()
             },
-        );
-        widgets::draw_text(
-            d,
-            font,
-            if audio_lyric_route(self.assist_settings.is_open())
-                && reference == AssistLyricReference::None
-            {
-                "Uses embedded lyrics when available; otherwise suggests words heard in the audio."
-            } else if audio_lyric_route(self.assist_settings.is_open()) {
-                "Audio helps place sung phrases; your lyric sheet stays local and supplies the caption text."
-            } else {
-                reference.summary()
-            },
-            x,
-            reference_y + 18.0,
-            13.0,
-            color::ui_muted(),
-        );
-        if !buttons.reference_room {
-            return;
+        ));
+    }
+    let raises = execution::any_fallback_can_raise_boundary(&snapshot.contracts);
+    lines.push((
+        if raises {
+            "A fallback in this graph could move data to a wider boundary.".to_string()
+        } else {
+            "No fallback here can widen a boundary.".to_string()
+        },
+        if raises {
+            color::ui_danger()
+        } else {
+            color::ui_muted()
+        },
+    ));
+    lines.extend(route_notes(plan));
+    lines
+}
+
+impl Shell {
+    /// The `assist column:` report line (WX-5d §5): the four cards' rects,
+    /// the open one and its body state with its buttons, and Auto scenes.
+    /// **The Look & Assist builder's**; empty until built, and an empty line
+    /// is not printed.
+    #[must_use]
+    pub(crate) fn describe_assist_column(&self, _workspace: &Workspace) -> String {
+        if self.column_view() != super::super::shell::ColumnView::Assist {
+            return String::new();
         }
-        let id = widgets::widget_id(ASSIST_WIDGETS, 20);
-        if self
-            .widgets
-            .text_button(
-                d,
-                font,
-                id,
-                buttons.choose,
-                if reference == AssistLyricReference::None {
-                    "Choose lyrics..."
-                } else {
-                    "Replace lyrics..."
-                },
-                false,
-                ButtonStyle::Neutral,
-                None,
-            )
-            .clicked
-        {
-            session.request(AssistRequest::ChooseLyricSheet);
-        }
-        // Clear exists only for a sheet the user chose. A sibling the helper found
-        // is not something this panel can un-find.
-        if track.is_some_and(|track| track.lyrics_reference_path.is_some()) {
-            let id = widgets::widget_id(ASSIST_WIDGETS, 21);
-            if self
-                .widgets
-                .text_button(
-                    d,
-                    font,
-                    id,
-                    buttons.clear,
-                    "Clear",
-                    false,
-                    ButtonStyle::Neutral,
-                    None,
-                )
-                .clicked
-            {
-                session.request(AssistRequest::ClearLyricSheet);
-            }
-        }
+        self.assist_column.report.clone()
     }
 
-    /// The staged-result review (`plug.c:2431-2525`).
+    /// The Assist panel, in the timeline strip's place (`draw_assist_panel`,
+    /// `plug.c:2166-2540`).
     ///
-    /// Every line reads `before -> after`, because "12 lyrics" does not tell
-    /// anyone whether applying replaces two cues or two hundred.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the review rows emit a Seek, so the body needs the command sink the panel already threads"
-    )]
-    fn assist_candidate_body(
+    /// Reads the session through `input.workspace`; every click becomes an
+    /// [`AssistRequest`] the frame loop drains once the drawing pair has closed.
+    /// Nothing here spawns, signals, reads a file or edits a track.
+    pub(crate) fn assist_panel(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
         input: &ShellInput<'_>,
-        boundary: UiRect,
-        action_y: f32,
-        padding: f32,
-        gap: f32,
         commands: &mut Vec<ShellCommand>,
     ) {
-        let font = input.fonts.ui();
-        let workspace = input.workspace;
-        let session = &workspace.assist;
-        let Some(candidate) = session.candidate.as_ref() else {
-            return;
-        };
-        let target = session
-            .candidate_track
-            .and_then(|index| workspace.get(index));
-        let x = boundary.x + padding;
-        let mut line_y = action_y;
-        let available = candidate.available();
-
-        // Both blocking conditions are decided before anything is drawn, because
-        // the reason may need the row the "First staged lyric" preview would
-        // otherwise take (review 1.13).
-        //
-        // A staged lyric replacement must never clear an authored draft
-        // implicitly. `draft_is_dirty` is `false` until Agent I's editor lands,
-        // which is why this reads as unblocked today.
-        let draft_conflict = assist_ui_state::candidate_conflicts_with_lyric_draft(
-            available.lyrics,
-            session.candidate_track == workspace.current_index(),
-            false,
-        );
-        let blocked_reason = if draft_conflict {
-            Some("Finish the active lyric draft before applying this result.")
-        } else if target.is_none() {
-            Some("The target track is no longer available. Discard this result.")
-        } else {
-            None
-        };
-        // The fixed action row reserves summaries for all three lanes. Return
-        // unused summary rows to the review list for a lyrics-only result.
-        let lane_count = usize::from(available.lyrics)
-            + usize::from(available.sections)
-            + usize::from(available.semantics);
-        let controls_y = action_y - 18.0 * (3 - lane_count.min(3)) as f32;
-        let row =
-            candidate_action_row(boundary, controls_y, padding, gap, blocked_reason.is_some());
-
-        if available.lyrics {
-            let before = target.map_or(0, |track| track.lyrics.len());
-            let after = candidate.lyrics().len();
-            // The counts belong on the summary line, and an LT1 run has better
-            // ones than the per-cue `uncertain` flag: that flag cannot count a
-            // line which never became a cue at all, and an unresolved line is
-            // exactly the case a user must be told about.
-            let line = match candidate.lyrics_review() {
-                Some(review) => {
-                    // LX1-f. The parked proposals are inside `after`, so without
-                    // this clause the count silently includes cues the aligner
-                    // explicitly failed to place — and the reader has no way to
-                    // tell which part of "0 -> 52" is a placement.
-                    let parked = parked_summary(candidate).summary();
-                    if parked.is_empty() {
-                        format!("Lyrics: {before} -> {after}  |  {}", review.summary())
-                    } else {
-                        format!(
-                            "Lyrics: {before} -> {after}  |  {}  |  {parked}",
-                            review.summary()
-                        )
-                    }
-                }
-                None => {
-                    let uncertain = candidate.uncertain_lyric_count();
-                    if uncertain == 0 {
-                        format!("Lyrics: {before} -> {after}  |  No timing cues flagged for review")
-                    } else {
-                        format!(
-                            "Lyrics: {before} -> {after}  |  {uncertain} timing cue{} {} review",
-                            if uncertain == 1 { "" } else { "s" },
-                            if uncertain == 1 { "needs" } else { "need" }
-                        )
-                    }
-                }
-            };
-            widgets::draw_text(d, font, &line, x, line_y, 14.0, color::ui_ink());
-            line_y += 18.0;
-        }
-        if available.sections {
-            let line = format!(
-                "Scene changes: {} -> {}",
-                target.map_or(0, |track| track.scene_switches.len()),
-                candidate.sections().len()
-            );
-            widgets::draw_text(d, font, &line, x, line_y, 14.0, color::ui_ink());
-            line_y += 18.0;
-        }
-        if available.semantics {
-            let line = format!(
-                "Feeling cues: {} -> {}",
-                target.map_or(0, |track| track.semantic_events.len()),
-                candidate.semantic_events().len()
-            );
-            widgets::draw_text(d, font, &line, x, line_y, 14.0, color::ui_ink());
-            line_y += 18.0;
-        }
-        // Authored wording is a separate authority from timing.  Name it on the
-        // staged surface so an automatically discovered embedded tag cannot
-        // look like the explicitly chosen sheet the user had in mind.  This
-        // takes the existing preview row; the action row geometry stays fixed.
-        let preview_row_taken = matches!(row.reason, ReasonSlot::Above(rect) if line_y >= rect.y);
-        let source_line = candidate
-            .lyrics_review()
-            .map(LyricsReview::source_summary)
-            .filter(|line| !line.is_empty() && !preview_row_taken);
-        if let Some(line) = source_line.as_deref() {
-            widgets::draw_text(
-                d,
-                font,
-                line,
-                x,
-                line_y,
-                REASON_FONT_SIZE,
-                color::ui_muted(),
-            );
-        }
-
-        // Suppressed only when the source used the preview row or the reason
-        // has taken it, which happens when all three lanes are staged and the
-        // panel is too narrow to put the reason beside the buttons.
-        if source_line.is_none() && !session.candidate_first_lyric.is_empty() && !preview_row_taken
-        {
-            widgets::draw_text(
-                d,
-                font,
-                &format!("First staged lyric: {}", session.candidate_first_lyric),
-                x,
-                line_y,
-                REASON_FONT_SIZE,
-                color::ui_muted(),
-            );
-        }
-
-        let apply = row.apply;
-        let discard = row.discard;
-        let embedded_reference = candidate
-            .lyrics_review()
-            .is_some_and(|review| review.reference_source.starts_with("embedded:"));
-        let apply_label = if session.apply_confirmation_pending() && embedded_reference {
-            "Confirm embedded"
-        } else if session.apply_confirmation_pending() {
-            "Confirm apply"
-        } else {
-            "Apply changes"
-        };
-        if target.is_none() || draft_conflict {
-            self.widgets
-                .disabled_button(d, font, apply, apply_label, None);
-        } else {
-            let id = widgets::widget_id(ASSIST_WIDGETS, 30);
-            if self
-                .widgets
-                .text_button(
-                    d,
-                    font,
-                    id,
-                    apply,
-                    apply_label,
-                    session.apply_confirmation_pending(),
-                    ButtonStyle::Neutral,
-                    None,
-                )
-                .clicked
-            {
-                // Two presses, and the first one only arms. The C also pushes a
-                // persistent notice on the first press; the label change carries
-                // the same information without a tray entry to dismiss.
-                if session.apply_confirmation_pending() {
-                    session.request(AssistRequest::Apply);
-                } else {
-                    session.set_apply_confirmation_pending(true);
-                }
-            }
-        }
-        let id = widgets::widget_id(ASSIST_WIDGETS, 31);
-        if self
-            .widgets
-            .text_button(
-                d,
-                font,
-                id,
-                discard,
-                "Discard",
-                false,
-                ButtonStyle::Neutral,
-                None,
-            )
-            .clicked
-        {
-            session.request(AssistRequest::Discard);
-        }
-        if let Some(reason) = blocked_reason {
-            draw_blocking_reason(d, font, reason, row.reason);
-        }
-        self.assist_artifact_actions(d, input, boundary, row.artifacts_x, row.apply.y, gap);
-        // Inside the lyrics-lane guard (review LT1-R, R1): a review is a claim
-        // about lyric content, and a run that staged no lyrics lane is offering
-        // none. `attach_lyrics_review` already refuses one, and this is the
-        // second lock on the same door — the drawing cannot outlive the lane.
-        if let Some(review) = candidate.lyrics_review().filter(|_| available.lyrics) {
-            // The document the *Lyrics panel* edits, which is the one a press can
-            // send the user into. Not the candidate's staged lane: until Apply
-            // runs, that lane's cues do not exist anywhere the user can drag one.
-            let document = workspace.current().map(|track| &track.lyrics);
-            let mouse = input.ui_scale.mouse(d);
-            let pointer = ReviewPointer {
-                x: mouse.x,
-                y: mouse.y,
-                wheel: d.get_mouse_wheel_move(),
-            };
-            let folder = PathBuf::from(session.artifact_path(AssistArtifact::Folder));
-            let reveal_state = reveal::reveal_state(&folder, assist_probe_run());
-            let frame = draw_lyrics_review(
-                d,
-                &mut self.widgets,
-                font,
-                review,
-                document,
-                pointer,
-                reveal_state,
-                x,
-                controls_y + REVIEW_BLOCK_OFFSET,
-                (boundary.width - padding * 2.0).max(0.0),
-                // The scissor's own inner edge, which is what actually cuts a
-                // row. `boundary.height` is `available.min(required)`, so at a
-                // window too short for the panel this is *less* than the block
-                // asked for and the list has to fit what it got.
-                boundary.y + boundary.height - 1.0,
-            );
-            report_review(describe_review(Some(candidate), frame.drawn));
-            if frame.reveal {
-                // The refusal is a whole sentence, and it names the fallback:
-                // "Copy folder" is right beside this button and does work with
-                // no display, so a machine that cannot open a file manager still
-                // has a route to the path.
-                let (severity, title, detail) =
-                    match reveal::reveal_directory(&folder, assist_probe_run()) {
-                        Ok(()) => (
-                            Severity::Info,
-                            "Opening the job folder",
-                            format!("{} was handed to your file manager.", folder.display()),
-                        ),
-                        Err(error) => (
-                            Severity::Warning,
-                            "The job folder could not be opened",
-                            format!("{error}. Copy folder puts the path on the clipboard instead."),
-                        ),
-                    };
-                self.notify(severity, title, &detail);
-            }
-            // A probe press only reaches rows the panel drew, so a capture cannot
-            // claim to have pressed a row the scissor ate. It is offset by the
-            // scroll position for the same reason: the row a capture points at is
-            // the row on screen, not the row in the parse.
-            let pressed = frame.activated.or_else(|| {
-                probe_activated_row()
-                    .filter(|row| *row < frame.drawn.rows)
-                    .map(|row| frame.drawn.first + row)
-            });
-            if let Some(entry) = pressed.and_then(|row| review.entries.get(row)) {
-                let outcome = self.open_lyric_review_row(entry, workspace, commands);
-                println!("assist review nav: {}", outcome.describe(entry));
-            }
-        }
+        let column = self.column_rect();
+        self.assist_view(d, input, column, commands);
     }
 
     /// A flagged review row, pressed: the route from "this line is wrong" to the
@@ -4557,71 +4539,70 @@ impl Shell {
         );
         ReviewNavigation::NoCue { seconds }
     }
-
-    /// The three Copy buttons (`draw_assist_artifact_actions`, `plug.c:2069-2110`).
-    ///
-    /// A button whose artifact this job did not produce is drawn disabled rather
-    /// than hidden: the run that failed is exactly the run whose log someone
-    /// wants.
-    fn assist_artifact_actions(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        input: &ShellInput<'_>,
-        boundary: UiRect,
-        mut x: f32,
-        y: f32,
-        gap: f32,
-    ) {
-        let font = input.fonts.ui();
-        let session = &input.workspace.assist;
-        let labels: Vec<&str> = AssistArtifact::ALL.iter().map(|a| a.label()).collect();
-        let widths: Vec<f32> = AssistArtifact::ALL.iter().map(|a| a.width()).collect();
-        let font_size = widgets::row_font_size(font, &labels, &widths, metric::UI_BUTTON_HEIGHT);
-
-        for (index, artifact) in AssistArtifact::ALL.into_iter().enumerate() {
-            let button = UiRect::new(x, y, artifact.width(), metric::UI_BUTTON_HEIGHT);
-            x += artifact.width() + gap;
-            if !boundary.contains(button) {
-                continue;
-            }
-            let path = session.artifact_path(artifact);
-            // Existence is checked, not assumed: a job can exit before writing a
-            // bridge, and a Copy that hands over a path to nothing is worse than a
-            // disabled button.
-            let available = !path.is_empty()
-                && match artifact {
-                    AssistArtifact::Folder => Path::new(path).is_dir(),
-                    _ => Path::new(path).is_file(),
-                };
-            if !available {
-                self.widgets
-                    .disabled_button(d, font, button, artifact.label(), Some(font_size));
-                continue;
-            }
-            let id = widgets::widget_id(ASSIST_WIDGETS, 40 + index as u32);
-            if self
-                .widgets
-                .text_button(
-                    d,
-                    font,
-                    id,
-                    button,
-                    artifact.label(),
-                    false,
-                    ButtonStyle::Neutral,
-                    Some(font_size),
-                )
-                .clicked
-            {
-                session.request(AssistRequest::Copy(artifact));
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_card_probe_opens_the_named_workflow_on_confirmation() {
+        use musializer_core::assist::execution::WorkflowKind;
+        for (kind, mode) in [
+            (WorkflowKind::Lyrics, AssistMode::Lyrics),
+            (WorkflowKind::Sections, AssistMode::Sections),
+            (WorkflowKind::Mimo, AssistMode::Mimo),
+            (WorkflowKind::All, AssistMode::All),
+        ] {
+            let workspace = Workspace::default();
+            apply_card_probe(&workspace, kind);
+            assert_eq!(workspace.assist.mode(), mode);
+            assert_eq!(
+                workspace.assist.panel_content(),
+                AssistPanelContent::Confirmation
+            );
+        }
+    }
+
+    #[test]
+    fn a_card_names_what_it_replaces_with_the_tracks_numbers() {
+        assert_eq!(
+            card_replaces(AssistMode::Lyrics, None),
+            "Adds \u{00b7} timed lyrics"
+        );
+        assert_eq!(
+            card_replaces(AssistMode::Sections, None),
+            "Adds \u{00b7} a scene plan"
+        );
+        assert_eq!(
+            card_replaces(AssistMode::Mimo, None),
+            "Adds \u{00b7} feeling cues"
+        );
+        assert_eq!(
+            card_replaces(AssistMode::All, None),
+            "Replaces \u{00b7} lyrics and plan, adds feelings"
+        );
+        assert_eq!(
+            auto_scenes_sentence(Some((true, 70))),
+            "70 sections follow the measured plan"
+        );
+        assert_eq!(
+            auto_scenes_sentence(Some((false, 70))),
+            "Paused \u{00b7} the plan's 70 sections wait"
+        );
+        assert_eq!(
+            auto_scenes_sentence(None),
+            "No scene plan yet \u{00b7} Scene changes makes one"
+        );
+        assert_eq!(running_clock(125.0), "2:05");
+        assert_eq!(running_clock(2400.0), "40:00");
+        assert_eq!(running_clock(f64::NAN), "0:00");
+        assert_eq!(
+            AssistMode::ALL.map(card_token),
+            ["lyrics", "scenes", "feelings", "full"]
+        );
+    }
+
     use musializer_core::project::lyrics::LyricsDocument;
     use musializer_core::project::sha256;
 
@@ -5311,111 +5292,9 @@ mod tests {
         a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height
     }
 
-    /// The Copy strip as one rectangle, which is what the reason must clear.
-    fn artifact_strip(row: &CandidateActionRow, gap: f32) -> UiRect {
-        UiRect::new(
-            row.artifacts_x,
-            row.apply.y,
-            artifact_strip_width(gap),
-            metric::UI_BUTTON_HEIGHT,
-        )
-    }
-
     /// Every panel width the shell can hand this body, in 1 px steps.
     fn width_sweep() -> impl Iterator<Item = f32> {
         (240..=1600).map(|width| width as f32)
-    }
-
-    #[test]
-    fn the_blocking_reason_never_shares_a_pixel_with_a_button() {
-        // This is the defect itself, as arithmetic. Before the fix the reason was
-        // drawn at `discard.right + gap` and the Copy buttons started at the same
-        // x and y, so every width failed this.
-        let padding = metric::UI_PANEL_PADDING;
-        let gap = metric::UI_CONTROL_GAP;
-        for width in width_sweep() {
-            let boundary = UiRect::new(12.0, 200.0, width, 260.0);
-            let row = candidate_action_row(boundary, 300.0, padding, gap, true);
-            let strip = artifact_strip(&row, gap);
-            let reason = match row.reason {
-                ReasonSlot::None => panic!("a blocked row must offer the reason a slot"),
-                ReasonSlot::Beside(rect) | ReasonSlot::Above(rect) => rect,
-            };
-            assert!(reason.width > 0.0, "at {width}px the reason has no room");
-            for (name, rect) in [
-                ("apply", row.apply),
-                ("discard", row.discard),
-                ("artifacts", strip),
-            ] {
-                assert!(
-                    !overlaps(reason, rect),
-                    "at {width}px the reason overlaps {name}: {reason:?} vs {rect:?}"
-                );
-            }
-            assert!(!overlaps(row.apply, row.discard));
-            assert!(!overlaps(row.discard, strip));
-        }
-    }
-
-    #[test]
-    fn the_reason_takes_its_own_row_only_when_it_cannot_fit_beside_the_buttons() {
-        let padding = metric::UI_PANEL_PADDING;
-        let gap = metric::UI_CONTROL_GAP;
-        let mut previous_beside: Option<f32> = None;
-        let mut above_widths = Vec::new();
-        let mut beside_widths = Vec::new();
-        for width in width_sweep() {
-            let boundary = UiRect::new(12.0, 200.0, width, 260.0);
-            let row = candidate_action_row(boundary, 300.0, padding, gap, true);
-            match row.reason {
-                ReasonSlot::Above(rect) => {
-                    above_widths.push(width);
-                    // The full inner width, and it ends exactly where the buttons
-                    // begin rather than running under them.
-                    assert_eq!(rect.width, width - padding * 2.0);
-                    assert_eq!(rect.y + rect.height, row.apply.y);
-                }
-                ReasonSlot::Beside(rect) => {
-                    beside_widths.push(width);
-                    assert!(rect.width >= REASON_MIN_WIDTH);
-                    // Monotone in the panel width, which is what keeps a resize
-                    // from making the sentence jump between the two slots more
-                    // than once. `transport_bar` earned this rule.
-                    if let Some(previous) = previous_beside {
-                        assert!(rect.width > previous, "at {width}px the slot shrank");
-                    }
-                    previous_beside = Some(rect.width);
-                }
-                ReasonSlot::None => panic!("a blocked row must offer the reason a slot"),
-            }
-        }
-        // One crossing, not several: every narrow width uses the row above and
-        // every wide one uses the slot beside.
-        assert!(!above_widths.is_empty() && !beside_widths.is_empty());
-        assert!(
-            above_widths
-                .iter()
-                .all(|narrow| beside_widths.iter().all(|wide| narrow < wide)),
-            "the two slots interleave, so a resize would flap between them"
-        );
-    }
-
-    #[test]
-    fn an_unblocked_row_keeps_the_buttons_where_a_blocked_one_puts_them() {
-        // The reason appears and disappears while the user is looking at the
-        // panel. If the Copy strip moved with it, a press aimed at Copy log
-        // would land on Copy folder.
-        let padding = metric::UI_PANEL_PADDING;
-        let gap = metric::UI_CONTROL_GAP;
-        for width in width_sweep() {
-            let boundary = UiRect::new(12.0, 200.0, width, 260.0);
-            let blocked = candidate_action_row(boundary, 300.0, padding, gap, true);
-            let clear = candidate_action_row(boundary, 300.0, padding, gap, false);
-            assert_eq!(clear.reason, ReasonSlot::None);
-            assert_eq!(clear.apply, blocked.apply);
-            assert_eq!(clear.discard, blocked.discard);
-            assert_eq!(clear.artifacts_x, blocked.artifacts_x);
-        }
     }
 
     /// A measure that is not a font: 7 px a character, so an assertion about the
@@ -5424,77 +5303,9 @@ mod tests {
         text.chars().count() as f32 * 7.0
     }
 
-    #[test]
-    fn the_reason_wraps_within_its_slot_and_ellipsizes_only_when_it_must() {
-        let text = "The target track is no longer available. Discard this result.";
-        let measure: &dyn Fn(&str) -> f32 = &measure_7px;
-
-        // The narrowest slot the row will hand out, two lines.
-        let lines = wrap_to_width(text, REASON_MIN_WIDTH, 2, measure);
-        assert_eq!(lines.len(), 2);
-        for line in &lines {
-            assert!(
-                measure(line) <= REASON_MIN_WIDTH,
-                "{line:?} runs past the slot"
-            );
-        }
-        assert!(
-            lines.iter().all(|line| !line.ends_with("...")),
-            "both reasons fit whole in the narrowest slot the row hands out: {lines:?}"
-        );
-        assert_eq!(lines.concat().replace(' ', ""), text.replace(' ', ""));
-
-        // A sentence that does not fit says so rather than stopping mid-word.
-        let long = format!("{text} {text}");
-        let lines = wrap_to_width(&long, REASON_MIN_WIDTH, 2, measure);
-        assert_eq!(lines.len(), 2);
-        assert!(lines[1].ends_with("..."));
-        assert!(measure(&lines[1]) <= REASON_MIN_WIDTH);
-
-        // Wide enough, and nothing is cut.
-        let lines = wrap_to_width(text, 900.0, 2, measure);
-        assert_eq!(lines, vec![text.to_string()]);
-
-        // A single row, which is the narrow-panel fallback.
-        let one = ellipsize(text, 210.0, measure);
-        assert!(measure(&one) <= 210.0 && one.ends_with("..."));
-        assert_eq!(ellipsize(text, 900.0, measure), text);
-        // Degenerate widths answer rather than loop.
-        assert_eq!(ellipsize(text, 1.0, measure), "...");
-        assert!(wrap_to_width(text, 0.0, 2, measure).is_empty());
-        assert!(wrap_to_width(text, 200.0, 0, measure).is_empty());
-    }
-
     // -----------------------------------------------------------------------
     // The probe states (review 4.2).
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn both_reason_slots_are_reachable_at_a_supported_window_size() {
-        // Which matters for the capture gate: if every supported size chose the
-        // same slot, the other branch would be code nothing photographs — the
-        // exact failure review 4.2 is about. The width here is the one
-        // `assist_timeline_height` measures the panel with, less its padding.
-        let slot_at = |window: f32, inspector_open: bool| {
-            let width = WorkspaceFrame::assist_panel_width(window, inspector_open)
-                - metric::UI_PANEL_PADDING * 2.0;
-            let boundary = UiRect::new(0.0, 0.0, width, 300.0);
-            candidate_action_row(
-                boundary,
-                0.0,
-                metric::UI_PANEL_PADDING,
-                metric::UI_CONTROL_GAP,
-                true,
-            )
-            .reason
-        };
-        assert!(matches!(slot_at(1280.0, false), ReasonSlot::Beside(_)));
-        assert!(matches!(slot_at(1280.0, true), ReasonSlot::Beside(_)));
-        assert!(matches!(slot_at(960.0, false), ReasonSlot::Beside(_)));
-        // The supported minimum with the inspector open is the narrow case, and
-        // it is the one the gate should photograph for the row above.
-        assert!(matches!(slot_at(960.0, true), ReasonSlot::Above(_)));
-    }
 
     #[test]
     fn every_probe_state_reaches_the_body_it_names() {
@@ -5718,57 +5529,6 @@ mod tests {
             0.0
         );
         assert_eq!(review_block_height(None), 0.0);
-    }
-
-    #[test]
-    fn the_review_block_fits_the_height_the_panel_can_actually_get() {
-        // `assist_ui_state::timeline_height` caps the strip at
-        // `screen - toolbar - 150`, so at the supported 1280x720 there are 88 px
-        // over the body the oracle's layout asks for. A block taller than that
-        // would be drawn into the scissor and photograph as a truncated list.
-        let scratch = Scratch::new("review-height");
-        let mut flags = String::new();
-        for index in 0..40 {
-            if index > 0 {
-                flags.push(',');
-            }
-            flags.push_str(&format!(
-                r#"{{"reference_line_index":{index},"text":"line {index}","flag":"unresolved"}}"#
-            ));
-        }
-        let folder = review_job_folder(
-            &scratch,
-            "many",
-            LT1_MANIFEST,
-            &format!(r#"{{"unresolved":[],"review_flags":[{flags}]}}"#),
-        );
-        let review = read_lyrics_review(&folder.display().to_string()).expect("review");
-        assert_eq!(review.flagged, 40);
-        let mut candidate = probe_candidate(AssistMode::All).expect("probe candidate");
-        assert!(candidate.attach_lyrics_review(review));
-
-        // Three named rows and the "3 of 40 shown" tail: four rows plus the
-        // heading.
-        assert_eq!(
-            review_rows(candidate.lyrics_review().unwrap(), REVIEW_MAX_ROWS),
-            (3, 37)
-        );
-        let block = review_block_height(Some(&candidate));
-        assert_eq!(
-            block,
-            18.0 + REVIEW_MAX_ROWS as f32 * REVIEW_ROW_HEIGHT + 4.0
-        );
-        let layout = assist_ui_state::ui_layout(
-            WorkspaceFrame::assist_panel_width(1280.0, false) - metric::UI_PANEL_PADDING * 2.0,
-            AssistPanelContent::Candidate,
-            false,
-        );
-        let ceiling = 720.0 - metric::HUD_BUTTON_SIZE - 150.0 - 158.0;
-        assert!(
-            layout.required_height + block <= ceiling,
-            "the review block must fit the 1280x720 ceiling: {} + {block} > {ceiling}",
-            layout.required_height
-        );
     }
 
     // -----------------------------------------------------------------------

@@ -35,24 +35,24 @@
 
 use musializer_core::project::preset_store::PresetAction;
 use musializer_core::scene::routes::{AnalysisSource, Interpolation, ParameterMapping, RouteTable};
-use musializer_core::scene::settings::{self, SceneSettings, SettingDescriptor, SettingsSnapshot};
+use musializer_core::scene::settings::{
+    self, SceneSettings, SettingDescriptor, SettingsSnapshot, PRESETS_PER_SCENE,
+};
 use musializer_core::scene::SceneId;
 use musializer_core::ui::notice::Severity;
 use musializer_core::ui::route_editor_state::{self, RouteEditorDraft, RouteEditorState};
-use musializer_core::ui::scroll_list::{BarHit, ListMetrics, ScrollState};
 use musializer_core::ui::text_edit::TextRules;
 use musializer_core::ui::tune_explore::{
     self, ExploreSource, ExploreState, Side, SplitMix64, Strength, TuneTarget, TypedValueError,
 };
+use musializer_core::ui::tune_groups;
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::AuthoredText;
 use raylib::prelude::{KeyboardKey, RaylibDraw, RaylibDrawHandle, Rectangle};
 use serde::{Deserialize, Serialize};
 
-use super::super::column::Placement;
 use super::super::mapping_editor::{self, AnchorPair};
 use super::super::shell::{Shell, ShellCommand, ShellInput};
-use super::super::shell_layout::WorkspaceFrame;
 use super::super::text_input::TextField;
 use super::super::theme::{color, metric};
 use super::super::widgets::{self, ButtonStyle};
@@ -93,9 +93,6 @@ const ROUTE_EDITOR_BAND_ROW_HEIGHT: f32 = 24.0;
 const ROUTE_EDITOR_ROW_HEADER: f32 = 22.0;
 const ROUTE_EDITOR_ROW_GAP: f32 = 4.0;
 
-/// `gap` in `scene_route_editor_panel` (`plug.c:5648`).
-const GAP: f32 = 5.0;
-
 // -- widget ids ---------------------------------------------------------------
 //
 // All inside `widgets::id::INSPECTOR`, below the 900 the reset button uses. The
@@ -103,10 +100,6 @@ const GAP: f32 = 5.0;
 // another's press; the editor's own controls are singletons because at most one
 // editor is open.
 mod slot {
-    /// `~` for setting `index`.
-    pub const ROUTE_TOGGLE: u32 = 100;
-    /// The collapsed routed summary, which is also a hit target (`plug.c:6210`).
-    pub const ROUTED_SUMMARY: u32 = 150;
     pub const SOURCE: u32 = 200;
     pub const BAND_PREVIOUS: u32 = 210;
     pub const BAND_NEXT: u32 = 211;
@@ -127,13 +120,6 @@ mod slot {
 
     /// The value chip, which opens typed entry. `+ index`.
     pub const VALUE_CHIP: u32 = 250;
-    /// The label, which resets one setting to its default. `+ index`.
-    pub const LABEL_RESET: u32 = 300;
-    pub const NUDGE: u32 = 400;
-    pub const SURPRISE: u32 = 401;
-    pub const AB_COMPARE: u32 = 410;
-    pub const AB_REVERT: u32 = 411;
-    pub const AB_KEEP: u32 = 412;
     /// The route editor's two disabled actions, which need a hit target of
     /// their own to hover-test: `disabled_button` returns no state (B08).
     pub const ACTION_DISABLED: u32 = 420;
@@ -142,12 +128,12 @@ mod slot {
     /// Every constant above, named individually, plus the two bare literals the
     /// row loop uses (`index` for the slider, `900` for Reset scene).
     #[cfg(test)]
-    pub const ALL_SLOTS: [(&str, u32, u32); 20] = [
+    pub const ALL_SLOTS: [(&str, u32, u32); 18] = [
         // (name, first slot, count)
         ("SLIDER", 0, 12),
-        ("ROUTE_TOGGLE", ROUTE_TOGGLE, 12),
-        ("ROUTED_SUMMARY", ROUTED_SUMMARY, 12),
-        ("SOURCE", SOURCE, 6),
+        // Ten: every `AnalysisSource`, one per item (it read 6 while ten
+        // were claimed; nothing sat in 206..209, so it never bit).
+        ("SOURCE", SOURCE, 10),
         ("BAND_PREVIOUS", BAND_PREVIOUS, 1),
         ("BAND_NEXT", BAND_NEXT, 1),
         ("INPUT_LOW", INPUT_LOW, 1),
@@ -158,12 +144,13 @@ mod slot {
         ("CURVE_NEXT", CURVE_NEXT, 1),
         ("ACTION", ACTION, 5),
         ("VALUE_CHIP", VALUE_CHIP, 12),
-        ("LABEL_RESET", LABEL_RESET, 12),
-        ("NUDGE", NUDGE, 1),
-        ("SURPRISE", SURPRISE, 1),
-        ("AB", AB_COMPARE, 3),
         ("ACTION_DISABLED", ACTION_DISABLED, 2),
         ("HIDDEN_DRAFT", HIDDEN_DRAFT, 2),
+        // WX-5d's column (`column_slot`): twelve rows of four ids each.
+        ("COLUMN_ROW", super::column_slot::ROW, 48),
+        ("COLUMN_TILES", super::column_slot::NUDGE, 2),
+        ("COLUMN_TRIAL", super::column_slot::COMPARE, 7),
+        ("RESET_SCENE (column too)", 900, 0),
     ];
 }
 
@@ -203,7 +190,6 @@ pub(crate) struct EditorHost {
     explore_presses: u64,
     /// `--ui-probe tune-seed=`, replacing the counter for a capture run.
     probe_seed: Option<u64>,
-    scroll: TuneScroll,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -302,62 +288,8 @@ impl Default for EditorHost {
             typing: None,
             explore_presses: 0,
             probe_seed: None,
-            scroll: TuneScroll::default(),
         }
     }
-}
-
-const SETTING_ROW_HEIGHT: f32 = 46.0;
-const SCROLLBAR_WIDTH: f32 = 12.0;
-const SCROLL_CONTENT_PADDING: f32 = 4.0;
-
-#[derive(Default)]
-struct TuneScroll {
-    context: Option<(usize, SceneId)>,
-    focused: Option<usize>,
-    settings: ScrollState,
-    route: ScrollState,
-}
-
-impl TuneScroll {
-    fn for_view(
-        &mut self,
-        track: usize,
-        scene: SceneId,
-        focused: Option<usize>,
-    ) -> &mut ScrollState {
-        if self.context != Some((track, scene)) {
-            self.settings.reset();
-            self.route.reset();
-            self.context = Some((track, scene));
-        }
-        if self.focused != focused {
-            self.route.reset();
-            self.focused = focused;
-        }
-        if focused.is_some() {
-            &mut self.route
-        } else {
-            &mut self.settings
-        }
-    }
-}
-
-fn tune_scroll_metrics(visible: f32, body_height: f32) -> ListMetrics {
-    let visible = visible.max(1.0);
-    let scrollable = body_height + SCROLL_CONTENT_PADDING * 2.0;
-    ListMetrics {
-        item_size: SETTING_ROW_HEIGHT,
-        padding: 0.0,
-        bar_width: SCROLLBAR_WIDTH,
-        visible,
-        scrollable,
-        max_offset: (scrollable - visible).max(0.0),
-    }
-}
-
-fn explore_block_height(audition: bool) -> f32 {
-    30.0 + if audition { 46.0 } else { 0.0 }
 }
 
 /// Ordinary wheel movement navigates; editing a value is an explicit modifier.
@@ -939,12 +871,78 @@ pub(crate) fn tune_state_line(
     )
 }
 
-/// What Look drew in its last frame, kept on `Shell::look_column` for the
-/// `tune layout:` line (WX-5d seam). Empty until the Look & Assist builder
-/// gives it fields; it lives in this file so that builder never edits
-/// `shell.rs`.
+/// Look's column state across frames, kept on `Shell::look_column` (WX-5d).
+/// It lives in this file so this view never edits `shell.rs`.
 #[derive(Clone, Debug, Default)]
-pub struct LookColumn {}
+pub struct LookColumn {
+    /// The list's scroll offset, in logical px.
+    offset: f32,
+    /// What the offset is for: a new track or scene starts at the top.
+    context: Option<(usize, SceneId)>,
+    /// Scroll the open route editor into view on the next frame.
+    reveal_editor: bool,
+    /// The row whose editor the last frame showed. An editor that opens by any
+    /// route — `~`, Edit draft, a probe — is scrolled into view once.
+    editor_shown: Option<usize>,
+    /// The last track press, `(descriptor index, time)`, for double-click reset.
+    last_track_press: Option<(usize, f64)>,
+    /// The `tune layout:` line for the last frame Look drew in the column.
+    report: String,
+}
+
+/// Two presses on one track within this many seconds reset it (§3.3).
+const DOUBLE_PRESS_SECONDS: f64 = 0.4;
+/// How far one wheel notch scrolls the list.
+const LOOK_WHEEL_STEP: f32 = 48.0;
+/// The scene name's type size (the design's 20 px header).
+const LOOK_TITLE_SIZE: f32 = 20.0;
+
+/// Slots in `widgets::id::INSPECTOR` for the column (WX-5d), past the 900
+/// Reset scene keeps. Rows stride by `widgets::SLIDER_ROW_IDS`.
+mod column_slot {
+    pub const ROW: u32 = 1000;
+    pub const NUDGE: u32 = 1100;
+    pub const SURPRISE: u32 = 1101;
+    /// The A / B switch: two consecutive items.
+    pub const COMPARE: u32 = 1110;
+    pub const REVERT: u32 = 1112;
+    pub const KEEP: u32 = 1113;
+    pub const AGAIN: u32 = 1114;
+    pub const ANOTHER: u32 = 1115;
+    /// Keep's hover target while A is on screen and Keep is refused.
+    pub const KEEP_REFUSED: u32 = 1116;
+}
+
+/// The row label column's width for a row `width` wide: a third of the row,
+/// held between what a two-word label needs and what leaves the track room
+/// (118 at the mockup's 1280 width, 147 at 1920).
+#[must_use]
+pub(crate) fn look_label_width(width: f32) -> f32 {
+    (width * 0.34).round().clamp(96.0, 150.0)
+}
+
+/// Look's scope sentence (WX-5d §3.3): where a change lands, in words. The
+/// column twin of [`tune_scope_label`], with "section" for the plan's unit as
+/// the plan lane now names it.
+#[must_use]
+pub(crate) fn look_scope_sentence(
+    cue: Option<(usize, f64)>,
+    sections: usize,
+    plan_enabled: bool,
+) -> String {
+    match cue {
+        Some((position, start_seconds)) => format!(
+            "Changes apply to section {}, from {}",
+            position + 1,
+            widgets::format_timestamp(start_seconds)
+        ),
+        None if sections == 0 => "Changes apply to the base scene".to_string(),
+        None if plan_enabled => {
+            "Changes apply to the base scene \u{00b7} this section captured no tuning".to_string()
+        }
+        None => format!("Changes apply to the base scene \u{00b7} {sections} sections are paused"),
+    }
+}
 
 impl Shell {
     /// The `tune layout:` report line (WX-5d §5): the drawn scene, its groups
@@ -953,8 +951,10 @@ impl Shell {
     /// until built, and an empty line is not printed.
     #[must_use]
     pub(crate) fn describe_tune_layout(&self, _workspace: &Workspace) -> String {
-        let LookColumn {} = &self.look_column;
-        String::new()
+        if self.column_view() != super::super::shell::ColumnView::Look {
+            return String::new();
+        }
+        self.look_column.report.clone()
     }
 
     /// The tuning inspector: one slider per setting of the active scene.
@@ -965,590 +965,11 @@ impl Shell {
     pub(crate) fn inspector(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
-        frame: &WorkspaceFrame,
         input: &ShellInput<'_>,
         commands: &mut Vec<ShellCommand>,
-        placement: Placement,
     ) {
-        // WX-5d seam: the Column branch is the Look & Assist builder's;
-        // until it lands, the inspector keeps its own column.
-        let _ = placement;
-        if frame.inspector.is_empty() {
-            return;
-        }
-        // The slot the draft is keyed against. Cached before any row is measured,
-        // because `route_editor_height` is asked without the workspace.
-        let track_slot = input.workspace.current_index().unwrap_or(0);
-        self.with_editor(|host| host.track_slot = track_slot);
-
-        let content = widgets::panel(d, input.fonts.ui(), frame.inspector, "TUNE");
-        let font = input.fonts.ui();
-        let padding = metric::UI_PANEL_PADDING;
-        let mut y = content.y + padding;
-
-        widgets::draw_text(
-            d,
-            input.fonts.ui(),
-            input.scene.display_name(),
-            content.x + padding,
-            y,
-            metric::UI_FONT_HEADER,
-            color::ui_ink(),
-        );
-        y += metric::UI_FONT_HEADER + metric::UI_CONTROL_GAP;
-
-        // review 1.7 (UX0-A07): `cue_settings_active` silently redirects every
-        // slider edit and Reset into a cue's captured snapshot whenever the
-        // playhead sits on one, and nothing on screen said so — the header
-        // named the scene, never which copy of its settings was being edited.
-        // The identity and time come straight from `Track::active_cue`, not
-        // from the playhead, so the label cannot drift from what a Reset or a
-        // slider edit actually touches.
-        // The audition is scoped to what a slider would move, which is the same
-        // thing the scope line below names. A target that has moved since last
-        // frame ends the session rather than letting Revert write into a
-        // segment the snapshot never came from (LX3).
-        let target = self.tune_target(input, track_slot);
-        self.with_editor(|host| host.explore.retarget(target));
-
-        let active_cue = input.workspace.current().and_then(Track::active_cue);
-        let (segments, plan_enabled) = input.workspace.current().map_or((0, false), |track| {
-            (track.scene_switches.len(), track.scene_switches.enabled)
-        });
-        let scope = tune_scope_label(
-            active_cue.map(|(index, cue)| (index, cue.start_seconds)),
-            segments,
-            plan_enabled,
-        );
-        widgets::draw_text(
-            d,
-            input.fonts.ui(),
-            &scope,
-            content.x + padding,
-            y,
-            metric::UI_FONT_CAPTION,
-            if active_cue.is_some() {
-                color::ui_ink()
-            } else {
-                color::ui_muted()
-            },
-        );
-        y += metric::UI_FONT_CAPTION + metric::UI_CONTROL_GAP;
-
-        let focused_route = self.focused_route_row(track_slot, input.scene);
-        let hidden_height = if self.route_editor.state.is_dirty() && focused_route.is_none() {
-            58.0
-        } else {
-            0.0
-        };
-        let preset_height = if focused_route.is_none() {
-            super::events::preset_block_height(input.presets.library.presets(input.scene).len())
-        } else {
-            0.0
-        };
-        let explore_height = if focused_route.is_none() {
-            explore_block_height(self.route_editor.explore.session(target).is_some())
-        } else {
-            0.0
-        };
-        let rows_height = focused_route.map_or_else(
-            || settings::descriptors(input.scene).len() as f32 * SETTING_ROW_HEIGHT,
-            |index| self.route_editor_height(input.scene, index),
-        );
-        // Only the scene/scope header and Reset remain fixed. Presets, audition
-        // actions and all setting controls share one scrollable body.
-        let list_bottom = content.y + content.height
-            - padding
-            - if focused_route.is_none() {
-                metric::UI_BUTTON_HEIGHT + padding
-            } else {
-                0.0
-            };
-        let viewport = UiRect::new(content.x, y, content.width, (list_bottom - y).max(0.0));
-        let metrics = tune_scroll_metrics(
-            viewport.height,
-            hidden_height + preset_height + explore_height + rows_height,
-        );
-        let mouse = input.ui_scale.mouse(d);
-        let alt = d.is_key_down(KeyboardKey::KEY_LEFT_ALT)
-            || d.is_key_down(KeyboardKey::KEY_RIGHT_ALT)
-            || self.probe_wheel_alt;
-        let (scroll_wheel, value_wheel) = tune_wheel(self.wheel_delta(d), alt);
-        let scroll = self
-            .route_editor
-            .scroll
-            .for_view(track_slot, input.scene, focused_route);
-        use raylib::consts::MouseButton::MOUSE_BUTTON_LEFT;
-        let bar = UiRect::new(
-            viewport.x + viewport.width - SCROLLBAR_WIDTH,
-            viewport.y,
-            SCROLLBAR_WIDTH,
-            viewport.height,
-        );
-        // Finish drags even if resizing has removed the scrollbar.
-        if !d.is_mouse_button_down(MOUSE_BUTTON_LEFT) || !metrics.needs_bar() {
-            scroll.end_drag();
-        }
-        if viewport.contains_point(mouse.x, mouse.y) && !d.is_mouse_button_down(MOUSE_BUTTON_LEFT) {
-            scroll.wheel(scroll_wheel, &metrics);
-        }
-        if let Some((top, height)) = metrics.thumb(scroll.offset()) {
-            let thumb = UiRect::new(bar.x, bar.y + top, bar.width, height);
-            if d.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) && bar.contains_point(mouse.x, mouse.y)
-            {
-                if thumb.contains_point(mouse.x, mouse.y) {
-                    scroll.begin_drag(mouse.y - thumb.y);
-                } else {
-                    scroll.page(
-                        if mouse.y < thumb.y {
-                            BarHit::Above
-                        } else {
-                            BarHit::Below
-                        },
-                        &metrics,
-                    );
-                }
-            }
-        }
-        // A slider drag must not slide the surface out from under its pointer.
-        let delta = if d.is_mouse_button_down(MOUSE_BUTTON_LEFT) && !scroll.is_dragging() {
-            0.0
-        } else {
-            d.get_frame_time()
-        };
-        scroll.advance(delta, mouse.y - viewport.y, &metrics);
-        let offset = scroll.offset();
-        let thumb = metrics.thumb(offset);
-        let body = UiRect::new(
-            viewport.x,
-            viewport.y,
-            (viewport.width - SCROLLBAR_WIDTH).max(0.0),
-            viewport.height,
-        );
-        let old_clip = self.widgets.set_input_clip(Some(body));
-        {
-            let mut clip = widgets::begin_scissor(d, body, input.ui_scale);
-            let d = &mut *clip;
-            y = viewport.y + SCROLL_CONTENT_PADDING - offset;
-            y += self.hidden_route_draft_bar(
-                d,
-                input,
-                UiRect::new(
-                    body.x + padding,
-                    y,
-                    body.width - padding * 2.0,
-                    hidden_height,
-                ),
-                commands,
-            );
-
-            // The shared preset block, between the header and the first slider
-            // (`plug.c:5979-6100`): 42 px collapsed, 98 px populated, 0 if it does
-            // not fit.
-            let mut presets = Vec::new();
-            if focused_route.is_none() {
-                y += self.preset_block(
-                    d,
-                    input,
-                    UiRect::new(body.x, y, body.width, preset_height),
-                    input.presets,
-                    &mut presets,
-                );
-            }
-            if !presets.is_empty() {
-                // review 1.8: a preset Apply/Replace/Delete changes what Reset would
-                // act on, so an armed confirmation from a moment ago must not carry
-                // over and land on a scene the user has since edited a different way.
-                self.with_editor(|host| host.reset_arm.disarm());
-            }
-            // UX0-C04's headline case: *loading a preset* is the destructive
-            // exploration the plan names, and it arrives here as an action the
-            // application will perform after this frame. Capturing before it does is
-            // what makes "try that preset" reversible.
-            if presets
-                .iter()
-                .any(|action| matches!(action, PresetAction::Apply(_)))
-            {
-                self.begin_audition(target, input.settings, ExploreSource::Preset);
-            }
-            commands.extend(presets.into_iter().map(ShellCommand::Preset));
-
-            // UX0-C04/C07. Between the presets and the sliders because that is where
-            // the actions it makes reversible are: a preset Apply and a Surprise are
-            // the same gesture, and a Revert anywhere else would have to be hunted
-            // for after the thing it undoes has already happened.
-            if focused_route.is_none() {
-                y += self.explore_block(
-                    d,
-                    input,
-                    UiRect::new(body.x, y, body.width, explore_height + SETTING_ROW_HEIGHT),
-                    target,
-                    commands,
-                );
-            }
-
-            let descriptors = settings::descriptors(input.scene);
-            let row_height = SETTING_ROW_HEIGHT;
-            for (index, descriptor) in descriptors.iter().enumerate() {
-                // Give the open route the available Tune area. Previously a late
-                // setting's expanded row disappeared below the panel floor, taking
-                // Apply/Discard with it while its dirty guard kept blocking edits.
-                if focused_route.is_some_and(|focused| index != focused) {
-                    continue;
-                }
-                // Expanded routes have their full natural height, including the
-                // extra band controls; the same height sizes the scrollbar.
-                let expanded = self.route_editor_height(input.scene, index);
-                let row = UiRect::new(
-                    body.x + padding,
-                    y,
-                    body.width - padding * 2.0,
-                    if expanded > 0.0 { expanded } else { row_height },
-                );
-                y += row.height;
-                // Keep laying out every row: the scissor clips pixels and Widgets
-                // clips presses. No tail is dropped when the pane is too short.
-
-                let committed = committed_route(input, input.scene, index).cloned();
-                let routed = committed.is_some();
-
-                // UX0-B08: the route affordance is a **word**, not `~`.
-                //
-                // The oracle draws a tilde (`plug.c:6169-6186`) and the review found
-                // exactly what a tilde tells a newcomer, which is nothing — it is not
-                // an abbreviation of anything, has no established meaning in an
-                // audio interface, and its tooltip was the only thing in the
-                // application that explained it. The button now says which of its
-                // three states it is in, so the row is readable with the pointer
-                // parked somewhere else entirely.
-                let route_label = if expanded > 0.0 {
-                    if self.route_edit_is_dirty() {
-                        "Discard"
-                    } else {
-                        "Close"
-                    }
-                } else if routed {
-                    "Routed"
-                } else {
-                    "Route"
-                };
-                let route_width = (widgets::measure(font, route_label, metric::UI_FONT_CAPTION)
-                    + 14.0)
-                    .clamp(44.0, 74.0);
-                let toggle = UiRect::new(
-                    row.x + row.width - route_width,
-                    row.y - 3.0,
-                    route_width,
-                    20.0,
-                );
-                let toggle_id =
-                    widgets::widget_id(widgets::id::INSPECTOR, slot::ROUTE_TOGGLE + index as u32);
-                let toggle_state = self.widgets.text_button(
-                    d,
-                    font,
-                    toggle_id,
-                    toggle,
-                    route_label,
-                    routed || expanded > 0.0,
-                    ButtonStyle::Neutral,
-                    Some(metric::UI_FONT_CAPTION),
-                );
-                if toggle_state.clicked {
-                    self.toggle_route_editor(track_slot, input.scene, index, committed.as_ref());
-                }
-                // UX0-B08's second half: a *dynamic* tip. A routed row's tip names
-                // the route it would open rather than repeating the static sentence,
-                // because by then the user knows what routing is and wants to know
-                // what this one does.
-                self.widgets.hint(
-                    d,
-                    toggle_state,
-                    toggle_id,
-                    toggle,
-                    &match (expanded > 0.0, committed.as_ref()) {
-                        (true, _) if self.route_edit_is_dirty() => {
-                            "Discard this unapplied route and return to all settings".to_string()
-                        }
-                        (true, _) => {
-                            "Close this route editor and return to all settings".to_string()
-                        }
-                        (false, Some(route)) => format!(
-                            "Driven by {} - click to edit",
-                            ascii_fallback(
-                                font.all_loaded(),
-                                &route_editor_state::summary(route, descriptor.precision)
-                            )
-                        ),
-                        (false, None) => {
-                            "Let the music move this setting instead of the slider".to_string()
-                        }
-                    },
-                );
-
-                // The label and the readout are drawn for *every* row, expanded
-                // included (`plug.c:6156-6190`): the C's editor replaces the slider
-                // zone, not the line that names the setting. Losing the readout there
-                // would leave the one row the user is working on as the only one that
-                // does not say what value it currently produces.
-                let value = input.settings.get(input.scene, index);
-                let effective = input
-                    .routed
-                    .map_or(value, |routed| routed.get(input.scene, index));
-
-                // Only an unrouted, uncollapsed row gets the editable chip: a routed
-                // setting's number is produced by its route, and a text field over it
-                // would take a value the next frame overwrites.
-                let editable = !routed && expanded <= 0.0;
-                let pulse_auto = input.scene == SceneId::PulseField
-                    && descriptor.key == "settings.pulse.petals"
-                    && effective < 0.5
-                    && !routed;
-                let readout = if pulse_auto {
-                    "Auto: balance".to_string()
-                } else {
-                    format!(
-                        "{:.*}{}",
-                        descriptor.precision as usize,
-                        effective,
-                        if routed { "  routed" } else { "" }
-                    )
-                };
-                let readout_width = widgets::measure(font, &readout, metric::UI_FONT_VALUE);
-                let chip_width = if editable {
-                    (readout_width + 14.0).clamp(46.0, 104.0)
-                } else {
-                    readout_width
-                };
-                let chip = UiRect::new(toggle.x - 8.0 - chip_width, row.y - 3.0, chip_width, 20.0);
-                if !body.contains(chip)
-                    && self
-                        .route_editor
-                        .typing
-                        .as_ref()
-                        .is_some_and(|entry| entry.scene == input.scene && entry.index == index)
-                {
-                    self.route_editor.typing = None;
-                }
-
-                // UX0-B09: per-setting reset, on the label.
-                //
-                // A third button on a 46 px row that already carries a chip and a
-                // route control does not fit at the 960 px minimum, and an
-                // affordance that only appears on hover is the defect LX2-a was.
-                // The label is already drawn, already wide, and already names the
-                // thing being reset; a leading `*` marks it as moved from its
-                // default, which also makes "what have I changed on this scene"
-                // answerable at a glance rather than value by value.
-                let modified = value.to_bits() != descriptor.default_value.to_bits();
-                let label_zone = (chip.x - 6.0 - row.x).max(24.0);
-                let label_rect = UiRect::new(row.x, row.y - 3.0, label_zone, 20.0);
-                let label_id =
-                    widgets::widget_id(widgets::id::INSPECTOR, slot::LABEL_RESET + index as u32);
-                // An unmodified label claims no press: there is nothing to reset, and
-                // a hit target over an inert control is a click the user cannot
-                // account for.
-                let label_state = if modified {
-                    self.widgets.button(d, label_id, label_rect)
-                } else {
-                    widgets::ButtonState::default()
-                };
-                if label_state.clicked {
-                    self.begin_audition(target, input.settings, ExploreSource::Manual);
-                    commands.push(ShellCommand::SetSetting {
-                        scene: input.scene,
-                        index,
-                        value: descriptor.default_value,
-                    });
-                    self.with_editor(|host| host.reset_arm.disarm());
-                }
-                if modified {
-                    self.widgets.hint(
-                        d,
-                        label_state,
-                        label_id,
-                        label_rect,
-                        &format!(
-                            "{} - click to reset to {:.*}",
-                            descriptor.label,
-                            descriptor.precision as usize,
-                            descriptor.default_value
-                        ),
-                    );
-                }
-                let label_text = if modified {
-                    format!("* {}", descriptor.label)
-                } else {
-                    descriptor.label.to_string()
-                };
-                widgets::draw_text_faded(
-                    d,
-                    input.fonts.ui(),
-                    &label_text,
-                    row.x,
-                    row.y,
-                    label_zone,
-                    12.0,
-                    metric::UI_FONT_CAPTION,
-                    // Hovered can only be true where the label is a live reset
-                    // button, so lighting it is the affordance: the one word that
-                    // brightens under the pointer is the one that does something.
-                    // Ink rather than the accent since WX-5a — a reset is not
-                    // "now" — and a routed row already says so in its own row.
-                    if routed || label_state.hovered || modified {
-                        color::ui_ink()
-                    } else {
-                        color::ui_muted()
-                    },
-                );
-
-                if editable {
-                    self.value_chip(
-                        d, input, chip, index, descriptor, effective, &readout, target, commands,
-                    );
-                } else {
-                    widgets::draw_text(
-                        d,
-                        input.fonts.ui(),
-                        &readout,
-                        chip.x,
-                        row.y,
-                        metric::UI_FONT_VALUE,
-                        color::ui_ink(),
-                    );
-                }
-
-                // An expanded row replaces the whole slider zone rather than sitting
-                // beside it (`plug.c:5517-5528`), so nothing below runs for it.
-                if expanded > 0.0 {
-                    self.route_editor_row(d, input, row, input.scene, index, commands);
-                    continue;
-                }
-
-                // A routed setting shows the route, not a slider that appears to move
-                // on its own: the summary, the live meter, and a hit target that opens
-                // the editor (`plug.c:6197-6215`).
-                if let Some(route) = committed.as_ref() {
-                    self.routed_row(d, input, row, index, descriptor, route);
-                    continue;
-                }
-
-                let span = descriptor.maximum - descriptor.minimum;
-                let normalized = if span > 0.0 {
-                    (effective - descriptor.minimum) / span
-                } else {
-                    0.0
-                };
-                // Alt+wheel retains precise value stepping without changing values
-                // when the user scrolls through the panel. Shift makes ten steps.
-                let wheel = value_wheel;
-                if wheel != 0.0 {
-                    let pointer = input.ui_scale.mouse(d);
-                    if row.contains_point(pointer.x, pointer.y)
-                        && body.contains_point(pointer.x, pointer.y)
-                    {
-                        let coarse = d.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
-                            || d.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT)
-                            || self.probe_wheel_shift;
-                        let steps = (wheel.round() as i32) * if coarse { 10 } else { 1 };
-                        let stepped = tune_explore::step(descriptor, value, steps);
-                        if stepped.to_bits() != value.to_bits() {
-                            commands.push(ShellCommand::SetSetting {
-                                scene: input.scene,
-                                index,
-                                value: stepped,
-                            });
-                            self.with_editor(|host| {
-                                host.reset_arm.disarm();
-                                host.explore.note_manual_edit(target);
-                            });
-                        }
-                    }
-                }
-
-                let track = UiRect::new(row.x, row.y + 22.0, row.width, 20.0);
-                let id = widgets::widget_id(widgets::id::INSPECTOR, index as u32);
-                if let Some(fraction) = self.widgets.slider(d, id, track, normalized) {
-                    // Every value this panel writes goes onto the descriptor's own
-                    // precision grid, so the readout above the slider is the number
-                    // in the store rather than a rounded picture of it. The C only
-                    // did this for `precision == 0` (`plug.c`'s integer readout),
-                    // which left a two-place slider showing "1.23" for 1.2345.
-                    let proposed =
-                        tune_explore::conform(descriptor, descriptor.minimum + fraction * span);
-                    commands.push(ShellCommand::SetSetting {
-                        scene: input.scene,
-                        index,
-                        value: proposed,
-                    });
-                    // A drag while an audition is open is the user refining the
-                    // experiment; it becomes the new "B" without starting a session
-                    // of its own.
-                    self.with_editor(|host| host.explore.note_manual_edit(target));
-                    // review 1.8: an edit made after arming Reset is exactly the
-                    // "changed my mind" case the arm/confirm step exists to protect
-                    // — the preset block's Delete disarms the same way on any other
-                    // preset action (`main.rs`'s `handle_preset`), mirrored here for
-                    // the same reason.
-                    self.with_editor(|host| host.reset_arm.disarm());
-                }
-            }
-        }
-        self.widgets.set_input_clip(old_clip);
-        if let Some((top, height)) = thumb {
-            widgets::fill(d, bar, color::ui_rule());
-            widgets::fill(
-                d,
-                UiRect::new(bar.x + 2.0, bar.y + top, bar.width - 4.0, height),
-                color::ui_muted(),
-            );
-        }
-
-        let reset = UiRect::new(
-            content.x + padding,
-            content.y + content.height - metric::UI_BUTTON_HEIGHT - padding,
-            content.width - padding * 2.0,
-            metric::UI_BUTTON_HEIGHT,
-        );
-        if content.contains(reset) && focused_route.is_none() {
-            // review 1.8 (UX0-A08): Reset used to fire on a single unconfirmed
-            // click while the less-destructive preset Delete right above it
-            // already required a second one. Same arm/confirm shape, same
-            // widget-style rules: filled and named `Confirm reset` while armed,
-            // `Danger` styled so the row reads as "about to do something" rather
-            // than a plain toggle.
-            let armed =
-                self.peek_editor(|host| host.reset_arm.is_armed_for(track_slot, input.scene));
-            let id = widgets::widget_id(widgets::id::INSPECTOR, RESET_SCENE_SLOT);
-            if self
-                .widgets
-                .text_button(
-                    d,
-                    input.fonts.ui(),
-                    id,
-                    reset,
-                    if armed {
-                        "Confirm reset"
-                    } else {
-                        "Reset scene"
-                    },
-                    armed,
-                    if armed {
-                        ButtonStyle::Danger
-                    } else {
-                        ButtonStyle::Neutral
-                    },
-                    None,
-                )
-                .clicked
-            {
-                if armed {
-                    self.with_editor(|host| host.reset_arm.disarm());
-                    commands.push(ShellCommand::ResetScene(input.scene));
-                } else {
-                    self.with_editor(|host| host.reset_arm.arm(track_slot, input.scene));
-                }
-            }
-        }
+        let column = self.column_rect();
+        self.look_view(d, column, input, commands);
     }
 
     /// One row's value, as a chip that can be typed into (UX0-B09).
@@ -1738,216 +1159,6 @@ impl Shell {
         );
     }
 
-    /// Nudge / Surprise, and the audition bar that makes them safe
-    /// (UX0-C04, UX0-C07).
-    ///
-    /// Returns the height it consumed, `0.0` when it does not fit — the same
-    /// contract `preset_block` has, and for the same reason: at the 960x640
-    /// minimum the inspector is already truncating its slider list, and a block
-    /// that took its space unconditionally would push settings off the bottom to
-    /// make room for a button.
-    fn explore_block(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        input: &ShellInput<'_>,
-        area: UiRect,
-        target: TuneTarget,
-        commands: &mut Vec<ShellCommand>,
-    ) -> f32 {
-        const BUTTON_H: f32 = 24.0;
-        const SENTENCE_H: f32 = 18.0;
-        const GAP_AFTER: f32 = 6.0;
-        // One slider row's worth of settings must survive underneath, or the
-        // block has eaten the thing it exists to explore.
-        const ROOM_FOR_ONE_ROW: f32 = 46.0;
-
-        let font = input.fonts.ui();
-        let session = self.peek_editor(|host| host.explore.session(target));
-        let needed = explore_block_height(session.is_some());
-        if area.height < needed + ROOM_FOR_ONE_ROW {
-            return 0.0;
-        }
-
-        let mut y = area.y;
-        // Two buttons, equal halves. Surprise is on the right — it is the bolder
-        // of the pair, and the pair reads left to right as increasing daring.
-        let half = (area.width - GAP) * 0.5;
-        for (slot_index, label, strength, tip) in [
-            (
-                slot::NUDGE,
-                "Nudge",
-                Strength::Nudge,
-                "Move every setting a little, at random. Revert brings it back.",
-            ),
-            (
-                slot::SURPRISE,
-                "Surprise",
-                Strength::Surprise,
-                "Re-tune this scene at random, inside every setting's own range. Revert brings it back.",
-            ),
-        ] {
-            let boundary = UiRect::new(
-                area.x + f32::from(slot_index == slot::SURPRISE) * (half + GAP),
-                y,
-                half,
-                BUTTON_H,
-            );
-            let id = widgets::widget_id(widgets::id::INSPECTOR, slot_index);
-            let state = self.widgets.text_button(
-                d,
-                font,
-                id,
-                boundary,
-                label,
-                false,
-                ButtonStyle::Neutral,
-                Some(metric::UI_FONT_CAPTION),
-            );
-            if state.clicked {
-                self.begin_audition(
-                    target,
-                    input.settings,
-                    if strength == Strength::Surprise {
-                        ExploreSource::Surprise
-                    } else {
-                        ExploreSource::Nudge
-                    },
-                );
-                let seed = self.next_explore_seed(input.scene);
-                let mut rng = SplitMix64::new(seed);
-                let snapshot =
-                    tune_explore::explore(&mut rng, input.scene, input.settings, strength);
-                push_snapshot(input.scene, &snapshot, commands);
-                self.with_editor(|host| host.reset_arm.disarm());
-            }
-            self.widgets.hint(d, state, id, boundary, tip);
-        }
-        y += BUTTON_H;
-
-        if let Some(session) = session {
-            y += 4.0;
-            widgets::draw_text(
-                d,
-                font,
-                &tune_explore::audition_label(&session),
-                area.x,
-                y,
-                metric::UI_FONT_CAPTION,
-                color::ui_ink(),
-            );
-            y += SENTENCE_H;
-
-            let third = (area.width - GAP * 2.0) / 3.0;
-            let boundary = |slot_index: usize| {
-                UiRect::new(
-                    area.x + slot_index as f32 * (third + GAP),
-                    y,
-                    third,
-                    BUTTON_H,
-                )
-            };
-            let showing_before = session.showing == Side::Before;
-            let labels = ["A/B", "Revert", "Keep"];
-            let font_size = widgets::row_font_size(font, &labels, &[third; 3], BUTTON_H);
-
-            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::AB_COMPARE);
-            let state = self.widgets.text_button(
-                d,
-                font,
-                id,
-                boundary(0),
-                labels[0],
-                showing_before,
-                ButtonStyle::Neutral,
-                Some(font_size),
-            );
-            if state.clicked {
-                let swap = self.with_editor(|host| host.explore.compare(target, input.settings));
-                if let Some(snapshot) = swap {
-                    push_snapshot(input.scene, &snapshot, commands);
-                }
-            }
-            self.widgets.hint(
-                d,
-                state,
-                id,
-                boundary(0),
-                if showing_before {
-                    "Showing the tuning you started with - click to hear the new one"
-                } else {
-                    "Showing the new tuning - click to compare against the one you started with"
-                },
-            );
-
-            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::AB_REVERT);
-            let state = self.widgets.text_button(
-                d,
-                font,
-                id,
-                boundary(1),
-                labels[1],
-                false,
-                ButtonStyle::Danger,
-                Some(font_size),
-            );
-            if state.clicked {
-                if let Some(snapshot) = self.with_editor(|host| host.explore.revert(target)) {
-                    push_snapshot(input.scene, &snapshot, commands);
-                }
-                self.with_editor(|host| host.reset_arm.disarm());
-            }
-            self.widgets.hint(
-                d,
-                state,
-                id,
-                boundary(1),
-                "Put every setting back exactly as it was before you started",
-            );
-
-            // Keep is refused while the original is on screen, because it would
-            // throw the experiment away — the opposite of what the word says.
-            // Disabled with a reason rather than hidden (UX0-B08's rule, applied
-            // to a control that is not a route).
-            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::AB_KEEP);
-            if showing_before {
-                self.widgets
-                    .disabled_button(d, font, boundary(2), labels[2], Some(font_size));
-                let hover = self.widgets.button(d, id, boundary(2));
-                self.widgets.hint(
-                    d,
-                    hover,
-                    id,
-                    boundary(2),
-                    "A/B back to the new tuning first - Keep here would discard it",
-                );
-            } else {
-                let state = self.widgets.text_button(
-                    d,
-                    font,
-                    id,
-                    boundary(2),
-                    labels[2],
-                    false,
-                    ButtonStyle::Neutral,
-                    Some(font_size),
-                );
-                if state.clicked {
-                    self.with_editor(|host| host.explore.keep(target));
-                }
-                self.widgets.hint(
-                    d,
-                    state,
-                    id,
-                    boundary(2),
-                    "Settle on this tuning and close the comparison",
-                );
-            }
-            y += BUTTON_H;
-        }
-
-        y - area.y + GAP_AFTER
-    }
-
     /// Open, close, or refuse — the route button's three answers
     /// (`plug.c:6174-6186`).
     ///
@@ -1991,546 +1202,6 @@ impl Shell {
         }
     }
 
-    /// The collapsed routed row: summary, live meter, and a click target that
-    /// opens the editor (`plug.c:6197-6215`).
-    fn routed_row(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        input: &ShellInput<'_>,
-        row: UiRect,
-        index: usize,
-        descriptor: &SettingDescriptor,
-        route: &ParameterMapping,
-    ) {
-        let font = input.fonts.ui();
-        let summary = ascii_fallback(
-            font.all_loaded(),
-            &route_editor_state::summary(route, descriptor.precision),
-        );
-        widgets::draw_text(
-            d,
-            font,
-            &summary,
-            row.x,
-            row.y + 20.0,
-            metric::UI_FONT_CAPTION,
-            color::ui_ink(),
-        );
-        let meter = UiRect::new(row.x, row.y + 37.0, row.width, 7.0);
-        self.route_meter(d, input, meter, route);
-
-        // The whole zone is the hit target, not just the `~` button
-        // (`plug.c:6208-6215`).
-        let hit = UiRect::new(row.x, row.y + 18.0, row.width, 28.0);
-        let id = widgets::widget_id(widgets::id::INSPECTOR, slot::ROUTED_SUMMARY + index as u32);
-        if self.widgets.button(d, id, hit).clicked {
-            self.toggle_route_editor(
-                input.workspace.current_index().unwrap_or(0),
-                input.scene,
-                index,
-                Some(route),
-            );
-        }
-    }
-
-    /// How tall the route editor row for this setting is, or `0.0` when it is
-    /// not open for it.
-    ///
-    /// The oracle's editor *area* is `24+26+40+40+70+26+32+4` px, plus 24 more
-    /// when the source is `band` (`plug.c:5517-5523`), and it is asked *before*
-    /// the row is measured so a row that will not fit is never drawn — the layout
-    /// rule this repository has already paid for. See
-    /// [`ROUTE_EDITOR_ROW_HEADER`] for why the row is that plus 26 rather than
-    /// the C's plus 41.
-    pub(crate) fn route_editor_height(&self, scene: SceneId, index: usize) -> f32 {
-        self.peek_editor(|host| {
-            if !host.state.targets(host.track_slot, scene, index) {
-                return 0.0;
-            }
-            let band = host
-                .state
-                .draft()
-                .is_some_and(|draft| draft.source == AnalysisSource::Band);
-            ROUTE_EDITOR_ROW_HEADER
-                + ROUTE_EDITOR_AREA_HEIGHT
-                + if band {
-                    ROUTE_EDITOR_BAND_ROW_HEIGHT
-                } else {
-                    0.0
-                }
-                + ROUTE_EDITOR_ROW_GAP
-        })
-    }
-
-    /// The expanded route editor, drawn in place of one setting's slider zone
-    /// (`scene_route_editor_panel`, `plug.c:5643-5872`).
-    ///
-    /// Returns the height it consumed, which is the contract the caller advances
-    /// by instead of by the slider row's height — how the C makes one row taller
-    /// without a second layout pass.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the stub's signature, which the inspector's row loop calls"
-    )]
-    pub(crate) fn route_editor_row(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        input: &ShellInput<'_>,
-        row: UiRect,
-        scene: SceneId,
-        index: usize,
-        commands: &mut Vec<ShellCommand>,
-    ) -> f32 {
-        let Some(descriptor) = settings::descriptor(scene, index) else {
-            return 0.0;
-        };
-        let Some(draft) = self.peek_editor(|host| host.state.draft().cloned()) else {
-            return 0.0;
-        };
-        let font = input.fonts.ui();
-
-        // The label, the readout and the `~` button on the line above were all
-        // drawn by the caller, for every row alike. This function owns the zone
-        // the slider would have had, and nothing else.
-        let area = UiRect::new(
-            row.x,
-            row.y + ROUTE_EDITOR_ROW_HEADER,
-            row.width,
-            row.height - ROUTE_EDITOR_ROW_HEADER - ROUTE_EDITOR_ROW_GAP,
-        );
-        // The oracle draws the block straight onto the panel; a faint raised
-        // ground is what tells a reader that 260 px of controls belong to one row
-        // rather than to the list.
-        widgets::fill(d, area, color::ui_surface());
-
-        let mut cursor = area.y;
-        let live = self.live_value(input, draft.source, draft.band_index);
-
-        // 1. The live caption and the input-window meter (`plug.c:5654-5681`).
-        let mapped = live.and_then(|value| draft.output_value(descriptor, value));
-        let caption = match (live, mapped) {
-            (Some(live), Some(mapped)) => format!(
-                "LIVE {} {:.3} {} {:.*}",
-                route_editor_state::source_label(draft.source),
-                live,
-                mapping_editor::arrow(font.all_loaded()),
-                descriptor.precision as usize,
-                mapped
-            ),
-            (Some(live), None) => format!(
-                "LIVE {}  {:.3}",
-                route_editor_state::source_label(draft.source),
-                live
-            ),
-            _ => format!(
-                "LIVE {}  no signal",
-                route_editor_state::source_label(draft.source)
-            ),
-        };
-        widgets::draw_text(d, font, &caption, area.x, cursor, 12.0, color::ui_muted());
-        self.route_meter(
-            d,
-            input,
-            UiRect::new(area.x, cursor + 14.0, area.width, 7.0),
-            &draft,
-        );
-        cursor += 24.0;
-
-        // 2. The sources. Post-legacy musical summaries make this a two-row
-        // palette: five comfortably readable choices per row instead of ten
-        // cryptic slivers. `ALL` remains the authority so another appended source
-        // cannot silently disappear.
-        const SOURCE_COLUMNS: usize = 5;
-        let source_width =
-            (area.width - GAP * (SOURCE_COLUMNS as f32 - 1.0)) / SOURCE_COLUMNS as f32;
-        for (slot_index, source) in AnalysisSource::ALL.into_iter().enumerate() {
-            let column = slot_index % SOURCE_COLUMNS;
-            let source_row = slot_index / SOURCE_COLUMNS;
-            let button = UiRect::new(
-                area.x + column as f32 * (source_width + GAP),
-                cursor + source_row as f32 * 26.0,
-                source_width,
-                22.0,
-            );
-            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::SOURCE + slot_index as u32);
-            let state = self.widgets.text_button(
-                d,
-                font,
-                id,
-                button,
-                route_editor_state::source_label(source),
-                draft.source == source,
-                ButtonStyle::Neutral,
-                Some(metric::UI_FONT_CAPTION),
-            );
-            if state.clicked {
-                self.with_editor(|host| host.state.set_source(source));
-            }
-            self.widgets.hint(
-                d,
-                state,
-                id,
-                button,
-                match source {
-                    AnalysisSource::Rms => "Overall loudness, smoothed",
-                    AnalysisSource::Peak => "The loudest instant in the window",
-                    AnalysisSource::SpectralFlux => "How much the spectrum is moving",
-                    AnalysisSource::BeatPhase => "Position inside the current beat, 0 to 1",
-                    AnalysisSource::Band => "One analyzer band, chosen below",
-                    AnalysisSource::Time => "An eight-second triangle clock; needs no audio",
-                    AnalysisSource::Bass => "Mean energy in the lowest fifth of the spectrum",
-                    AnalysisSource::Mids => "Mean energy between the low and high fifths",
-                    AnalysisSource::Treble => "Mean energy in the highest fifth of the spectrum",
-                    AnalysisSource::Balance => {
-                        "Treble share of bass plus treble: 0 bass-heavy, 1 treble-heavy"
-                    }
-                },
-            );
-        }
-        cursor += 52.0;
-
-        // 3. The band stepper, only for the band source (`plug.c:5699-5721`).
-        if draft.source == AnalysisSource::Band {
-            // The live analyzer's band count, capped by the analyzer's own
-            // maximum inside `step_band`. Zero means no analysis has arrived yet,
-            // and the C falls back to the cap rather than refusing to step.
-            let band_limit = if input.band_count > 0 {
-                input.band_count
-            } else {
-                musializer_core::audio::analyzer::MAX_BANDS
-            };
-            let previous = UiRect::new(area.x, cursor, 34.0, 20.0);
-            let next = UiRect::new(area.x + area.width - 34.0, cursor, 34.0, 20.0);
-            for (id_slot, delta, label, boundary) in [
-                (slot::BAND_PREVIOUS, -1, "<", previous),
-                (slot::BAND_NEXT, 1, ">", next),
-            ] {
-                let id = widgets::widget_id(widgets::id::INSPECTOR, id_slot);
-                if self
-                    .widgets
-                    .text_button(
-                        d,
-                        font,
-                        id,
-                        boundary,
-                        label,
-                        false,
-                        ButtonStyle::Neutral,
-                        Some(metric::UI_FONT_CAPTION),
-                    )
-                    .clicked
-                {
-                    self.with_editor(|host| host.state.step_band(delta, band_limit));
-                }
-            }
-            let caption = format!("Band {} of {} (low to high)", draft.band_index, band_limit);
-            let width = widgets::measure(font, &caption, 13.0);
-            widgets::draw_text(
-                d,
-                font,
-                &caption,
-                area.x + (area.width - width) * 0.5,
-                cursor + (20.0 - 13.0) * 0.5,
-                13.0,
-                color::ui_ink(),
-            );
-            cursor += ROUTE_EDITOR_BAND_ROW_HEIGHT;
-        }
-
-        // 4. The two anchors (`plug.c:5723-5776`).
-        //
-        // Each anchor pairs one source level with one output value, and the
-        // physical grouping mirrors that pairing. The C notes why: the layout that
-        // grouped the four sliders by axis hid the diagonal input→output
-        // relationship the route actually is.
-        let span = descriptor.maximum - descriptor.minimum;
-        let span = if span <= 0.0 { 1.0 } else { span };
-        for anchor in 0..2u32 {
-            let high = anchor == 1;
-            let name = route_editor_state::anchor_label(draft.source, high);
-            let anchor_input = if high {
-                draft.input_max
-            } else {
-                draft.input_min
-            };
-            let anchor_output = if high {
-                draft.output_max
-            } else {
-                draft.output_min
-            };
-            let caption = format!(
-                "{name}  {anchor_input:.2} {} {:.*}",
-                mapping_editor::arrow(font.all_loaded()),
-                descriptor.precision as usize,
-                anchor_output
-            );
-            let (input_slot, output_slot) = if high {
-                (slot::INPUT_HIGH, slot::OUTPUT_HIGH)
-            } else {
-                (slot::INPUT_LOW, slot::OUTPUT_LOW)
-            };
-            let edit = mapping_editor::anchor_pair(
-                d,
-                &mut self.widgets,
-                font,
-                area.x,
-                cursor,
-                area.width,
-                &AnchorPair {
-                    caption: &caption,
-                    input_fraction: anchor_input as f32,
-                    output_fraction: (anchor_output as f32 - descriptor.minimum) / span,
-                    input_id: widgets::widget_id(widgets::id::INSPECTOR, input_slot),
-                    output_id: widgets::widget_id(widgets::id::INSPECTOR, output_slot),
-                    arrow_ok: font.all_loaded(),
-                },
-            );
-            if let Some(fraction) = edit.input {
-                self.with_editor(|host| {
-                    if high {
-                        host.state.set_input_max(f64::from(fraction))
-                    } else {
-                        host.state.set_input_min(f64::from(fraction))
-                    }
-                });
-            }
-            if let Some(fraction) = edit.output {
-                let value = f64::from(descriptor.minimum + fraction * span);
-                self.with_editor(|host| {
-                    if high {
-                        host.state.set_output_high(value)
-                    } else {
-                        host.state.set_output_low(value)
-                    }
-                });
-            }
-            cursor += 40.0;
-        }
-
-        // 5. The transfer graph (`plug.c:5778-5782`). The sample closure is
-        // `output_value` — the same function the frame loop maps with — so
-        // curve shape, swapped outputs, clamping and toggle quantization draw
-        // exactly as they will play.
-        let plot = UiRect::new(area.x, cursor, area.width, 64.0);
-        mapping_editor::transfer_graph(
-            d,
-            plot,
-            (draft.input_min, draft.input_max),
-            f64::from(descriptor.minimum),
-            f64::from(span),
-            live,
-            &|source| draft.output_value(descriptor, source),
-        );
-        cursor += 70.0;
-
-        // 6. The curve stepper (`plug.c:5784-5808`).
-        if let Some(next) = mapping_editor::curve_stepper(
-            d,
-            &mut self.widgets,
-            font,
-            area.x,
-            cursor,
-            area.width,
-            widgets::widget_id(widgets::id::INSPECTOR, slot::CURVE_PREVIOUS),
-            widgets::widget_id(widgets::id::INSPECTOR, slot::CURVE_NEXT),
-            draft.interpolation,
-        ) {
-            self.with_editor(|host| host.state.set_curve(next));
-        }
-        cursor += 26.0;
-
-        // 7. The action row (`plug.c:5810-5871`).
-        self.route_actions(d, input, area, cursor, &draft, commands);
-        row.height
-    }
-
-    /// Clamp / Swap / Apply / Remove / Close (`plug.c:5810-5871`).
-    ///
-    /// The enable rules are the oracle's: Apply is live only for a draft that is
-    /// valid *and* either dirty or never committed, Remove only for a draft with a
-    /// committed route behind it, and Close reads `Discard` while the draft is
-    /// dirty so the destructive answer names itself.
-    fn route_actions(
-        &mut self,
-        d: &mut RaylibDrawHandle<'_>,
-        input: &ShellInput<'_>,
-        area: UiRect,
-        cursor: f32,
-        draft: &ParameterMapping,
-        commands: &mut Vec<ShellCommand>,
-    ) {
-        let font = input.fonts.ui();
-        let (dirty, can_apply, has_committed) = self.peek_editor(|host| {
-            (
-                host.state.is_dirty(),
-                host.state.can_apply(),
-                host.state
-                    .session()
-                    .is_some_and(|session| session.committed.is_some()),
-            )
-        });
-        let apply_label = if has_committed { "Applied" } else { "Apply" };
-        let close_label = if dirty { "Discard" } else { "Close" };
-        let labels = ["Clamp", "Swap", apply_label, "Remove", close_label];
-
-        let action_width = (area.width - GAP * 4.0) / 5.0;
-        let widths = [action_width; 5];
-        let font_size = widgets::row_font_size(font, &labels, &widths, 28.0);
-        let boundary = |slot_index: usize| {
-            UiRect::new(
-                area.x + slot_index as f32 * (action_width + GAP),
-                cursor,
-                action_width,
-                28.0,
-            )
-        };
-        let id =
-            |slot_index: u32| widgets::widget_id(widgets::id::INSPECTOR, slot::ACTION + slot_index);
-
-        let state = self.widgets.text_button(
-            d,
-            font,
-            id(0),
-            boundary(0),
-            labels[0],
-            draft.clamp,
-            ButtonStyle::Neutral,
-            Some(font_size),
-        );
-        if state.clicked {
-            let next = !draft.clamp;
-            self.with_editor(|host| host.state.set_clamp(next));
-        }
-        self.widgets.hint(
-            d,
-            state,
-            id(0),
-            boundary(0),
-            "Hold the source inside the quiet/loud window; off lets the curve extrapolate",
-        );
-        let state = self.widgets.text_button(
-            d,
-            font,
-            id(1),
-            boundary(1),
-            labels[1],
-            false,
-            ButtonStyle::Neutral,
-            Some(font_size),
-        );
-        if state.clicked {
-            self.with_editor(|host| host.state.swap_output());
-        }
-        self.widgets.hint(
-            d,
-            state,
-            id(1),
-            boundary(1),
-            "Exchange the two output values, inverting the response",
-        );
-
-        // SEAM 2: committing needs `&mut RouteTable`, which the shell never sees.
-        // The enable rules are the oracle's so the row still teaches what Apply
-        // costs; the click says the commit is not built rather than doing nothing.
-        if can_apply && (dirty || !has_committed) {
-            if self
-                .widgets
-                .text_button(
-                    d,
-                    font,
-                    id(2),
-                    boundary(2),
-                    "Apply",
-                    true,
-                    ButtonStyle::Neutral,
-                    Some(font_size),
-                )
-                .clicked
-            {
-                commands.push(ShellCommand::ApplyRoute {
-                    scene: input.scene,
-                    route: draft.clone(),
-                });
-                self.discard_route_draft();
-            }
-        } else {
-            // UX0-B08: a disabled action says *why*. `disabled_button` returns no
-            // state, so the reason needs a hit target of its own — which also
-            // stops a click falling through to whatever is behind it.
-            self.widgets
-                .disabled_button(d, font, boundary(2), apply_label, Some(font_size));
-            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::ACTION_DISABLED);
-            let hover = self.widgets.button(d, id, boundary(2));
-            self.widgets.hint(
-                d,
-                hover,
-                id,
-                boundary(2),
-                if !can_apply {
-                    "The quiet and loud levels are the same, so this route has nothing to map"
-                } else {
-                    "Already applied - change something above to apply it again"
-                },
-            );
-        }
-
-        if has_committed {
-            if self
-                .widgets
-                .text_button(
-                    d,
-                    font,
-                    id(3),
-                    boundary(3),
-                    labels[3],
-                    false,
-                    ButtonStyle::Danger,
-                    Some(font_size),
-                )
-                .clicked
-            {
-                commands.push(ShellCommand::RemoveRoute {
-                    scene: input.scene,
-                    parameter: draft.parameter.clone(),
-                });
-                self.discard_route_draft();
-            }
-        } else {
-            self.widgets
-                .disabled_button(d, font, boundary(3), labels[3], Some(font_size));
-            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::ACTION_DISABLED + 1);
-            let hover = self.widgets.button(d, id, boundary(3));
-            self.widgets.hint(
-                d,
-                hover,
-                id,
-                boundary(3),
-                "Nothing to remove - this setting has no route yet. Apply one first.",
-            );
-        }
-
-        if self
-            .widgets
-            .text_button(
-                d,
-                font,
-                id(4),
-                boundary(4),
-                close_label,
-                false,
-                if dirty {
-                    ButtonStyle::Danger
-                } else {
-                    ButtonStyle::Neutral
-                },
-                Some(font_size),
-            )
-            .clicked
-        {
-            self.discard_route_draft();
-        }
-    }
-
     /// The live-source meter: where this frame's source value sits inside the
     /// route's input window (`scene_route_meter`, `plug.c:5574-5590`).
     ///
@@ -2566,6 +1237,1295 @@ impl Shell {
         // `RouteSources` the frame loop evaluated the routes from, so the meter
         // and the route agree by construction rather than by coincidence.
         input.route_sources.value(source, band_index)
+    }
+}
+
+// -- Look in the column (WX-5d §3.3) -------------------------------------------
+
+impl Shell {
+    /// Look, drawn in the right column: the scene, the scope in words, the
+    /// two explore tiles (or the trial card), saved looks, the parameters in
+    /// groups with the route editor inline, and the footer. Every rect comes
+    /// from [`tune_groups::look_layout`] and
+    /// [`route_editor_state::column_editor_layout`].
+    ///
+    /// The same state and the same commands as the inspector above: a row's
+    /// drag, its typed value, its reset and its route all go through the
+    /// paths the inspector's controls use, so nothing here can write
+    /// somewhere a slider could not.
+    pub(crate) fn look_view(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        column: UiRect,
+        input: &ShellInput<'_>,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        if column.is_empty() {
+            self.look_column.report.clear();
+            return;
+        }
+        let font = input.fonts.ui();
+        let scene = input.scene;
+        let track_slot = input.workspace.current_index().unwrap_or(0);
+        self.with_editor(|host| host.track_slot = track_slot);
+        let target = self.tune_target(input, track_slot);
+        self.with_editor(|host| host.explore.retarget(target));
+        if self.look_column.context != Some((track_slot, scene)) {
+            self.look_column.context = Some((track_slot, scene));
+            self.look_column.offset = 0.0;
+        }
+
+        // The head: LOOK, and where the change lands as a count.
+        let active_cue = input.workspace.current().and_then(Track::active_cue);
+        let (sections, plan_enabled) = input.workspace.current().map_or((0, false), |track| {
+            (track.scene_switches.len(), track.scene_switches.enabled)
+        });
+        let head = widgets::column_head(d, font, column, &[widgets::MicroRun::muted("Look")]);
+        let position_text = active_cue.map(|(index, _)| format!("{}", index + 1));
+        let total_text = format!("{sections}");
+        let trailing: Vec<widgets::MicroRun<'_>> = match position_text.as_deref() {
+            Some(position) => vec![
+                widgets::MicroRun::muted("Section "),
+                widgets::MicroRun::ink(position),
+                widgets::MicroRun::muted(" of "),
+                widgets::MicroRun::ink(&total_text),
+            ],
+            None => vec![widgets::MicroRun::muted("Base scene")],
+        };
+        let trailing_width = widgets::micro_width(font, &trailing);
+        let trailing_box = head.trailing_right(trailing_width, metric::UI_FONT_MICRO);
+        widgets::draw_micro(d, font, trailing_box.x, trailing_box.y, &trailing);
+
+        // What the list holds this frame.
+        let groups = tune_groups::groups(scene);
+        let order: Vec<usize> = groups
+            .iter()
+            .flat_map(|rows| rows.indices.iter().copied())
+            .collect();
+        let focused = self.focused_route_row(track_slot, scene);
+        if focused != self.look_column.editor_shown {
+            self.look_column.editor_shown = focused;
+            self.look_column.reveal_editor |= focused.is_some();
+        }
+        let draft_bar = self.route_editor.state.is_dirty() && focused.is_none();
+        let audition = self.peek_editor(|host| host.explore.session(target));
+        let looks = super::events::SavedLooks::measure(font, &input.presets, scene);
+        let card_width = (head.body.width - tune_groups::LOOK_PADDING * 2.0).max(0.0);
+        let band = self
+            .route_editor
+            .state
+            .draft()
+            .is_some_and(|draft| draft.source == AnalysisSource::Band);
+        let spec = tune_groups::LookSpec {
+            groups: groups
+                .iter()
+                .map(|rows| (rows.group, rows.indices.len()))
+                .collect(),
+            draft_bar,
+            audition: audition.is_some(),
+            chip_widths: looks.chip_widths.clone(),
+            save_width: looks.save_width,
+            empty_hint_width: looks.hint_width,
+            preset_action_widths: looks.action_widths.clone(),
+            editor: focused.and_then(|index| {
+                order.iter().position(|&row| row == index).map(|position| {
+                    (
+                        position,
+                        route_editor_state::column_editor_height(band, card_width),
+                    )
+                })
+            }),
+        };
+
+        // Scroll: the wheel moves the list unless Alt asks for a value step.
+        let mouse = input.ui_scale.mouse(d);
+        let alt = d.is_key_down(KeyboardKey::KEY_LEFT_ALT)
+            || d.is_key_down(KeyboardKey::KEY_RIGHT_ALT)
+            || self.probe_wheel_alt;
+        let (scroll_wheel, value_wheel) = tune_wheel(self.wheel_delta(d), alt);
+        let mut layout = tune_groups::look_layout(head.body, &spec, self.look_column.offset);
+        if scroll_wheel != 0.0 && layout.viewport.contains_point(mouse.x, mouse.y) {
+            layout = tune_groups::look_layout(
+                head.body,
+                &spec,
+                layout.offset - scroll_wheel * LOOK_WHEEL_STEP,
+            );
+        }
+        if self.look_column.reveal_editor {
+            self.look_column.reveal_editor = false;
+            if let Some(editor) = layout.editor {
+                let offset = tune_groups::reveal_offset(&layout, editor);
+                layout = tune_groups::look_layout(head.body, &spec, offset);
+            }
+        }
+        self.look_column.offset = layout.offset;
+
+        // The fixed header: the scene's name and the scope sentence.
+        widgets::draw_text(
+            d,
+            font,
+            scene.display_name(),
+            layout.title.x,
+            layout.title.y + (layout.title.height - LOOK_TITLE_SIZE) * 0.5,
+            LOOK_TITLE_SIZE,
+            color::ui_ink(),
+        );
+        let scope = look_scope_sentence(
+            active_cue.map(|(index, cue)| (index, cue.start_seconds)),
+            sections,
+            plan_enabled,
+        );
+        widgets::draw_text_faded(
+            d,
+            font,
+            &ascii_fallback(font.all_loaded(), &scope),
+            layout.scope.x,
+            layout.scope.y,
+            layout.scope.width,
+            24.0,
+            metric::UI_FONT_CAPTION,
+            color::ui_muted(),
+        );
+
+        let old_clip = self.widgets.set_input_clip(Some(layout.viewport));
+        let mut report_rows = Vec::with_capacity(order.len());
+        let explore_report;
+        let mut editor_report = String::from("none");
+        {
+            let mut clip = widgets::begin_scissor(d, layout.viewport, input.ui_scale);
+            let d = &mut *clip;
+            if let Some(bar) = layout.draft_bar {
+                self.hidden_route_draft_bar(d, input, bar, commands);
+            }
+            explore_report =
+                self.look_explore(d, input, &layout.explore, target, audition, commands);
+
+            let mut presets = Vec::new();
+            self.saved_looks(
+                d,
+                input,
+                &looks,
+                layout.presets_head,
+                &layout.preset_actions,
+                &layout.chips,
+                layout.save,
+                layout.empty_hint,
+                &mut presets,
+            );
+            if !presets.is_empty() {
+                self.with_editor(|host| host.reset_arm.disarm());
+            }
+            if presets
+                .iter()
+                .any(|action| matches!(action, PresetAction::Apply(_)))
+            {
+                self.begin_audition(target, input.settings, ExploreSource::Preset);
+            }
+            commands.extend(presets.into_iter().map(ShellCommand::Preset));
+
+            let label_width = look_label_width(card_width);
+            for group in &layout.groups {
+                widgets::section_head(
+                    d,
+                    font,
+                    group.head,
+                    &[widgets::MicroRun::muted(group.group.title())],
+                );
+                for &(position, row) in &group.rows {
+                    let index = order[position];
+                    let line = self.look_row(
+                        d,
+                        input,
+                        row,
+                        index,
+                        label_width,
+                        target,
+                        value_wheel,
+                        layout.viewport,
+                        commands,
+                    );
+                    report_rows.push(line);
+                }
+            }
+            if let (Some(card), Some(index)) = (layout.editor, focused) {
+                editor_report = self.route_editor_column(d, input, card, scene, index, commands);
+            }
+        }
+        self.widgets.set_input_clip(old_clip);
+        if !layout.scrollbar.is_empty() {
+            widgets::rounded_box(
+                d,
+                layout.scrollbar,
+                2.0,
+                color::ui_control_edge(),
+                color::ui_control_edge(),
+                1.0,
+            );
+        }
+
+        // The footer: Reset scene… (two presses) and the hint.
+        widgets::fill(d, layout.footer, color::ui_surface());
+        widgets::fill(
+            d,
+            UiRect::new(layout.footer.x, layout.footer.y, layout.footer.width, 1.0),
+            color::ui_rule(),
+        );
+        let armed = self.peek_editor(|host| host.reset_arm.is_armed_for(track_slot, scene));
+        let reset_id = widgets::widget_id(widgets::id::INSPECTOR, RESET_SCENE_SLOT);
+        let reset_state = if armed {
+            self.widgets.text_button(
+                d,
+                font,
+                reset_id,
+                layout.reset,
+                "Confirm reset",
+                true,
+                ButtonStyle::Danger,
+                Some(metric::UI_FONT_CAPTION),
+            )
+        } else {
+            self.text_action(
+                d,
+                font,
+                reset_id,
+                layout.reset,
+                "Reset scene\u{2026}",
+                color::ui_danger(),
+            )
+        };
+        if reset_state.clicked {
+            if armed {
+                self.with_editor(|host| host.reset_arm.disarm());
+                commands.push(ShellCommand::ResetScene(scene));
+            } else {
+                self.with_editor(|host| host.reset_arm.arm(track_slot, scene));
+            }
+        }
+        self.widgets.hint(
+            d,
+            reset_state,
+            reset_id,
+            layout.reset,
+            if armed {
+                "Press again to put every value of this scene back to its default"
+            } else {
+                "Every value back to its default; a second press confirms"
+            },
+        );
+        let hint = [widgets::MicroRun::muted(
+            "~ follows the music \u{00b7} double-click resets",
+        )];
+        let hint_width = widgets::micro_width(font, &hint);
+        if hint_width <= layout.footer_hint.width {
+            widgets::draw_micro(
+                d,
+                font,
+                layout.footer_hint.x + layout.footer_hint.width - hint_width,
+                layout.footer_hint.y + (layout.footer_hint.height - metric::UI_FONT_MICRO) * 0.5,
+                &hint,
+            );
+        }
+
+        // The report line (§5), from the rects just drawn.
+        let rect = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
+        let groups_text: Vec<String> = groups
+            .iter()
+            .map(|rows| format!("{}:{}", rows.group.token(), rows.indices.len()))
+            .collect();
+        let chips_text: Vec<String> = layout.chips.iter().map(|chip| rect(*chip)).collect();
+        self.look_column.report = format!(
+            "scene={} head={} title={} viewport={} offset={:.0}/{:.0} groups={} rows={} explore={} presets={}/{} chips={} save@{} reset@{}{} editor={}",
+            scene.stable_name(),
+            rect(head.head),
+            rect(layout.title),
+            rect(layout.viewport),
+            layout.offset,
+            layout.max_offset,
+            groups_text.join(","),
+            report_rows.join(";"),
+            explore_report,
+            looks.labels.len(),
+            PRESETS_PER_SCENE,
+            if chips_text.is_empty() {
+                "none".to_string()
+            } else {
+                chips_text.join(";")
+            },
+            rect(layout.save),
+            rect(layout.reset),
+            if armed { "*" } else { "" },
+            editor_report,
+        );
+    }
+
+    /// A word that is a button: a hover box, no frame, the label in `tint`
+    /// (Reset scene…, the danger-text actions of §3).
+    fn text_action(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &musializer_runtime::font::UiFonts,
+        id: u64,
+        rect: UiRect,
+        label: &str,
+        tint: raylib::prelude::Color,
+    ) -> widgets::ButtonState {
+        let state = self.widgets.button(d, id, rect);
+        if state.hovered {
+            widgets::control_box(d, rect, color::ui_hover(), color::ui_hover(), 1.0);
+        }
+        widgets::text_label(d, font, rect, label, metric::UI_FONT_CAPTION, tint);
+        state
+    }
+
+    /// The explore block: Nudge and Surprise as tiles, or the trial card.
+    /// Returns its part of the report line.
+    fn look_explore(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        explore: &tune_groups::ExploreLayout,
+        target: TuneTarget,
+        audition: Option<tune_explore::Audition>,
+        commands: &mut Vec<ShellCommand>,
+    ) -> String {
+        let font = input.fonts.ui();
+        let rect = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
+        let press = |shell: &mut Shell, strength: Strength, commands: &mut Vec<ShellCommand>| {
+            shell.begin_audition(
+                target,
+                input.settings,
+                if strength == Strength::Surprise {
+                    ExploreSource::Surprise
+                } else {
+                    ExploreSource::Nudge
+                },
+            );
+            let seed = shell.next_explore_seed(input.scene);
+            let mut rng = SplitMix64::new(seed);
+            let snapshot = tune_explore::explore(&mut rng, input.scene, input.settings, strength);
+            push_snapshot(input.scene, &snapshot, commands);
+            shell.with_editor(|host| host.reset_arm.disarm());
+        };
+        match (explore, audition) {
+            (tune_groups::ExploreLayout::Tiles { nudge, surprise }, _) => {
+                for (tile, slot_index, strength, icon, title, line, short, tip) in [
+                    (
+                        *nudge,
+                        column_slot::NUDGE,
+                        Strength::Nudge,
+                        musializer_runtime::font::Icon::Sliders,
+                        "Nudge",
+                        "Small steps around this look",
+                        "Small steps",
+                        "Move every value a little, at random. The trial card brings it back.",
+                    ),
+                    (
+                        *surprise,
+                        column_slot::SURPRISE,
+                        Strength::Surprise,
+                        musializer_runtime::font::Icon::Random,
+                        "Surprise",
+                        "A bold new look",
+                        "A bold new look",
+                        "Re-tune this scene at random, inside every value's own range. The trial card brings it back.",
+                    ),
+                ] {
+                    let id = widgets::widget_id(widgets::id::INSPECTOR, slot_index);
+                    let state = self.widgets.button(d, id, tile);
+                    widgets::rounded_box(
+                        d,
+                        tile,
+                        6.0,
+                        if state.pressed {
+                            color::ui_selected()
+                        } else if state.hovered {
+                            color::ui_hover()
+                        } else {
+                            color::ui_raised()
+                        },
+                        if state.hovered {
+                            color::ui_selected_edge()
+                        } else {
+                            color::ui_control_edge()
+                        },
+                        1.0,
+                    );
+                    let mut text_x = tile.x + 12.0;
+                    if input.fonts.icons_available() {
+                        d.draw_text_ex(
+                            input.fonts.icons(),
+                            &icon.glyph().to_string(),
+                            raylib::prelude::Vector2::new(tile.x + 12.0, tile.y + 14.0),
+                            15.0,
+                            0.0,
+                            color::ui_ink(),
+                        );
+                        text_x += 22.0;
+                    }
+                    widgets::draw_text(
+                        d,
+                        font,
+                        title,
+                        text_x,
+                        tile.y + 12.0,
+                        15.0,
+                        color::ui_ink(),
+                    );
+                    // The full invitation when it fits; at the 320 column the
+                    // first words carry it rather than a faded half sentence.
+                    let room = (tile.width - 24.0).max(0.0);
+                    let line = if widgets::measure(font, line, metric::UI_FONT_CAPTION) <= room {
+                        line
+                    } else {
+                        short
+                    };
+                    widgets::draw_text_faded(
+                        d,
+                        font,
+                        line,
+                        tile.x + 12.0,
+                        tile.y + 37.0,
+                        (tile.width - 24.0).max(0.0),
+                        18.0,
+                        metric::UI_FONT_CAPTION,
+                        color::ui_muted(),
+                    );
+                    if state.clicked {
+                        press(self, strength, commands);
+                    }
+                    self.widgets.hint(d, state, id, tile, tip);
+                }
+                format!("nudge@{},surprise@{}", rect(*nudge), rect(*surprise))
+            }
+            (tune_groups::ExploreLayout::Audition(card), Some(session)) => {
+                widgets::rounded_box(
+                    d,
+                    card.card,
+                    6.0,
+                    color::ui_surface(),
+                    color::ui_selected_edge(),
+                    1.0,
+                );
+                let head = tune_explore::audition_head(&session);
+                let moved = session.moved(input.scene, input.settings);
+                let moved_text =
+                    format!("{moved} value{} moved", if moved == 1 { "" } else { "s" });
+                // The verb muted, what is tried in ink (`TRYING SURPRISE 3`). The space
+                // stays inside the first run: a run of one space measures as nothing
+                // once tracked.
+                let (verb, rest) = head
+                    .split_once(' ')
+                    .map_or((String::new(), head.clone()), |(verb, rest)| {
+                        (format!("{verb} "), rest.to_string())
+                    });
+                let runs = [
+                    widgets::MicroRun::muted(&verb),
+                    widgets::MicroRun::ink(&rest),
+                ];
+                let y = card.line.y + (card.line.height - metric::UI_FONT_MICRO) * 0.5;
+                widgets::draw_micro(d, font, card.line.x, y, &runs);
+                let moved_runs = [widgets::MicroRun::muted(&moved_text)];
+                let moved_width = widgets::micro_width(font, &moved_runs);
+                widgets::draw_micro(
+                    d,
+                    font,
+                    card.line.x + card.line.width - moved_width,
+                    y,
+                    &moved_runs,
+                );
+
+                let showing_before = session.showing == Side::Before;
+                let segmented = self.widgets.segmented(
+                    d,
+                    font,
+                    widgets::id::INSPECTOR,
+                    column_slot::COMPARE,
+                    card.compare,
+                    &["A \u{00b7} before", "B \u{00b7} this"],
+                    Some(usize::from(!showing_before)),
+                    widgets::SegmentedFit::Hug,
+                );
+                if let Some(pick) = segmented.clicked {
+                    if (pick == 0) != showing_before {
+                        let swap =
+                            self.with_editor(|host| host.explore.compare(target, input.settings));
+                        if let Some(snapshot) = swap {
+                            push_snapshot(input.scene, &snapshot, commands);
+                        }
+                    }
+                }
+
+                let id = widgets::widget_id(widgets::id::INSPECTOR, column_slot::REVERT);
+                let state = self.widgets.text_button(
+                    d,
+                    font,
+                    id,
+                    card.revert,
+                    "Revert",
+                    false,
+                    ButtonStyle::Ghost,
+                    Some(metric::UI_FONT_CAPTION),
+                );
+                if state.clicked {
+                    if let Some(snapshot) = self.with_editor(|host| host.explore.revert(target)) {
+                        push_snapshot(input.scene, &snapshot, commands);
+                    }
+                    self.with_editor(|host| host.reset_arm.disarm());
+                }
+                self.widgets.hint(
+                    d,
+                    state,
+                    id,
+                    card.revert,
+                    "Put every value back exactly as it was before you started",
+                );
+                if showing_before {
+                    self.widgets.disabled_button(
+                        d,
+                        font,
+                        card.keep,
+                        "Keep",
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                    let id = widgets::widget_id(widgets::id::INSPECTOR, column_slot::KEEP_REFUSED);
+                    let hover = self.widgets.button(d, id, card.keep);
+                    self.widgets.hint(
+                        d,
+                        hover,
+                        id,
+                        card.keep,
+                        "Switch back to B first - Keep here would discard the trial",
+                    );
+                } else {
+                    let id = widgets::widget_id(widgets::id::INSPECTOR, column_slot::KEEP);
+                    let state = self.widgets.text_button(
+                        d,
+                        font,
+                        id,
+                        card.keep,
+                        "Keep",
+                        false,
+                        ButtonStyle::Strong,
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                    if state.clicked {
+                        self.with_editor(|host| host.explore.keep(target));
+                    }
+                    self.widgets.hint(
+                        d,
+                        state,
+                        id,
+                        card.keep,
+                        "Settle on this look and close the trial",
+                    );
+                }
+                for (button, slot_index, strength, label) in [
+                    (
+                        card.again,
+                        column_slot::AGAIN,
+                        Strength::Nudge,
+                        "Nudge again",
+                    ),
+                    (
+                        card.another,
+                        column_slot::ANOTHER,
+                        Strength::Surprise,
+                        "Another",
+                    ),
+                ] {
+                    let id = widgets::widget_id(widgets::id::INSPECTOR, slot_index);
+                    let state = self.widgets.text_button(
+                        d,
+                        font,
+                        id,
+                        button,
+                        label,
+                        false,
+                        ButtonStyle::Neutral,
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                    if state.clicked {
+                        press(self, strength, commands);
+                    }
+                }
+                let items: Vec<String> = segmented
+                    .layout
+                    .items
+                    .iter()
+                    .map(|item| rect(*item))
+                    .collect();
+                format!(
+                    "trial@{} a@{} b@{} revert@{} keep@{} again@{} another@{} moved={moved}",
+                    rect(card.card),
+                    items.first().map_or("-", String::as_str),
+                    items.get(1).map_or("-", String::as_str),
+                    rect(card.revert),
+                    rect(card.keep),
+                    rect(card.again),
+                    rect(card.another),
+                )
+            }
+            (tune_groups::ExploreLayout::Audition(_), None) => String::from("none"),
+        }
+    }
+
+    /// One parameter row (§3.3): label with the changed dot, the track with
+    /// its default tick, the value (press to type), and `~`. Returns its
+    /// entry in the report line.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one row's worth of context: where, which setting, and where the edit lands"
+    )]
+    fn look_row(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        row: UiRect,
+        index: usize,
+        label_width: f32,
+        target: TuneTarget,
+        value_wheel: f32,
+        viewport: UiRect,
+        commands: &mut Vec<ShellCommand>,
+    ) -> String {
+        let font = input.fonts.ui();
+        let scene = input.scene;
+        let Some(descriptor) = settings::descriptor(scene, index) else {
+            return String::new();
+        };
+        let track_slot = input.workspace.current_index().unwrap_or(0);
+        let committed = committed_route(input, scene, index).cloned();
+        let routed = committed.is_some();
+        let open = self.focused_route_row(track_slot, scene) == Some(index);
+        let value = input.settings.get(scene, index);
+        let effective = input
+            .routed
+            .map_or(value, |routed| routed.get(scene, index));
+        let span = descriptor.maximum - descriptor.minimum;
+        let fraction = |v: f32| {
+            if span > 0.0 {
+                ((v - descriptor.minimum) / span).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+        let modified = value.to_bits() != descriptor.default_value.to_bits();
+        let pulse_auto = scene == SceneId::PulseField
+            && descriptor.key == "settings.pulse.petals"
+            && effective < 0.5
+            && !routed;
+        let value_text = if pulse_auto {
+            "Auto".to_string()
+        } else {
+            format!("{:.*}", descriptor.precision as usize, effective)
+        };
+        let label = ascii_fallback(font.all_loaded(), descriptor.label);
+        let first = column_slot::ROW + index as u32 * widgets::SLIDER_ROW_IDS;
+        let result = self.widgets.slider_row(
+            d,
+            font,
+            widgets::id::INSPECTOR,
+            first,
+            row,
+            &widgets::SliderRow {
+                label: &label,
+                value_text: &value_text,
+                normalized: fraction(effective),
+                default: Some(fraction(descriptor.default_value)),
+                changed: modified,
+                route: Some(routed || open),
+                label_width,
+            },
+        );
+        let layout = result.layout;
+        let id = |offset: u32| widgets::widget_id(widgets::id::INSPECTOR, first + offset);
+        let editable = !routed && !open;
+
+        // The label resets a changed value, as it did in the inspector.
+        if modified && result.label.clicked {
+            self.begin_audition(target, input.settings, ExploreSource::Manual);
+            commands.push(ShellCommand::SetSetting {
+                scene,
+                index,
+                value: descriptor.default_value,
+            });
+            self.with_editor(|host| host.reset_arm.disarm());
+        }
+        self.widgets.hint(
+            d,
+            result.label,
+            id(1),
+            layout.label,
+            &if modified {
+                format!(
+                    "{} - click to reset to {:.*}",
+                    descriptor.label, descriptor.precision as usize, descriptor.default_value
+                )
+            } else {
+                format!("{} - at its default", descriptor.label)
+            },
+        );
+
+        // The track: a drag writes onto the descriptor's grid; two presses
+        // reset. A routed value belongs to its route, so the track only shows it.
+        if editable {
+            if let Some(fraction) = result.drag {
+                let proposed =
+                    tune_explore::conform(descriptor, descriptor.minimum + fraction * span);
+                if proposed.to_bits() != value.to_bits() {
+                    commands.push(ShellCommand::SetSetting {
+                        scene,
+                        index,
+                        value: proposed,
+                    });
+                    self.with_editor(|host| {
+                        host.explore.note_manual_edit(target);
+                        host.reset_arm.disarm();
+                    });
+                }
+            }
+            if result.track.clicked {
+                let now = d.get_time();
+                let double = self
+                    .look_column
+                    .last_track_press
+                    .is_some_and(|(last, at)| last == index && now - at <= DOUBLE_PRESS_SECONDS);
+                if double {
+                    self.look_column.last_track_press = None;
+                    self.begin_audition(target, input.settings, ExploreSource::Manual);
+                    commands.push(ShellCommand::SetSetting {
+                        scene,
+                        index,
+                        value: descriptor.default_value,
+                    });
+                } else {
+                    self.look_column.last_track_press = Some((index, now));
+                }
+            }
+            // Alt+wheel steps the value under the pointer; Shift makes ten.
+            if value_wheel != 0.0 {
+                let pointer = input.ui_scale.mouse(d);
+                if row.contains_point(pointer.x, pointer.y)
+                    && viewport.contains_point(pointer.x, pointer.y)
+                {
+                    let coarse = d.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+                        || d.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT)
+                        || self.probe_wheel_shift;
+                    let steps = (value_wheel.round() as i32) * if coarse { 10 } else { 1 };
+                    let stepped = tune_explore::step(descriptor, value, steps);
+                    if stepped.to_bits() != value.to_bits() {
+                        commands.push(ShellCommand::SetSetting {
+                            scene,
+                            index,
+                            value: stepped,
+                        });
+                        self.with_editor(|host| {
+                            host.reset_arm.disarm();
+                            host.explore.note_manual_edit(target);
+                        });
+                    }
+                }
+            }
+        }
+
+        // The value: a press opens typed entry; while typing, the field sits
+        // over the value, a little wider so a long number fits.
+        let typing_here = self.peek_editor(|host| {
+            host.typing
+                .as_ref()
+                .is_some_and(|entry| entry.scene == scene && entry.index == index)
+        });
+        let field = UiRect::new(
+            layout.value.x - 22.0,
+            layout.value.y + 4.0,
+            layout.value.width + 22.0,
+            layout.value.height - 8.0,
+        );
+        if typing_here {
+            if !viewport.contains(field) {
+                self.with_editor(|host| host.typing = None);
+            } else {
+                self.value_chip(
+                    d,
+                    input,
+                    field,
+                    index,
+                    descriptor,
+                    effective,
+                    &value_text,
+                    target,
+                    commands,
+                );
+            }
+        } else if editable && result.value.clicked {
+            let precision = descriptor.precision;
+            self.with_editor(|host| {
+                host.typing = Some(TypedEntry::open(scene, index, value, precision));
+            });
+        }
+        self.widgets.hint(
+            d,
+            result.value,
+            id(2),
+            layout.value,
+            &if editable {
+                format!(
+                    "Type a value ({:.*} to {:.*}) - Alt+wheel steps, Shift by ten",
+                    descriptor.precision as usize,
+                    descriptor.minimum,
+                    descriptor.precision as usize,
+                    descriptor.maximum,
+                )
+            } else {
+                "This value follows the music; open ~ to change how".to_string()
+            },
+        );
+
+        // `~`: open, close or refuse, as the inspector's route button.
+        if result.route.clicked {
+            self.toggle_route_editor(track_slot, scene, index, committed.as_ref());
+            if self.focused_route_row(track_slot, scene) == Some(index) {
+                self.look_column.reveal_editor = true;
+            }
+        }
+        self.widgets.hint(
+            d,
+            result.route,
+            id(3),
+            layout.route,
+            &match (open, committed.as_ref()) {
+                (true, _) if self.route_edit_is_dirty() => {
+                    "Discard this unapplied route".to_string()
+                }
+                (true, _) => "Close the route editor".to_string(),
+                (false, Some(route)) => format!(
+                    "Follows {} - click to edit",
+                    ascii_fallback(
+                        font.all_loaded(),
+                        &route_editor_state::summary(route, descriptor.precision)
+                    )
+                ),
+                (false, None) => "Let the music move this value".to_string(),
+            },
+        );
+
+        let rect = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
+        format!(
+            "{}{}@{}(track@{},value@{},route@{},label@{})",
+            descriptor.key,
+            match (modified, routed) {
+                (true, true) => "*~",
+                (true, false) => "*",
+                (false, true) => "~",
+                (false, false) => "",
+            },
+            rect(layout.row),
+            rect(layout.track),
+            rect(layout.value),
+            rect(layout.route),
+            rect(layout.label),
+        )
+    }
+
+    /// The route editor as the column draws it (§3.3): the same draft and
+    /// commands as [`Self::route_editor_row`], in the column's vocabulary.
+    /// Returns its part of the report line.
+    fn route_editor_column(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        card: UiRect,
+        scene: SceneId,
+        index: usize,
+        commands: &mut Vec<ShellCommand>,
+    ) -> String {
+        let Some(descriptor) = settings::descriptor(scene, index) else {
+            return "none".to_string();
+        };
+        let Some(draft) = self.peek_editor(|host| host.state.draft().cloned()) else {
+            return "none".to_string();
+        };
+        let font = input.fonts.ui();
+        let layout =
+            route_editor_state::column_editor_layout(card, draft.source == AnalysisSource::Band);
+        let (dirty, can_apply, has_committed) = self.peek_editor(|host| {
+            (
+                host.state.is_dirty(),
+                host.state.can_apply(),
+                host.state
+                    .session()
+                    .is_some_and(|session| session.committed.is_some()),
+            )
+        });
+        widgets::rounded_box(
+            d,
+            layout.card,
+            6.0,
+            color::ui_raised(),
+            color::ui_control_edge(),
+            1.0,
+        );
+
+        // Head: what follows the music, and whether it is applied.
+        let label = ascii_fallback(font.all_loaded(), descriptor.label);
+        let head = [
+            widgets::MicroRun::muted("Follows the music \u{00b7} "),
+            widgets::MicroRun::ink(&label),
+        ];
+        let y = layout.head.y + (layout.head.height - metric::UI_FONT_MICRO) * 0.5;
+        let state_word = if has_committed && !dirty {
+            "Applied"
+        } else {
+            "Not applied yet"
+        };
+        let state_runs = [widgets::MicroRun::muted(state_word)];
+        let state_width = widgets::micro_width(font, &state_runs);
+        widgets::draw_micro(d, font, layout.head.x, y, &head);
+        if widgets::micro_width(font, &head) + state_width + 12.0 <= layout.head.width {
+            widgets::draw_micro(
+                d,
+                font,
+                layout.head.x + layout.head.width - state_width,
+                y,
+                &state_runs,
+            );
+        }
+
+        // Sources: two segmented rows of five.
+        let selected = AnalysisSource::ALL
+            .iter()
+            .position(|source| *source == draft.source);
+        let mut source_items = Vec::new();
+        for (row_index, boundary) in layout.sources.iter().enumerate() {
+            let start = row_index * route_editor_state::COLUMN_EDITOR_SOURCES_PER_ROW;
+            let end = (start + route_editor_state::COLUMN_EDITOR_SOURCES_PER_ROW)
+                .min(AnalysisSource::ALL.len());
+            let labels: Vec<&str> = AnalysisSource::ALL[start..end]
+                .iter()
+                .map(|source| route_editor_state::source_label(*source))
+                .collect();
+            let segmented = self.widgets.segmented(
+                d,
+                font,
+                widgets::id::INSPECTOR,
+                slot::SOURCE + start as u32,
+                *boundary,
+                &labels,
+                selected.and_then(|picked| picked.checked_sub(start)),
+                widgets::SegmentedFit::Fill,
+            );
+            if let Some(pick) = segmented.clicked {
+                let source = AnalysisSource::ALL[start + pick];
+                self.with_editor(|host| host.state.set_source(source));
+            }
+            source_items.extend(segmented.layout.items);
+        }
+
+        // The band stepper, only for the band source.
+        if draft.source == AnalysisSource::Band {
+            let band_limit = if input.band_count > 0 {
+                input.band_count
+            } else {
+                musializer_core::audio::analyzer::MAX_BANDS
+            };
+            let row = layout.band;
+            for (id_slot, delta, label, boundary) in [
+                (
+                    slot::BAND_PREVIOUS,
+                    -1,
+                    "<",
+                    UiRect::new(row.x, row.y, 34.0, row.height),
+                ),
+                (
+                    slot::BAND_NEXT,
+                    1,
+                    ">",
+                    UiRect::new(row.x + row.width - 34.0, row.y, 34.0, row.height),
+                ),
+            ] {
+                let id = widgets::widget_id(widgets::id::INSPECTOR, id_slot);
+                if self
+                    .widgets
+                    .text_button(
+                        d,
+                        font,
+                        id,
+                        boundary,
+                        label,
+                        false,
+                        ButtonStyle::Neutral,
+                        Some(metric::UI_FONT_CAPTION),
+                    )
+                    .clicked
+                {
+                    self.with_editor(|host| host.state.step_band(delta, band_limit));
+                }
+            }
+            widgets::text_label(
+                d,
+                font,
+                row,
+                &format!("Band {} of {} (low to high)", draft.band_index, band_limit),
+                metric::UI_FONT_CAPTION,
+                color::ui_ink(),
+            );
+        }
+
+        // The live level: the source's name, where it sits in the window, the
+        // reading.
+        let live = self.live_value(input, draft.source, draft.band_index);
+        let name = [widgets::MicroRun::muted(route_editor_state::source_label(
+            draft.source,
+        ))];
+        let level_y = layout.level.y + (layout.level.height - metric::UI_FONT_MICRO) * 0.5;
+        widgets::draw_micro(d, font, layout.level.x, level_y, &name);
+        let reading = live.map_or_else(|| "no signal".to_string(), |value| format!("{value:.2}"));
+        let reading_width = widgets::measure_tabular(font, &reading, metric::UI_FONT_CAPTION);
+        widgets::draw_text_tabular(
+            d,
+            font,
+            &reading,
+            layout.level.x + layout.level.width - reading_width,
+            layout.level.y + (layout.level.height - metric::UI_FONT_CAPTION) * 0.5,
+            metric::UI_FONT_CAPTION,
+            color::ui_ink(),
+        );
+        let meter = UiRect::new(
+            layout.level.x + 52.0,
+            layout.level.y + (layout.level.height - 4.0) * 0.5,
+            (layout.level.width - 52.0 - reading_width - 12.0).max(0.0),
+            4.0,
+        );
+        self.route_meter(d, input, meter, &draft);
+
+        // The transfer plot: the live reading is the accent dot (5a's rule).
+        let span = descriptor.maximum - descriptor.minimum;
+        let span = if span <= 0.0 { 1.0 } else { span };
+        mapping_editor::transfer_graph(
+            d,
+            layout.plot,
+            (draft.input_min, draft.input_max),
+            f64::from(descriptor.minimum),
+            f64::from(span),
+            live,
+            &|source| draft.output_value(descriptor, source),
+        );
+
+        // The two anchors: the shared pair, so Lyrics' `~ Tune` matches.
+        for (anchor, rect) in layout.anchors.iter().enumerate() {
+            let high = anchor == 1;
+            let name = route_editor_state::anchor_label(draft.source, high);
+            let (anchor_input, anchor_output) = if high {
+                (draft.input_max, draft.output_max)
+            } else {
+                (draft.input_min, draft.output_min)
+            };
+            let caption = format!(
+                "{name}  {anchor_input:.2} {} {:.*}",
+                mapping_editor::arrow(font.all_loaded()),
+                descriptor.precision as usize,
+                anchor_output
+            );
+            let (input_slot, output_slot) = if high {
+                (slot::INPUT_HIGH, slot::OUTPUT_HIGH)
+            } else {
+                (slot::INPUT_LOW, slot::OUTPUT_LOW)
+            };
+            let edit = mapping_editor::anchor_pair(
+                d,
+                &mut self.widgets,
+                font,
+                rect.x,
+                rect.y,
+                rect.width,
+                &AnchorPair {
+                    caption: &caption,
+                    input_fraction: anchor_input as f32,
+                    output_fraction: (anchor_output as f32 - descriptor.minimum) / span,
+                    input_id: widgets::widget_id(widgets::id::INSPECTOR, input_slot),
+                    output_id: widgets::widget_id(widgets::id::INSPECTOR, output_slot),
+                    arrow_ok: font.all_loaded(),
+                },
+            );
+            if let Some(fraction) = edit.input {
+                self.with_editor(|host| {
+                    if high {
+                        host.state.set_input_max(f64::from(fraction))
+                    } else {
+                        host.state.set_input_min(f64::from(fraction))
+                    }
+                });
+            }
+            if let Some(fraction) = edit.output {
+                let value = f64::from(descriptor.minimum + fraction * span);
+                self.with_editor(|host| {
+                    if high {
+                        host.state.set_output_high(value)
+                    } else {
+                        host.state.set_output_low(value)
+                    }
+                });
+            }
+        }
+
+        if let Some(next) = mapping_editor::curve_stepper(
+            d,
+            &mut self.widgets,
+            font,
+            layout.curve.x,
+            layout.curve.y,
+            layout.curve.width,
+            widgets::widget_id(widgets::id::INSPECTOR, slot::CURVE_PREVIOUS),
+            widgets::widget_id(widgets::id::INSPECTOR, slot::CURVE_NEXT),
+            draft.interpolation,
+        ) {
+            self.with_editor(|host| host.state.set_curve(next));
+        }
+
+        // The actions: Apply strong; Discard; Remove for a committed route;
+        // Clamp and Swap at the right.
+        let size = Some(metric::UI_FONT_CAPTION);
+        let action =
+            |slot_index: u32| widgets::widget_id(widgets::id::INSPECTOR, slot::ACTION + slot_index);
+        let apply_live = can_apply && (dirty || !has_committed);
+        if apply_live {
+            let state = self.widgets.text_button(
+                d,
+                font,
+                action(2),
+                layout.apply,
+                "Apply",
+                false,
+                ButtonStyle::Strong,
+                size,
+            );
+            if state.clicked {
+                commands.push(ShellCommand::ApplyRoute {
+                    scene,
+                    route: draft.clone(),
+                });
+                self.discard_route_draft();
+            }
+        } else {
+            self.widgets.disabled_button(
+                d,
+                font,
+                layout.apply,
+                if has_committed { "Applied" } else { "Apply" },
+                size,
+            );
+            let id = widgets::widget_id(widgets::id::INSPECTOR, slot::ACTION_DISABLED);
+            let hover = self.widgets.button(d, id, layout.apply);
+            self.widgets.hint(
+                d,
+                hover,
+                id,
+                layout.apply,
+                if !can_apply {
+                    "The quiet and loud levels are the same, so this route has nothing to map"
+                } else {
+                    "Already applied - change something above to apply it again"
+                },
+            );
+        }
+        let close = self.widgets.text_button(
+            d,
+            font,
+            action(4),
+            layout.discard,
+            if dirty { "Discard" } else { "Close" },
+            false,
+            ButtonStyle::Ghost,
+            size,
+        );
+        if close.clicked {
+            self.discard_route_draft();
+        }
+        if has_committed {
+            let state = self.text_action(
+                d,
+                font,
+                action(3),
+                layout.remove,
+                "Remove",
+                color::ui_danger(),
+            );
+            if state.clicked {
+                commands.push(ShellCommand::RemoveRoute {
+                    scene,
+                    parameter: draft.parameter.clone(),
+                });
+                self.discard_route_draft();
+            }
+        }
+        let clamp = self.widgets.text_button(
+            d,
+            font,
+            action(0),
+            layout.clamp,
+            "Clamp",
+            draft.clamp,
+            ButtonStyle::Ghost,
+            size,
+        );
+        if clamp.clicked {
+            let next = !draft.clamp;
+            self.with_editor(|host| host.state.set_clamp(next));
+        }
+        self.widgets.hint(
+            d,
+            clamp,
+            action(0),
+            layout.clamp,
+            "Hold the source inside the quiet/loud window; off lets the curve extrapolate",
+        );
+        let swap = self.widgets.text_button(
+            d,
+            font,
+            action(1),
+            layout.swap,
+            "Swap",
+            false,
+            ButtonStyle::Ghost,
+            size,
+        );
+        if swap.clicked {
+            self.with_editor(|host| host.state.swap_output());
+        }
+        self.widgets.hint(
+            d,
+            swap,
+            action(1),
+            layout.swap,
+            "Exchange the two output values, inverting the response",
+        );
+
+        let rect = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
+        let sources: Vec<String> = AnalysisSource::ALL
+            .iter()
+            .zip(&source_items)
+            .map(|(source, item)| {
+                format!(
+                    "{}{}@{}",
+                    source.canonical_name(),
+                    if *source == draft.source { "*" } else { "" },
+                    rect(*item)
+                )
+            })
+            .collect();
+        format!(
+            "{}@{}(sources={} plot@{} apply@{}{} discard@{} clamp@{} swap@{} dirty={})",
+            descriptor.key,
+            rect(layout.card),
+            sources.join(";"),
+            rect(layout.plot),
+            rect(layout.apply),
+            if apply_live { "" } else { "!" },
+            rect(layout.discard),
+            rect(layout.clamp),
+            rect(layout.swap),
+            u8::from(dirty),
+        )
     }
 }
 
@@ -2665,60 +2625,6 @@ mod tests {
     // close-before-and-after helper; that helper is gone with the global.
 
     #[test]
-    fn scrolling_reaches_the_last_atlas_control_with_all_sections_open() {
-        let count = settings::descriptors(SceneId::SongAtlas).len();
-        assert_eq!(count, 12);
-        let preceding =
-            58.0 + super::super::events::preset_block_height(1) + explore_block_height(true);
-        let metrics = tune_scroll_metrics(300.0, preceding + count as f32 * SETTING_ROW_HEIGHT);
-        assert_eq!(metrics.scrollable, 792.0);
-        assert_eq!(metrics.max_offset, 492.0);
-        let mut scroll = ScrollState::new();
-        scroll.begin_drag(0.0);
-        scroll.advance(0.0, metrics.visible, &metrics);
-        scroll.end_drag();
-        let last_top = SCROLL_CONTENT_PADDING + preceding + (count - 1) as f32 * SETTING_ROW_HEIGHT
-            - scroll.offset();
-        assert_eq!(last_top, 250.0);
-        assert_eq!(last_top + SETTING_ROW_HEIGHT, 296.0);
-        // Resizing until all content fits removes the bar and clamps the old offset.
-        let enlarged = tune_scroll_metrics(900.0, 784.0);
-        scroll.advance(0.0, 0.0, &enlarged);
-        assert_eq!(scroll.offset(), 0.0);
-        assert!(!enlarged.needs_bar());
-    }
-
-    #[test]
-    fn wheel_navigation_does_not_edit_and_route_focus_preserves_list_position() {
-        assert_eq!(tune_wheel(-2.0, false), (-2.0, 0.0));
-        assert_eq!(tune_wheel(1.0, true), (0.0, 1.0));
-        let metrics = tune_scroll_metrics(300.0, 784.0);
-        let mut view = TuneScroll::default();
-        let list = view.for_view(0, SceneId::SongAtlas, None);
-        list.wheel(-3.0, &metrics);
-        list.advance(1.0 / 60.0, 0.0, &metrics);
-        let saved = list.offset();
-        assert!(saved > 0.0);
-        assert_eq!(view.for_view(0, SceneId::SongAtlas, Some(11)).offset(), 0.0);
-        assert_eq!(view.for_view(0, SceneId::SongAtlas, None).offset(), saved);
-        assert_eq!(view.for_view(1, SceneId::SongAtlas, None).offset(), 0.0);
-        assert_eq!(view.for_view(1, SceneId::Loom, None).offset(), 0.0);
-    }
-
-    #[test]
-    fn a_route_taller_than_the_viewport_can_scroll_to_its_actions() {
-        let mut shell = Shell::new();
-        shell.toggle_route_editor(0, SceneId::SongAtlas, index::atlas::COLOR, None);
-        shell.route_editor.state.set_source(AnalysisSource::Band);
-        let height = shell.route_editor_height(SceneId::SongAtlas, index::atlas::COLOR);
-        let metrics = tune_scroll_metrics(200.0, height);
-        assert!(metrics.needs_bar());
-        assert_eq!(SCROLL_CONTENT_PADDING + height - metrics.max_offset, 196.0);
-        let (top, thumb) = metrics.thumb(metrics.max_offset).unwrap();
-        assert!((top + thumb - 200.0).abs() < 0.0001);
-    }
-
-    #[test]
     fn manual_hue_motion_leaves_other_routes_available() {
         let mut shell = Shell::new();
         let mut values = SceneSettings::default();
@@ -2774,39 +2680,6 @@ mod tests {
     }
 
     #[test]
-    fn an_open_last_setting_gets_the_same_space_as_the_first() {
-        let mut shell = Shell::new();
-        let last = settings::descriptors(SceneId::SongAtlas).len() - 1;
-        shell.toggle_route_editor(0, SceneId::SongAtlas, last, None);
-        shell.route_editor.state.set_source(AnalysisSource::Band);
-        assert_eq!(shell.focused_route_row(0, SceneId::SongAtlas), Some(last));
-        let frame = WorkspaceFrame::layout(960.0, 640.0, true, 150.0);
-        let padding = metric::UI_PANEL_PADDING;
-        let available = frame.inspector.height
-            - 27.0
-            - padding
-            - metric::UI_FONT_HEADER
-            - metric::UI_CONTROL_GAP
-            - metric::UI_FONT_CAPTION
-            - metric::UI_CONTROL_GAP
-            - metric::UI_BUTTON_HEIGHT
-            - padding * 2.0;
-        assert!(shell.route_editor_height(SceneId::SongAtlas, last) <= available);
-        // The header's Discard action works even while the draft is dirty.
-        shell.toggle_route_editor(0, SceneId::SongAtlas, last, None);
-        assert!(!shell.route_edit_is_dirty());
-        assert_eq!(shell.focused_route_row(0, SceneId::SongAtlas), None);
-    }
-
-    #[test]
-    fn a_closed_editor_leaves_every_row_a_slider() {
-        let shell = Shell::new();
-        for index in 0..settings::descriptors(SceneId::Loom).len() {
-            assert_eq!(shell.route_editor_height(SceneId::Loom, index), 0.0);
-        }
-    }
-
-    #[test]
     fn recovery_restores_a_route_edit_as_a_dirty_draft() {
         let mut shell = Shell::new();
         let weight = index::loom::WEIGHT;
@@ -2830,86 +2703,6 @@ mod tests {
         assert_eq!(session.scene, SceneId::Loom);
         assert_eq!(session.setting_index, weight);
         assert_eq!(session.draft.interpolation, Interpolation::Smoothstep);
-    }
-
-    #[test]
-    fn the_expanded_row_accounts_for_the_extended_source_palette() {
-        // The oracle's `scene_route_editor_area_height` (`plug.c:5517-5523`),
-        // plus one deliberate post-legacy source row. Written out so a geometry
-        // change has to update the accounting rather than clipping controls.
-        const ORACLE_AREA: f32 = 24.0 + 26.0 + 40.0 + 40.0 + 70.0 + 26.0 + 32.0 + 4.0;
-        const MUSICAL_SOURCE_ROW: f32 = 26.0;
-        assert_eq!(ROUTE_EDITOR_AREA_HEIGHT, ORACLE_AREA + MUSICAL_SOURCE_ROW);
-
-        let mut shell = Shell::new();
-        let weight = index::loom::WEIGHT;
-        assert!(shell
-            .route_editor
-            .state
-            .open(0, SceneId::Loom, weight, None));
-        assert_eq!(
-            shell.route_editor_height(SceneId::Loom, weight),
-            ROUTE_EDITOR_AREA_HEIGHT + ROUTE_EDITOR_ROW_HEADER + ROUTE_EDITOR_ROW_GAP
-        );
-        // Only the row that hosts the draft grows.
-        assert_eq!(
-            shell.route_editor_height(SceneId::Loom, index::loom::DENSITY),
-            0.0
-        );
-        // And only for the scene it was opened on.
-        assert_eq!(shell.route_editor_height(SceneId::SongAtlas, weight), 0.0);
-
-        // The band source adds its stepper row, and the height is asked before
-        // the row is measured — so the change has to be visible here.
-        assert!(shell.route_editor.state.set_source(AnalysisSource::Band));
-        assert_eq!(
-            shell.route_editor_height(SceneId::Loom, weight),
-            ROUTE_EDITOR_AREA_HEIGHT
-                + ROUTE_EDITOR_BAND_ROW_HEIGHT
-                + ROUTE_EDITOR_ROW_HEADER
-                + ROUTE_EDITOR_ROW_GAP
-        );
-    }
-
-    #[test]
-    fn a_draft_for_another_track_does_not_expand_this_tracks_row() {
-        // `route_editor_targets` is track-scoped for exactly this reason
-        // (`route_editor_state.c:101-114`): a hidden draft must not reshape the
-        // list of a track it does not belong to.
-        let mut shell = Shell::new();
-        let weight = index::loom::WEIGHT;
-        assert!(shell
-            .route_editor
-            .state
-            .open(1, SceneId::Loom, weight, None));
-        shell.route_editor.track_slot = 0;
-        assert_eq!(shell.route_editor_height(SceneId::Loom, weight), 0.0);
-        shell.route_editor.track_slot = 1;
-        assert!(shell.route_editor_height(SceneId::Loom, weight) > 0.0);
-    }
-
-    #[test]
-    fn the_expanded_row_fits_the_inspector_at_the_minimum_window() {
-        // The layout rule as a number. `WorkspaceFrame::layout` at the 960x640
-        // minimum with the inspector open has to leave a content rectangle the
-        // expanded row can sit in, or the row is never drawn and the feature is
-        // unreachable at a size the application permits.
-        let frame = WorkspaceFrame::layout(960.0, 640.0, true, 150.0);
-        let padding = metric::UI_PANEL_PADDING;
-        // The panel header rule, then the scene name, then the scope line
-        // (review 1.7 added this one), then the first row.
-        let available = frame.inspector.height
-            - 27.0
-            - padding
-            - metric::UI_FONT_HEADER
-            - metric::UI_CONTROL_GAP
-            - metric::UI_FONT_CAPTION
-            - metric::UI_CONTROL_GAP;
-        assert!(
-            available >= ROUTE_EDITOR_AREA_HEIGHT + ROUTE_EDITOR_ROW_HEADER + ROUTE_EDITOR_ROW_GAP,
-            "the expanded row needs {} px and the 960x640 inspector offers {available}",
-            ROUTE_EDITOR_AREA_HEIGHT + ROUTE_EDITOR_ROW_HEADER + ROUTE_EDITOR_ROW_GAP
-        );
     }
 
     #[test]
@@ -3015,6 +2808,48 @@ mod tests {
     /// break this panel is to mint a base that another band grows into, which is
     /// exactly what `EXPORT`/`SEEK` did one level up. The table is beside the
     /// constants and this sweeps all of it, rather than a hand-written subset.
+    #[test]
+    fn the_column_rows_stride_by_the_widgets_ids_per_row() {
+        assert_eq!(widgets::SLIDER_ROW_IDS, 4);
+        assert_eq!(
+            slot::ALL_SLOTS
+                .iter()
+                .find(|(name, _, _)| *name == "COLUMN_ROW")
+                .map(|(_, _, count)| *count),
+            Some(12 * widgets::SLIDER_ROW_IDS)
+        );
+        assert_eq!(column_slot::ANOTHER + 1, column_slot::KEEP_REFUSED);
+    }
+
+    #[test]
+    fn look_scope_sentence_names_the_section_or_the_base_scene() {
+        assert_eq!(
+            look_scope_sentence(Some((20, 92.583)), 70, true),
+            "Changes apply to section 21, from 01:32.583"
+        );
+        assert_eq!(
+            look_scope_sentence(None, 0, false),
+            "Changes apply to the base scene"
+        );
+        assert_eq!(
+            look_scope_sentence(None, 70, true),
+            "Changes apply to the base scene \u{00b7} this section captured no tuning"
+        );
+        assert_eq!(
+            look_scope_sentence(None, 6, false),
+            "Changes apply to the base scene \u{00b7} 6 sections are paused"
+        );
+    }
+
+    #[test]
+    fn the_label_column_is_a_third_of_the_row_within_its_bounds() {
+        assert_eq!(look_label_width(330.0), 112.0);
+        assert_eq!(look_label_width(432.0), 147.0);
+        assert_eq!(look_label_width(292.0), 99.0);
+        assert_eq!(look_label_width(200.0), 96.0);
+        assert_eq!(look_label_width(900.0), 150.0);
+    }
+
     #[test]
     fn no_two_inspector_slot_bands_overlap() {
         let mut taken: Vec<(u32, &str)> = Vec::new();

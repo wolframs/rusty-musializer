@@ -57,7 +57,7 @@ case "$line" in
     *) fail "the terminal never printed the shell's own output (dock-42)" ;;
 esac
 case "$line" in
-    *"running keyboard=true"*) ;;
+    *"keyboard=true"*) ;;
     *) fail "a focused terminal did not report holding the keyboard" ;;
 esac
 [ -s "$OUT/dock.png" ] || fail "no capture was written"
@@ -73,12 +73,13 @@ case "$line" in
     *) fail "an unfocused terminal claimed the keyboard: ${line:0:160}" ;;
 esac
 
-# 3. Closed by default with a fresh configuration: no tab, no shell.
+# 3. The dock is the column's default view, and it starts nothing by itself:
+#    with a fresh configuration, no tab and no shell.
 tools/headless_run.sh "$FIXTURE" --probe-frames 20 >"$OUT/closed.log" 2>&1 || true
 line="$(dock_line "$OUT/closed.log")"
 case "$line" in
-    *"open=false tabs=0"*) ;;
-    *) fail "the dock opened (or started a shell) without being asked: ${line:0:160}" ;;
+    *"open=true tabs=0 "*"pane=closed"*) ;;
+    *) fail "the dock started something without being asked: ${line:0:160}" ;;
 esac
 
 # 4. Nothing the dock started outlives the window.

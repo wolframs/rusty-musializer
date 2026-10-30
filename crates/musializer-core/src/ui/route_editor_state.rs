@@ -25,6 +25,7 @@
 use crate::scene::routes::{AnalysisSource, Interpolation, ParameterMapping, RouteTable};
 use crate::scene::settings::{self, SettingDescriptor};
 use crate::scene::SceneId;
+use crate::ui::workspace_layout::UiRect;
 
 /// Minimum input-range width the editor maintains while either endpoint is
 /// dragged (`route_editor_state.h:15-17`).
@@ -673,6 +674,193 @@ pub fn meter_position(route: &ParameterMapping, source_value: f64) -> f32 {
     normalized.clamp(0.0, 1.0) as f32
 }
 
+// ---------------------------------------------------------------------------
+// The route editor as Look's column draws it (WX-5d §3.3).
+//
+// The same draft and the same controls as the inspector's editor above, laid
+// out in the column's vocabulary: a card under its row, the sources as two
+// segmented rows, the live level, the transfer plot, the two anchors, the
+// curve, and one action row with Apply strong. Pure so every rect is pinned.
+// ---------------------------------------------------------------------------
+
+/// The card's inner padding.
+pub const COLUMN_EDITOR_PADDING: f32 = 10.0;
+/// The micro head line (`FOLLOWS THE MUSIC · BEAT BREATHING`, `NOT APPLIED YET`).
+pub const COLUMN_EDITOR_HEAD_HEIGHT: f32 = 18.0;
+/// One segmented row of sources; [`AnalysisSource::ALL`] splits into two.
+pub const COLUMN_EDITOR_SOURCE_ROW_HEIGHT: f32 = 30.0;
+/// Sources per segmented row.
+pub const COLUMN_EDITOR_SOURCES_PER_ROW: usize = 5;
+/// The band stepper, present only for [`AnalysisSource::Band`].
+pub const COLUMN_EDITOR_BAND_ROW_HEIGHT: f32 = 24.0;
+/// The live level: micro source name, meter, reading.
+pub const COLUMN_EDITOR_LEVEL_HEIGHT: f32 = 18.0;
+pub const COLUMN_EDITOR_PLOT_HEIGHT: f32 = 64.0;
+/// One anchor pair, the shared `mapping_editor::anchor_pair` stride.
+pub const COLUMN_EDITOR_ANCHOR_HEIGHT: f32 = 40.0;
+pub const COLUMN_EDITOR_CURVE_HEIGHT: f32 = 22.0;
+pub const COLUMN_EDITOR_ACTION_HEIGHT: f32 = 30.0;
+const COLUMN_EDITOR_ACTION_GAP: f32 = 6.0;
+/// The action row's buttons. Fixed rather than measured: the words are fixed
+/// and short, and a fixed row keeps Apply in the same place for every route.
+pub const COLUMN_EDITOR_APPLY_WIDTH: f32 = 64.0;
+pub const COLUMN_EDITOR_DISCARD_WIDTH: f32 = 70.0;
+pub const COLUMN_EDITOR_REMOVE_WIDTH: f32 = 70.0;
+pub const COLUMN_EDITOR_CLAMP_WIDTH: f32 = 58.0;
+pub const COLUMN_EDITOR_SWAP_WIDTH: f32 = 52.0;
+
+/// Where the column's route editor puts everything.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColumnEditorLayout {
+    pub card: UiRect,
+    pub head: UiRect,
+    /// The two segmented rows' boundaries: sources `0..5` and `5..10`.
+    pub sources: [UiRect; 2],
+    /// The band stepper's row; empty unless the source is the band.
+    pub band: UiRect,
+    pub level: UiRect,
+    pub plot: UiRect,
+    /// Each anchor pair's top-left and width; 40 px tall.
+    pub anchors: [UiRect; 2],
+    pub curve: UiRect,
+    pub apply: UiRect,
+    pub discard: UiRect,
+    pub remove: UiRect,
+    pub clamp: UiRect,
+    pub swap: UiRect,
+}
+
+/// The width the action row needs on one line: Apply, Discard and Remove on
+/// the left, Clamp and Swap on the right, with one gap wider between them.
+pub const COLUMN_EDITOR_ONE_ROW_WIDTH: f32 = COLUMN_EDITOR_APPLY_WIDTH
+    + COLUMN_EDITOR_DISCARD_WIDTH
+    + COLUMN_EDITOR_REMOVE_WIDTH
+    + COLUMN_EDITOR_CLAMP_WIDTH
+    + COLUMN_EDITOR_SWAP_WIDTH
+    + COLUMN_EDITOR_ACTION_GAP * 5.0;
+
+/// Whether a card `width` wide (padding included) splits its actions over two
+/// rows: Clamp and Swap move under Apply's row when the five do not fit, which
+/// they do not in the 320 and 358 columns.
+#[must_use]
+pub fn column_editor_two_rows(width: f32) -> bool {
+    width - COLUMN_EDITOR_PADDING * 2.0 < COLUMN_EDITOR_ONE_ROW_WIDTH
+}
+
+/// The card's height for a draft whose source is (or is not) the band, in a
+/// card `width` wide.
+#[must_use]
+pub fn column_editor_height(band: bool, width: f32) -> f32 {
+    column_editor_height_one_row(band)
+        + if column_editor_two_rows(width) {
+            COLUMN_EDITOR_ACTION_HEIGHT + COLUMN_EDITOR_ACTION_GAP
+        } else {
+            0.0
+        }
+}
+
+fn column_editor_height_one_row(band: bool) -> f32 {
+    COLUMN_EDITOR_PADDING
+        + COLUMN_EDITOR_HEAD_HEIGHT
+        + 6.0
+        + COLUMN_EDITOR_SOURCE_ROW_HEIGHT * 2.0
+        + 4.0
+        + if band {
+            COLUMN_EDITOR_BAND_ROW_HEIGHT + 4.0
+        } else {
+            0.0
+        }
+        + 8.0
+        + COLUMN_EDITOR_LEVEL_HEIGHT
+        + 6.0
+        + COLUMN_EDITOR_PLOT_HEIGHT
+        + 8.0
+        + COLUMN_EDITOR_ANCHOR_HEIGHT * 2.0
+        + 2.0
+        + COLUMN_EDITOR_CURVE_HEIGHT
+        + 8.0
+        + COLUMN_EDITOR_ACTION_HEIGHT
+        + COLUMN_EDITOR_PADDING
+}
+
+/// Lays the editor out in `card` (its x, y and width; the height is
+/// [`column_editor_height`]'s).
+#[must_use]
+pub fn column_editor_layout(card: UiRect, band: bool) -> ColumnEditorLayout {
+    let card = UiRect::new(
+        card.x,
+        card.y,
+        card.width.max(0.0),
+        column_editor_height(band, card.width),
+    );
+    let x = card.x + COLUMN_EDITOR_PADDING;
+    let width = (card.width - COLUMN_EDITOR_PADDING * 2.0).max(0.0);
+    let mut y = card.y + COLUMN_EDITOR_PADDING;
+    let head = UiRect::new(x, y, width, COLUMN_EDITOR_HEAD_HEIGHT);
+    y += COLUMN_EDITOR_HEAD_HEIGHT + 6.0;
+    let first = UiRect::new(x, y, width, COLUMN_EDITOR_SOURCE_ROW_HEIGHT);
+    y += COLUMN_EDITOR_SOURCE_ROW_HEIGHT + 4.0;
+    let second = UiRect::new(x, y, width, COLUMN_EDITOR_SOURCE_ROW_HEIGHT);
+    y += COLUMN_EDITOR_SOURCE_ROW_HEIGHT;
+    let band_row = if band {
+        let row = UiRect::new(x, y + 4.0, width, COLUMN_EDITOR_BAND_ROW_HEIGHT);
+        y += COLUMN_EDITOR_BAND_ROW_HEIGHT + 4.0;
+        row
+    } else {
+        UiRect::new(x, y, width, 0.0)
+    };
+    y += 8.0;
+    let level = UiRect::new(x, y, width, COLUMN_EDITOR_LEVEL_HEIGHT);
+    y += COLUMN_EDITOR_LEVEL_HEIGHT + 6.0;
+    let plot = UiRect::new(x, y, width, COLUMN_EDITOR_PLOT_HEIGHT);
+    y += COLUMN_EDITOR_PLOT_HEIGHT + 8.0;
+    let low = UiRect::new(x, y, width, COLUMN_EDITOR_ANCHOR_HEIGHT);
+    y += COLUMN_EDITOR_ANCHOR_HEIGHT;
+    let high = UiRect::new(x, y, width, COLUMN_EDITOR_ANCHOR_HEIGHT);
+    y += COLUMN_EDITOR_ANCHOR_HEIGHT + 2.0;
+    let curve = UiRect::new(x, y, width, COLUMN_EDITOR_CURVE_HEIGHT);
+    y += COLUMN_EDITOR_CURVE_HEIGHT + 8.0;
+    let button = |left: f32, w: f32| UiRect::new(left, y, w, COLUMN_EDITOR_ACTION_HEIGHT);
+    let apply = button(x, COLUMN_EDITOR_APPLY_WIDTH);
+    let discard = button(
+        apply.x + apply.width + COLUMN_EDITOR_ACTION_GAP,
+        COLUMN_EDITOR_DISCARD_WIDTH,
+    );
+    let remove = button(
+        discard.x + discard.width + COLUMN_EDITOR_ACTION_GAP,
+        COLUMN_EDITOR_REMOVE_WIDTH,
+    );
+    // The right pair: beside Remove when the row is wide enough, otherwise on
+    // a row of its own under Apply's, still right-aligned.
+    if column_editor_two_rows(card.width) {
+        y += COLUMN_EDITOR_ACTION_HEIGHT + COLUMN_EDITOR_ACTION_GAP;
+    }
+    let button = |left: f32, w: f32| UiRect::new(left, y, w, COLUMN_EDITOR_ACTION_HEIGHT);
+    let swap = button(
+        x + width - COLUMN_EDITOR_SWAP_WIDTH,
+        COLUMN_EDITOR_SWAP_WIDTH,
+    );
+    let clamp = button(
+        swap.x - COLUMN_EDITOR_ACTION_GAP - COLUMN_EDITOR_CLAMP_WIDTH,
+        COLUMN_EDITOR_CLAMP_WIDTH,
+    );
+    ColumnEditorLayout {
+        card,
+        head,
+        sources: [first, second],
+        band: band_row,
+        level,
+        plot,
+        anchors: [low, high],
+        curve,
+        apply,
+        discard,
+        remove,
+        clamp,
+        swap,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -958,5 +1146,61 @@ mod tests {
         assert!((meter_position(&route, -3.0) - 0.0).abs() < 1e-6);
         assert!((meter_position(&route, 9.0) - 1.0).abs() < 1e-6);
         assert!((meter_position(&route, f64::NAN) - 0.0).abs() < 1e-6);
+    }
+    #[test]
+    fn the_column_editor_is_pinned_rect_by_rect() {
+        assert_eq!(COLUMN_EDITOR_ONE_ROW_WIDTH, 344.0);
+        assert_eq!(column_editor_height(false, 432.0), 354.0);
+        assert_eq!(column_editor_height(true, 432.0), 382.0);
+        assert_eq!(column_editor_height(false, 330.0), 390.0);
+        assert!(!column_editor_two_rows(364.0));
+        assert!(column_editor_two_rows(363.0));
+        let layout = column_editor_layout(UiRect::new(1474.0, 580.0, 432.0, 0.0), false);
+        assert_eq!(layout.card, UiRect::new(1474.0, 580.0, 432.0, 354.0));
+        assert_eq!(layout.head, UiRect::new(1484.0, 590.0, 412.0, 18.0));
+        assert_eq!(layout.sources[0], UiRect::new(1484.0, 614.0, 412.0, 30.0));
+        assert_eq!(layout.sources[1], UiRect::new(1484.0, 648.0, 412.0, 30.0));
+        assert!(layout.band.is_empty());
+        assert_eq!(layout.level, UiRect::new(1484.0, 686.0, 412.0, 18.0));
+        assert_eq!(layout.plot, UiRect::new(1484.0, 710.0, 412.0, 64.0));
+        assert_eq!(layout.anchors[0], UiRect::new(1484.0, 782.0, 412.0, 40.0));
+        assert_eq!(layout.anchors[1], UiRect::new(1484.0, 822.0, 412.0, 40.0));
+        assert_eq!(layout.curve, UiRect::new(1484.0, 864.0, 412.0, 22.0));
+        assert_eq!(layout.apply, UiRect::new(1484.0, 894.0, 64.0, 30.0));
+        assert_eq!(layout.discard, UiRect::new(1554.0, 894.0, 70.0, 30.0));
+        assert_eq!(layout.remove, UiRect::new(1630.0, 894.0, 70.0, 30.0));
+        assert_eq!(layout.clamp, UiRect::new(1780.0, 894.0, 58.0, 30.0));
+        assert_eq!(layout.swap, UiRect::new(1844.0, 894.0, 52.0, 30.0));
+        // The action row ends exactly one padding above the card's bottom.
+        assert_eq!(
+            layout.apply.y + layout.apply.height + COLUMN_EDITOR_PADDING,
+            layout.card.y + layout.card.height
+        );
+        // Ten sources, two rows of five: none is left without a slot.
+        assert_eq!(
+            AnalysisSource::ALL.len(),
+            COLUMN_EDITOR_SOURCES_PER_ROW * layout.sources.len()
+        );
+    }
+
+    #[test]
+    fn the_band_row_pushes_everything_below_it_by_its_own_height() {
+        let plain = column_editor_layout(UiRect::new(0.0, 0.0, 300.0, 0.0), false);
+        let band = column_editor_layout(UiRect::new(0.0, 0.0, 300.0, 0.0), true);
+        assert_eq!(band.band, UiRect::new(10.0, 102.0, 280.0, 24.0));
+        assert_eq!(band.level.y, plain.level.y + 28.0);
+        assert_eq!(band.swap.y, plain.swap.y + 28.0);
+        assert_eq!(band.card.height, plain.card.height + 28.0);
+        // At the 320 column (292 card) the right pair moves under Remove's row,
+        // still right-aligned, and the card grows by that row.
+        let narrow = column_editor_layout(UiRect::new(14.0, 0.0, 292.0, 0.0), false);
+        assert_eq!(narrow.clamp, UiRect::new(180.0, 350.0, 58.0, 30.0));
+        assert_eq!(narrow.swap, UiRect::new(244.0, 350.0, 52.0, 30.0));
+        assert_eq!(narrow.remove, UiRect::new(170.0, 314.0, 70.0, 30.0));
+        assert_eq!(narrow.card.height, 390.0);
+        assert_eq!(
+            narrow.swap.y + narrow.swap.height + 10.0,
+            narrow.card.height
+        );
     }
 }

@@ -53,8 +53,8 @@ spec:
 | WX-2 | A real terminal in the dock, with one-click Claude / Codex / Antigravity tabs | done 2026-10-21 |
 | WX-3 | The window follows a treatment file live | done 2026-10-21 |
 | WX-4 | Native agent sessions: Claude Code, Codex, Antigravity | done 2026-10-21 |
-| WX-5 | The restyle the mockup proposes | 5a (tokens and type) done 2026-10-24; 5b (the lane as runs, with poster frames) done 2026-10-24; 5c (rail, top bar, big preview) done 2026-10-29 |
-| WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1 to WX-4 (fake agents for all three protocols); WX-5 next |
+| WX-5 | The restyle the mockup proposes | 5a (tokens and type) done 2026-10-24; 5b (the lane as runs, with poster frames) done 2026-10-24; 5c (rail, top bar, big preview) done 2026-10-29; 5d (one right column for every secondary panel) landed 2026-10-30 |
+| WX-6 | A headless gate for all of it | `tools/dock_check.sh` covers WX-1 to WX-4 (fake agents for all three protocols); `tools/column_check.sh`, `tools/lyrics_column_check.sh` and `tools/look_assist_check.sh` cover WX-5d |
 
 ### WX-1 — the dock
 
@@ -311,10 +311,45 @@ They are independent unless a line says otherwise. Every one finishes with
        `ShellCommand` and the draw belong in `ui/top_bar.rs`.
      - The top bar spans the workspace, not the dock (open choice, §0).
      - Scene tiles show names, not posters (§1's follow-up).
-     - The secondary panels (Export, Lyrics, Assist, Tune) are re-skinned
-       only; their restructure is the next wave. With Export open at
-       1280x720 the preview is 145 px tall.
+     - ~~The secondary panels (Export, Lyrics, Assist, Tune) are re-skinned
+       only.~~ Restructured in WX-5d, below; the preview no longer shrinks
+       for any of them.
      - `README` screenshot still to retake (3a).
+3b. **WX-5d: one right column.** *Landed 2026-10-30.* Every secondary panel
+   is a view of one column on the right: Direct (the dock, with the chat
+   restyled to invite a conversation), Lyrics (Cues, Style, Effects), Look,
+   Assist and Render. Exactly one view is open, the top bar's tabs and
+   Render… pick it, and the preview, the transport and the band do not move
+   when the view changes. The band layout is deleted: no `Placement`, no
+   per-panel band heights, no lyrics band budget, no
+   `MUSIALIZER_COLUMN_LAYOUT`. `ui.json` gains `column_open`, `column_view`
+   and `column_width`; a file with only `dock_width` opens that wide on
+   Direct. Export's tab became the Render view, and the export progress is
+   its own full-window screen on the surface, with the frame being encoded.
+   Divergence rows carry the per-view decisions; the checks are named in
+   the WX-6 row above.
+   **Left:**
+   - `UiPanel` and the `inspector_open`/`dock_open` flags still exist, and
+     `ColumnView` is derived from them rather than replacing them.
+   - The Direct chat's note about a rewritten treatment says it was applied
+     once; it has no "40 s ago" and no count of the sections it changed.
+   - The AI settings dialog's READY column is 96 px, so "Not implemented in
+     this build" ellipsizes; its hover carries the sentence.
+   - `open_route_editor_probe` still reports the inspector-row height (314,
+     338); the card the column draws is on `tune layout: … editor=`.
+   - In the 320 and 358 px columns the route editor's Clamp and Swap take
+     a second row.
+   - The band's two widget-index collision tests went with the band; the
+     column's indices have no such test yet.
+   - `tools/headless_check.sh` stops at "120 ms was outside the silent band"
+     on llvmpipe (`MZ_GL_LAUNCH=""`), and passes on the GPU. It is audio
+     timing, and it was not run on `master` to see whether it predates
+     WX-5d.
+   - `headless_check.sh`'s pixel checks run with the column closed, because
+     they aim at a full-width band. The column open, the default, is
+     covered by the column checks and the gate's dark section.
+   - The welcome screen has no column, so an agent cannot
+     be started before a track is open.
 3a. **Loose ends from WX-5a/5b**, small:
    - The gate's pixel checks still run on the light look (a theme-only
      `ui.json` in its private config); the dark default has its own

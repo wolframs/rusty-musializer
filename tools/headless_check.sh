@@ -250,7 +250,11 @@ export XDG_DATA_HOME="$XDG_ROOT/data"
 # (`=== the dark appearance, as a new user gets it ===`). Only the theme is
 # set; every split stays a new user's, which is what the paragraph above is for.
 mkdir -p "$XDG_CONFIG_HOME/musializer"
-printf '{"theme":"light-blue","schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null}\n' \
+# `column_open` false: every point this gate aims at the band was measured with
+# the band at the window's width, which since WX-5d is the column closed.
+# `tools/column_check.sh` and the dark section below run the column's default,
+# open on Direct.
+printf '{"theme":"light-blue","schema":"musializer.ui-preferences/v1","scale":"auto","sidebar_width":null,"inspector_width":null,"timeline_height":null,"column_open":false}\n' \
     >"$XDG_CONFIG_HOME/musializer/ui.json"
 
 FIXTURE="$OUT_DIR/fixture-sweep.wav"
@@ -750,6 +754,25 @@ fi
 # launches, one comparison, and the encoder is held fixed on both sides because
 # that is what makes an md5 comparison mean anything.
 echo "=== an export cannot inherit the preview's trails ==="
+# WX-5d: every Render control is read off the `render view:` line, never typed.
+# The share row is under the fold at 720, so its points come from a taller run.
+capture "render-points" 1280x720 --ui-probe "panel=export" || SWEEP_FAILED=1
+capture "render-points-tall" 1280x900 --ui-scale 100 --ui-probe "panel=export" || SWEEP_FAILED=1
+render_point() {
+    # render_point KEY [LOG]: the centre of the control the line names.
+    python3 - "$1" "$OUT_DIR/${2:-render-points}.txt" <<'PY'
+import re, sys
+key, log = sys.argv[1:]
+line = next(l for l in open(log, encoding="utf-8", errors="replace") if l.startswith("render view:"))
+found = re.search(r"(?:^|[ ,;=])" + re.escape(key) + r"\*?[@=](\d+),(\d+),(\d+),(\d+)", line)
+if not found:
+    sys.exit(f"render view has no {key}: {line}")
+x, y, w, h = map(int, found.groups())
+print(f"{x + w // 2}x{y + h // 2}")
+PY
+}
+RV_COMMIT="$(render_point commit)"
+RV_STILL="$(render_point still)"
 CLAWD_WARM="$OUT_DIR/clawd-warm-export.mp4"
 CLAWD_COLD="$OUT_DIR/clawd-cold-export.mp4"
 rm -f "$CLAWD_WARM" "$CLAWD_COLD"
@@ -757,7 +780,7 @@ env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
     $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
         --scene clawd --render-window 2 3 --probe-frames 40 \
-        --ui-probe "panel=export,click=1153x683,save-to=$CLAWD_WARM" \
+        --ui-probe "panel=export,click=$RV_COMMIT,save-to=$CLAWD_WARM" \
     >"$OUT_DIR/clawd-warm-export.txt" 2>&1 || true
 env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
@@ -972,8 +995,7 @@ done
 # both scales. Only a press separates "this control is under the pointer" from
 # "this control receives the press", so the check is the press.
 #
-# Coordinates are the button centres at 1280x720 from `panel-export-1280x720.png`
-# above, and each run asserts the *whole* configuration line, so a click that
+# Coordinates come from the `render view:` line (`render_point`), and each run asserts the *whole* configuration line, so a click that
 # lands on a neighbour fails rather than passing on a partial match.
 echo "=== the export panel takes a click ==="
 click_export() {
@@ -994,19 +1016,25 @@ click_export() {
             ;;
     esac
 }
-click_export 720p    116x542 "1280x720 at 30 fps, High, supersample 2x"
-click_export 1440p   284x542 "2560x1440 at 30 fps, High, supersample 2x"
-click_export 2160p   368x542 "3840x2160 at 30 fps, High, supersample 2x"
-click_export 24fps   498x542 "1920x1080 at 24 fps, High, supersample 2x"
-click_export master  377x589 "1920x1080 at 30 fps, Master, supersample 2x"
-# The control-free gap between two SIZE buttons, so the gate proves it can tell a
+click_export 720p    "$(render_point 720p)" "1280x720 at 30 fps, High, supersample 2x"
+click_export 1440p   "$(render_point 1440p)" "2560x1440 at 30 fps, High, supersample 2x"
+click_export 2160p   "$(render_point 2160p)" "3840x2160 at 30 fps, High, supersample 2x"
+click_export 24fps   "$(render_point 24-fps)" "1920x1080 at 24 fps, High, supersample 2x"
+click_export master  "$(render_point master)" "1920x1080 at 30 fps, Master, supersample 2x"
+# The control-free gap between two shape tiles, so the gate proves it can tell a
 # press that lands from one that does not. Without this row, a probe that
 # silently clicked nothing would satisfy every assertion above by leaving the
 # default configuration in place.
-capture "click-export-gap" 1280x720 --ui-probe "panel=export,click=158x542" || SWEEP_FAILED=1
+# The gap between the first two shape tiles.
+RV_GAP="$(python3 -c "
+import re
+line = next(l for l in open('$OUT_DIR/render-points.txt', errors='replace') if l.startswith('render view:'))
+x, y, w, h = map(int, re.search(r'16:9\\*?@(\\d+),(\\d+),(\\d+),(\\d+)', line).groups())
+print(f'{x + w + 3}x{y + h // 2}')")"
+capture "click-export-gap" 1280x720 --ui-probe "panel=export,click=$RV_GAP" || SWEEP_FAILED=1
 GAP_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/click-export-gap.txt")"
 GAP_CONFIG="$(sed -n 's/^export config: *//p' "$OUT_DIR/click-export-gap.txt")"
-echo "click gap at 158x542: [$GAP_CONFIG] via $GAP_CLAIM"
+echo "click gap at $RV_GAP: [$GAP_CONFIG] via $GAP_CLAIM"
 case "$GAP_CLAIM" in
     *"claimed=nothing"*) : ;;
     *)
@@ -1028,17 +1056,17 @@ fi
 # that panel are the same picture — which is exactly what ASCII Field's fixed
 # grid looked like before this tranche.
 echo "=== the export aspect row, and the framed preview ==="
-click_export 9x16  605x589 "1080x1920 at 30 fps, High, supersample 2x"
-click_export 1x1   675x589 "1080x1080 at 30 fps, High, supersample 2x"
-click_export 4x5   745x589 "1080x1350 at 30 fps, High, supersample 2x"
+click_export 9x16  "$(render_point 9:16)" "1080x1920 at 30 fps, High, supersample 2x"
+click_export 1x1   "$(render_point 1:1)" "1080x1080 at 30 fps, High, supersample 2x"
+click_export 4x5   "$(render_point 4:5)" "1080x1350 at 30 fps, High, supersample 2x"
 # A rung change must keep the shape. This is the whole reason the two rows are
 # one configuration rather than eight independent buttons.
 capture "click-export-tall-2160p" 1280x720 \
-    --ui-probe "panel=export,click=605x589" >/dev/null 2>&1 || true
+    --ui-probe "panel=export,click=$(render_point 9:16)" >/dev/null 2>&1 || true
 TALL_THEN_2160="$(env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
     $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 --resolution 1080x1920 \
-        --probe-frames 30 --ui-probe "panel=export,click=368x542" 2>&1 \
+        --probe-frames 30 --ui-probe "panel=export,click=$(render_point 2160p)" 2>&1 \
     | sed -n 's/^export config: *//p')"
 echo "vertical then 2160p: [$TALL_THEN_2160]"
 if [ "$TALL_THEN_2160" != "2160x3840 at 30 fps, High, supersample 2x" ]; then
@@ -1113,11 +1141,7 @@ check_preview_frame square 1080x1080 1.0
 #      a vertically mirrored still does, which is the bug this section's PSNR
 #      cross-check found (22.7 dB, against 45.5 once fixed).
 #
-# The coordinates are the button centres at 1280x720 from
-# `panel-export-1280x720.png` above. The CLIP row is drawn *above* SIZE, and the
-# rows below it did not move: the band grows upward while the footer stays
-# pinned to the window's bottom edge, so every coordinate the sections above
-# aim by hand is unchanged. `export.rs` pins that as arithmetic.
+# The coordinates come from the `render view:` line, as above.
 echo "=== the export clip window ==="
 click_clip() {
     # click_clip NAME POINT TIME EXPECTED-CLIP
@@ -1141,9 +1165,9 @@ click_clip() {
 }
 # One press is a renderable clip: In selects from the playhead to the end of the
 # track, because "post from the drop onward" should not cost two clicks.
-click_clip in  236x496 2.0 "clip in 2.000 out 8.000 (6.000 s, 180 frames)"
+click_clip in  "$(render_point in)" 2.0 "clip in 2.000 out 8.000 (6.000 s, 180 frames)"
 # And Out alone selects from the start, which is the same rule mirrored.
-click_clip out 360x496 5.0 "clip in 0.000 out 5.000 (5.000 s, 150 frames)"
+click_clip out "$(render_point out)" 5.0 "clip in 0.000 out 5.000 (5.000 s, 150 frames)"
 # `--render-window` and the CLIP row are one state, so the flag shows up in the
 # panel; Full track clears it. Both are asserted, because "the seed worked" and
 # "the button worked" produce the same line if the seed silently did nothing.
@@ -1161,21 +1185,26 @@ CLEARED_CLIP="$(env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
     $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
         --render-window 2 3 --probe-frames 30 \
-        --ui-probe "panel=export,click=124x496" 2>&1 \
+        --ui-probe "panel=export,click=$(render_point whole)" 2>&1 \
     | sed -n 's/^export clip: *//p')"
 echo "Full track clears it: [$CLEARED_CLIP]"
 if [ "$CLEARED_CLIP" != "full track (240 frames)" ]; then
     echo "FAIL: Full track did not clear a seeded clip window" >&2
     SWEEP_FAILED=1
 fi
-# The negative control, in the 8 px gap between Full track and In. Without it a
+# The negative control, in the gap between In and Out. Without it a
 # probe that pressed nothing satisfies every assertion above, because a no-op
 # leaves the default — which for this row is the state two of the checks expect.
+RV_CLIP_GAP="$(python3 -c "
+import re
+line = next(l for l in open('$OUT_DIR/render-points.txt', errors='replace') if l.startswith('render view:'))
+x, y, w, h = map(int, re.search(r'in@(\\d+),(\\d+),(\\d+),(\\d+)', line).groups())
+print(f'{x + w + 3}x{y + h // 2}')")"
 capture "click-clip-gap" 1280x720 \
-    --ui-probe "panel=export,time=2.0,click=174x496" || SWEEP_FAILED=1
+    --ui-probe "panel=export,time=2.0,click=$RV_CLIP_GAP" || SWEEP_FAILED=1
 CLIP_GAP_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/click-clip-gap.txt")"
 CLIP_GAP="$(sed -n 's/^export clip: *//p' "$OUT_DIR/click-clip-gap.txt")"
-echo "click clip gap at 174x496: [$CLIP_GAP] via $CLIP_GAP_CLAIM"
+echo "click clip gap at $RV_CLIP_GAP: [$CLIP_GAP] via $CLIP_GAP_CLAIM"
 case "$CLIP_GAP_CLAIM" in
     *"claimed=nothing"*) : ;;
     *)
@@ -1198,7 +1227,7 @@ env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
     PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
     $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
         --render-window 2 3 --probe-frames 40 \
-        --ui-probe "panel=export,click=1153x683,save-to=$CLIP_MP4" \
+        --ui-probe "panel=export,click=$RV_COMMIT,save-to=$CLIP_MP4" \
     >"$OUT_DIR/clip-export.txt" 2>&1 || true
 if [ ! -f "$CLIP_MP4" ]; then
     echo "FAIL: pressing 'Choose output and render' produced no file" >&2
@@ -1244,7 +1273,7 @@ still_at() {
         PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
         $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
             --probe-frames 30 \
-            --ui-probe "panel=export,time=$2,click=868x683,save-to=$1" \
+            --ui-probe "panel=export,time=$2,click=$RV_STILL,save-to=$1" \
         >"$OUT_DIR/still-$(basename "$1" .png).txt" 2>&1 || true
 }
 still_at "$STILL_A" 4.0
@@ -1331,8 +1360,8 @@ fi
 # the same deterministic replay; the checks below prove that reuse reaches the
 # MP4 rather than stopping at a plausible report line.
 echo "=== the share frame is encoded frame zero only ==="
-capture "click-share-frame" 960x640 \
-    --ui-probe "panel=export,time=4.0,click=383x603" || SWEEP_FAILED=1
+capture "click-share-frame" 1280x900 --ui-scale 100 \
+    --ui-probe "panel=export,time=4.0,click=$(render_point playhead render-points-tall)" || SWEEP_FAILED=1
 SHARE_SELECTION="$(sed -n 's/^export share: *//p' \
     "$OUT_DIR/click-share-frame.txt")"
 SHARE_CLAIM="$(sed -n 's/^click probe: *//p' \
@@ -1361,7 +1390,7 @@ env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
     $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
         --resolution 640x360 --quality balanced --render-window 2 1 \
         --probe-frames 40 $MZ_ENC \
-        --ui-probe "panel=export,time=4,share-frame=playhead,click=1153x683,save-to=$SHARE_MP4" \
+        --ui-probe "panel=export,time=4,share-frame=playhead,click=$RV_COMMIT,save-to=$SHARE_MP4" \
     >"$OUT_DIR/share-frame.txt" 2>&1 || true
 share_normal_export() {
     # share_normal_export START PATH LABEL
@@ -1547,13 +1576,23 @@ else
     # One caption tooltip actually in a frame (UX0-C16). Probe runs suppress
     # tips unless `hover=` asks for one, so without this capture every tip the
     # caption panes gained would be unphotographed — the welcome-screen blind
-    # spot again. 250x466 is the GLOW slider at 960x640; its tip box lands
-    # above the bar, and the crop below sits inside the box where the bare
-    # frame is plain panel (measured: bare 247/247, tip 20/239).
+    # spot again. Since WX-5d the point is the GLOW row's track centre from the
+    # `caption style:` line; the tip box lands above the row and the crop sits
+    # inside it (measured: base 19/41, tip 42/217).
+    lyric_capture "lyrics-effects-tip-base-960x640" 960x640 \
+        "panel=lyrics,style=effects,play=1" || SWEEP_FAILED=1
+    read -r TIP_X TIP_Y TIP_CROP <<<"$(python3 - "$OUT_DIR/lyrics-effects-tip-base-960x640.txt" <<'PY'
+import re, sys
+line = re.search(r"^caption style:\s+(.*)$", open(sys.argv[1]).read(), re.M).group(1)
+x, y, w, h = map(int, re.search(r"\bglow@(\d+),(\d+),(\d+),(\d+)", line).groups())
+cx = x + 68 + (w - 124) // 2
+print(cx, y + h // 2, f"85:10:{cx - 42}:{y - 20}")
+PY
+)"
     lyric_capture "lyrics-tip-glow-960x640" 960x640 \
-        "panel=lyrics,style=effects,play=1,hover=250x466" || SWEEP_FAILED=1
+        "panel=lyrics,style=effects,play=1,hover=${TIP_X}x${TIP_Y}" || SWEEP_FAILED=1
     TIP_STATS="$(ffprobe -v error -f lavfi \
-        -i "movie=$OUT_DIR/lyrics-tip-glow-960x640.png,crop=85:10:165:436,signalstats" \
+        -i "movie=$OUT_DIR/lyrics-tip-glow-960x640.png,crop=$TIP_CROP,signalstats" \
         -show_entries frame_tags=lavfi.signalstats.YMIN,lavfi.signalstats.YMAX \
         -of csv=p=0 2>/dev/null | head -1)"
     TIP_MIN="${TIP_STATS%%,*}"
@@ -1620,18 +1659,19 @@ else
     # panel, where `panel: export` printed happily over a blank white band.
     #
     # The measurement is specific to what a hue bar is: a full turn around the
-    # chroma circle. Sixteen pixel columns at x=124 are the bar itself (the
-    # timeline panel's content starts at x=20 — 10 px window padding plus 10 px
-    # panel padding — and the picker puts its bar 104 px in), swept over the
-    # bottom 220 rows, which covers the panel at both window heights. A ramp
-    # through all six sectors makes U and V each span nearly the full byte; grey
-    # chrome and a single accent fill cannot, whatever else they draw.
+    # chroma circle, inside the rect `caption style:` reports for the open
+    # picker (`hue@`). A ramp through all six sectors makes U and V each span
+    # nearly the full byte; grey chrome and a single accent fill cannot,
+    # whatever else they draw. A closed capture is measured at the rect of the
+    # open picker named beside it, so the control looks where the bar would be.
     picker_chroma() {
-        # picker_chroma NAME WINDOW_HEIGHT -> "Uspread Vspread"
-        local png="$OUT_DIR/$1.png" top=$(( $2 - 220 ))
-        local raw
+        # picker_chroma NAME RECT_SOURCE -> "Uspread Vspread"
+        local png="$OUT_DIR/$1.png"
+        local crop raw
+        crop="$(sed -n 's/^caption style:.* hue@\([0-9]*\),\([0-9]*\),\([0-9]*\),\([0-9]*\) .*/\3:\4:\1:\2/p' \
+            "$OUT_DIR/$2.txt" | tail -1)"
         raw="$(ffprobe -v error -f lavfi \
-            -i "movie=$png,crop=16:220:124:$top,signalstats" \
+            -i "movie=$png,crop=$crop,signalstats" \
             -show_entries frame_tags=lavfi.signalstats.UMIN,lavfi.signalstats.UMAX,lavfi.signalstats.VMIN,lavfi.signalstats.VMAX \
             -of csv=p=0 2>/dev/null | head -1)"
         [ -z "$raw" ] && { echo "0 0"; return; }
@@ -1639,18 +1679,18 @@ else
         echo "$(( umax - umin )) $(( vmax - vmin ))"
     }
     for pair in \
-        "lyrics-picker-ink-1280x720:720:open" \
-        "lyrics-picker-ink-960x640:640:open" \
-        "lyrics-picker-plate-960x640:640:open" \
-        "lyrics-picker-glow-960x640:640:open" \
-        "lyrics-effects-960x640:640:closed" \
-        "lyrics-style-1280x720:720:closed" \
-        "lyrics-style-960x640:640:closed"; do
+        "lyrics-picker-ink-1280x720:lyrics-picker-ink-1280x720:open" \
+        "lyrics-picker-ink-960x640:lyrics-picker-ink-960x640:open" \
+        "lyrics-picker-plate-960x640:lyrics-picker-plate-960x640:open" \
+        "lyrics-picker-glow-960x640:lyrics-picker-glow-960x640:open" \
+        "lyrics-effects-960x640:lyrics-picker-glow-960x640:closed" \
+        "lyrics-style-1280x720:lyrics-picker-ink-1280x720:closed" \
+        "lyrics-style-960x640:lyrics-picker-ink-960x640:closed"; do
         name="${pair%%:*}"
         rest="${pair#*:}"
-        height="${rest%%:*}"
+        source_name="${rest%%:*}"
         state="${rest##*:}"
-        read -r u_spread v_spread <<<"$(picker_chroma "$name" "$height")"
+        read -r u_spread v_spread <<<"$(picker_chroma "$name" "$source_name")"
         printf '%-30s %-6s chroma spread U=%s V=%s\n' "$name" "$state" "$u_spread" "$v_spread"
         # Measured: an open picker gives 251/252, the closed left column 67/34.
         # The two thresholds are a decade apart on purpose, and the closed case
@@ -2715,13 +2755,19 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
     # The remote frame has to *look* different from the local one, or the block
     # is drawing the same three lines whatever it resolved. Warning ink is the
     # measurable difference: the heading and the audio-leaving row are tinted.
-    # `w:h:x:y`, the same grammar the LT1 review measurements use. The window
-    # spans the route block in both frames: the lyric-reference row makes the
-    # local panel taller, so the block starts a few pixels apart in the two.
-    ROUTE_BLOCK_CROP=700:100:18:595
-    ROUTE_SAT_LOCAL="$(assist_routes_saturation assist-routes-local "$ROUTE_BLOCK_CROP")"
-    ROUTE_SAT_REMOTE="$(assist_routes_saturation assist-routes-remote "$ROUTE_BLOCK_CROP")"
-    ROUTE_SAT_NOKEY="$(assist_routes_saturation assist-routes-nokey "$ROUTE_BLOCK_CROP")"
+    # `w:h:x:y`, the same grammar the LT1 review measurements use. The window is
+    # the 110 px above each frame's own `start@` (`assist column:`), where the
+    # open card lists its routes, and stays inside the card's warning outline.
+    route_crop() {
+        sed -n 's/^assist column:.* body=Confirmation start@\([0-9]*\),\([0-9]*\),.*/\1 \2/p' \
+            "$OUT_DIR/$1.txt" | tail -1 | {
+            read -r x y
+            echo "304:110:$x:$((y - 118))"
+        }
+    }
+    ROUTE_SAT_LOCAL="$(assist_routes_saturation assist-routes-local "$(route_crop assist-routes-local)")"
+    ROUTE_SAT_REMOTE="$(assist_routes_saturation assist-routes-remote "$(route_crop assist-routes-remote)")"
+    ROUTE_SAT_NOKEY="$(assist_routes_saturation assist-routes-nokey "$(route_crop assist-routes-nokey)")"
     printf 'assist routes ink: local-sat=%s remote-sat=%s nokey-sat=%s\n' \
         "${ROUTE_SAT_LOCAL:-?}" "${ROUTE_SAT_REMOTE:-?}" "${ROUTE_SAT_NOKEY:-?}"
     if ! awk -v a="${ROUTE_SAT_LOCAL:-0}" -v b="${ROUTE_SAT_REMOTE:-0}" \
@@ -3168,39 +3214,35 @@ manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
             ;;
     esac
 
-    # Review LT1-R, R2/R5. At 960x640 the panel gets less height than the review
-    # block asks for, and the row that admits the truncation used to be the first
-    # thing the scissor ate. The tail is now fitted before the names are, so at
-    # this size it is the only review row there is.
+    # Review LT1-R, R2/R5, in the column: the block no longer competes for a
+    # band's height, so at 960x640 every named row is drawn and the column
+    # scrolls. The tail row still exists past `REVIEW_MAX_ROWS` (the LX1-f
+    # fixture below); here it would be a row that has nothing to admit.
     REVIEW_TAIL_LINE="$(sed -n 's/^assist review: *//p' "$OUT_DIR/assist-review-tail.txt")"
     case "$REVIEW_TAIL_LINE" in
-        *" tail=yes "*) ;;
+        *" listed=4 rows_drawn=4 tail=no "*) ;;
         *)
-            echo "FAIL: the 960x640 panel drew no tail row: ${REVIEW_TAIL_LINE:-<absent>}" >&2
+            echo "FAIL: the 960x640 panel did not draw all four rows: ${REVIEW_TAIL_LINE:-<absent>}" >&2
             SWEEP_FAILED=1
             ;;
     esac
-    case "$REVIEW_TAIL_LINE" in
-        *" listed=4 rows_drawn=0 "*) ;;
-        *)
-            echo "FAIL: the 960x640 panel did not report what it actually drew:" >&2
-            echo "      ${REVIEW_TAIL_LINE:-<absent>}" >&2
-            SWEEP_FAILED=1
-            ;;
-    esac
-    # And the pixels, because a report line is a claim about a frame. 20,602 is
-    # the tail row inside the panel at 960x640; 20,615 is the strip between it
-    # and the panel's own border, which must stay empty -- a row drawn there
-    # would be one the scissor cuts mid-glyph.
-    REVIEW_TAIL_INK="$(assist_review_luma_min assist-review-tail 520:14:20:602)"
-    REVIEW_TAIL_CLEAR="$(assist_review_luma_min assist-review-tail 520:12:20:615)"
+    # `assist review rows:` as "x y width pitch rows".
+    review_rows_of() {
+        sed -n 's/^assist review rows: x=\([0-9]*\) y=\([0-9]*\) width=\([0-9]*\) pitch=\([0-9]*\) rows=\([0-9]*\).*/\1 \2 \3 \4 \5/p' \
+            "$OUT_DIR/$1.txt" | tail -1
+    }
+    # And the pixels, because a report line is a claim about a frame: the last
+    # row is on screen, and the strip below it, above Apply, stays empty.
+    read -r RX RY RW RP RN <<<"$(review_rows_of assist-review-tail)"
+    REVIEW_TAIL_INK="$(assist_review_luma_min assist-review-tail "$RW:$RP:$RX:$(( RY + RP * (RN - 1) ))")"
+    REVIEW_TAIL_CLEAR="$(assist_review_luma_min assist-review-tail "$RW:8:$RX:$(( RY + RP * RN ))")"
     echo "review tail at 960x640: ink=${REVIEW_TAIL_INK:-?} below=${REVIEW_TAIL_CLEAR:-?} (control)"
     if [ "${REVIEW_TAIL_INK%%.*}" -ge 200 ] 2>/dev/null; then
-        echo "FAIL: the tail row is reported but not on screen at 960x640" >&2
+        echo "FAIL: the last review row is reported but not on screen at 960x640" >&2
         SWEEP_FAILED=1
     fi
     if [ "${REVIEW_TAIL_CLEAR%%.*}" -lt 200 ] 2>/dev/null; then
-        echo "FAIL: a review row was drawn into the panel's clipped edge" >&2
+        echo "FAIL: something was drawn between the review rows and Apply" >&2
         SWEEP_FAILED=1
     fi
 
@@ -3235,15 +3277,19 @@ manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
             SWEEP_FAILED=1
             ;;
     esac
-    # The named rows, at the panel's default scale. 20,588 300x82 is the block
-    # below the Apply/Discard row at 1280x720; `clear` draws two shorter rows and
-    # gets its own tighter crop.
-    REVIEW_SAT_FLAGGED="$(assist_review_saturation assist-review-flagged 300:82:20:588)"
-    REVIEW_SAT_CLEAR="$(assist_review_saturation assist-review-clear 300:36:20:632)"
-    REVIEW_SAT_LEGACY_A="$(assist_review_saturation assist-review-legacy 300:82:20:588)"
-    REVIEW_SAT_LEGACY_B="$(assist_review_saturation assist-review-legacy 300:36:20:632)"
+    # The named rows: the first two, the coloured ones, at the rect the panel
+    # reports. The same rect over `legacy` is the control. `clear` measures its
+    # one sentence; legacy has no sentence to compare, because its own warning
+    # line sits at that height, so its control there is the report line.
+    read -r RX RY RW RP RN <<<"$(review_rows_of assist-review-flagged)"
+    REVIEW_ROWS_CROP="$RW:$(( RP * 2 )):$RX:$RY"
+    REVIEW_SENTENCE="$(sed -n 's/^assist review block: .*sentence=\([0-9]*\),\([0-9]*\),\([0-9]*\),\([0-9]*\).*/\3:\4:\1:\2/p' \
+        "$OUT_DIR/assist-review-clear.txt" | tail -1)"
+    REVIEW_SAT_FLAGGED="$(assist_review_saturation assist-review-flagged "$REVIEW_ROWS_CROP")"
+    REVIEW_SAT_CLEAR="$(assist_review_saturation assist-review-clear "$REVIEW_SENTENCE")"
+    REVIEW_SAT_LEGACY_A="$(assist_review_saturation assist-review-legacy "$REVIEW_ROWS_CROP")"
     echo "review block saturation: flagged=${REVIEW_SAT_FLAGGED:-?} clear=${REVIEW_SAT_CLEAR:-?}" \
-         "legacy=${REVIEW_SAT_LEGACY_A:-?}/${REVIEW_SAT_LEGACY_B:-?} (control)"
+         "legacy=${REVIEW_SAT_LEGACY_A:-?} (control)"
     if [ "${REVIEW_SAT_FLAGGED%%.*}" -lt 3 ] 2>/dev/null; then
         echo "FAIL: the named review rows were not drawn where the panel says they are" >&2
         SWEEP_FAILED=1
@@ -3253,7 +3299,7 @@ manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
         SWEEP_FAILED=1
     fi
     if [ "${REVIEW_SAT_LEGACY_A%%.*}" -ge 3 ] 2>/dev/null \
-        || [ "${REVIEW_SAT_LEGACY_B%%.*}" -ge 2 ] 2>/dev/null; then
+        || grep -q '^assist review block:' "$OUT_DIR/assist-review-legacy.txt"; then
         echo "FAIL: the control is not a control; a pre-LT1 panel drew review text" >&2
         SWEEP_FAILED=1
     fi
@@ -3284,7 +3330,7 @@ manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
     # The stale panel is the second saturation control: it holds `flagged`'s own
     # lyric document, so any coloured review text in the block is that document
     # being drawn by a run that never had a lyrics lane.
-    REVIEW_SAT_STALE="$(assist_review_saturation assist-review-stale 300:82:20:588)"
+    REVIEW_SAT_STALE="$(assist_review_saturation assist-review-stale "$REVIEW_ROWS_CROP")"
     echo "review block saturation: stale=${REVIEW_SAT_STALE:-?} (control)"
     if [ "${REVIEW_SAT_STALE%%.*}" -ge 3 ] 2>/dev/null; then
         echo "FAIL: a run with no lyrics lane drew the previous run's review rows" >&2
@@ -3338,8 +3384,10 @@ manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
     # Both frames drew coloured review rows where the panel says they are. The
     # scrolled one is the interesting half: a list that scrolled its data and not
     # its pixels would pass the line check and fail here.
-    REVIEW_SAT_PARKED="$(assist_review_saturation assist-review-parked 300:82:20:588)"
-    REVIEW_SAT_SCROLLED="$(assist_review_saturation assist-review-scrolled 300:82:20:588)"
+    read -r RX RY RW RP RN <<<"$(review_rows_of assist-review-parked)"
+    REVIEW_SAT_PARKED="$(assist_review_saturation assist-review-parked "$RW:$(( RP * RN )):$RX:$RY")"
+    read -r RX RY RW RP RN <<<"$(review_rows_of assist-review-scrolled)"
+    REVIEW_SAT_SCROLLED="$(assist_review_saturation assist-review-scrolled "$RW:$(( RP * RN )):$RX:$RY")"
     echo "review block saturation: parked=${REVIEW_SAT_PARKED:-?} scrolled=${REVIEW_SAT_SCROLLED:-?}"
     if [ "${REVIEW_SAT_PARKED%%.*}" -lt 3 ] 2>/dev/null \
         || [ "${REVIEW_SAT_SCROLLED%%.*}" -lt 3 ] 2>/dev/null; then
@@ -3350,8 +3398,10 @@ manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
     # a probe run never spawns a file manager, whatever the display says -- so
     # what this measures is that a *box* was drawn, which is the difference
     # between a control that explains itself and a blank corner.
-    REVEAL_INK="$(assist_review_luma_min assist-review-parked 92:16:1168:589)"
-    REVEAL_CONTROL="$(assist_review_luma_min assist-review-legacy 92:16:1168:589)"
+    REVEAL_CROP="$(sed -n 's/^assist review block: .*reveal=\([0-9]*\),\([0-9]*\),\([0-9]*\),\([0-9]*\).*/\3:\4:\1:\2/p' \
+        "$OUT_DIR/assist-review-parked.txt" | tail -1)"
+    REVEAL_INK="$(assist_review_luma_min assist-review-parked "$REVEAL_CROP")"
+    REVEAL_CONTROL="$(assist_review_luma_min assist-review-legacy "$REVEAL_CROP")"
     echo "review open-folder button: ink=${REVEAL_INK:-?} bare=${REVEAL_CONTROL:-?} (control)"
     if [ "${REVEAL_INK%%.*}" -ge 200 ] 2>/dev/null; then
         echo "FAIL: the Open folder control is not on screen" >&2
@@ -3376,10 +3426,10 @@ manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
     # screenshot once and then trusted forever. A re-layout that moves them makes
     # the hover below miss, and this is the line that says so instead.
     REVIEW_ROWS_LINE="$(sed -n 's/^assist review rows: *//p' \
-        "$OUT_DIR/assist-review-flagged.txt" | head -1)"
+        "$OUT_DIR/assist-review-flagged.txt" | tail -1)"
     echo "review rows: ${REVIEW_ROWS_LINE:-<absent>}"
     case "$REVIEW_ROWS_LINE" in
-        'x=20 y=609 width=1240 pitch=15 rows=4 hint="Click a line to open it in Lyrics"') ;;
+        *'pitch=15 rows=4 hint="Click a line to open it in Lyrics"') ;;
         *)
             echo "FAIL: the review rows are not where the hover below aims:" >&2
             echo "      ${REVIEW_ROWS_LINE:-<absent>}" >&2
@@ -3387,24 +3437,29 @@ manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
             ;;
     esac
 
-    # 200x614 is the middle of the first row -- `y=609` less the 2 px the hit box
-    # starts above the ink, plus half a 15 px pitch.
+    # The middle of the first row: its `y` less the 2 px the hit box starts above
+    # the ink, plus half a 15 px pitch.
+    read -r RX RY RW RP RN <<<"$(review_rows_of assist-review-flagged)"
     assist_review_capture assist-review-hover "$ASSIST_REVIEW_DIR/flagged" \
-        1280x720 "" ",hover=200x614" || SWEEP_FAILED=1
-    # The tip is white on near-black over a panel that is otherwise 247 flat, so
-    # one crop carries both halves: a dark minimum is the box, a bright maximum
-    # is the text inside it. `assist-review-flagged` is the same frame without a
-    # pointer and is the control.
+        1280x720 "" ",hover=$(( RX + 60 ))x$(( RY - 2 + RP / 2 ))" || SWEEP_FAILED=1
+    # The tip is white on near-black just above the row, over a panel that is
+    # otherwise light, so one crop carries both halves: a dark mean is the box,
+    # a bright maximum is the text inside it. `assist-review-flagged` is the
+    # same frame without a pointer and is the control. The mean rather than the
+    # minimum, because the block's own heading reaches into this crop.
+    ROW_TIP_CROP="$RW:12:$RX:$(( RY - 24 ))"
     ROW_TIP="$(ffprobe -v error -f lavfi \
-        -i "movie=$OUT_DIR/assist-review-hover.png,crop=300:16:480:581,signalstats" \
-        -show_entries frame_tags=lavfi.signalstats.YMIN,lavfi.signalstats.YMAX \
+        -i "movie=$OUT_DIR/assist-review-hover.png,crop=$ROW_TIP_CROP,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YAVG,lavfi.signalstats.YMAX \
         -of csv=p=0 2>/dev/null | head -1)"
     ROW_TIP_CONTROL="$(ffprobe -v error -f lavfi \
-        -i "movie=$OUT_DIR/assist-review-flagged.png,crop=300:16:480:581,signalstats" \
-        -show_entries frame_tags=lavfi.signalstats.YMIN -of csv=p=0 2>/dev/null | head -1)"
-    echo "review row tooltip: box/text=${ROW_TIP:-?} bare=${ROW_TIP_CONTROL:-?} (control)"
-    if [ "${ROW_TIP%%,*}" -ge 100 ] 2>/dev/null \
-        || [ "${ROW_TIP##*,}" -lt 180 ] 2>/dev/null; then
+        -i "movie=$OUT_DIR/assist-review-flagged.png,crop=$ROW_TIP_CROP,signalstats" \
+        -show_entries frame_tags=lavfi.signalstats.YAVG -of csv=p=0 2>/dev/null | head -1)"
+    echo "review row tooltip: mean/max=${ROW_TIP:-?} bare=${ROW_TIP_CONTROL:-?} (control)"
+    ROW_TIP_MEAN="$(echo "$ROW_TIP" | cut -d, -f1)"
+    ROW_TIP_MAX="$(echo "$ROW_TIP" | cut -d, -f2)"
+    if [ "${ROW_TIP_MEAN%%.*}" -ge 100 ] 2>/dev/null \
+        || [ "${ROW_TIP_MAX%%.*}" -lt 180 ] 2>/dev/null; then
         echo "FAIL: no tooltip where the first review row's tip should be" >&2
         SWEEP_FAILED=1
     fi
@@ -3416,13 +3471,13 @@ manifest=0/0 policy=anchor-block-mms | All lines placed, none flagged") ;;
     # the *same* row in the frame with no pointer, and the row below it in this
     # frame -- a highlight that painted every row would pass the first alone.
     ROW_FILL="$(ffprobe -v error -f lavfi \
-        -i "movie=$OUT_DIR/assist-review-hover.png,crop=400:12:700:608,signalstats" \
+        -i "movie=$OUT_DIR/assist-review-hover.png,crop=$RW:12:$RX:$RY,signalstats" \
         -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
     ROW_FILL_NEIGHBOUR="$(ffprobe -v error -f lavfi \
-        -i "movie=$OUT_DIR/assist-review-hover.png,crop=400:12:700:623,signalstats" \
+        -i "movie=$OUT_DIR/assist-review-hover.png,crop=$RW:12:$RX:$(( RY + RP )),signalstats" \
         -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
     ROW_FILL_BARE="$(ffprobe -v error -f lavfi \
-        -i "movie=$OUT_DIR/assist-review-flagged.png,crop=400:12:700:608,signalstats" \
+        -i "movie=$OUT_DIR/assist-review-flagged.png,crop=$RW:12:$RX:$RY,signalstats" \
         -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
     echo "review row hover fill: row=${ROW_FILL:-?} neighbour=${ROW_FILL_NEIGHBOUR:-?}" \
          "bare=${ROW_FILL_BARE:-?} (controls)"
@@ -3654,19 +3709,26 @@ else
         echo "FAIL: enabled and disabled Auto-scenes captures were identical" >&2
         SWEEP_FAILED=1
     fi
-    # At this fixed 1280x720 layout, y=404 is inside the 24 px scene lane and
+    # 44 px under the lane head's own `auto=` button is inside the scene lane and
     # outside both its controls and the waveform. Saturation proves the two-cue
     # plan is actually painted; a plausible empty strip or a missing lane is
     # white here and reads zero. Disabled stays visible but deliberately muted.
+    SCENE_LANE_Y="$(sed -n 's/^lane head:.* auto=[0-9]*,\([0-9]*\),.*/\1/p' "$AUTO_SCENE_DIR/enabled.txt" | tail -1)"
+    SCENE_LANE_CROP="1000:12:100:$(( SCENE_LANE_Y + 44 ))"
     ENABLED_LANE_SAT="$(ffprobe -v error -f lavfi \
-        -i "movie=$AUTO_SCENE_DIR/enabled.png,crop=1000:12:100:404,signalstats" \
+        -i "movie=$AUTO_SCENE_DIR/enabled.png,crop=$SCENE_LANE_CROP,signalstats" \
         -show_entries frame_tags=lavfi.signalstats.SATAVG -of csv=p=0 2>/dev/null | head -1)"
     DISABLED_LANE_SAT="$(ffprobe -v error -f lavfi \
-        -i "movie=$AUTO_SCENE_DIR/disabled.png,crop=1000:12:100:404,signalstats" \
+        -i "movie=$AUTO_SCENE_DIR/disabled.png,crop=$SCENE_LANE_CROP,signalstats" \
         -show_entries frame_tags=lavfi.signalstats.SATAVG -of csv=p=0 2>/dev/null | head -1)"
     echo "scene lane saturation: enabled=${ENABLED_LANE_SAT:-?} disabled=${DISABLED_LANE_SAT:-?}"
-    if [ "${ENABLED_LANE_SAT%%.*}" -lt 30 ] 2>/dev/null \
-        || [ "${DISABLED_LANE_SAT%%.*}" -lt 10 ] 2>/dev/null; then
+    # Measured with the band at full width: 21.3 and 11.4; a crop that misses
+    # the lane reads 1.3. The 30 here before WX-5d was the old crop's own number
+    # (30.005), not a line between two states. What separates the states is
+    # drawn or not, and the disabled plan's being the quieter of the two.
+    if [ "${ENABLED_LANE_SAT%%.*}" -lt 15 ] 2>/dev/null \
+        || [ "${DISABLED_LANE_SAT%%.*}" -lt 8 ] 2>/dev/null \
+        || [ "${DISABLED_LANE_SAT%%.*}" -ge "${ENABLED_LANE_SAT%%.*}" ] 2>/dev/null; then
         echo "FAIL: the editable scene-plan lane was not visibly drawn in both states" >&2
         SWEEP_FAILED=1
     fi
@@ -4005,16 +4067,29 @@ if ! grep -h '^assist settings: ' "$OUT_DIR/ai-local-bottom.txt" "$OUT_DIR/ai-op
     AI_FAILED=1
 fi
 
-# 3. The modal really is modal. With the dialog open the timeline strip is not
-#    drawn at all, because the lyrics cue field reads raylib's keyboard directly
-#    and would otherwise receive keys typed into the masked field. The strip is
-#    the only thing that prints `assist settings button:`, so its absence from a
-#    dialog run is the assertion.
-if grep -q '^assist settings button:' "$OUT_DIR/ai-routing.txt"; then
-    echo "FAIL: the Assist panel drew underneath the modal, so its text field could take keys" >&2
+# 3. The modal really is modal. With the dialog open, no view that holds a text
+#    field draws, because those fields read raylib's keyboard directly and would
+#    otherwise receive keys typed into the masked field. Assist stays behind the
+#    dialog (it has no field, and a full-window press blocker covers it); Lyrics
+#    and Look do not. Each has its own report line, and the same run without the
+#    dialog is the control.
+for view in lyrics look; do
+    panel="$view"; [ "$view" = look ] && panel=tune
+    ai_capture "ai-modal-$view" 1280x720 MUSIALIZER_ASSIST_SETTINGS_OPEN=routing \
+        -- --ui-probe "panel=$panel,play=0" || AI_FAILED=1
+    ai_capture "ai-modal-$view-control" 1280x720 \
+        -- --ui-probe "panel=$panel,play=0" || AI_FAILED=1
+done
+if grep -q '^lyrics column:' "$OUT_DIR/ai-modal-lyrics.txt" \
+    || grep -q '^tune layout:' "$OUT_DIR/ai-modal-look.txt"; then
+    echo "FAIL: a view with a text field drew underneath the modal" >&2
+    AI_FAILED=1
+elif ! grep -q '^lyrics column:' "$OUT_DIR/ai-modal-lyrics-control.txt" \
+    || ! grep -q '^tune layout:' "$OUT_DIR/ai-modal-look-control.txt"; then
+    echo "FAIL: the modal control drew no view, so its absence above proves nothing" >&2
     AI_FAILED=1
 else
-    echo "  modal: the timeline strip is not drawn while the dialog is open"
+    echo "  modal: Lyrics and Look are not drawn while the dialog is open"
 fi
 
 # 4. Keyboard traversal, photographed. A headless run has no keyboard any more
@@ -5130,15 +5205,13 @@ lane_alignment() {
     fi
 }
 for size in 1280x720 960x640; do
-    # Three lanes wherever the cue lane is drawn, which since D4 is every state
-    # except Export and Assist — those two take the whole band for their own
-    # budgets, so the lane would push their bodies down rather than into slack.
-    # This is a strengthening rather than a bookkeeping change: the closed lane
+    # Three lanes in every state: since WX-5d no panel takes the band, so the
+    # cue lane is always there. This is a strengthening rather than a bookkeeping change: the closed lane
     # is drawn from a different call site than the open one, and this is what
     # proves it lands on the same time axis as the waveform above it.
     lane_alignment "panel-none-$size" 3
     lane_alignment "panel-tune-$size" 3
-    lane_alignment "panel-export-$size" 2
+    lane_alignment "panel-export-$size" 3
     lane_alignment "panel-lyrics-$size" 3
     # The seeded project, which is the only frame with cue blocks in the lane.
     lane_alignment "lyrics-cues-$size" 3
@@ -5564,12 +5637,16 @@ else
     echo "census control: an accent slab on the rail fails the census, as it must"
 fi
 
-# 4. The export panel draws ink on its dark fill. The light check's crop, read
-# against the crop's own background; and a control crop in the same panel, to
-# the right of the CLIP readout, where nothing is drawn.
-DARK_EXPORT_INK="$(python3 tools/chrome_probe.py ink "$DARK_DIR/dark-export-1280x720.png" 340:90:10:474)"
-DARK_EXPORT_BLANK="$(python3 tools/chrome_probe.py ink "$DARK_DIR/dark-export-1280x720.png" 300:24:900:486)"
-echo "dark export panel: ink=${DARK_EXPORT_INK:-?} blank=${DARK_EXPORT_BLANK:-?} (control), fill $(python3 tools/chrome_probe.py fill "$DARK_DIR/dark-export-1280x720.png" 340:90:10:474)"
+# 4. The Render view draws ink on its dark fill: the summary card, read against
+# the crop's own background; and a control crop in the same view, in the head
+# between the title and the close button, where nothing is drawn.
+DARK_RV="$(sed -n 's/^render view: *//p' "$DARK_DIR/dark-export-1280x720.txt" | tail -1)"
+DARK_EXPORT_CROP="$(echo "$DARK_RV" | sed -n 's/.*summary=\([0-9]*\),\([0-9]*\),\([0-9]*\),\([0-9]*\).*/\3:\4:\1:\2/p')"
+DARK_BLANK_CROP="$(echo "$DARK_RV" | sed -n 's/^rect=\([0-9]*\),\([0-9]*\),.*/120:24:\1:\2/p' \
+    | awk -F: '{print $1 ":" $2 ":" $3 + 120 ":" $4 + 8}')"
+DARK_EXPORT_INK="$(python3 tools/chrome_probe.py ink "$DARK_DIR/dark-export-1280x720.png" "$DARK_EXPORT_CROP")"
+DARK_EXPORT_BLANK="$(python3 tools/chrome_probe.py ink "$DARK_DIR/dark-export-1280x720.png" "$DARK_BLANK_CROP")"
+echo "dark export panel: ink=${DARK_EXPORT_INK:-?} blank=${DARK_EXPORT_BLANK:-?} (control), fill $(python3 tools/chrome_probe.py fill "$DARK_DIR/dark-export-1280x720.png" "$DARK_EXPORT_CROP")"
 if [ "${DARK_EXPORT_INK:-0}" -lt 120 ]; then
     echo "FAIL: the dark export panel drew no ink" >&2
     DARK_FAILED=1
@@ -5584,7 +5661,7 @@ DARK_TIP_TEXT="$(ffprobe -v error -f lavfi \
     -i "movie=$DARK_DIR/dark-tip-mute.png,crop=140:24:$((DARK_MCX - 71)):$((DARK_TIP_TOOLBAR - 34)),signalstats" \
     -show_entries frame_tags=lavfi.signalstats.YMAX -of csv=p=0 2>/dev/null | head -1)"
 DARK_TIP_ADDED="$(python3 tools/chrome_probe.py changed "$DARK_DIR/dark-tip-mute.png" \
-    "$DARK_DIR/dark-tip-bare.png" "140:24:1050:$((${DARK_TIP_TOOLBAR:-363} - 26))")"
+    "$DARK_DIR/dark-tip-bare.png" "140:24:$((DARK_MCX - 71)):$((${DARK_TIP_TOOLBAR:-363} - 34))")"
 echo "dark tooltip: text luma max=${DARK_TIP_TEXT:-?} pixels added=${DARK_TIP_ADDED:-?}"
 if [ "${DARK_TIP_TEXT%%.*}" -lt 180 ] 2>/dev/null || [ "${DARK_TIP_ADDED:-0}" -lt 150 ]; then
     echo "FAIL: no tooltip where the mute button's tip should be, on the dark appearance" >&2
@@ -6410,45 +6487,17 @@ PY
     # unavailable" branch D3 asks to be tested.
     TIMING_EMPTY_BIN="$TIMING_DIR/empty-bin"
     mkdir -p "$TIMING_EMPTY_BIN"
-    # Located by measurement, never hard-coded: the row's three buttons are the
-    # only long horizontal runs of `UI_RULE` in the bottom-right of the form, and
-    # a guessed pair is how `--ui-probe hover=` silently photographs the wrong
-    # thing. Their widths come back as 77/77/92, which is the code's own
-    # `export`/`import`/`add` table.
-    read -r EXPORT_X IMPORT_X GAP_X BUTTON_Y <<<"$(python3 - "$OUT_DIR/timing-idle.png" <<'PY'
-import sys
-
-import numpy as np
-from PIL import Image
-
-image = np.array(Image.open(sys.argv[1]).convert("RGB")).astype(int)
-height, width, _ = image.shape
-mask = np.abs(image - np.array([210, 210, 214])).sum(axis=2) < 12
-rows = []
-for y in range(height * 2 // 3, height):
-    runs, start = [], None
-    for x in range(width):
-        if mask[y, x]:
-            if start is None:
-                start = x
-        else:
-            if start is not None and x - start >= 60:
-                runs.append((start, x - 1))
-            start = None
-    if len(runs) >= 3 and runs[-1][0] > width * 0.55:
-        rows.append((y, runs[-3:]))
-assert len(rows) >= 2, "the Export/Import/Add row was not found"
-top, runs = rows[0]
-bottom = rows[-1][0]
-export, imports, _add = runs
-# The 7 px gap between Export and Import: a click there must claim nothing, or a
-# probe that pressed empty panel would satisfy every assertion below.
-print(
-    (export[0] + export[1]) // 2,
-    (imports[0] + imports[1]) // 2,
-    (export[1] + imports[0]) // 2,
-    (top + bottom) // 2,
-)
+    # Located by the report, never hard-coded (WX-5d): Import… and Export…
+    # are ghost buttons in the Lyrics column's footer and draw no rule, so
+    # their rects come from the `lyrics column:` line. The gap between them
+    # must claim nothing, or a probe that pressed empty panel would satisfy
+    # every assertion below.
+    read -r EXPORT_X IMPORT_X GAP_X BUTTON_Y <<<"$(python3 - "$OUT_DIR/timing-idle.txt" <<'PY'
+import re, sys
+line = re.search(r"^lyrics column:\s+(.*)$", open(sys.argv[1]).read(), re.M).group(1)
+rect = lambda name: list(map(int, re.search(r"\b" + name + r"@(\d+),(\d+),(\d+),(\d+)", line).groups()))
+imp, exp = rect("import"), rect("export")
+print(exp[0] + exp[2] // 2, imp[0] + imp[2] // 2, (imp[0] + imp[2] + exp[0]) // 2, imp[1] + imp[3] // 2)
 PY
 )"
     echo "the document row: export x=$EXPORT_X import x=$IMPORT_X gap x=$GAP_X at y=$BUTTON_Y"
@@ -6804,6 +6853,24 @@ tune_entry()  { sed -n 's/^tune entry: *//p'  "$OUT_DIR/$1.txt"; }
 # The tuning every case below starts from, and the shape of the report line.
 capture "tune-base" 1280x720 --ui-probe "panel=tune" || TUNE_FAILED=1
 TUNE_BASE="$(tune_values tune-base)"
+# WX-5d: every Tune point from the `tune layout:` line, never typed.
+TUNE_LAYOUT="$(sed -n 's/^tune layout: *//p' "$OUT_DIR/tune-base.txt")"
+read -r TUNE_CHIP TUNE_CHIP_GAP TUNE_ROW TUNE_MISS TUNE_SURPRISE_AT <<<"$(python3 - "$TUNE_LAYOUT" <<'PY'
+import re, sys
+line = sys.argv[1]
+entry = next(x for x in line.split(");") if "settings.spectrum.amplitude" in x)
+def rect(name, text):
+    return tuple(map(int, re.search(name + r"@(\d+),(\d+),(\d+),(\d+)", text).groups()))
+value, track = rect("value", entry), rect("track", entry)
+title = tuple(map(int, re.search(r"title=(\d+),(\d+),(\d+),(\d+)", line).groups()))
+surprise = rect("surprise", line)
+c = lambda r: f"{r[0] + r[2] // 2}x{r[1] + r[3] // 2}"
+# The gap: 5 px right of the value, inside the row's 10 px gap before `~`.
+print(c(value), f"{value[0] + value[2] + 5}x{value[1] + value[3] // 2}", c(track),
+      f"{title[0] + 40}x{title[1] + 13}", c(surprise))
+PY
+)"
+echo "tune points: chip=$TUNE_CHIP gap=$TUNE_CHIP_GAP row=$TUNE_ROW miss=$TUNE_MISS surprise=$TUNE_SURPRISE_AT"
 echo "tune base: [$TUNE_BASE]"
 if [ "$TUNE_BASE" != "spectrum 1 1 1 3 55 1 0.5 0.3" ]; then
     echo "FAIL: Spectrum's descriptor defaults are not what Tune reports: [$TUNE_BASE]" >&2
@@ -6816,13 +6883,11 @@ fi
 
 # -- UX0-B09: the value chip takes a press and becomes a field -----------------
 #
-# The click coordinate is the Amplitude chip's centre at 1280x720, read off
-# panel-tune-1280x720.png, adjusted by -12 x / +4 y for the scrollbar
-# gutter/body padding. That adjustment awaits the next visual gate.
+# The click point is the Amplitude value's centre from `tune layout:`.
 # Asserting `tune entry:` as well as `click probe:` is
 # the point: a press cashed by the right widget id through a branch that forgot to
 # open the field photographs exactly like one that opened it.
-capture "tune-chip-click" 1280x720 --ui-probe "panel=tune,click=1183x168" || TUNE_FAILED=1
+capture "tune-chip-click" 1280x720 --ui-probe "panel=tune,click=$TUNE_CHIP" || TUNE_FAILED=1
 CHIP_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/tune-chip-click.txt")"
 CHIP_ENTRY="$(tune_entry tune-chip-click)"
 echo "chip click: $CHIP_CLAIM -> [$CHIP_ENTRY]"
@@ -6839,7 +6904,7 @@ esac
 # The control-free gap between the label zone and the chip. Without this row a
 # probe that pressed nothing would satisfy every assertion above, since a no-op
 # leaves the panel exactly as it started.
-capture "tune-chip-gap" 1280x720 --ui-probe "panel=tune,click=1148x168" || TUNE_FAILED=1
+capture "tune-chip-gap" 1280x720 --ui-probe "panel=tune,click=$TUNE_CHIP_GAP" || TUNE_FAILED=1
 GAP_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/tune-chip-gap.txt")"
 GAP_ENTRY="$(tune_entry tune-chip-gap)"
 echo "chip gap: $GAP_CLAIM -> [$GAP_ENTRY]"
@@ -6919,14 +6984,14 @@ tune_wheel() {
     esac
 }
 # Amplitude is a 0.40..2.00 slider at precision 2, so one notch is 0.01.
-tune_wheel up   1050x190 1  "spectrum 1.01 1 1 3 55 1 0.5 0.3"
-tune_wheel down 1050x190 -3 "spectrum 0.97 1 1 3 55 1 0.5 0.3"
+tune_wheel up   $TUNE_ROW 1  "spectrum 1.01 1 1 3 55 1 0.5 0.3"
+tune_wheel down $TUNE_ROW -3 "spectrum 0.97 1 1 3 55 1 0.5 0.3"
 # The negative control, and it has to be inside the panel rather than outside it:
 # a wheel handler scoped to the inspector instead of to a row would pass every
 # assertion above and silently move whichever setting happened to be first.
-tune_wheel miss 1000x620 1 "$TUNE_BASE"
+tune_wheel miss $TUNE_MISS 1 "$TUNE_BASE"
 # Unmodified wheel navigates Tune and must never change the setting underneath.
-tune_wheel scroll 1050x190 -3 "$TUNE_BASE" 0
+tune_wheel scroll $TUNE_ROW -3 "$TUNE_BASE" 0
 
 # -- UX0-C07: Surprise stays inside every bound, and is reproducible -----------
 #
@@ -6963,7 +7028,7 @@ fi
 # The Surprise *button*, pressed. Same seed, so the values must be byte-identical
 # to the sequence probe's — which is what stops the two probe families from
 # drifting into testing different code.
-capture "tune-surprise-click" 1280x720 --ui-probe "panel=tune,tune-seed=4242,click=1150x139" || TUNE_FAILED=1
+capture "tune-surprise-click" 1280x720 --ui-probe "panel=tune,tune-seed=4242,click=$TUNE_SURPRISE_AT" || TUNE_FAILED=1
 CLICK_CLAIM="$(sed -n 's/^click probe: *//p' "$OUT_DIR/tune-surprise-click.txt")"
 CLICK_VALUES="$(tune_values tune-surprise-click)"
 echo "surprise click: $CLICK_CLAIM -> [$CLICK_VALUES]"

@@ -32,17 +32,6 @@ use super::theme::metric;
 /// Timeline height with no panel open (`plug.c:7669`).
 pub const DEFAULT_TIMELINE_HEIGHT: f32 = 180.0;
 
-/// Timeline height the export panel asks for by default.
-///
-/// The C uses 330 (`plug.c:7691-7694`), but its band spends nothing on a manual
-/// event row or a scene-plan lane — this rewrite's does — so 330 here leaves the
-/// panel's boundary 21 px short of its own content and it would draw its
-/// too-small notice at the default size (review 1.4, UX0-A04). Derived from the
-/// panel's single source of truth so the two can never drift apart again; the
-/// value works out to 351.
-pub const EXPORT_PANEL_TIMELINE_HEIGHT: f32 = super::panels::export::EXPORT_MIN_BAND_HEIGHT
-    - super::panels::scene_timeline::SCENE_SECTION_HEIGHT;
-
 /// Narrowest window `scene_settings_ui_layout` will lay out
 /// (`scene_settings.c:494`). Below this it fails, and the C then keeps the
 /// fallback it initialized the struct with (`plug.c:7573-7577`).
@@ -60,15 +49,6 @@ pub struct ShellWidths {
     /// The rail on the left of the workspace (WX-5c): [`RAIL_WIDTH`] in every
     /// workspace frame. It was the 168–520 px tracks-and-scenes sidebar.
     pub rail_width: f32,
-}
-
-/// Toolkit editor bounds shared by the scene layout and widget renderer.
-pub fn editor_rect(window: (f32, f32)) -> UiRect {
-    let width = (window.0 * 0.44)
-        .clamp(420.0, 600.0)
-        .min((window.0 - 32.0).max(0.0));
-    let height = (window.1 - 90.0).max(300.0).min((window.1 - 32.0).max(0.0));
-    UiRect::new(window.0 - width - 16.0, 16.0, width, height)
 }
 
 /// User-sized split positions in logical UI units. `None` keeps the existing
@@ -190,9 +170,7 @@ pub struct WorkspaceFrame {
     /// Right-hand tuning inspector; empty when closed.
     pub inspector: UiRect,
     /// The right column every secondary view draws in (WX-5d,
-    /// [`super::column`]). **In the seam it is the inspector's rect**, so
-    /// nothing moves; the Frame builder gives it the column rule
-    /// (`wx5d-design.md` §1) behind `MUSIALIZER_COLUMN_LAYOUT`.
+    /// [`super::column`]); empty when closed.
     pub column: UiRect,
     /// The scene preview. This is what every other region takes from.
     pub preview: UiRect,
@@ -302,10 +280,51 @@ impl WorkspaceFrame {
         }
     }
 
-    /// Editing gives the complete scene the space beside the toolkit panel.
-    /// Inactive workspace controls are hidden instead of implying they can be used.
-    pub fn editor(window: (f32, f32)) -> Self {
-        let panel = editor_rect(window);
+    /// The frame with the right column (WX-5d §1): the top bar spans the whole window, the
+    /// column runs from under it to the window's bottom edge, and the
+    /// workspace — rail, preview, transport, band — is everything left of it.
+    ///
+    /// `column_width` is `None` when the column is closed, which gives the
+    /// workspace the whole window. The inspector is empty here; the shell
+    /// points it at the column while Look is the view.
+    #[must_use]
+    pub fn with_column(
+        window_width: f32,
+        window_height: f32,
+        column_width: Option<f32>,
+        timeline_height: f32,
+    ) -> Self {
+        let column_width = column_width
+            .filter(|width| width.is_finite() && *width > 0.0)
+            .map_or(0.0, |width| width.min(window_width.max(0.0)));
+        let workspace_width = (window_width - column_width).max(0.0);
+        let mut frame = Self::layout_with_overrides(
+            workspace_width,
+            window_height,
+            false,
+            timeline_height,
+            LayoutOverrides::default(),
+        );
+        frame.top_bar.width = window_width.max(0.0);
+        let top = frame.top_bar.height;
+        frame.column = if column_width > 0.0 {
+            UiRect::new(
+                workspace_width,
+                top,
+                column_width,
+                (window_height - top).max(0.0),
+            )
+        } else {
+            UiRect::new(window_width.max(0.0), top, 0.0, 0.0)
+        };
+        frame
+    }
+
+    /// [`Self::editor`] beside a given panel: with the column layout the
+    /// Editor takes the column's place (WX-5d §3.6), so F8 no longer moves
+    /// the right edge.
+    #[must_use]
+    pub fn editor_beside(window: (f32, f32), panel: UiRect) -> Self {
         let mut frame = Self::fullscreen(window.0, window.1, false);
         frame.preview = UiRect::new(
             16.0,
@@ -346,32 +365,6 @@ impl WorkspaceFrame {
             },
             timeline: empty,
         }
-    }
-
-    /// Timeline height for an open export panel (`plug.c:7689-7695`).
-    #[must_use]
-    pub fn export_timeline_height(window_height: f32) -> f32 {
-        let toolbar_height = metric::HUD_BUTTON_SIZE;
-        let ceiling = window_height - toolbar_height - DEFAULT_TIMELINE_HEIGHT;
-        if EXPORT_PANEL_TIMELINE_HEIGHT > ceiling {
-            150.0f32.max(ceiling)
-        } else {
-            EXPORT_PANEL_TIMELINE_HEIGHT
-        }
-    }
-
-    /// The width the Assist panel's layout is measured against
-    /// (`plug.c:7674`: `workspace_width - 12.0f`).
-    ///
-    /// **Owner: Agent J.** It is the workspace width, not the window width, so an
-    /// open inspector really does narrow the panel — which at the 960 px minimum
-    /// is what drops the mode grid to two rows and makes the panel taller. That
-    /// is the case worth reproducing rather than approximating with a constant.
-    #[must_use]
-    pub fn assist_panel_width(window_width: f32, inspector_open: bool) -> f32 {
-        let widths = ShellWidths::layout(window_width, inspector_open)
-            .unwrap_or_else(|| ShellWidths::fallback(window_width));
-        (widths.workspace_width - 12.0).max(0.0)
     }
 }
 
@@ -565,29 +558,6 @@ mod tests {
     const MIN: (f32, f32) = (960.0, 640.0);
 
     #[test]
-    fn editor_keeps_complete_preview_clear_of_panel_at_supported_sizes() {
-        for window in [
-            (960.0, 640.0),
-            (1280.0, 900.0),
-            (1920.0, 1080.0),
-            (480.0, 320.0),
-        ] {
-            let panel = editor_rect(window);
-            let frame = WorkspaceFrame::editor(window);
-            assert!(frame.preview.x + frame.preview.width <= panel.x - 16.0);
-            assert!(panel.y + panel.height <= window.1);
-            assert!(
-                frame.toolbar.is_empty()
-                    && frame.rail.is_empty()
-                    && frame.top_bar.is_empty()
-                    && frame.timeline.is_empty()
-            );
-        }
-        let frame = WorkspaceFrame::editor((1920.0, 1080.0));
-        assert_eq!(frame.preview, UiRect::new(16.0, 16.0, 1272.0, 1048.0));
-    }
-
-    #[test]
     fn a_closed_inspector_gives_the_workspace_the_whole_window() {
         let widths = ShellWidths::layout(1280.0, false).unwrap();
         assert_eq!(widths.inspector_width, 0.0);
@@ -655,55 +625,6 @@ mod tests {
             + frame.toolbar.height
             + frame.timeline.height;
         assert!((total - 720.0).abs() < 0.01, "got {total}");
-    }
-
-    /// Where the top bar and the rail sit (WX-5c §0): the bar spans the
-    /// workspace and stops at the inspector's column, and the rail runs from
-    /// the bar's bottom to the band's top, beside the preview and the
-    /// transport only. Pinned as numbers at the windows the gate photographs,
-    /// with the band each one draws when no panel is open (260 px).
-    #[test]
-    fn the_top_bar_spans_the_workspace_and_the_rail_stops_at_the_band() {
-        let frame = WorkspaceFrame::layout(1280.0, 720.0, false, 260.0);
-        assert_eq!(frame.top_bar, UiRect::new(0.0, 0.0, 1280.0, 46.0));
-        assert_eq!(frame.rail, UiRect::new(0.0, 46.0, 52.0, 414.0));
-        assert_eq!(frame.preview, UiRect::new(52.0, 46.0, 1228.0, 364.0));
-        assert_eq!(frame.toolbar, UiRect::new(52.0, 410.0, 1228.0, 50.0));
-        assert_eq!(frame.timeline, UiRect::new(0.0, 460.0, 1280.0, 260.0));
-        assert_eq!(
-            frame.rail_layout.map(|rail| rail.flyout),
-            Some(UiRect::new(52.0, 46.0, 336.0, 674.0))
-        );
-
-        let frame = WorkspaceFrame::layout(MIN.0, MIN.1, false, 260.0);
-        assert_eq!(frame.preview, UiRect::new(52.0, 46.0, 908.0, 284.0));
-        assert_eq!(frame.rail, UiRect::new(0.0, 46.0, 52.0, 334.0));
-
-        // The inspector narrows the bar with the workspace, never the rail.
-        let frame = WorkspaceFrame::layout(MIN.0, MIN.1, true, 260.0);
-        assert_eq!(frame.top_bar, UiRect::new(0.0, 0.0, 680.0, 46.0));
-        assert_eq!(frame.preview, UiRect::new(52.0, 46.0, 628.0, 284.0));
-        assert_eq!(frame.inspector, UiRect::new(680.0, 0.0, 280.0, 640.0));
-
-        for (window, inspector) in [
-            ((1280.0, 720.0), false),
-            ((1280.0, 720.0), true),
-            (MIN, true),
-            ((2560.0, 1440.0), false),
-        ] {
-            let frame = WorkspaceFrame::layout(window.0, window.1, inspector, 260.0);
-            assert_eq!(frame.top_bar.width, frame.widths.workspace_width);
-            assert_eq!(frame.rail.y, frame.top_bar.y + frame.top_bar.height);
-            assert_eq!(frame.rail.y + frame.rail.height, frame.timeline.y);
-            assert_eq!(frame.rail.x + frame.rail.width, frame.preview.x);
-        }
-        for frame in [
-            WorkspaceFrame::fullscreen(1280.0, 720.0, true),
-            WorkspaceFrame::editor((1280.0, 720.0)),
-        ] {
-            assert!(frame.top_bar.is_empty() && frame.rail.is_empty());
-            assert!(frame.rail_layout.is_none());
-        }
     }
 
     #[test]
@@ -809,46 +730,6 @@ mod tests {
         assert_eq!(frame.preview.height, 670.0);
         assert_eq!(frame.toolbar.y, 670.0);
         assert!(!frame.preview.overlaps(frame.toolbar));
-    }
-
-    #[test]
-    fn the_export_panel_yields_before_the_preview_does() {
-        // Tall window: the panel gets what it asked for.
-        assert_eq!(
-            WorkspaceFrame::export_timeline_height(1080.0),
-            EXPORT_PANEL_TIMELINE_HEIGHT
-        );
-        // 640 - 50 - 180 = 410, still above 330.
-        assert_eq!(
-            WorkspaceFrame::export_timeline_height(640.0),
-            EXPORT_PANEL_TIMELINE_HEIGHT
-        );
-        // A short window floors at 150 rather than pushing the preview negative.
-        assert_eq!(WorkspaceFrame::export_timeline_height(300.0), 150.0);
-    }
-
-    #[test]
-    fn the_assist_panel_is_measured_against_the_workspace_not_the_window() {
-        // `workspace_width - 12` (`plug.c:7674`). An open inspector narrows it,
-        // and at the 960 px minimum that is what pushes the mode grid to two rows
-        // — the case a constant would have hidden.
-        use musializer_core::ui::assist_ui_state::{self, AssistPanelContent};
-
-        let wide = WorkspaceFrame::assist_panel_width(1280.0, false);
-        let narrow = WorkspaceFrame::assist_panel_width(960.0, true);
-        assert!(narrow < wide);
-        assert_eq!(
-            assist_ui_state::ui_layout(wide, AssistPanelContent::Ready, false).mode_rows,
-            1
-        );
-        assert_eq!(
-            assist_ui_state::ui_layout(narrow, AssistPanelContent::Ready, false).mode_rows,
-            2,
-            "the inspector at the minimum window is what makes the grid wrap"
-        );
-        // A degenerate window still answers with a non-negative width rather
-        // than poisoning the layout with a negative one.
-        assert!(WorkspaceFrame::assist_panel_width(1.0, true) >= 0.0);
     }
 
     #[test]
@@ -1007,19 +888,38 @@ mod tests {
         assert!((narrow.steps[1].x - narrow.steps[0].x) < 250.0);
     }
 
-    /// WX-5d seam: the column is the inspector's rect in every frame, so the
-    /// seam moves nothing. The Frame builder replaces this with the column
-    /// rule's own table.
+    /// WX-5d §1's table, measured from the mockup bases: the column costs the
+    /// 16:9 frame nothing because the preview is height-bound with the band
+    /// at 260, and the band and preview are identical in every view.
     #[test]
-    fn the_seams_column_is_the_inspectors_rect() {
-        for (width, height) in [(960.0, 640.0), (1280.0, 720.0), (1920.0, 1080.0)] {
-            for open in [false, true] {
-                let frame = WorkspaceFrame::layout(width, height, open, 260.0);
-                assert_eq!(frame.column, frame.inspector, "{width}x{height} {open}");
-            }
-            let full = WorkspaceFrame::fullscreen(width, height, true);
-            assert!(full.column.is_empty());
-            assert!(WorkspaceFrame::editor((width, height)).column.is_empty());
+    fn the_column_frame_is_the_designs_table() {
+        use musializer_core::ui::column_layout::column_width;
+        for (window, column, preview) in [
+            ((960.0, 640.0), 320.0, (588.0, 284.0)),
+            ((1280.0, 720.0), 358.0, (870.0, 364.0)),
+            ((1920.0, 1080.0), 460.0, (1408.0, 724.0)),
+            ((1707.0, 960.0), 460.0, (1195.0, 604.0)),
+        ] {
+            let width = column_width(window.0, None);
+            assert_eq!(width, column);
+            let frame = WorkspaceFrame::with_column(window.0, window.1, Some(width), 260.0);
+            assert_eq!(
+                frame.column,
+                UiRect::new(window.0 - column, 46.0, column, window.1 - 46.0)
+            );
+            assert_eq!(frame.top_bar, UiRect::new(0.0, 0.0, window.0, 46.0));
+            assert_eq!((frame.preview.width, frame.preview.height), preview);
+            assert_eq!(
+                frame.timeline,
+                UiRect::new(0.0, window.1 - 260.0, window.0 - column, 260.0)
+            );
+            assert!(frame.inspector.is_empty());
+            assert!(!frame.preview.overlaps(frame.column));
+            assert!(!frame.timeline.overlaps(frame.column));
         }
+        let closed = WorkspaceFrame::with_column(1280.0, 720.0, None, 260.0);
+        assert!(closed.column.is_empty());
+        assert_eq!(closed.preview.width, 1228.0);
+        assert_eq!(closed.timeline.width, 1280.0);
     }
 }

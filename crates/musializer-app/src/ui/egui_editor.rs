@@ -356,121 +356,142 @@ impl EditorState {
                 ui.set_width(rect.width());
                 ui.set_height(rect.height());
                 ui.set_clip_rect(rect);
-                egui::Frame::new()
+                // WX-5d §3.6: a floating surface — 4 px corners, a hairline,
+                // a shadow — headed by the micro `EDITOR` and a ghost ×, like
+                // every column view.
+                let frame = egui::Frame::new()
                     .fill(ui.visuals().panel_fill)
-                    .stroke(ui.visuals().window_stroke)
-                    .inner_margin(14.0)
-                    .show(ui, |ui| {
-                        ui.set_min_size(egui::vec2(
-                            (rect.width() - 28.0).max(0.0),
-                            (rect.height() - 28.0).max(0.0),
-                        ));
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                    .corner_radius(4.0)
+                    .shadow(ui.visuals().popup_shadow)
+                    .inner_margin(14.0);
+                frame.show(ui, |ui| {
+                    ui.set_min_size(egui::vec2(
+                        (rect.width() - 28.0).max(0.0),
+                        (rect.height() - 28.0).max(0.0),
+                    ));
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("EDITOR")
+                                .size(super::theme::metric::UI_FONT_MICRO)
+                                .extra_letter_spacing(1.0)
+                                .color(ui.visuals().weak_text_color()),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let close = ui.add(egui::Button::new("\u{00d7}").frame(false));
+                            output.close_requested |= close
+                                .on_hover_text(
+                                    "Close editor (Esc or F8). Unapplied lyric drafts are kept.",
+                                )
+                                .clicked();
+                        });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.tab, Tab::Tune, "Tune");
+                        ui.selectable_value(&mut self.tab, Tab::Lyrics, "Lyrics");
+                        if ui
+                            .add_enabled(
+                                track.is_some(),
+                                egui::Button::new(if playing { "Pause" } else { "Play" }),
+                            )
+                            .on_hover_text(if playing {
+                                "Pause the current track"
+                            } else {
+                                "Play the current track"
+                            })
+                            .clicked()
+                        {
+                            output.commands.push(ShellCommand::TogglePlay);
+                        }
+                        let seekable = track.is_some_and(|track| track.transport_seekable);
+                        if ui
+                            .add_enabled(seekable, egui::Button::new("-5 s"))
+                            .on_hover_text("Seek back 5 seconds")
+                            .clicked()
+                        {
+                            output
+                                .commands
+                                .push(ShellCommand::Seek((playhead - 5.0).max(0.0)));
+                        }
+                        if ui
+                            .add_enabled(seekable, egui::Button::new("+5 s"))
+                            .on_hover_text("Seek forward 5 seconds")
+                            .clicked()
+                        {
+                            let duration = track.map_or(0.0, |track| track.duration_seconds);
+                            output
+                                .commands
+                                .push(ShellCommand::Seek((playhead + 5.0).min(duration)));
+                        }
+                    });
+                    if theme_picker(ui, "editor_theme", &mut self.theme) {
+                        output.theme = Some(self.theme);
+                    }
+                    ui.separator();
+                    if let Some(track) = track {
+                        let name = track.display_name();
+                        ui.add(egui::Label::new(RichText::new(name).strong()).truncate())
+                            .on_hover_text(name);
+                        let save_state = track.save_state();
+                        let save_enabled = save_state != SaveState::Saved;
+                        if save_enabled
+                            && ctx.input_mut(|input| {
+                                input.consume_shortcut(&egui::KeyboardShortcut::new(
+                                    egui::Modifiers::COMMAND,
+                                    egui::Key::S,
+                                ))
+                            })
+                        {
+                            output.commands.push(ShellCommand::SaveProject);
+                        }
                         ui.horizontal(|ui| {
-                            ui.heading("Editor");
+                            ui.label(
+                                RichText::new(format!(
+                                    "{playhead:.3} / {:.3} s",
+                                    track.duration_seconds
+                                ))
+                                .monospace(),
+                            );
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    output.close_requested |= ui
-                                        .button("Close")
-                                        .on_hover_text("Close editor (Esc or F8). Unapplied lyric drafts are kept.")
-                                        .clicked();
+                                    if ui
+                                        .add_enabled(
+                                            save_enabled,
+                                            egui::Button::new("Save project"),
+                                        )
+                                        .on_hover_text(match save_state {
+                                            SaveState::Saved => "The project is already saved",
+                                            SaveState::NoProjectFile => {
+                                                "Choose a project file and save"
+                                            }
+                                            _ => "Save current project changes",
+                                        })
+                                        .clicked()
+                                    {
+                                        output.commands.push(ShellCommand::SaveProject);
+                                    }
+                                    ui.label(RichText::new(save_state.label()).small());
                                 },
                             );
                         });
-                        ui.horizontal(|ui| {
-                            ui.selectable_value(&mut self.tab, Tab::Tune, "Tune");
-                            ui.selectable_value(&mut self.tab, Tab::Lyrics, "Lyrics");
-                            if ui
-                                .add_enabled(track.is_some(), egui::Button::new(if playing { "Pause" } else { "Play" }))
-                                .on_hover_text(if playing { "Pause the current track" } else { "Play the current track" })
-                                .clicked()
-                            {
-                                output.commands.push(ShellCommand::TogglePlay);
-                            }
-                            let seekable = track.is_some_and(|track| track.transport_seekable);
-                            if ui
-                                .add_enabled(seekable, egui::Button::new("-5 s"))
-                                .on_hover_text("Seek back 5 seconds")
-                                .clicked()
-                            {
-                                output
-                                    .commands
-                                    .push(ShellCommand::Seek((playhead - 5.0).max(0.0)));
-                            }
-                            if ui
-                                .add_enabled(seekable, egui::Button::new("+5 s"))
-                                .on_hover_text("Seek forward 5 seconds")
-                                .clicked()
-                            {
-                                let duration = track.map_or(0.0, |track| track.duration_seconds);
-                                output
-                                    .commands
-                                    .push(ShellCommand::Seek((playhead + 5.0).min(duration)));
-                            }
-                        });
-                        if theme_picker(ui, "editor_theme", &mut self.theme) {
-                            output.theme = Some(self.theme);
-                        }
-                        ui.separator();
-                        if let Some(track) = track {
-                            let name = track.display_name();
-                            ui.add(egui::Label::new(RichText::new(name).strong()).truncate())
-                                .on_hover_text(name);
-                            let save_state = track.save_state();
-                            let save_enabled = save_state != SaveState::Saved;
-                            if save_enabled
-                                && ctx.input_mut(|input| {
-                                    input.consume_shortcut(&egui::KeyboardShortcut::new(
-                                        egui::Modifiers::COMMAND,
-                                        egui::Key::S,
-                                    ))
-                                })
-                            {
-                                output.commands.push(ShellCommand::SaveProject);
-                            }
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(format!(
-                                        "{playhead:.3} / {:.3} s",
-                                        track.duration_seconds
-                                    ))
-                                    .monospace(),
-                                );
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        if ui
-                                            .add_enabled(save_enabled, egui::Button::new("Save project"))
-                                            .on_hover_text(match save_state {
-                                                SaveState::Saved => "The project is already saved",
-                                                SaveState::NoProjectFile => "Choose a project file and save",
-                                                _ => "Save current project changes",
-                                            })
-                                            .clicked()
-                                        {
-                                            output.commands.push(ShellCommand::SaveProject);
-                                        }
-                                        ui.label(RichText::new(save_state.label()).small());
-                                    },
-                                );
+                        let body_height = ui.available_height().max(50.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("editor_body")
+                            .max_height(body_height)
+                            .show(ui, |ui| match self.tab {
+                                Tab::Tune => {
+                                    self.tune(ui, track, scene, playhead, &mut output);
+                                }
+                                Tab::Lyrics => self.lyrics(ui, track, playhead, &mut output),
                             });
-                            let body_height = ui.available_height().max(50.0);
-                            egui::ScrollArea::vertical()
-                                .id_salt("editor_body")
-                                .max_height(body_height)
-                                .show(ui, |ui| match self.tab {
-                                    Tab::Tune => {
-                                        self.tune(ui, track, scene, playhead, &mut output);
-                                    }
-                                    Tab::Lyrics => self.lyrics(ui, track, playhead, &mut output),
-                                });
-                        } else {
-                            ui.label("Open a track to tune its scene or edit lyrics.");
-                            if ui.button("Add audio").clicked() {
-                                output.commands.push(ShellCommand::OpenAudio);
-                            }
+                    } else {
+                        ui.label("Open a track to tune its scene or edit lyrics.");
+                        if ui.button("Add audio").clicked() {
+                            output.commands.push(ShellCommand::OpenAudio);
                         }
-                    });
+                    }
+                });
             });
         output
     }
@@ -1282,7 +1303,7 @@ mod tests {
         );
         draw(&mut editor, &ctx, &track, vec![]);
         let (frame, _) = draw(&mut editor, &ctx, &track, vec![]);
-        let close = click(&mut editor, &ctx, &track, text_point(&frame, "Close"));
+        let close = click(&mut editor, &ctx, &track, text_point(&frame, "\u{00d7}"));
         assert!(close.close_requested);
         let draft = editor.drafts.get(&(track.file_path.clone(), 9)).unwrap();
         assert_eq!(draft.text, "Changed phrase");

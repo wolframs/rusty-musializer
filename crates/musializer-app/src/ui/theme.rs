@@ -590,7 +590,6 @@ pub mod metric {
     pub const UI_RADIUS: f32 = 4.0;
     pub const UI_PANEL_PADDING: f32 = 10.0;
     pub const UI_CONTROL_GAP: f32 = 8.0;
-    pub const UI_BUTTON_HEIGHT: f32 = 36.0;
 
     // The timed-lane system (LX1-e). The timeline band stacks the scene plan
     // lane, the waveform strip and the lyric cue lane over one time axis, and

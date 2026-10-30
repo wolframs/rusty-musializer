@@ -801,8 +801,18 @@ impl Readiness {
     fn tint(&self) -> Color {
         match self {
             Readiness::Ready => color::ui_success(),
-            Readiness::Blocked(_) => color::ui_danger(),
+            Readiness::Blocked(_) => color::ui_warning(),
             Readiness::Unknown(_) => color::ui_muted(),
+        }
+    }
+
+    /// The dot's tone in the WX-5d skin: Ready success, Blocked warning,
+    /// Unknown muted (§3.4). Never the accent.
+    fn tone(&self) -> widgets::StatusTone {
+        match self {
+            Readiness::Ready => widgets::StatusTone::Success,
+            Readiness::Blocked(_) => widgets::StatusTone::Warning,
+            Readiness::Unknown(_) => widgets::StatusTone::Muted,
         }
     }
 
@@ -3372,8 +3382,9 @@ impl AssistSettingsDialog {
         // context rather than as content. It is not a widget: the shell's own
         // blocker already claimed this frame's press.
         widgets::fill(d, layout.scrim, color::scrim());
-        widgets::fill(d, layout.dialog, color::ui_surface());
-        d.draw_rectangle_lines_ex(widgets::rectangle(layout.dialog), 1.0, color::ui_rule());
+        // WX-5d: a floating surface, like a flyout or a notice card — 4 px
+        // corners, a hairline and a soft shadow over the scrim.
+        widgets::floating_surface(d, layout.dialog);
 
         self.draw_header(d, fonts, layout);
         self.draw_tabs(d, font, layout);
@@ -3396,7 +3407,9 @@ impl AssistSettingsDialog {
 
     fn draw_header(&mut self, d: &mut RaylibDrawHandle<'_>, fonts: &Faces, layout: DialogLayout) {
         let font = fonts.ui();
-        widgets::fill(d, layout.header, color::ui_raised());
+        // WX-5d: the header sits on the dialog's own surface, a hairline under
+        // it (raylib has no per-corner radius, so a raised header would square
+        // the dialog's top corners); its title is the micro head.
         d.draw_line_ex(
             Vector2::new(layout.header.x, layout.header.y + layout.header.height),
             Vector2::new(
@@ -3406,14 +3419,13 @@ impl AssistSettingsDialog {
             1.0,
             color::ui_rule(),
         );
-        widgets::draw_text(
+        widgets::draw_micro(
             d,
             font,
-            "AI SETTINGS",
             layout.dialog.x + DIALOG_PADDING,
-            layout.dialog.y + 14.0,
-            metric::UI_FONT_HEADER,
-            color::ui_ink(),
+            // On the subtitle's line: its 13 px caption, centred.
+            layout.dialog.y + 19.0,
+            &[widgets::MicroRun::muted("AI settings")],
         );
         let subtitle = if self.is_dirty() {
             "Draft differs \u{00b7} Save to affect the next job"
@@ -3821,7 +3833,9 @@ impl AssistSettingsDialog {
         }
         let id = widgets::widget_id(DIALOG_WIDGETS, widget);
         let state = self.widgets.button(d, id, boundary);
-        badge(d, font, boundary, &readiness.label(), readiness.tint());
+        // WX-5d: a dot and a word, which also ends the pill's clipping; the
+        // whole remediation stays on hover.
+        widgets::status_dot_label(d, font, boundary, readiness.tone(), &readiness.label());
         self.widgets.hint(d, state, id, boundary, &readiness.hint());
     }
 

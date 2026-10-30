@@ -46,7 +46,13 @@
 # diffed exactly against `tests/differential/layout_post_legacy.txt` (1388
 # records: the window grid at six band heights, every rail height from 0 to
 # 260, each icon-ladder rung a sixteenth and a pixel either side, and ten
-# degenerate cases). Its two negative controls, run 2026-10-28:
+# degenerate cases), then since WX-5d the right column's width rule (2477
+# `column` records: the automatic rule 1 px at a time from 900 to 1700 and
+# on a 20 px grid outside, and 16 dragged widths on the 20 px grid — each
+# drag bound, the automatic bounds, a pixel either side, 0, NaN and 9000).
+# Its negative control, run 2026-10-29: COLUMN_AUTO_MIN 320 -> 321 failed
+# with 496 column records, the 1388 rail records unchanged. The rail's two
+# negative controls, run 2026-10-28:
 #
 #   3. RAIL_WIDTH 52 -> 52.0625 (one sixteenth of a pixel): 1215 of the 1388
 #      records differ — every accepted one; the 173 refusals print sentinels.
@@ -138,13 +144,14 @@ fi
 if ! diff -u "$EXPECTED" "$OUT_DIR/layout_rust_post.txt" >"$OUT_DIR/layout_post_legacy.diff"; then
     head -40 "$OUT_DIR/layout_post_legacy.diff"
     echo
-    echo "FAIL: the rail layout changed: $(grep -c '^+rail' "$OUT_DIR/layout_post_legacy.diff") of" \
-         "$(grep -c '^rail' "$EXPECTED") pinned records differ ('-' is the pinned" \
+    echo "FAIL: the post-legacy layout changed: $(grep -c '^+rail' "$OUT_DIR/layout_post_legacy.diff") of" \
+         "$(grep -c '^rail' "$EXPECTED") rail and $(grep -c '^+column' "$OUT_DIR/layout_post_legacy.diff") of" \
+         "$(grep -c '^column' "$EXPECTED") column records differ ('-' is the pinned" \
          "expectation, '+' is the code). If the change is deliberate, update" \
          "$EXPECTED and say why in the commit." >&2
     exit 1
 fi
-echo "post-legacy rail: $(grep -c '^rail' "$EXPECTED") records match the pinned file"
+echo "post-legacy: $(grep -c '^rail' "$EXPECTED") rail and $(grep -c '^column' "$EXPECTED") column records match the pinned file"
 
 echo "=== comparing ==="
 python3 - "$OUT_DIR/layout_oracle.txt" "$OUT_DIR/layout_rust.txt" "$TOLERANCE" <<'PY'

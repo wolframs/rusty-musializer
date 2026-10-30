@@ -120,7 +120,12 @@ impl Shell {
                 RailIcon::Tracks => (icons::RAIL_TRACKS, self.open_flyout == Some(Flyout::Tracks)),
                 RailIcon::Scenes => (icons::RAIL_SCENES, self.open_flyout == Some(Flyout::Scenes)),
                 RailIcon::Editor => (icons::EDITOR, self.editor_open),
-                RailIcon::Dock => (icons::DOCK, self.dock_open),
+                // WX-5d: with the column the dock is its Direct view, and
+                // this slot shows or hides the whole column.
+                RailIcon::Dock => (
+                    icons::COLUMN,
+                    self.column_view() != super::shell::ColumnView::Closed,
+                ),
             };
             let id = widgets::widget_id(widgets::id::RAIL, slot as u32);
             let font_size = (boundary.height * 0.44).round();
@@ -159,7 +164,7 @@ impl Shell {
                         self.editor_open = true;
                     }
                 }
-                RailIcon::Dock => commands.push(self.toggle_dock()),
+                RailIcon::Dock => self.toggle_column(input.workspace, commands),
             }
         }
     }

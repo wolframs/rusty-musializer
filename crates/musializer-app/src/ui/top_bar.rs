@@ -103,6 +103,8 @@ const TAB_SLOT: u32 = 0;
 const STILL_SLOT: u32 = 10;
 const SHEET_SLOT: u32 = 11;
 const RENDER_SLOT: u32 = 12;
+/// The info line as a press (WX-5d): it opens the Render view.
+const FORMAT_SLOT: u32 = 13;
 
 /// What the top bar drew in its last frame, kept for [`Shell::describe_top_bar`].
 ///
@@ -124,6 +126,9 @@ pub(crate) struct TopBarState {
     /// Whether Render… was live (it is disabled, with its reason, without
     /// FFmpeg on PATH).
     pub render_live: bool,
+    /// Whether the Render view was open (WX-5d): Render… wore the selection
+    /// look instead of the accent.
+    pub render_view: bool,
     /// The UI scale the rects are in, so a script can turn them into pixels.
     pub scale: f32,
 }
@@ -131,14 +136,16 @@ pub(crate) struct TopBarState {
 /// The natural widths of everything the bar might draw, measured by the
 /// caller in the faces that will draw them. A separate value so the layout
 /// is arithmetic a test can sweep without a window.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TopBarMeasures {
     pub title: f32,
     /// Zero when the project names no artist.
     pub artist: f32,
     pub info: f32,
     pub save_word: f32,
-    pub tabs: [f32; 5],
+    /// One per tab drawn: five on the band layout, four with the column
+    /// (WX-5d, Export left for Render…).
+    pub tabs: Vec<f32>,
     /// Still, Contact sheet, Render….
     pub actions: [f32; 3],
     /// "Sheet", the narrow label of the second action.
@@ -190,7 +197,7 @@ impl Shed {
 }
 
 /// Where everything goes, in the bar's own (logical) coordinates.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TopBarLayout {
     pub shed: Shed,
     /// Tabs at the bar's centre, or packed after the title.
@@ -206,7 +213,7 @@ pub(crate) struct TopBarLayout {
     pub dot: UiRect,
     pub save_word: Option<UiRect>,
     pub group: UiRect,
-    pub tabs: [UiRect; 5],
+    pub tabs: Vec<UiRect>,
     pub actions: [UiRect; 3],
     pub sheet_short: bool,
 }
@@ -332,9 +339,9 @@ impl TopBarLayout {
         let save_word = show_word.then(|| line(x + DOT_GAP, m.save_word));
 
         let group = UiRect::new(group_x, control_y, tabs_width, CONTROL_HEIGHT);
-        let mut tabs = [UiRect::default(); 5];
+        let mut tabs = vec![UiRect::default(); m.tabs.len()];
         let mut tab_x = group_x + GROUP_INSET;
-        for (rect, label) in tabs.iter_mut().zip(m.tabs) {
+        for (rect, label) in tabs.iter_mut().zip(&m.tabs) {
             let width = label + tab_padding * 2.0;
             *rect = UiRect::new(
                 tab_x,
@@ -498,7 +505,6 @@ fn tab_tip(tab: ModeTab) -> &'static str {
         ModeTab::Direct => "Direct: the preview and the plan, no panel open",
         ModeTab::Lyrics => "Lyrics: the lines and their timing",
         ModeTab::Look => "Look: the tuning inspector [T]",
-        ModeTab::Export => "Export: size, shape, clip and quality",
         ModeTab::Assist => "Assist: analysis and lyric timing",
     }
 }
@@ -633,6 +639,8 @@ impl Shell {
         const TAB_SIZE: f32 = metric::UI_FONT_LABEL;
         const ACTION_SIZE: f32 = metric::UI_FONT_LABEL;
         let action_labels = ["Still", "Contact sheet", "Render\u{2026}"];
+        // WX-5d: with the column, four tabs; Export is Render…'s view.
+        let tab_list: &[ModeTab] = &ModeTab::ALL;
         let measures = TopBarMeasures {
             title: authored.measure_text(&title, TITLE_SIZE, 0.0).x,
             artist: artist.as_deref().map_or(0.0, |artist| {
@@ -640,7 +648,10 @@ impl Shell {
             }),
             info: widgets::measure_tabular(ui, &info, META_SIZE),
             save_word: widgets::measure(ui, &save_word, META_SIZE),
-            tabs: ModeTab::ALL.map(|tab| widgets::measure(ui, tab.label(), TAB_SIZE)),
+            tabs: tab_list
+                .iter()
+                .map(|tab| widgets::measure(ui, tab.label(), TAB_SIZE))
+                .collect(),
             actions: action_labels.map(|label| widgets::measure(ui, label, ACTION_SIZE)),
             sheet_short: widgets::measure(ui, "Sheet", ACTION_SIZE),
         };
@@ -738,7 +749,12 @@ impl Shell {
             color::ui_control_edge(),
             1.0,
         );
-        for (index, (tab, area)) in ModeTab::ALL.into_iter().zip(layout.tabs).enumerate() {
+        for (tab, &area) in tab_list.iter().copied().zip(&layout.tabs) {
+            // By what the tab is, so the four-tab bar keeps every tab's id.
+            let index = ModeTab::ALL
+                .iter()
+                .position(|candidate| *candidate == tab)
+                .unwrap_or(0);
             let id = widgets::widget_id(widgets::id::TOP_BAR, TAB_SLOT + index as u32);
             let button = self.widgets.button(d, id, area);
             let selected = self.mode_tab_selected(tab);
@@ -767,9 +783,20 @@ impl Shell {
                 TAB_SIZE,
                 ink,
             );
+            // The Direct tab's dot while another view shows (WX-5d §2): the
+            // dock's news, never the accent.
+            if tab == ModeTab::Direct && !selected {
+                if let Some(tone) = self.column_report.badge.tone() {
+                    d.draw_circle_v(
+                        Vector2::new(area.x + area.width - 5.0, area.y + 7.0),
+                        3.0,
+                        tone.color(),
+                    );
+                }
+            }
             self.widgets.hint(d, button, id, area, tab_tip(tab));
             if button.clicked {
-                self.activate_mode_tab(tab, input.workspace);
+                self.activate_mode_tab(tab, input.workspace, commands);
             }
         }
 
@@ -831,41 +858,63 @@ impl Shell {
         // cannot press says why rather than vanishing.
         let render_live = ffmpeg_available();
         let render_id = widgets::widget_id(widgets::id::TOP_BAR, RENDER_SLOT);
-        let render_tip = format!(
-            "Render: choose a file and render {} (size, shape and clip in Export)",
-            format_label(track.render_config.width, track.render_config.height)
-        );
-        if render_live {
+        let render_view = self.column_view() == super::shell::ColumnView::Render;
+        {
+            // WX-5d §3.5: Render… opens the Render view, whose commit renders.
+            // While the view is open the button wears the selection look and
+            // the commit carries the accent, so the frame still has one.
             let render = self.widgets.text_button(
                 d,
                 ui,
                 render_id,
                 layout.actions[2],
                 action_labels[2],
-                false,
-                ButtonStyle::Primary,
-                Some(ACTION_SIZE),
-            );
-            self.widgets
-                .hint(d, render, render_id, layout.actions[2], &render_tip);
-            if render.clicked {
-                commands.push(ShellCommand::StartRender);
-            }
-        } else {
-            self.widgets.disabled_button(
-                d,
-                ui,
-                layout.actions[2],
-                action_labels[2],
+                render_view,
+                if render_view {
+                    ButtonStyle::Neutral
+                } else {
+                    ButtonStyle::Primary
+                },
                 Some(ACTION_SIZE),
             );
             self.widgets.hint(
                 d,
-                hover(layout.actions[2]),
+                render,
                 render_id,
                 layout.actions[2],
-                "Render needs FFmpeg on the PATH; Still and Contact sheet do not",
+                if render_view {
+                    "Close the render settings"
+                } else {
+                    "Render: size, shape, clip and quality, then choose a file"
+                },
             );
+            if render.clicked {
+                self.toggle_column_view(
+                    super::shell::ColumnView::Render,
+                    input.workspace,
+                    commands,
+                );
+            }
+            // The format text opens the same view (§3.5): it names what the
+            // view sets.
+            if let Some(area) = layout.info {
+                let format_id = widgets::widget_id(widgets::id::TOP_BAR, FORMAT_SLOT);
+                let format = self.widgets.button(d, format_id, area);
+                self.widgets.hint(
+                    d,
+                    format,
+                    format_id,
+                    area,
+                    "Size, shape and frame rate: open the render settings",
+                );
+                if format.clicked && !render_view {
+                    self.toggle_column_view(
+                        super::shell::ColumnView::Render,
+                        input.workspace,
+                        commands,
+                    );
+                }
+            }
         }
 
         self.top_bar_state = TopBarState {
@@ -878,6 +927,7 @@ impl Shell {
             save_reason: reason,
             layout: Some(layout),
             render_live,
+            render_view,
             scale: input.ui_scale.value(),
         };
     }
@@ -895,7 +945,7 @@ impl Shell {
             return "hidden (editor)".to_owned();
         }
         let state = &self.top_bar_state;
-        let (Some(rect), Some(layout)) = (state.drawn, state.layout) else {
+        let (Some(rect), Some(layout)) = (state.drawn, state.layout.as_ref()) else {
             return "none".to_owned();
         };
         let at = |area: UiRect| {
@@ -904,9 +954,11 @@ impl Shell {
                 area.x, area.y, area.width, area.height
             )
         };
-        let tabs: Vec<String> = ModeTab::ALL
-            .into_iter()
-            .zip(layout.tabs)
+        let tab_list: &[ModeTab] = &ModeTab::ALL;
+        let tabs: Vec<String> = tab_list
+            .iter()
+            .copied()
+            .zip(layout.tabs.iter().copied())
             .map(|(tab, area)| {
                 format!(
                     "{}{}@{}",
@@ -953,8 +1005,13 @@ impl Shell {
                 "sheet"
             },
             at(layout.actions[1]),
-            if state.render_live { "" } else { "(disabled)" },
+            // Render… opens the Render view whether or not FFmpeg is on PATH:
+            // the view's commit is what says it cannot render.
+            if state.render_view { "(view)" } else { "" },
             at(layout.actions[2]),
+        ) + &format!(
+            " format={}",
+            layout.info.map_or_else(|| "hidden".to_owned(), at)
         )
     }
 }
@@ -971,7 +1028,7 @@ mod tests {
             artist: if artist { 126.0 } else { 0.0 },
             info: 168.0,
             save_word: 38.0,
-            tabs: [44.0, 46.0, 32.0, 48.0, 46.0],
+            tabs: vec![44.0, 46.0, 32.0, 48.0, 46.0],
             actions: [32.0, 92.0, 62.0],
             sheet_short: 38.0,
         }

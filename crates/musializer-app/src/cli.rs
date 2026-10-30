@@ -469,29 +469,23 @@ pub struct UiProbe {
     /// `column-width=N` (WX-5d): the column's dragged width, in the split
     /// bounds every other width probe takes.
     pub column_width: Option<f32>,
+    /// `column-switch=VIEW` (WX-5d): change the column to VIEW on frame 40,
+    /// through the press path, after `dock-focus=` (frame 20) and
+    /// `agent-say=` (frame 30) have run. Invented because the claims about
+    /// leaving Direct — the keyboard is released, a reply behind another
+    /// view lights the Direct tab — are about a *sequence*.
+    pub column_switch: Option<crate::ui::shell::ColumnView>,
     /// `lyrics-pane=cues|style|effects` (WX-5d): the Lyrics view's sub-view.
     /// `style=caption|effects` stays as an alias and sets this too; giving
     /// both is refused. `style` and `effects` also set the two flags above,
     /// which are what today's panel reads.
-    #[allow(
-        dead_code,
-        reason = "WX-5d seam: the Lyrics builder's column reads it; today's panel reads the style flags"
-    )]
     pub lyrics_pane: Option<LyricsPaneProbe>,
     /// `assist-card=lyrics|scenes|feelings|full` (WX-5d): open that workflow's
     /// card in the Assist view. The words are the cards'; the values are the
     /// pipeline's own workflow kinds.
-    #[allow(
-        dead_code,
-        reason = "WX-5d seam: the Look & Assist builder's cards read it"
-    )]
     pub assist_card: Option<musializer_core::assist::execution::WorkflowKind>,
     /// `progress-shot=N` (WX-5d): photograph the export progress screen while
     /// it encodes frame N (0-based), so the themed screen is reviewable.
-    #[allow(
-        dead_code,
-        reason = "WX-5d seam: the Frame builder's progress screen reads it"
-    )]
     pub progress_shot: Option<u32>,
 }
 
@@ -1302,6 +1296,9 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             }
         }
         "column-width" => probe.column_width = Some(parse_split_position(value)?),
+        "column-switch" => {
+            probe.column_switch = Some(crate::ui::shell::ColumnView::from_name(value)?);
+        }
         "assist-card" => {
             use musializer_core::assist::execution::WorkflowKind;
             probe.assist_card = Some(match value {
@@ -1637,7 +1634,8 @@ Diagnostics:
                           flyout=tracks|scenes|none opens a rail flyout,
                           column=direct|lyrics|look|assist|render|closed
                           shows that column view (not with panel=),
-                          column-width=PX, lyrics-pane=cues|style|effects,
+                          column-width=PX, column-switch=VIEW (frame 40),
+                          lyrics-pane=cues|style|effects,
                           assist-card=lyrics|scenes|feelings|full,
                           progress-shot=N photographs export frame N,
                           key=escape presses Escape once,
@@ -2763,5 +2761,28 @@ mod tests {
                 "{refused}"
             );
         }
+    }
+
+    #[test]
+    fn column_switch_names_a_view() {
+        use crate::ui::shell::ColumnView;
+        assert_eq!(
+            parse_ui_probe("column-switch=lyrics")
+                .unwrap()
+                .column_switch,
+            Some(ColumnView::Lyrics)
+        );
+        assert_eq!(
+            parse_ui_probe("column-switch=closed")
+                .unwrap()
+                .column_switch,
+            Some(ColumnView::Closed)
+        );
+        assert!(parse_ui_probe("column-switch=export").is_none());
+        // It is a sequence step, not the starting view: it leaves `panel` alone.
+        assert_eq!(
+            parse_ui_probe("column-switch=assist").unwrap().panel,
+            UiPanel::None
+        );
     }
 }

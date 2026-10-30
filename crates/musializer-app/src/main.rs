@@ -426,9 +426,8 @@ fn run(
     };
     app.shell.set_ui_scale_override(options.ui_scale);
     app.shell.editor_open = options.editor_ui;
-    // WX-5d: the column layout's switch, read once so no frame sees half of
-    // it. Off unless `MUSIALIZER_COLUMN_LAYOUT=1`.
-    app.shell.column_layout = ui::column::column_layout_from_env();
+    // WX-5d: the column opens where `ui.json` left it (absent: on Direct).
+    app.shell.seed_column_from_preferences();
     let mut editor_backend = ui::egui_backend::EguiBackend::default();
     let mut editor = ui::egui_editor::EditorState::default();
     let mut editor_was_active = false;
@@ -793,6 +792,12 @@ fn run(
     // `--ui-probe key=escape`: frames left before the one Escape, on the
     // frame `click=` would press, after the same settling frames.
     let mut escape_in: Option<u32> = None;
+    // `--ui-probe progress-shot=N` (WX-5d), and whether frame N is past.
+    let mut progress_shot: Option<u32> = options
+        .ui_probe
+        .as_ref()
+        .and_then(|probe| probe.progress_shot);
+    let mut progress_shot_wait: Option<u8> = None;
     let mut middle_drag_phase: u32 = 0;
     let mut middle_drag: Option<(f32, f32)> = None;
     // `--ui-probe save-to=PATH`, the destination picker's stand-in for a
@@ -971,7 +976,11 @@ fn run(
                 rl.set_window_size(width as i32, height as i32);
             }
             rl.set_window_position(0, 0);
-            app.shell.panel = probe.panel;
+            // A probe that names no panel and no view keeps the view
+            // `ui.json` seeded rather than resetting it to none.
+            if probe.panel != cli::UiPanel::None || probe.column.is_some() {
+                app.shell.panel = probe.panel;
+            }
             app.shell.fullscreen = probe.fullscreen;
             if let Some(width) = probe.sidebar_width {
                 app.shell.ui_preferences.sidebar_width = Some(width);
@@ -1056,6 +1065,9 @@ fn run(
             // state exactly what `Shell::column_view` reads back.
             if let Some(view) = probe.column {
                 app.shell.set_column_view(view);
+            }
+            if let Some(kind) = probe.assist_card {
+                ui::panels::assist::apply_card_probe(&app.workspace, kind);
             }
             if let Some(width) = probe.column_width {
                 app.shell.ui_preferences.column_width = Some(width);
@@ -1372,8 +1384,14 @@ fn run(
             && (rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
                 || rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL))
         {
-            dock_commands.push(app.shell.toggle_dock());
-            if app.shell.dock_open {
+            // WX-5d §2: Ctrl+` opens the column on Direct and focuses the
+            // terminal, or closes the column from Direct.
+            app.shell.toggle_column_view(
+                ui::shell::ColumnView::Direct,
+                &app.workspace,
+                &mut dock_commands,
+            );
+            if app.shell.column_view() == ui::shell::ColumnView::Direct {
                 dock.focus_active();
             }
         }
@@ -1381,17 +1399,22 @@ fn run(
         // the dock is on screen.
         dock.tick();
         let full_logical = ui_scale.logical_size(physical_window);
-        let dock_rect = (app.shell.dock_open && !app.shell.fullscreen)
-            .then(|| {
-                ui::dock::Dock::rect(
-                    full_logical,
-                    dock.dragged_width().or(app.shell.ui_preferences.dock_width),
-                )
-            })
-            .flatten();
-        let workspace_window = dock_rect.map_or(full_logical, |rect| (rect.x, full_logical.1));
+        // WX-5d: the dock is the column's Direct view, drawn into the
+        // column; the workspace is not narrowed for it. The welcome screen
+        // has no column, and its right side is the recent-project list.
+        let dock_rect = (app.workspace.current().is_some()
+            && app.shell.column_view() == ui::shell::ColumnView::Direct)
+            .then(|| app.shell.frame_for(full_logical, &app.workspace).column)
+            .filter(|rect| !rect.is_empty());
+        let workspace_window = full_logical;
         if dock_rect.is_none() {
             app.shell.dock_keyboard = false;
+            // Leaving Direct, or hiding the dock, releases the keyboard
+            // (WX-5d §2). Without this a terminal that hid the dock with
+            // Ctrl+` kept the keyboard, and the chord could not reopen it.
+            if dock.wants_keyboard() {
+                dock.release_keyboard(editor_backend.ctx());
+            }
         }
         // Reasserted every frame rather than set once, so the tooltip a capture is
         // after is in the shot regardless of how many frames the run lasts — and
@@ -1511,6 +1534,33 @@ fn run(
         // the analyzer and the scene for the duration, and draws its own progress
         // screen (`musializer.c:641-651`).
         if export.is_some() {
+            // `--ui-probe progress-shot=N` (WX-5d): once N frames are
+            // encoded, hold the encoder for three ticks and photograph the
+            // screen after the second identical one. Held rather than timed,
+            // because which of the last two frames a readback returns depends
+            // on the renderer (`docs/TRAPS.md`), and a still screen makes
+            // that question moot.
+            if let (Some(target), Some(path)) = (progress_shot, options.probe_shot.as_ref()) {
+                let session = export.as_mut().expect("just checked");
+                match progress_shot_wait {
+                    None if session.encoded_frames() >= u64::from(target) => {
+                        session.hold_for(3);
+                        progress_shot_wait = Some(2);
+                    }
+                    Some(0) => {
+                        let path = progress_shot_path(path);
+                        with_preview_paused(music.as_ref(), || {
+                            let image = rl.load_image_from_screen(&thread);
+                            image.export_image(&path.to_string_lossy());
+                        });
+                        app.shell.render_view.progress_at_shot =
+                            Some(app.shell.render_view.progress.clone());
+                        progress_shot = None;
+                    }
+                    Some(left) => progress_shot_wait = Some(left - 1),
+                    None => {}
+                }
+            }
             let finished = export.as_mut().expect("just checked").tick(
                 &mut rl,
                 &thread,
@@ -1691,6 +1741,29 @@ fn run(
         // One egui pass for every toolkit surface on screen: the dock, the
         // Editor and the welcome theme picker. The dock is built first, so
         // keys a terminal used are gone before the Editor reads its Escape.
+        // The dock's probes run whether or not Direct is on screen (WX-5d):
+        // a reply that arrives behind another view is what the Direct tab's
+        // dot is for, and a probe that only ran while the dock was shown
+        // could never stage one.
+        {
+            let context = dock_context(&app, follow.as_ref(), time_seconds);
+            // The window's own treatment applies, noted in the shown chat.
+            dock.observe(&context);
+            if let Some(probe) = options.ui_probe.as_ref() {
+                if report.frames == 20 && (probe.dock_run.is_some() || probe.dock_focus) {
+                    // The terminals live in the Direct view's pane, which
+                    // starts empty; the probes type into one.
+                    dock.ensure_terminal(&context);
+                }
+                dock_probes(&mut dock, probe, report.frames, &context);
+                if report.frames == 40 {
+                    if let Some(view) = probe.column_switch {
+                        app.shell
+                            .show_column_view(view, &app.workspace, &mut dock_commands);
+                    }
+                }
+            }
+        }
         let egui_active = editor_active || welcome_theme_active || dock_rect.is_some();
         if egui_active {
             editor_backend.begin_frame(
@@ -1705,48 +1778,21 @@ fn run(
                     egui::pos2(bounds.x, bounds.y),
                     egui::vec2(bounds.width, bounds.height),
                 );
-                if let Some(probe) = options.ui_probe.as_ref() {
-                    if report.frames == 10 {
-                        if let Some(agent) =
-                            probe.agent.as_deref().and_then(ui::dock::Agent::from_name)
-                        {
-                            dock.open_chat(agent, &context);
-                        }
-                    }
-                    if report.frames == 30 {
-                        if let Some(text) = probe.agent_say.as_deref() {
-                            dock.probe_say(text, &context);
-                        }
-                    }
-                    if report.frames == 60 {
-                        if let Some(allow) = probe.agent_decide {
-                            dock.probe_decide(allow);
-                        }
-                    }
-                    if report.frames == 20 {
-                        if let Some(command) = probe.dock_run.as_deref() {
-                            dock.probe_write(&format!("{command}\r"));
-                        }
-                        if probe.dock_focus {
-                            dock.focus_active();
-                        }
-                    }
-                }
                 let output = dock.show(editor_backend.ctx(), rect, &context);
                 if output.toggle {
-                    dock_commands.push(app.shell.toggle_dock());
+                    app.shell.toggle_column_view(
+                        ui::shell::ColumnView::Direct,
+                        &app.workspace,
+                        &mut dock_commands,
+                    );
                 }
                 if output.stop_following {
                     dock_commands.push(ShellCommand::StopFollowingTreatment);
                 }
-                if let Some(width) = output.resized {
-                    app.shell.ui_preferences.dock_width = Some(width.round());
-                    dock_commands.push(ShellCommand::SaveUiPreferences(app.shell.ui_preferences));
-                }
             }
             app.shell.dock_keyboard = app.shell.dock_open && dock.wants_keyboard();
             if editor_active {
-                let bounds = ui::shell_layout::editor_rect(workspace_window);
+                let bounds = app.shell.editor_panel(workspace_window);
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(bounds.x, bounds.y),
                     egui::vec2(bounds.width, bounds.height),
@@ -1776,6 +1822,17 @@ fn run(
                 welcome_input_blocked = owns_input;
             }
             editor_backend.end_frame(&mut rl);
+        }
+
+        // The Direct tab's dot, and one notice when an agent starts waiting
+        // on Allow/Deny while another view has the column (WX-5d §2).
+        {
+            let (badge, notice) = dock.badge(dock_rect.is_some());
+            app.shell.column_report.badge = badge;
+            if let Some(detail) = notice {
+                app.shell
+                    .notify(Severity::Warning, "An agent is waiting on you", &detail);
+            }
         }
 
         // The shape the export will actually be (EX2). Falls back to the default
@@ -1906,6 +1963,8 @@ fn run(
                     d.draw_rectangle_rec(surround, ui::theme::color::preview_surround());
                 }
                 let preview = ui::widgets::rectangle(ui_scale.physical_rect(framed));
+                // WX-5d: the sample caption, preview only (the draw takes it).
+                renderer.sample_caption = app.shell.sample_caption(&app.workspace, time_seconds);
                 renderer.draw(&mut d, &fonts, &app.scene, &frame, assets, preview, 1.0);
                 // The frame edge, drawn *after* the scene and only when there is
                 // one. A capture of Pentagram Orbits pillarboxed against the
@@ -2809,6 +2868,14 @@ fn run(
     }
     close_audio(&mut music, &mut app, &mut scratch);
     report.dock = dock.describe(app.shell.dock_open);
+    {
+        // WX-5d: where the dock drew, which is the column's rect on Direct.
+        let rect = app.shell.column_rect();
+        report.dock.push_str(&format!(
+            " rect={:.0},{:.0},{:.0},{:.0}",
+            rect.x, rect.y, rect.width, rect.height
+        ));
+    }
     report.scene_runs = app.shell.describe_runs(&app.workspace);
     report.top_bar = app.shell.describe_top_bar();
     report.notices = app.shell.describe_notices();
@@ -6048,7 +6115,7 @@ impl Report {
             let theme = ui::theme::current();
             let p = theme.palette();
             println!(
-                "appearance:      {} accent=#{:06X} surface=#{:06X} raised=#{:06X} trough=#{:06X} rule=#{:06X} selected=#{:06X}/#{:06X}",
+                "appearance:      {} accent=#{:06X} surface=#{:06X} raised=#{:06X} trough=#{:06X} rule=#{:06X} selected=#{:06X}/#{:06X} ink=#{:06X} warning=#{:06X}",
                 match theme {
                     ui::theme::UiTheme::BlackAmber => "black-amber",
                     ui::theme::UiTheme::LightBlue => "light-blue",
@@ -6060,6 +6127,8 @@ impl Report {
                 p.ui_rule >> 8,
                 p.ui_selected >> 8,
                 p.ui_selected_edge >> 8,
+                p.ui_ink >> 8,
+                p.ui_warning >> 8,
             );
         }
         println!(
@@ -6628,6 +6697,52 @@ impl Report {
                 (false, _, _) => "no audio was consumed",
             }
         );
+    }
+}
+
+/// Where `progress-shot=` writes: beside `--probe-shot`, with `-progress`
+/// before the extension, so one run can photograph the progress screen and
+/// the workspace after it.
+fn progress_shot_path(shot: &Path) -> PathBuf {
+    let stem = shot
+        .file_stem()
+        .map_or_else(|| "shot".into(), |stem| stem.to_string_lossy().into_owned());
+    let extension = shot
+        .extension()
+        .map_or_else(|| "png".into(), |ext| ext.to_string_lossy().into_owned());
+    shot.with_file_name(format!("{stem}-progress.{extension}"))
+}
+
+/// The dock's probe seams (`agent=`, `agent-say=`, `agent-decide=`,
+/// `dock-run=`, `dock-focus=`), each on its own frame.
+fn dock_probes(
+    dock: &mut ui::dock::Dock,
+    probe: &cli::UiProbe,
+    frame: u64,
+    context: &ui::dock::DockContext,
+) {
+    if frame == 10 {
+        if let Some(agent) = probe.agent.as_deref().and_then(ui::dock::Agent::from_name) {
+            dock.open_chat(agent, context);
+        }
+    }
+    if frame == 30 {
+        if let Some(text) = probe.agent_say.as_deref() {
+            dock.probe_say(text, context);
+        }
+    }
+    if frame == 60 {
+        if let Some(allow) = probe.agent_decide {
+            dock.probe_decide(allow);
+        }
+    }
+    if frame == 20 {
+        if let Some(command) = probe.dock_run.as_deref() {
+            dock.probe_write(&format!("{command}\r"));
+        }
+        if probe.dock_focus {
+            dock.focus_active();
+        }
     }
 }
 

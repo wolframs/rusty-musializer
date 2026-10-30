@@ -81,15 +81,20 @@ pub const EDITOR: Control =
     reason = "left the transport in WX-5c; the top bar's tabs are words"
 )]
 pub const ASSIST: Control = Control::new(Icon::Magic, "Assist", "Analysis assist");
-pub const DOCK: Control = Control::new(
-    Icon::Terminal,
-    "Agents",
-    "Terminal and agents: Claude Code, Codex, Antigravity [Ctrl+`]",
-);
 
 /// The rail's two flyouts (WX-5c §1). Neither has a key: every letter a
 /// flyout could take is already a global, and both are one press away on the
 /// rail, which is always on screen beside the preview.
+/// The rail's column toggle (WX-5d §2), in the Dock's slot: the dock is the
+/// Direct view of the column now.
+pub const COLUMN: Control = Control::new(
+    Icon::Columns,
+    "Panel",
+    "Show or hide the side panel: Direct, Lyrics, Look, Assist [Ctrl+`]",
+);
+/// The Render view's close button (WX-5d §3.5).
+pub const CLOSE_VIEW: Control = Control::new(Icon::Times, "Close", "Close [Render\u{2026}]");
+
 pub const RAIL_TRACKS: Control = Control::new(
     Icon::Music,
     "Trk",
@@ -162,9 +167,6 @@ mod tests {
 
     /// Every control names itself in its tooltip, and every control that has a
     /// keyboard binding says so there.
-    ///
-    /// Worth asserting rather than eyeballing: the tooltip is now the *only* place
-    /// a shortcut is written down, so one omitted is a binding nobody can discover.
     #[test]
     fn every_control_has_a_tooltip_and_a_text_fallback() {
         let all = [
@@ -178,7 +180,8 @@ mod tests {
             EXPORT,
             LYRICS,
             ASSIST,
-            DOCK,
+            COLUMN,
+            CLOSE_VIEW,
             RAIL_TRACKS,
             RAIL_SCENES,
             READOUT,
@@ -206,7 +209,6 @@ mod tests {
             SEEK_FORWARD,
             TUNE,
             EDITOR,
-            DOCK,
             READOUT,
             MUTE,
             UNMUTE,
