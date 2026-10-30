@@ -18,7 +18,7 @@
 //! Adapted with permission from a Python offline renderer by **Digi**
 //! (<https://github.com/digi-the-robot>, <https://x.com/digi_dot_exe>,
 //! canonical: <https://linktr.ee/digi_the_robot>) — the source is
-//! `OUTSIDE-DROPS/dreamscape.py` plus its `README.md`.
+//! Digi's `dreamscape.py` and its README.
 //!
 //! ## What changed on the way in, and why
 //!

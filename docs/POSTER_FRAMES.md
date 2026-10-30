@@ -202,6 +202,4 @@ Its private draft probe shares the real outcome handler rather than OS keys.
 Branch controls caught invisible/wrong posters, false ready reports, 105 px
 tiles, tile/artist gap hitboxes, hover selection, disabled draft ownership,
 reversed commit/cancel, 3000 ms playing budgets, and failure to clear artist
-metadata on both renderers. Handoff copies and original receipts remain under
-the main checkout's `build/redesign/` and the source workers' ignored build
-folders. Integrated receipts live in `build/wx5-integrated/`.
+metadata on both renderers. Integrated receipts live in `build/wx5-integrated/`.

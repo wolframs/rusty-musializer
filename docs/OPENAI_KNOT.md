@@ -2,7 +2,7 @@
 
 Select **OpenAI Knot** in the scene picker, or use `--scene knot`
 (`openai-knot` is an alias). The stable project identifier is `knot`, id 12.
-The scene uses the ordinary Tune controls, routes, saved presets and `.musi`
+The scene uses the ordinary Look controls, routes, saved presets and `.musi`
 format. Its eleven settings are pinned in `PHASE0_INVENTORY.md` and the
 post-legacy settings/route fixtures.
 

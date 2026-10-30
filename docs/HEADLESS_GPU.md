@@ -317,8 +317,8 @@ discarded and repeated. The contention symptom did not recur; no poster code
 or budget changed.
 
 Raw reports, process/load receipts, binary hashes, controls and rejected pilot
-are retained under `build/wx6-evidence/` for the lead's local review. They are
-ignored artifacts, not committed fixture data.
+were saved under `build/wx6-evidence/`. These local artifacts are not committed
+fixture data.
 
 ### Final verification and disposition
 
@@ -336,9 +336,8 @@ each original positive input and the clean tree were restored byte-for-byte.
 The fixed-display refusal controls cover both renderer environments as well.
 The only application change is the private report seam; the extra launcher
 change reserves :83 for isolated hand probes and supplies VirtualGL's shell
-utilities. No app UI or poster implementation changed. The pre-wave throwaway
-worktree is gone. The final handoff includes a release build and no owned
-background process; its command result is reported with the branch commits.
+utilities. No app UI or poster implementation changed. The release build
+completed, and no test process remained running.
 
 ## Integrated CPU poster timing (2026-10-30)
 

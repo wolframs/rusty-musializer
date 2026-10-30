@@ -48,18 +48,17 @@ like, or ask for a still or a clip. The agent reads your project and writes a
 `--treatment song.treatment.json`, or drop that file onto it, and the preview
 follows every valid edit while the music keeps playing.
 
-Each agent uses its own installed CLI and login. The
-[workstation guide](docs/WORKSTATION.md) covers the built-in sessions.
+Each agent uses its own installed CLI and login. See
+[native agent sessions](docs/WORKSTATION.md#wx-4--native-agent-sessions).
 
 ## What's in it
 
 **Scenes.** Open **Scenes** in the left rail. Every tile is a poster frame
-rendered from your own song. There are luminous
-bars, landscapes, kinetic type and [Fluid Ink](docs/FLUID_INK.md)'s curling plumes.
-The [scene gallery](docs/SCENE_GALLERY.md) runs from reflective chrome to northern
-lights and stained glass. [Pixel cats](docs/PIXEL_CATS.md) turns each lyric line
-into a pixel-art gag, and [Glyph Lattice](docs/GLYPH_LATTICE.md) sets light and
-words on a grid of tiny glyphs. Each scene has its own controls and reacts to the audio.
+rendered from your own song. Scenes include spectrum bars, landscapes, kinetic
+type, [Fluid Ink](docs/FLUID_INK.md), chrome, aurora and stained glass. See the
+[scene gallery](docs/SCENE_GALLERY.md). [Pixel cats](docs/PIXEL_CATS.md) renders
+lyrics as pixel art, and [Glyph Lattice](docs/GLYPH_LATTICE.md) draws shapes and
+words on a grid of glyphs. Each scene has its own controls and reacts to the audio.
 
 **Sections and routes.** Split the timeline into scenes, save different tuning
 for each section, and place markers for moments you want to emphasize. Connect
@@ -106,6 +105,7 @@ sudo apt install build-essential pkg-config libclang-dev \
 ```
 
 `kdialog` can replace `zenity` on KDE. Install `ffmpeg` for video export and Assist.
+Install `xvfb` for `tools/headless_run.sh` and the full `tools/verify.sh`.
 The checked-in libclang path targets Debian/Ubuntu on x86-64; on another layout,
 set `LIBCLANG_PATH` to the directory containing your libclang shared library.
 
@@ -212,7 +212,7 @@ valid choices, so an agent can correct itself from the error.
 }
 ```
 
-**Write, look, revise, render.**
+**The steps:**
 
 ```sh
 tools/headless_run.sh --vocabulary                       # 1. what can I name? scenes, settings, transitions
@@ -228,14 +228,14 @@ tools/headless_run.sh --treatment song.treatment.json \
   setting with its bounds and default, and every transition, as JSON. It needs
   no display, so it is the first thing an agent should run.
 - **`--contact-sheet`** and **`--still`** draw through the same path as the
-  export, so what an agent reviews is what the video will contain. A sheet is
-  how something without eyes on a screen watches four minutes in one image.
+  export, so what an agent reviews is what the video will contain. A sheet
+  shows a whole track in one image.
 - **`--save-project`** writes an ordinary `.musi`. Open it in the window and
-  keep working by hand; nothing about it is special.
+  keep working by hand.
 - **`tools/headless_run.sh`** runs the app on a private virtual display, muted,
   and passes its arguments through. Nothing appears on your screen and nothing
   plays through your speakers while an agent works.
-- **A look, not just scenes.** Hold a section to a palette (`grade`), finish the
+- **Grade, finish and glide.** Hold a section to a palette (`grade`), finish the
   whole video like film (`finish`: bloom, toning, vignette, grain), and ease one
   section's tuning into the next (`glide`). The `threshold` scene is a room whose
   doorway shows another scene live: walk the camera through it and the plan cuts
@@ -250,8 +250,8 @@ way taught. [`docs/examples/example.treatment.json`](docs/examples/example.treat
 is a complete treatment to start from.
 
 An agent can't hear, so check section changes and lyric timing by ear before you
-post. Transitions are authored in a treatment for now: the window plays them but
-doesn't show or edit them yet.
+post. Transitions are authored in a treatment for now: the window plays them and
+marks them on the scene lane, but can't edit them yet.
 
 ## Development
 

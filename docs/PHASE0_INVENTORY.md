@@ -456,7 +456,7 @@ Order effects, each observable:
 **`--still SECONDS`** and the times in **`--sheet-at`** read the lyric editor's
 grammar (`parse_cue_timestamp`): `73.5`, `1:13.5`, `01:13.500`. A negative sign,
 an hour field, `1:60` and anything non-numeric are refused. A `--still` at or
-past the end of the track is refused by name; the Export panel's still clamps
+past the end of the track is refused by name; the Render view's still clamps
 instead, because its playhead is on the track by construction.
 
 **`--sheet-at SPEC`** — `even:N` with N in `1..=96` (bare `even` is `even:24`,
@@ -466,7 +466,7 @@ times. A sheet holds at most 96 tiles.
 Report lines: `treatment:` (section, scene, route, lyric and event counts,
 caption and output state, seed, path), `contact sheet:` (tile count, first and
 last time, size, achieved supersample factor, path), and one `export still:`
-per still in the Export panel's own format.
+per still in the Render view's own format.
 
 ---
 

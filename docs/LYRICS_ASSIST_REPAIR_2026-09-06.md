@@ -2,8 +2,8 @@
 
 Work is tracked as **LT2** in `FEATURE_PARITY_PLAN.md` and paused at the
 operator’s request on 2026-09-07. These are observations and experiment receipts,
-not an acceptance claim. The [listening handoff](LYRICS_GROUPING_REVIEW.md)
-contains the two pending grouping judgments, browser session and portable bundle.
+not an acceptance claim. The [listening handoff](archive/LYRICS_GROUPING_REVIEW.md)
+contains the two resolved grouping judgments, browser session and portable bundle.
 
 The operator specified ten tracks and approved an error definition: a missing
 or extra performed lyric line, or either boundary more than 0.5 seconds wrong,

@@ -1,7 +1,7 @@
 # Lyrics timing incident: Groyper Idol (2026-08-17)
 
 This is the durable forensic record for the failure reported against
-`/home/wolfram/Music/Groyper Idol.mp3`. The source audio stays outside the
+a local MP3. The source audio stays outside the
 repository. Reproducible local artifacts live under gitignored
 `build/groyper-idol/`.
 

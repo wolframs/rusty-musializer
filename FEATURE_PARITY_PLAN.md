@@ -27,14 +27,6 @@ Other standing references: `AGENTS.md` for repository rules and the deliberate e
 and `docs/archive/` for history; `docs/PHASE0_INVENTORY.md` for formats, CLI
 grammar and schemas.
 
-## First-start agent cards — implemented, lead review pending 2026-10-30
-
-`t3/fix-agent-cards-tooltip-screenshot`: first-start shell-PATH discovery and truthful pending cards/report, Direct tooltip and README capture implemented. Scoped checks and GPU/CPU negative-control evidence are in `build/redesign/`; lead review pending, no push or merge.
-
-## F8 retirement — implemented, lead review pending 2026-10-30
-
-`t3/retire-f8-editor`: pixel filter and appearance moved into Look; modal deletion is its own commit; replacement press/state/persistence checks and the Direct README capture are implemented. Inventory and handoff evidence are in `build/redesign/`; negative controls and captures in `build/wx5-editor/`. The single guarded lyric-draft policy and in-field shortcut ownership are flagged for lead review. Nothing is pushed or merged to master.
-
 ## UI toolkit follow-through
 
 The right-column workspace replaces the duplicate modal; shared egui styling,
@@ -72,7 +64,7 @@ needs a schema bump or an updated harness and a recorded reason:
 ## Open work
 
 **WX-6 appearance coverage — still open (2026-10-30).** The EX4-c CPU
-failure is diagnosed and fixed on `t3/headless-wx6`: it predates WX-5d (5/5
+failure is diagnosed and fixed: it predates WX-5d (5/5
 quiet failures on both `3ec989e` and `be507e1`), and saturation occurs before
 the first drain, not during the injected stall. Five quiet poster gates passed;
 no poster change was needed. See `docs/HEADLESS_GPU.md` for evidence and the
@@ -90,21 +82,16 @@ lyric lane cannot grow past the fixed band's slack. Integration reproduced a
 working shrink to 30 px (the actual minimum request is 22). Growing the band
 through this grip remains a layout decision, separate from appearance coverage.
 
-**WX-5 polish and features — integrated, awaiting lead review (2026-10-30).**
-`t3/integrate-wx5-wx6-features` contains the three requested no-ff merges,
-scene posters and inline artist editing, consolidated capture ownership, and
-exact drawn route-card checks. Full verification is 20/20; the complete CPU
-headless gate also passes. Lead/operator review remains open; nothing was
-pushed or merged to master. Evidence: `WORKSTATION.md`, `POSTER_FRAMES.md`,
-`HEADLESS_GPU.md`, and the archive's integration entry. WX-6 appearance work
-above remains open, as does its separate band-growth layout decision.
+**WX-5 follow-ups.** The remaining layout decision is whether the lyric lane's
+resize grip should grow the whole band. WX-6 appearance coverage is tracked
+above; native agent follow-ups are in [the workstation guide](docs/WORKSTATION.md#open-work).
 
 **Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
 solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28, Geometry family),
 after the modal.com hero the operator wanted in his own form. Kicks run comets
 along the edges, solids morph per section, and `words` sets the sung line in
 the same cells. The gallery check, its negative control, the differential
-pins and live playback pass (`build/glyphs/`). Open: the operator's look at it,
+pins and live playback pass. Open: the operator's look at it,
 and whether `words` should default on. See [`docs/GLYPH_LATTICE.md`](docs/GLYPH_LATTICE.md).
 
 **Pixel Cats — built, ready for operator review (2026-10-24).** Six pixel-art
@@ -113,14 +100,14 @@ stagings of the lyric line as one scene family (`pixel-boot`, `pixel-shell`,
 the model-made video for the meow track. Each draws its line, reacts to the
 music and is byte-identical without it at `response` 0. The scene check and its
 negative control pass, as do the picker clicks for all seven families and a
-treatment of the meow track and of one other song (`build/pixel-scene/`). Open:
-the operator's look at it, and the stagings the picker had no room for (progress
-bar, pause menu, handheld, music box). See [`docs/PIXEL_CATS.md`](docs/PIXEL_CATS.md).
+treatment of the meow track and of one other song. Open:
+the operator's look at it, and the unbuilt stagings (progress bar, pause menu,
+handheld, music box). See [`docs/PIXEL_CATS.md`](docs/PIXEL_CATS.md).
 
 **Scene families and native gallery — built, ready for operator review (2026-10-23).**
-Six compact family tabs keep 22 scenes reachable with readable tiles in the same
-sidebar. Liquid Chrome, Aurora Veil, Metaball Garden, Neon Tunnel, Voronoi Bloom
-and Iridescent Pool each have eight Tune controls, routes and persistence.
+The Scenes flyout groups scenes by family and shows poster tiles in two
+columns. Liquid Chrome, Aurora Veil, Metaball Garden, Neon Tunnel, Voronoi Bloom
+and Iridescent Pool each have eight Look controls, routes and persistence.
 All 22 tiles pass actual minimum-size clicks; the six scenes pass musical,
 portrait, project and export checks, and real-track release playback has no
 PCM drops or output underruns. Two Sol review rounds resolved shader portability
@@ -130,7 +117,7 @@ the corrected older picker fixtures and the exact verification boundary.
 The release is rebuilt; operator aesthetic judgment remains open.
 
 **Fluid Ink — built, ready for operator review (2026-10-23).** The requested
-music-stirred luminous fluid is selectable in Scenes, with eight Tune controls,
+music-stirred luminous fluid is selectable in Scenes, with eight Look controls,
 routes and project persistence. Synthetic visual/replay checks and the disabled-
 response negative control pass; a muted release run entered through the scene
 tile on a real track has zero dropped PCM frames and zero output underruns.
@@ -143,7 +130,7 @@ seeking; the release is rebuilt. The recorded local run freshly generated only
 13 placed written lines, 13 unresolved lines and nine unplaced Whisper proposals.
 Three fresh Gemini 3.8 Flash audio reviews succeeded. The route mismatch,
 remaining acoustic defects and prior-session evidence are recorded in
-[the recording investigation](docs/LYRICS_RECORDING_2026-09-08.md).
+[the recording investigation](docs/archive/LYRICS_RECORDING_2026-09-08.md).
 The local crop-recovery repair now renders 27 captions for this recording
 (previously 13), including the two opening performances. The recommended
 no-sheet wording stage also stays local. Missing chorus entries and backing
@@ -184,17 +171,17 @@ playback pass; all ten normal-mode corpus runs and the final v6 comparison
 are complete. Model-reference disagreements remain substantial and are not
 adjudicated error rates. No research helper remains running. The operator
 requested a pause on September 7 and accepted both reviewed two-phrase groupings;
-see [the handoff](docs/LYRICS_GROUPING_REVIEW.md). The September 8 recording
+see [the handoff](docs/archive/LYRICS_GROUPING_REVIEW.md). The September 8 recording
 resumes investigation of the normal local workflow.
 
 **SX4 — built, awaiting operator review (2026-09-05).** The operator
 completed CX-4 track A in the Rust runner: ten `reject` and two `neither`
-answers (`build/protocols/cx4-surprise-a.answers.jsonl`). Song Atlas needs a
+answers. Song Atlas needs a
 creative redesign; Cadence has discontinuous motion; the audition windows cut
 across musical phrases. Preserve those answers and the original protocols.
 Atlas now has the Tideline spiral relief and traveling warm light; Cadence's
 onset/beat-wrap/word-envelope discontinuities are repaired, with soft ambient
-strata. New `build/listening-review/sx4-tideline-{a,b}.protocol.json` auditions
+strata. New Tideline auditions
 use measured candidate cuts and output fades. Cuts are **not yet verified phrase
 boundaries**. The reusable generator and browser form distinguish bad cuts from
 bad looks. Design decisions, compatibility and evidence are recorded in
@@ -222,7 +209,7 @@ a CX ruling, not a preference.
 | 8 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
 | 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV8 | MV3 landed with three follow-ups; MV2 is a `.musi` extension; the rest small |
 | 10 | **The compositor's work, moved into the renderer** — all of MV9 landed 2026-10-21; editing it in the window is the one follow-up | MV9-l | medium, UI |
-| 11 | **The window as a directing workstation** — a dock with a real terminal and native Claude Code / Codex / Antigravity sessions, the window following a treatment live, and the restyle the mockup proposes. Operator request 2026-10-21; WX-0 to WX-4 landed 2026-10-21, WX-5a (dark look, one accent) and WX-5b (plan lane as runs, poster frames) 2026-10-24; WX-5c/d and their polish, scene posters and inline artist are implemented, awaiting review; WX-6 appearance coverage remains open in [`docs/WORKSTATION.md`](docs/WORKSTATION.md) | WX-6, WX-4 follow-ups | gate runtime cap and small independent follow-ups |
+| 11 | **The window as a directing workstation** — a dock with a real terminal and native Claude Code / Codex / Antigravity sessions, the window following a treatment live, and the restyle the mockup proposes. Operator request 2026-10-21; WX-0 to WX-4 landed 2026-10-21, WX-5a (dark look, one accent) and WX-5b (plan lane as runs, poster frames) 2026-10-24; WX-6 appearance coverage and WX-4 follow-ups remain open in [`docs/WORKSTATION.md`](docs/WORKSTATION.md) | WX-6, WX-4 follow-ups | gate runtime cap and small independent follow-ups |
 | 12 | **Generated video as material** — scoping only: five 1080p+ picks from OpenRouter, all with first/last-frame input, prices and image inputs in [`docs/VIDEO_GENERATION.md`](docs/VIDEO_GENERATION.md); `tools/openrouter_video_prices.py --hd` refreshes them. Building it spends money and needs the Assist consent route | VG | not started; operator interest 2026-10-21 |
 
 ### The items, in one line each
@@ -246,7 +233,7 @@ prefix.
   path defers to `LyricTap::default()`, so the ruling is one constant plus
   `tools/headless_check.sh`'s `last stamp` expectation and two core tests.
 - **CX-5** — track-specific scene thumbnails are implemented through the poster
-  service; awaiting lead/operator review. The stable representative moment does
+  service; awaiting operator review. The stable representative moment does
   not require resume-position persistence (PXF-7 remains its own open item).
 
 **PXF — PX-wave debrief follow-ups.** PXF-6, PXF-8, PXF-9 and PXF-11 are not

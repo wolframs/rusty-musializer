@@ -1,9 +1,9 @@
 # Scene families and the native gallery
 
-The scene picker now shows one family at a time. Six compact tabs replace the
-need to fit every scene into one grid. The current families fit at the existing
-215 px panel minimum, using two-column tiles with a 24 px height floor. The
-sidebar and preview do not have to grow to accommodate another scene.
+The scene picker is the Scenes flyout on the left rail: a column of seven
+families and the browsed family's poster tiles in two columns. At 960x640 a
+family shows ten tiles before it scrolls. Neither the rail nor the preview has
+to grow for another scene.
 
 Family navigation changes only what is listed. Clicking a tile uses the existing
 scene-selection command, including its selected-segment behavior while a scene
@@ -39,7 +39,7 @@ copy their source, add dependencies or introduce unsafe blocks.
 | Voronoi Bloom | `voronoi` / 20 | Backlit stained glass with light shafts, blooms and kick-cracked panes | [Organic scenes](ORGANIC_SCENES.md) |
 | Iridescent Pool | `iridescent` / 21 | An oil slick on dark, deep water, torn open by the kick | [Materials](MATERIAL_SCENES.md) |
 
-Each has eight ordinary Tune controls, routes, presets and section tuning. Music
+Each has eight ordinary Look controls, routes, presets and section tuning. Music
 response zero leaves an intentional ambient picture. Core state owns seeded
 clocks and followers; drawing consumes it without advancing it. Still and clip
 replay therefore work without intermediate drawing. Pause freezes the followers
@@ -110,7 +110,7 @@ agreement. It uses High quality (2× supersampling) and probes NVENC with an act
 256×256 encode before selecting it. A 64×64 probe is below this encoder's minimum
 frame dimensions and would incorrectly imply that the hardware was unavailable.
 
-The gate also clicks every registered scene tile at 960×640 with a 240 px sidebar,
+The gate also clicks every registered scene tile at 960x640,
 checks each family's complete membership and unchanged active scene while
 browsing, and clicks a category through the real hit-claim path. Core tests cover
 future 100-entry families, bounded scrolling, reveal behavior and unique grouping.

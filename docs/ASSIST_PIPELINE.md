@@ -276,7 +276,7 @@ not independent acoustic acceptance: shared Whisper/MMS errors remain possible.
 Crop receipts are cached by audio, decoder/model settings, model and executable
 hashes, and crop span. Recovery policy version 3 invalidates old aligned results
 while preserving reusable crop evidence. The normal helper invokes no Gemini
-calls for this stage. See [the recording investigation](LYRICS_RECORDING_2026-09-08.md)
+calls for this stage. See [the recording investigation](archive/LYRICS_RECORDING_2026-09-08.md)
 for the measured change and remaining failures. First runs cost additional local
 ASR work; changing only recovery policy can reuse the crop cache.
 
