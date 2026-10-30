@@ -109,8 +109,42 @@ done
 } >&2
 
 DISPLAY_ARGS=(-a)
+REUSE_DISPLAY=()
 if [ -n "${MUSIALIZER_CAPTURE_DISPLAY:-}" ]; then
-    DISPLAY_ARGS=(--server-num "${MUSIALIZER_CAPTURE_DISPLAY#:}")
+    CAPTURE_NUMBER="${MUSIALIZER_CAPTURE_DISPLAY#:}"
+    DISPLAY_ARGS=(--server-num "$CAPTURE_NUMBER")
+    # headless_check owns one Xvfb for its whole gate, including the nested
+    # treatment gate which calls this wrapper. Reuse only a server whose
+    # immediate parent is OUR ancestor; a different agent's server is refused.
+    # No attachment to an arbitrary existing display or the desktop.
+    if [ -S "/tmp/.X11-unix/X$CAPTURE_NUMBER" ] && [ -r "/tmp/.X$CAPTURE_NUMBER-lock" ]; then
+        CAPTURE_PID="$(tr -d '[:space:]' <"/tmp/.X$CAPTURE_NUMBER-lock")"
+        CAPTURE_PARENT="$(ps -o ppid= -p "$CAPTURE_PID" | tr -d '[:space:]')"
+        CAPTURE_EXE="$(readlink -f "/proc/$CAPTURE_PID/exe" || true)"
+        CAPTURE_ANCESTOR="$PPID"
+        while [ "$CAPTURE_ANCESTOR" -gt 1 ] && [ "${CAPTURE_EXE##*/}" = Xvfb ]; do
+            if [ "$CAPTURE_ANCESTOR" = "$CAPTURE_PARENT" ]; then
+                REUSE_DISPLAY=("DISPLAY=$MUSIALIZER_CAPTURE_DISPLAY")
+                echo "headless_run: reuse $MUSIALIZER_CAPTURE_DISPLAY (Xvfb owned by an ancestor gate)" >&2
+                break
+            fi
+            CAPTURE_ANCESTOR="$(ps -o ppid= -p "$CAPTURE_ANCESTOR" | tr -d '[:space:]')"
+        done
+        if [ "${#REUSE_DISPLAY[@]}" -eq 0 ]; then
+            echo "headless_run: $MUSIALIZER_CAPTURE_DISPLAY belongs to another process tree; refusing" >&2
+            exit 2
+        fi
+    fi
+fi
+if [ "${#REUSE_DISPLAY[@]}" -gt 0 ]; then
+    # The ancestor owns server teardown. The app still gets every isolation
+    # guard and --mute, exactly as with a newly started private server below.
+    exec env "${REUSE_DISPLAY[@]}" \
+        WAYLAND_DISPLAY=musializer-headless-run-no-compositor \
+        PULSE_SERVER=unix:/nonexistent/musializer-headless-run-no-audio \
+        XDG_CONFIG_HOME="$STATE_DIR/config" \
+        PATH="$STATE_DIR/bin" \
+        "${GL[@]}" "$BIN" --mute "$@"
 fi
 exec xvfb-run "${DISPLAY_ARGS[@]}" -s "-screen 0 ${MZ_SCREEN:-2560x1440x24}" \
     env \

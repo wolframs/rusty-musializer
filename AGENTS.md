@@ -153,6 +153,8 @@ One line each. These are the rules; `docs/TRAPS.md` has the failure each one
 caused and how to recognise its symptom. When a capture looks plausible but a
 number disagrees, grep it there before debugging from scratch.
 
+- **A fixed Xvfb display reaches nested gates**: reuse only when its server
+  belongs to an ancestor gate; never attach to a sibling session.
 - **`WAYLAND_DISPLAY`**: set it to an unresolvable name (`MZ_NO_WAYLAND`),
   never unset it — unset falls back to a hardcoded `wayland-0`, the operator's
   compositor. Never write `env -u WAYLAND_DISPLAY`.

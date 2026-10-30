@@ -19,7 +19,7 @@ export WX5_OUT="$(realpath "$OUT")"
 export MZ_STATE_DIR="$WX5_OUT/state"
 cargo run --quiet --bin make-fixture-wav -- "$WX5_OUT/fixture.wav" 20 >/dev/null
 python3 - <<'PY'
-import itertools, json, math, os, re, shutil, subprocess
+import itertools, json, math, os, re, shutil, subprocess, time
 from pathlib import Path
 import numpy as np
 from PIL import Image
@@ -54,6 +54,46 @@ def run(name, probe, frames=30, project=None, appearance='dark', extra=()):
 plan = {'schema':'musializer.treatment/v1','title':'WX5 feature fixture',
         'audio':{'path':'fixture.wav'}, 'segments':[{'at':0,'scene':'spectrum'}]}
 (out/'plain.treatment.json').write_text(json.dumps(plan))
+
+if only in ('all','launcher'):
+    # A nested gate must reuse only its ancestor's private Xvfb. A sibling
+    # server owner is deliberately outside the launcher's ancestry.
+    display=os.environ['MUSIALIZER_CAPTURE_DISPLAY']
+    owner_script = r'''set -eu
+Xvfb "$MUSIALIZER_CAPTURE_DISPLAY" -screen 0 1280x720x24 -nolisten tcp >/dev/null 2>&1 &
+wx5_server=$!
+trap 'kill "$wx5_server" 2>/dev/null || true; wait "$wx5_server" 2>/dev/null || true' EXIT
+printf '%s\n' "$wx5_server"
+read -r wx5_continue
+tools/headless_run.sh --version
+'''
+    for renderer in ('gpu','cpu'):
+        owner_env=os.environ.copy()
+        if renderer=='cpu': owner_env['MZ_GL_LAUNCH']=''
+        owner=subprocess.Popen(['bash','-c',owner_script],env=owner_env,
+                               stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+        server=int(owner.stdout.readline().strip())
+        try:
+            for _ in range(100):
+                if Path('/tmp/.X11-unix/X'+display[1:]).exists(): break
+                time.sleep(.02)
+            foreign=subprocess.run(['tools/headless_run.sh','--version'],env=owner_env,
+                                   stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+            (out/('launcher-foreign-'+renderer+'.log')).write_text(foreign.stdout)
+            check(foreign.returncode==2 and 'belongs to another process tree; refusing' in foreign.stdout,
+                  renderer+' refuses a sibling gate display without starting the app')
+            owned,_=owner.communicate('continue\n',timeout=20)
+            (out/('launcher-owned-'+renderer+'.log')).write_text(owned)
+            check(owner.returncode==0 and 'Xvfb owned by an ancestor gate' in owned and 'musializer 2026.07' in owned,
+                  renderer+' reuses its ancestor private display with the normal guards')
+        finally:
+            if owner.poll() is None:
+                owner.communicate('continue\n',timeout=20)
+        try:
+            os.kill(server,0)
+            stopped=False
+        except ProcessLookupError: stopped=True
+        check(stopped,renderer+' ancestor server is stopped on exit')
 
 if only in ('all','posters'):
     families = {'sound':['spectrum','pulse','atlas','loom'],
@@ -109,11 +149,16 @@ if only in ('all','posters'):
             check('active=pixel-shell' in line(clicked,'scene picker'), 'tile press selects its named scene')
             missed=run('tile-gap',f'size=960x640,time=3,scene-family={family},posters=off,click={gap}')
             check('active=spectrum' in line(missed,'scene picker'), 'tile gap changes no scene')
-    for mode,frames in [('off',30),('pending',1)]:
-        suffix=',posters=off' if mode=='off' else ''
-        log=run('poster-'+mode,'size=960x640,time=3,scene-family=pixel-cats'+suffix,frames)
-        states=re.findall(r'pixel-[\w-]+:(\w+)@',line(log,'scene picker'))
-        check(states == [('unavailable' if mode=='off' else 'pending')]*6, mode+' is explicit on all six tiles')
+    log=run('poster-off','size=960x640,time=3,scene-family=pixel-cats,posters=off')
+    states=re.findall(r'pixel-[\w-]+:(\w+)@',line(log,'scene picker'))
+    check(states == ['unavailable']*6, 'off is explicit on all six tiles')
+    # Fluid Ink deliberately waits while playing. Hold this state long enough
+    # to photograph it on BOTH renderers; a one-frame GPU shot is the previous
+    # buffer and cannot prove that the fallback label was drawn (TRAPS.md).
+    log=run('poster-pending','size=960x640,play=1,scene-family=atmosphere')
+    states=re.findall(r'([\w-]+):(\w+)@',line(log,'scene picker'))
+    check(states == [('constellation','ready'),('fluid','pending'),('aurora','ready'),('tunnel','ready')],
+          'pending Fluid Ink is held visibly while the other three scenes arrive')
     # Ordinary scheduling, while music plays: this is not the unbounded settle.
     log=run('playing-posters','size=1280x720,play=1,scene-family=pixel-cats',180)
     stats=line(log,'posters')

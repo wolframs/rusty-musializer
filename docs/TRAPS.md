@@ -185,3 +185,12 @@ The full stories, moved out of `AGENTS.md` on 2026-10-29. `AGENTS.md` keeps a on
   editor open" passes on a frame with no editor. Check for `plot@` in the
   report before believing it (WX-5d: `column_check.sh` ran that way until its
   own slab control asked).
+
+- **A fixed capture display is inherited by nested gates.** (WX-5 features,
+  2026-10-30.) `headless_check.sh` owns Xvfb for its whole run and calls the
+  treatment gate, which uses `headless_run.sh`. Making that wrapper always
+  start the assigned display broke the nested gate with `Xvfb failed to start`.
+  The wrapper may reuse a live assigned Xvfb only if the server's immediate
+  parent is in its own process ancestry. A sibling gate's server is refused;
+  the ancestor keeps teardown ownership. Both paths still apply mute, null
+  audio/Wayland endpoints, private config and the no-dialog PATH guard.
