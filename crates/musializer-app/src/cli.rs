@@ -317,6 +317,9 @@ pub struct UiProbe {
     /// write a test that presses nothing. Spelled `FROMxTO` for the same reason
     /// `hover=` is `XxY`: the spec is comma-separated.
     pub middle_drag: Option<(f32, f32)>,
+    /// `left-drag=XxY`: press at `hover=`, move twice to this point, release.
+    /// Private input seam through the same pointer reader as real lane resizing.
+    pub left_drag: Option<(f32, f32)>,
     /// `scene-pick=NAME`: click the scene browser's tile for `NAME`, once (LX3).
     ///
     /// **Invented, and it exists because the gate could not reach the one
@@ -1387,6 +1390,7 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         "wheel-shift" => probe.wheel_shift = parse_probe_flag(value)?,
         "wheel-alt" => probe.wheel_alt = parse_probe_flag(value)?,
         "middle-drag" => probe.middle_drag = Some(parse_point(value)?),
+        "left-drag" => probe.left_drag = Some(parse_point(value)?),
         // Through `--scene`'s own resolver, aliases included, so there is one
         // spelling of a scene on this command line rather than two.
         "scene-pick" => probe.scene_pick = Some(scene_from_cli_name(value)?),
@@ -2401,7 +2405,7 @@ mod tests {
             "panel=assist,assist=confirm,lyric=3,play=1,fullscreen=0,\
              time=12.5,zoom=4,size=960x640,sidebar=400,inspector=440,\
              timeline-height=330,lyrics-file=/tmp/a.txt,drop=/tmp/b.musi,\
-             share-frame=playhead",
+             share-frame=playhead,hover=1x2,left-drag=40x50",
         )
         .unwrap();
         assert_eq!(probe.panel, UiPanel::Assist);
@@ -2421,6 +2425,8 @@ mod tests {
         );
         assert_eq!(probe.drop_file, Some(PathBuf::from("/tmp/b.musi")));
         assert!(probe.share_frame_playhead);
+        assert_eq!(probe.left_drag, Some((40.0, 50.0)));
+        assert_eq!(probe.hover, Some((1.0, 2.0)));
 
         let probe = parse_ui_probe("panel=lyrics,style=caption,fonts=consent").unwrap();
         assert!(probe.caption_style_pane);

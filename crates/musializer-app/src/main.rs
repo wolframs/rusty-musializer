@@ -798,6 +798,8 @@ fn run(
         .as_ref()
         .and_then(|probe| probe.progress_shot);
     let mut progress_shot_wait: Option<u8> = None;
+    let mut left_drag: Option<(f32, f32)> = None;
+    let mut left_drag_phase: u32 = 0;
     let mut middle_drag_phase: u32 = 0;
     let mut middle_drag: Option<(f32, f32)> = None;
     // `--ui-probe save-to=PATH`, the destination picker's stand-in for a
@@ -1056,6 +1058,7 @@ fn run(
             app.shell.probe_wheel_shift = probe.wheel_shift;
             app.shell.probe_wheel_alt = probe.wheel_alt;
             middle_drag = probe.middle_drag;
+            left_drag = probe.left_drag;
             audio_stall_ms = probe.audio_stall_ms;
             if probe.panel == cli::UiPanel::Tune {
                 app.shell.inspector_open = true;
@@ -1457,6 +1460,37 @@ fn run(
                 _ => None,
             });
             click_phase = click_phase.saturating_add(1);
+        }
+        if let Some((to_x, to_y)) = left_drag {
+            let (from_x, from_y) = hover_at.unwrap_or((0.0, 0.0));
+            let fraction = match left_drag_phase {
+                0..=3 => 0.0,
+                4 => 0.5,
+                _ => 1.0,
+            };
+            rl.set_mouse_position(Vector2::new(
+                from_x + (to_x - from_x) * fraction,
+                from_y + (to_y - from_y) * fraction,
+            ));
+            app.shell.widgets.set_pointer_probe(match left_drag_phase {
+                3 => Some(ui::widgets::PointerProbe {
+                    down: true,
+                    pressed: true,
+                    released: false,
+                }),
+                4 | 5 => Some(ui::widgets::PointerProbe {
+                    down: true,
+                    pressed: false,
+                    released: false,
+                }),
+                6 => Some(ui::widgets::PointerProbe {
+                    down: false,
+                    pressed: false,
+                    released: true,
+                }),
+                _ => None,
+            });
+            left_drag_phase = left_drag_phase.saturating_add(1);
         }
         match escape_in {
             Some(0) => {

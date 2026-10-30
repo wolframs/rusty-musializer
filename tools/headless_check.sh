@@ -5058,6 +5058,9 @@ case "$beat_line" in
         ;;
 esac
 
+echo "=== lyric grip press/drag, default and expanded band ==="
+python3 tools/lyric_grip_check.py "$OUT_DIR/lyric-grip"
+
 echo "=== the route editor card, inside the Tune inspector ==="
 # Narrow columns wrap Clamp/Swap; wider columns seat them in one row.
 # Read the final drawn card and require its exact agreement with tune layout.

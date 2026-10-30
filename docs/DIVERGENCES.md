@@ -349,3 +349,16 @@ from the later controlled stall; see `HEADLESS_GPU.md`.
 | Before | Now | Reason |
 | --- | --- | --- |
 | Three branch-specific display reservations | One optional `MUSIALIZER_CAPTURE_DISPLAY=:N`; absent allocates automatically. Validate syntax and reserve that exact display. Reuse an occupied Xvfb only when its immediate parent is a calling ancestor; refuse foreign or unverifiable sockets/locks | The main gate owns Xvfb while running nested treatment probes. All callers use one assignment, with mute, unreachable Wayland/audio, private config and dialog PATH guards on both launch paths. VirtualGL's `cut` and `hostname` remain allowed. No `MZ_XVFB_DISPLAY` or `MZ_CAPTURE_DISPLAY` alias remains |
+
+## Lyric resize reproduction (2026-10-30)
+
+The default fixed band caps the drawn lane at 49 px; requests clamp to 22..66.
+Upward dragging works and persists 30 px; downward dragging persists a 66 px
+request but draws 49 until the band is enlarged. This is the existing fixed-band
+layout, not a dead input handler. Growing the whole band through the bottom grip
+is left for a layout decision. The private `left-drag=XxY` seam stages a real
+press/move/move/release through Widgets' pointer reader (now also used by this
+handler); `lyrics:` reports its actual rect and resize ownership. No production
+resize formula or bound changed. `lyric_grip_check.py` presses report-derived
+grips and an outside control in both looks, reopens preferences, and checks an
+expanded band separately.
