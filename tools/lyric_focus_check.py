@@ -73,9 +73,10 @@ def drive():
         # Loading the copied full track can outlast window creation. Wait for
         # its first painted frame instead of delivering keys during decoding.
         from PIL import Image, ImageGrab
-        ready = Image.open(os.environ['FOCUS_BASE_SHOT']).convert('RGB').crop((10, 10, 32, 32)).tobytes()
+        ready_box = tuple(json.loads(os.environ.get('FOCUS_READY_BOX', '[10,10,32,32]')))
+        ready = Image.open(os.environ['FOCUS_BASE_SHOT']).convert('RGB').crop(ready_box).tobytes()
         for _ in range(200):
-            painted = ImageGrab.grab(xdisplay=os.environ['DISPLAY']).convert('RGB').crop((10, 10, 32, 32)).tobytes()
+            painted = ImageGrab.grab(xdisplay=os.environ['DISPLAY']).convert('RGB').crop(ready_box).tobytes()
             if painted == ready:
                 break
             assert process.poll() is None, 'app ended before its first frame'
@@ -86,9 +87,10 @@ def drive():
         points = json.loads(os.environ['FOCUS_POINTS'])
         if points.get('entry'):
             click(points['entry'])
-        for char in 'focus':
-            press(ord(char))
-        chord('a')
+        if os.environ['FOCUS_SURFACE'] != 'terminal':
+            for char in 'focus':
+                press(ord(char))
+            chord('a')
         # Asymmetric arrows/punctuation cannot cancel an escaped shortcut.
         for letter in 'cxvz':
             chord(letter)
@@ -182,6 +184,11 @@ def run_check():
         driven_env = dict(env, MZ_BIN=str(Path(__file__).resolve()), FOCUS_REAL_BIN=binary,
                           FOCUS_SURFACE=surface, FOCUS_POINTS=json.dumps({'entry': entry, 'outside': [x + w // 2, y + h // 2]}),
                           FOCUS_BASE_SHOT=str(out / f'{surface}-base.png'), FOCUS_INPUT_SHOT=str(out / f'{surface}-typing.png'), MZ_STATE_DIR=str(out / surface / 'drive-state'))
+        if surface == 'terminal':
+            col = re.search(r'rect=(\d+),(\d+),(\d+),(\d+)', line(log, 'column'))
+            cx, cy, cw, ch = map(int, col.groups())
+            # This patch is terminal ground only after frame 20 opens its pane.
+            driven_env['FOCUS_READY_BOX'] = json.dumps([cx + 12, cy + ch - 200, cx + 28, cy + ch - 184])
         saved_before = project.stat().st_mtime_ns
         driven = subprocess.run([*base_cmd, '--probe-frames', '600' if surface == 'chat' else '360', '--probe-shot', str(out / f'{surface}.png')], env=driven_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         (out / f'{surface}.log').write_text(driven.stdout)
