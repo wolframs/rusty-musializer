@@ -1246,6 +1246,23 @@ thread_local! {
     };
 }
 
+thread_local! {
+    /// The last `assist review block:` line printed.
+    static LAST_REVIEW_BLOCK: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Prints where the review block landed in the column (WX-5d): its scrolled
+/// position is the card's, so a capture check reads it here instead of aiming
+/// at a measured point.
+fn report_review_block(line: String) {
+    LAST_REVIEW_BLOCK.with(|last| {
+        if *last.borrow() != line {
+            println!("assist review block: {line}");
+            *last.borrow_mut() = line;
+        }
+    });
+}
+
 /// Prints where the pressable review rows landed (review LT1-R, R9).
 ///
 /// A hover state nothing can photograph is a hover state nobody reviews, and the
@@ -2887,6 +2904,13 @@ fn draw_lyrics_review(
         format!("Lines to check ({})", review.policy)
     };
     widgets::draw_text(d, font, &heading, x, y, REASON_FONT_SIZE, color::ui_ink());
+    report_review_block(format!(
+        "heading={x:.0},{y:.0},{width:.0},16 reveal={:.0},{:.0},{:.0},{:.0} sentence={x:.0},{row_y:.0},{width:.0},{REVIEW_ROW_HEIGHT:.0}",
+        x + width - REVEAL_WIDTH,
+        y - 2.0,
+        REVEAL_WIDTH,
+        REVEAL_HEIGHT,
+    ));
 
     // The Reveal control takes the heading row's right edge, and the fix hint
     // gives way to it rather than sharing: the hint is a footnote and the button

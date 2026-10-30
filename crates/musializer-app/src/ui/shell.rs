@@ -1756,8 +1756,9 @@ impl Shell {
                 self.timeline_strip(d, frame, under, toolbar, &mut commands);
             }
             // Look is one view among five, drawn only while it is the view
-            // (`frame.inspector` is the column then).
-            if !self.editor_open && self.column_view() == ColumnView::Look {
+            // (`frame.inspector` is the column then). Not under the modal
+            // either: its value chip is a text field too.
+            if !modal && self.column_view() == ColumnView::Look {
                 self.inspector(d, under, &mut commands);
             }
             if !self.editor_open {

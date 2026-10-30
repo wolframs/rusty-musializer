@@ -1539,6 +1539,7 @@ impl Shell {
         // COLOUR
         widgets::section_head(d, font, s(pane.colour_head), &[MicroRun::muted("Colour")]);
         let mut ink_report = String::new();
+        let mut picker_hue = "none".to_owned();
         let mut plate_report = String::new();
         for (row, label, target, presets, plus_id, swatch_base, picker) in [
             (
@@ -1625,14 +1626,9 @@ impl Shell {
                 ));
             }
             if let Some(block) = picker {
-                if self.inline_picker(
-                    d,
-                    input,
-                    editor,
-                    s_picker(block, offset),
-                    target,
-                    &mut style,
-                ) {
+                let block = s_picker(block, offset);
+                picker_hue = rect_token(block.hue);
+                if self.inline_picker(d, input, editor, block, target, &mut style) {
                     changed = true;
                 }
             }
@@ -1824,7 +1820,7 @@ impl Shell {
         }
         format!(
             "pane=style groups=type@{},colour@{},backing@{},place@{} faces={} sliders={} \
-             ink={} plate={} backing={} place={} anchors={} picker={} progress={} scroll={:.0}/{:.0}",
+             ink={} plate={} backing={} place={} anchors={} picker={} hue@{} progress={} scroll={:.0}/{:.0}",
             rect_token(s(pane.type_head)),
             rect_token(s(pane.colour_head)),
             rect_token(s(pane.backing_head)),
@@ -1837,6 +1833,7 @@ impl Shell {
             place_word.replace(' ', "-"),
             anchors_report.join(";"),
             editor.picker.target.map_or("none", |target| target.token()),
+            picker_hue,
             progress_report,
             offset,
             layout::max_scroll(pane.content_height, body),
@@ -1955,15 +1952,11 @@ impl Shell {
             color::ui_muted(),
         );
         report.push(format!("colour@{}", rect_token(swatch_rect)));
+        let mut picker_hue = "none".to_owned();
         if let Some(block) = pane.picker {
-            if self.inline_picker(
-                d,
-                input,
-                editor,
-                s_picker(block, offset),
-                CaptionColor::Glow,
-                &mut style,
-            ) {
+            let block = s_picker(block, offset);
+            picker_hue = rect_token(block.hue);
+            if self.inline_picker(d, input, editor, block, CaptionColor::Glow, &mut style) {
                 changed = true;
             }
         }
@@ -2174,9 +2167,10 @@ impl Shell {
             editor.push(LyricsEdit::SetCaptionStyle(Box::new(style)));
         }
         format!(
-            "pane=effects {} picker={} tune={} scroll={:.0}/{:.0}",
+            "pane=effects {} picker={} hue@{} tune={} scroll={:.0}/{:.0}",
             report.join(" "),
             editor.picker.target.map_or("none", |target| target.token()),
+            picker_hue,
             editor.tune_target.map_or("none", |target| target.token()),
             offset,
             layout::max_scroll(pane.content_height, body),
