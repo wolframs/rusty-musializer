@@ -582,7 +582,7 @@ mod tests {
             assert!((region.width - width).abs() < 0.001);
             assert_eq!(region.height, height);
         }
-        for scale in [1.0, 1.25, 1.5, 2.0] {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
             for (w, h) in [(960.0, 640.0), (1280.0, 720.0), (2560.0, 1440.0)] {
                 for recovery in [false, true] {
                     let frame = WelcomeFrame::layout(w / scale, h / scale, recovery);

@@ -827,8 +827,8 @@ impl Readiness {
 
     /// The full sentence behind the badge, for its tooltip.
     ///
-    /// The label names the readiness state in full, wrapping when needed;
-    /// the hover adds the longer remediation steps (AP3-R S9).
+    /// The label wraps across two lines; the unbuilt-route reason fits in
+    /// full. Arbitrary longer remediation stays available on hover (AP3-R S9).
     #[must_use]
     pub fn hint(&self) -> String {
         match self {
@@ -3816,7 +3816,7 @@ impl AssistSettingsDialog {
         state.clicked || self.take_activation(focus)
     }
 
-    /// A readiness dot and complete wrapped reason, with remediation on hover.
+    /// A readiness dot and two-line reason, with full remediation on hover.
     /// Its widget target covers both lines (WX-5 polish).
     fn readiness_badge(
         &mut self,
@@ -3837,7 +3837,7 @@ impl AssistSettingsDialog {
         let lines = musializer_core::ui::notice::wrap_detail(
             &label,
             (boundary.width - 12.0).max(0.0),
-            3,
+            2,
             |text| widgets::measure(font, text, metric::UI_FONT_CAPTION),
         );
         d.draw_circle_v(
