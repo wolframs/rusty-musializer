@@ -27,15 +27,16 @@ Other standing references: `AGENTS.md` for repository rules and the deliberate e
 and `docs/archive/` for history; `docs/PHASE0_INVENTORY.md` for formats, CLI
 grammar and schemas.
 
+## F8 retirement — implemented, lead review pending 2026-10-30
+
+`t3/retire-f8-editor`: pixel filter and appearance moved into Look; modal deletion is its own commit; replacement press/state/persistence checks and the Direct README capture are implemented. Inventory and handoff evidence are in `build/redesign/`; negative controls and captures in `build/wx5-editor/`. The single guarded lyric-draft policy and in-field shortcut ownership are flagged for lead review. Nothing is pushed or merged to master.
+
 ## UI toolkit follow-through
 
-The representative egui Tune/Lyrics editor and two workstation themes are
-implemented; see [UI_TOOLKIT](docs/UI_TOOLKIT.md). Remaining migration work:
-
-- Move the other workspace panels through the existing command boundary.
-- Decide whether unfinished toolkit drafts should persist across application restarts.
-- Evaluate simultaneous timeline editing in the focused editor view; the current
-  view restores the timeline when closed.
+The right-column workspace replaces the duplicate modal; shared egui styling,
+Direct and the welcome picker remain. See [UI_TOOLKIT](docs/UI_TOOLKIT.md).
+Remaining follow-through: decide whether unfinished toolkit chat drafts should
+persist across application restarts.
 
 ## Deliberate exclusions
 

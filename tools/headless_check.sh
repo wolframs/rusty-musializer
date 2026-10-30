@@ -5340,11 +5340,11 @@ if [ -f "$LYRIC_PROJECT" ]; then
     RAIL_BASE="$(rail_line rail-base rail)"
     echo "rail: $RAIL_BASE"
     case "$RAIL_BASE" in
-        "rect=0,46,52,414 icons=tracks@8,56,36,36;scenes@8,98,36,36;editor@8,372,36,36;dock@8,414,36,36 open=none flyout=none") ;;
+        "rect=0,46,52,414 icons=tracks@8,56,36,36;scenes@8,98,36,36;dock@8,414,36,36 open=none flyout=none") ;;
         *) echo "FAIL: the rail is not where WorkspaceRail puts it at 1280x720" >&2; RAIL_FAILED=1 ;;
     esac
     RAIL_TRACKS="$(rail_point "$RAIL_BASE" tracks @)" || RAIL_FAILED=1
-    # The rail's gap: between Scenes' bottom (134) and Editor's top (372).
+    # The rail's gap: between Scenes' bottom (134) and the column toggle's top (414).
     run_capture rail-open-tracks runs "panel=none,time=2.5,play=0,click=$RAIL_TRACKS" || RAIL_FAILED=1
     run_capture rail-gap runs "panel=none,time=2.5,play=0,click=26x250" || RAIL_FAILED=1
     case "$(rail_line rail-open-tracks rail) / $(rail_line rail-open-tracks 'click probe')" in

@@ -19,7 +19,7 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
   isolated launcher, and what the first video made this way ran into.
 - [`OPENAI_KNOT.md`](OPENAI_KNOT.md) — procedural weave, audio response and muted scene checks.
 
-- [`UI_TOOLKIT.md`](UI_TOOLKIT.md) — toolkit editor, appearance, migration boundary and real-input checks.
+- [`UI_TOOLKIT.md`](UI_TOOLKIT.md) — workspace controls, appearance, toolkit boundary and real-input checks.
 - [`VIDEO_GENERATION.md`](VIDEO_GENERATION.md) — VG: the five generated-video picks on OpenRouter, prices and image inputs.
 - [`WORKSTATION.md`](WORKSTATION.md) — WX: the dock, the terminal, native agent sessions, live treatments and the restyle; parts and status.
 - [`WX5C_DESIGN.md`](WX5C_DESIGN.md) — WX-5c plan: the rail, flyouts, the big preview, the top bar and the lane head; seam, file ownership, gate addressing.

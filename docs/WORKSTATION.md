@@ -58,10 +58,10 @@ spec:
 
 ### WX-1 — the dock
 
-- It sits beside the workspace. It is **not modal**, unlike the egui Editor.
+- It sits beside the workspace. It is **not modal**; the duplicate modal was retired on 2026-10-30.
   The workspace lays itself out in a narrower window (`ShellInput.window`
   loses the dock's width), so no panel is covered and no hit test changes.
-- It is egui, drawn in the same pass as the Editor and the welcome theme
+- It is egui, drawn in the same pass as the welcome theme
   picker. There is one egui pass per frame, whatever is open.
 - **Keyboard ownership is explicit.** While a dock surface has focus, every
   shell global stands down: Space, the arrows, `T`/`M`/`S`/`F`/`H`, Enter and
@@ -138,7 +138,7 @@ tokens first (visible everywhere, cheap), then the plan lane, then the rail.
 
 The operator's frame for the run (2026-10-24): 5a, 5b and 5c in one run; the
 secondary panels (Export, Tune, Lyrics, Assist, AI settings, protocol card,
-Editor, dock) are **re-skinned only**, their layouts restructured in a later
+the then-present modal, dock) were **re-skinned only**, their layouts restructured in a later
 wave; the dark mockup look becomes the default and the light appearance is kept
 on the same tokens; the mockup is the spine and the details are free. Fixed: one
 accent that means *now*, the plan lane as runs, the rail with flyouts, the
@@ -161,6 +161,16 @@ double-clicking a run zooms the view to it. The lane is 44 px (was 24). Split
 in two by design (`build/redesign/wx5b-design.md` in the main checkout): the
 lane here, the poster-frame service beside it, with a seam commit (`cbbe6b8`)
 both were built against.
+
+**F8 retirement (operator, 2026-10-30).** Look and Lyrics now carry the
+retired modal's work. Pixel look (whole video and section override, palettes,
+short-edge count, kick) is a group below Look's parameters; Dark / Light is in
+its fixed footer. The modal file, application F8 shortcut, pencil icon and
+startup flag are deleted. The column's transport, top bar and time axis stay
+present. Shared egui appearance moved to `egui_theme.rs`; Direct and welcome
+retain their backend. `pixel_look_check.sh` replaces the modal's gate. The
+inventory and lead-review policy differences are in
+`build/redesign/wx5-editor-inventory.md` (untracked local evidence).
 
 ### WX-6 — gate
 

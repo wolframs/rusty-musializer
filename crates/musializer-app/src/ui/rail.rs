@@ -1,7 +1,7 @@
 //! The rail and its flyouts (WX-5c, `docs/WX5C_DESIGN.md` §1).
 //!
 //! The rail replaces the 320 px sidebar: four icons beside the preview and the
-//! transport — Tracks and Scenes at the top, Editor and Dock at the bottom —
+//! transport — Tracks and Scenes at the top, the column toggle at the bottom —
 //! and the two that held the sidebar's panels open a **flyout** over the
 //! preview's left edge instead of taking width from it for good. A flyout is
 //! transient: it closes on Escape, on a press outside it, or on its icon, and
@@ -64,7 +64,7 @@ impl Shell {
         frame: &WorkspaceFrame,
     ) -> Option<UiRect> {
         let Some(rail) = frame.rail_layout else {
-            // Fullscreen and the editor hide the rail, and its flyouts with
+            // Fullscreen hides the rail, and its flyouts with
             // it; coming back shows the plain workspace.
             self.open_flyout = None;
             return None;
@@ -88,7 +88,7 @@ impl Shell {
     ///
     /// Ghost buttons ([`ButtonStyle::Ghost`]): a glyph in muted ink until it
     /// is hovered, and the selection look — outline and tint, never the accent
-    /// — while the state it names holds: its flyout open, the editor open, the
+    /// — while the state it names holds: its flyout open, the
     /// dock open.
     pub(crate) fn rail(
         &mut self,
@@ -119,7 +119,6 @@ impl Shell {
             let (control, selected) = match icon {
                 RailIcon::Tracks => (icons::RAIL_TRACKS, self.open_flyout == Some(Flyout::Tracks)),
                 RailIcon::Scenes => (icons::RAIL_SCENES, self.open_flyout == Some(Flyout::Scenes)),
-                RailIcon::Editor => (icons::EDITOR, self.editor_open),
                 // WX-5d: with the column the dock is its Direct view, and
                 // this slot shows or hides the whole column.
                 RailIcon::Dock => (
@@ -158,12 +157,6 @@ impl Shell {
             match icon {
                 RailIcon::Tracks => self.toggle_flyout(Flyout::Tracks),
                 RailIcon::Scenes => self.toggle_flyout(Flyout::Scenes),
-                RailIcon::Editor => {
-                    if self.lyric_draft_allows_context_change(input.workspace) {
-                        self.open_flyout = None;
-                        self.editor_open = true;
-                    }
-                }
                 RailIcon::Dock => self.toggle_column(input.workspace, commands),
             }
         }
@@ -264,7 +257,7 @@ impl Shell {
             self.scene_picker.browse(family);
         }
         let current_family = SceneFamily::of(input.scene);
-        let mouse_allowed = !self.editor_open && !self.assist_settings.is_open();
+        let mouse_allowed = !self.assist_settings.is_open();
 
         let mut layout = PickerLayout::new(area, self.scene_picker.family.scenes().len());
         let mut tabs = Vec::with_capacity(SceneFamily::ALL.len());
@@ -776,7 +769,7 @@ mod tests {
         assert_eq!(
             shell.describe_rail(),
             "rect=0,46,52,414 icons=tracks@8,56,36,36;scenes@8,98,36,36;\
-             editor@8,372,36,36;dock@8,414,36,36 open=scenes flyout=52,46,336,674"
+             dock@8,414,36,36 open=scenes flyout=52,46,336,674"
         );
     }
 }

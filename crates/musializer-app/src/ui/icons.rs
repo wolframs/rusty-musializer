@@ -74,8 +74,6 @@ pub const EXPORT: Control = Control::new(Icon::Film, "Export", "Render to video"
     reason = "left the transport in WX-5c; the top bar's tabs are words"
 )]
 pub const LYRICS: Control = Control::new(Icon::FileText, "Lyrics", "Lyrics editor");
-pub const EDITOR: Control =
-    Control::new(Icon::Pencil, "Editor", "Tune, lyrics and appearance [F8]");
 #[allow(
     dead_code,
     reason = "left the transport in WX-5c; the top bar's tabs are words"
@@ -176,7 +174,6 @@ mod tests {
             SEEK_BACK,
             SEEK_FORWARD,
             TUNE,
-            EDITOR,
             EXPORT,
             LYRICS,
             ASSIST,
@@ -208,7 +205,6 @@ mod tests {
             SEEK_BACK,
             SEEK_FORWARD,
             TUNE,
-            EDITOR,
             READOUT,
             MUTE,
             UNMUTE,

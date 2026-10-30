@@ -58,13 +58,15 @@ application added; the tables below pin the grammar's shape and the semantics
 inherited from `src/musializer.c` (parser at `:315-662`, four value parsers at
 `:19-250`).
 
-The toolkit editor adds `--editor-ui` (open at startup) and
-`--ui-theme light-blue|black-amber` (session appearance override; `light` and
-`dark` are accepted as aliases since WX-5a, 2026-10-24). The Editor selector
-persists the same theme tokens in the workstation UI preference JSON; a missing
-theme field defaults to `black-amber`, the dark appearance, which became the
-default with WX-5a (it was `light-blue` before). Neither flag changes project or
-export appearance. See [UI_TOOLKIT.md](UI_TOOLKIT.md).
+`--ui-theme light-blue|black-amber` is a session appearance override; `light`
+and `dark` are aliases (WX-5a, 2026-10-24). Look's fixed-footer Dark / Light
+switch and the welcome picker persist these tokens in workstation UI
+preferences. A missing theme defaults to `black-amber`; neither appearance
+changes projects or exports. **Deliberate grammar removal (2026-10-30):**
+`--editor-ui` was removed with the operator-retired F8 modal. It now reports retirement and returns exit status 1. Use Look/Lyrics tabs; capture with `--ui-probe column=look`
+or `column=lyrics`. `pixel=video|section` reveals Look's pixel group and selects
+its scope for a capture; it performs no project edit. Edits require `click=`.
+See [UI_TOOLKIT.md](UI_TOOLKIT.md).
 
 The directing flags — `--treatment`, `--vocabulary`, `--contact-sheet`,
 `--sheet-at`, `--still` — are post-legacy additions (2026-10-11) with no row in

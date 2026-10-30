@@ -1,3 +1,5 @@
+> The 2026-10-30 retirement removes the modal pencil; the column toggle is the sole bottom icon. See UI_TOOLKIT.md.
+
 # WX-5c design note: the rail, the big preview, the top bar
 
 Written by the 5a/5b designer for the lead, 2026-10-24, and accepted by the
@@ -47,7 +49,7 @@ A seam commit comes first, as in 5b. This note is the contract.
 
 - **Rail, 52 logical px:**
   - icons top to bottom: Tracks, Scenes (with ASCII imagery);
-  - at the bottom: Editor (F8) and Dock (`Ctrl+\``), moved here from the
+  - historical bottom pair: the retired modal and Dock (`Ctrl+\``), moved here from the
     transport;
   - icons from `ui/icons.rs`, each with a tooltip naming its shortcut (the
     UX0 rule that a tooltip is where a binding is written down);
@@ -102,7 +104,7 @@ A seam commit comes first, as in 5b. This note is the contract.
     check's 82x252→231 and the footer's 403→383 have each moved twice this
     week).
 - **Fullscreen** hides the top bar, rail, flyouts and band, as today. The
-  **Editor** frame hides them too ("inactive workspace panels are hidden").
+  **historical modal** frame hid them too ("inactive workspace panels are hidden").
   The **welcome screen** is unchanged: no track means no rail or top bar.
 
 ## 2. The transport (Rail)
@@ -118,7 +120,7 @@ The mockup's row under the preview:
   and fullscreen.
 
 Tune / Export / Lyrics / Assist leave the transport for the top bar's tabs;
-Editor and Dock go to the rail. `core::ui::transport_bar`'s ladder loses the
+The column toggle lives on the rail; the original pencil was removed on 2026-10-30. `core::ui::transport_bar`'s ladder loses the
 panel-button rung, and its 48 exact asserts move on purpose. **Monotonicity in
 width stays the property.**
 

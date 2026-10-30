@@ -499,7 +499,7 @@ fn rail_record(
             0,
             WorkspaceRail {
                 rail: SENTINEL_RECT,
-                icons: [None; 4],
+                icons: [None; 3],
                 flyout: SENTINEL_RECT,
             },
         ),
@@ -599,11 +599,11 @@ fn dump_rails(out: &mut String) {
     // probe follows a rung that moves — and the pinned file is what says it
     // moved.
     let stacked = |n: f32, s: f32| RAIL_ICON_MARGIN * 2.0 + n * s + (n - 1.0) * RAIL_ICON_GAP;
-    let split = stacked(4.0, RAIL_ICON_SIZE) + RAIL_GROUP_GAP - RAIL_ICON_GAP;
+    let split = stacked(3.0, RAIL_ICON_SIZE) + RAIL_GROUP_GAP - RAIL_ICON_GAP;
     for boundary in [
         split,
-        stacked(4.0, RAIL_ICON_SIZE),
-        stacked(4.0, RAIL_ICON_MINIMUM),
+        stacked(3.0, RAIL_ICON_SIZE),
+        stacked(3.0, RAIL_ICON_MINIMUM),
         stacked(2.0, RAIL_ICON_MINIMUM),
         stacked(1.0, RAIL_ICON_MINIMUM),
     ] {
