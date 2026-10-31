@@ -861,9 +861,15 @@ mod tests {
     fn ffmpeg_output_is_cut_at_what_the_header_promised() {
         let fake = FakeFfmpeg::new("flood", "echo $$ > PIDS\nexec yes");
         let flag = AtomicBool::new(false);
+        let started = Instant::now();
         assert_eq!(
-            fake.run(Duration::from_secs(5), &flag),
+            fake.run(Duration::from_secs(30), &flag),
             Err(PictureError::Undecodable)
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "stopped by the cap, not the deadline: {:?}",
+            started.elapsed()
         );
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(fake.still_alive(), Vec::<String>::new());
