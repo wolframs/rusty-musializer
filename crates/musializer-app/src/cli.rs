@@ -350,11 +350,22 @@ pub struct UiProbe {
     /// (WX-4). The gate points `MUSIALIZER_AGENT_<NAME>` at a fake agent; a
     /// probe run never starts a real one by itself.
     pub agent: Option<String>,
-    /// `agent-say=TEXT`: send `TEXT` to that chat on frame 30.
+    /// `agent-say=TEXT`: send `TEXT` to that chat on frame 30, or after the
+    /// last `agent-press=`.
     pub agent_say: Option<String>,
     /// `agent-decide=allow|deny`: answer the chat's permission prompts on
     /// frame 60, through the same path as the Allow and Deny buttons.
     pub agent_decide: Option<bool>,
+    /// `agent-press=NAME+NAME+...`: press controls of the chat through egui's
+    /// own pointer events, one every 12 frames from frame 40. `NAME` is a
+    /// kind from the `dock:` line (`chip-model`), or `row:` and a menu row
+    /// (`row:model:opus`).
+    ///
+    /// **Invented, and it is `click=` for egui.** `click=` feeds the raylib
+    /// widgets' pointer seam; egui reads the hardware button, which Xvfb never
+    /// presses. A menu is a sequence, so it takes several presses in one run,
+    /// addressed by name because a row only exists once its menu is open.
+    pub agent_press: Vec<String>,
     /// `follow=1`: follow `--treatment` in a probe run too (WX-3). A batch
     /// run applies it once; this lets the gate edit the file mid-run.
     pub follow: bool,
@@ -1427,6 +1438,12 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
                 "deny" => false,
                 _ => return None,
             });
+        }
+        "agent-press" => {
+            probe.agent_press = value.split('+').map(str::to_owned).collect();
+            if probe.agent_press.iter().any(String::is_empty) {
+                return None;
+            }
         }
         "dock-run" => {
             probe.dock = true;

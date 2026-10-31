@@ -11,12 +11,58 @@ echoes the user's words, so the gate can see its own message came back.
 
 A message containing the word `ask` makes the Claude and Codex fakes request
 permission first and report the answer in their reply ("permission: allow").
+A message containing `state?` adds what the fake was told about its model,
+effort and access to the reply, as each real CLI would hold it: Claude's from
+its flags and control requests, Codex's from its thread and turn requests,
+Antigravity's from its flags. `agy models` is answered as a listing.
 
 It never touches the network, never runs the "tool" it reports, and exits
 when its input closes. The real agents are never started by any check.
 """
 import json
 import sys
+
+ARGS = sys.argv[1:]
+
+
+def flag(name, default=None):
+    return ARGS[ARGS.index(name) + 1] if name in ARGS else default
+
+
+CLAUDE_MODELS = [
+    {"value": "default", "resolvedModel": "fake-opus", "displayName": "Default (recommended)",
+     "description": "Fake Opus, the default", "supportedEffortLevels": ["low", "high", "max"],
+     "supportsAutoMode": True},
+    {"value": "fake-opus", "resolvedModel": "fake-opus", "displayName": "Fake Opus",
+     "description": "For fake complex work", "supportedEffortLevels": ["low", "high", "max"],
+     "supportsAutoMode": True},
+    {"value": "fake-haiku", "resolvedModel": "fake-haiku", "displayName": "Fake Haiku",
+     "description": "No levels, no auto mode"},
+    {"value": "fake-capped", "resolvedModel": "fake-capped", "displayName": "Fake Capped",
+     "description": "Applies high when asked for max", "supportedEffortLevels": ["low", "max"],
+     "supportsAutoMode": True},
+    {"value": "fake-refused", "resolvedModel": "fake-refused", "displayName": "Fake Refused",
+     "description": "The fake refuses this one", "supportedEffortLevels": ["low"],
+     "supportsAutoMode": True},
+]
+
+CODEX_MODELS = [
+    {"id": "fake-sol", "model": "fake-sol", "displayName": "Fake Sol", "description": "A fake flagship",
+     "hidden": False, "isDefault": True, "defaultReasoningEffort": "low",
+     "supportedReasoningEfforts": [{"reasoningEffort": e, "description": e} for e in ("low", "high", "ultra")]},
+    {"id": "fake-luna", "model": "fake-luna", "displayName": "Fake Luna", "description": "A fake small one",
+     "hidden": False, "isDefault": False, "defaultReasoningEffort": "medium",
+     "supportedReasoningEfforts": [{"reasoningEffort": e, "description": e} for e in ("medium", "max")]},
+    {"id": "fake-hidden", "model": "fake-hidden", "displayName": "Fake Hidden", "description": "",
+     "hidden": True, "isDefault": False, "defaultReasoningEffort": "low", "supportedReasoningEfforts": []},
+]
+
+AGY_MODELS = """Fetching available models...
+fake-argon-medium\tFake Argon (Medium)
+fake-argon-high\tFake Argon (High)
+fake-argon-low\tFake Argon (Low)
+fake-oss-medium\tFake OSS (Medium)
+"""
 
 
 def out(obj):
@@ -35,13 +81,57 @@ def claude():
     session = "fake-session"
     turn = 0
     stream = lines()
+    state = {"model": flag("--model", "default"), "effort": flag("--effort", "high"),
+             "mode": flag("--permission-mode", "default")}
+
+    def resolved():
+        return next((m["resolvedModel"] for m in CLAUDE_MODELS if m["value"] == state["model"]), state["model"])
+
+    def control(message):
+        request = message["request"]
+        kind = request["subtype"]
+        body = None
+        error = None
+        if kind == "initialize":
+            body = {"models": CLAUDE_MODELS, "current_permission_mode": state["mode"]}
+        elif kind == "get_settings":
+            body = {"effective": {}, "applied": {"model": resolved(), "effort": state["effort"]}}
+        elif kind == "set_model":
+            if request["model"] == "fake-refused":
+                error = "fake-refused is not available on this plan"
+            else:
+                state["model"] = request["model"]
+                body = {"model": resolved()}
+        elif kind == "set_permission_mode":
+            if request["mode"] == "bypassPermissions" and "--allow-dangerously-skip-permissions" not in ARGS:
+                error = "the session was not launched to allow bypassPermissions"
+            else:
+                state["mode"] = request["mode"]
+                body = {"mode": request["mode"]}
+        elif kind == "apply_flag_settings":
+            state["effort"] = request["settings"]["effortLevel"]
+            if state["model"] == "fake-capped" and state["effort"] == "max":
+                state["effort"] = "high"
+            body = {}
+        else:
+            return
+        reply = {"request_id": message["request_id"]}
+        if error:
+            reply.update(subtype="error", error=error)
+        else:
+            reply.update(subtype="success", response=body)
+        out({"type": "control_response", "response": reply})
+
     for message in stream:
+        if message.get("type") == "control_request":
+            control(message)
+            continue
         if message.get("type") != "user":
             continue
         turn += 1
         text = message["message"]["content"][0]["text"]
         last = text.splitlines()[-1]
-        out({"type": "system", "subtype": "init", "model": "fake-claude", "session_id": session})
+        out({"type": "system", "subtype": "init", "model": resolved(), "session_id": session})
         decision = None
         if "ask" in last:
             out({"type": "control_request", "request_id": f"req-{turn}",
@@ -62,6 +152,8 @@ def claude():
         reply = f"fake reply to: {last}"
         if decision:
             reply += f" (permission: {decision})"
+        if "state?" in last:
+            reply += f" [{resolved()}/{state['effort']}/{state['mode']}]"
         out({"type": "stream_event", "event": {"type": "message_start", "message": {"id": mid}}})
         half = len(reply) // 2
         for part in (reply[:half], reply[half:]):
@@ -74,6 +166,10 @@ def claude():
 
 def antigravity():
     turn = 0
+    if flag("--mode") == "auto":
+        sys.stderr.write("warning: --mode auto is not available for this account; "
+                         "continuing in the default mode.\n")
+        sys.stderr.flush()
     for message in lines():
         if message.get("event") != "user":
             continue
@@ -85,6 +181,9 @@ def antigravity():
         out({"event": "step_update", "step_update": {"step_index": 1, "state": "DONE", "step_type": "tool",
              "tool_name": "run_command", "tool_info": {"parameters": {"CommandLine": "echo fake"}}}})
         reply = f"fake reply to: {last}"
+        if "state?" in last:
+            skip = "--dangerously-skip-permissions" in ARGS
+            reply += f" [{flag('--model', '-')}/{flag('--mode', '-')}/{'skip' if skip else 'ask'}]"
         out({"event": "step_update", "step_update": {"step_index": 2, "state": "ACTIVE",
              "step_type": "agent_response", "text_delta": reply}})
         out({"event": "result", "result": {"conversation_id": "fake-conversation", "status": "SUCCESS",
@@ -95,17 +194,30 @@ def codex():
     thread = None
     turn = 0
     pending = {}
+    state = {"model": "fake-sol", "effort": "low", "access": "-"}
     for message in lines():
         method = message.get("method")
         if method == "initialize":
             out({"id": message["id"], "result": {"userAgent": "fake"}})
+        elif method == "model/list":
+            out({"id": message["id"], "result": {"data": CODEX_MODELS, "nextCursor": None}})
         elif method == "thread/start":
             thread = "fake-thread"
-            out({"id": message["id"], "result": {"thread": {"id": thread}, "model": "fake-gpt"}})
+            params = message["params"]
+            state["model"] = params.get("model") or state["model"]
+            out({"id": message["id"], "result": {"thread": {"id": thread}, "model": state["model"],
+                                                 "reasoningEffort": state["effort"]}})
         elif method == "turn/start":
             turn += 1
-            text = message["params"]["input"][0]["text"]
+            params = message["params"]
+            text = params["input"][0]["text"]
             last = text.splitlines()[-1]
+            state["model"] = params.get("model") or state["model"]
+            state["effort"] = params.get("effort") or state["effort"]
+            state["access"] = "+".join([params.get("approvalPolicy", "-"), params.get("approvalsReviewer", "-"),
+                                        params.get("sandboxPolicy", {}).get("type", "-")])
+            if "state?" in last:
+                last += f" [{state['model']}/{state['effort']}/{state['access']}]"
             out({"id": message["id"], "result": {"turn": {"id": f"turn{turn}"}}})
             out({"method": "turn/started", "params": {"turn": {"id": f"turn{turn}"}}})
             if "ask" in last:
@@ -135,8 +247,10 @@ def finish_codex(turn, last, decision):
 
 
 def main():
-    args = sys.argv[1:]
-    if "app-server" in args:
+    args = ARGS
+    if args[:1] == ["models"]:
+        sys.stdout.write(AGY_MODELS)
+    elif "app-server" in args:
         codex()
     elif "--print=" in args:
         antigravity()

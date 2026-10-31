@@ -110,9 +110,10 @@ TUI inside a terminal:
   `docs/MUSIC_VIDEO_CLI.md` and `tools/headless_run.sh`.
 - A tool call shows as a one-line chip. Edits to the followed treatment
   trigger WX-3 by themselves; nothing extra is needed.
-- Permissions: sessions start in the project folder, in the CLI's
-  edit-accepting mode, without the dangerous skip flags. A permission prompt
-  the protocol surfaces becomes an Allow / Deny row in the chat.
+- Permissions: sessions start in the project folder, in the access the
+  composer's chip shows, which is the CLI's edit-accepting mode until changed.
+  A permission prompt the protocol surfaces becomes an Allow / Deny row in the
+  chat.
 - **Credentials are never seen here.** Each CLI uses its own login. The
   OpenRouter E1 scrub (`runtime::assist::env`) already keeps the app's own key
   out of children.
@@ -349,10 +350,8 @@ remaining workstation work is:
   [HEADLESS_GPU.md](HEADLESS_GPU.md).
 - **Lyric lane resizing.** Decide whether dragging the lane grip should grow
   the whole band. The current band limits downward growth.
-- **Native agent sessions.** Add inline images, a model picker per chat,
-  Codex thread resume after process exit, and a treatment file picker. Codex
-  and Antigravity still need a real turn through the dock; protocol probes
-  alone do not establish that integration.
+- **Native agent sessions.** Add inline images, Codex thread resume after
+  process exit, and a treatment file picker.
 - **Generated video as material.** The scope is in
   [VIDEO_GENERATION.md](VIDEO_GENERATION.md). Implementation needs the consent
   and price display before paid generation, followed by treatment support for
@@ -537,7 +536,7 @@ notice cards still in the pre-redesign style.
   as an Allow/Deny row. Codex runs with `approvalPolicy: on-request`, and its
   approvals are server requests answered the same way. Antigravity cannot ask
   in this mode: a refused action shows up in its result, and the chat says
-  so and offers "let it run commands", which restarts it with
+  so and points at Full access, which restarts it with
   `--dangerously-skip-permissions` and resumes its conversation. That is the
   operator's choice, made per chat, and nothing turns it on by default.
 - **PATH.** A desktop launch does not read `.zshrc`, which is where Codex's
@@ -555,9 +554,51 @@ notice cards still in the pre-redesign style.
   live only through the protocol probes above, not through the dock, to keep
   Codex's weekly limit for real work.
 - **Not done yet:** inline images (a contact sheet the agent wrote should
-  show in the chat), resuming a Codex thread after its process dies (Claude
-  and Antigravity resume, Codex starts a new thread), and a model picker
-  (each CLI uses its own configured default).
+  show in the chat), and resuming a Codex thread after its process dies (Claude
+  and Antigravity resume, Codex starts a new thread).
+
+**Composer controls (2026-10-31).** Model, effort and access, after T3 Code,
+whose access names and per-CLI mapping these are.
+
+| | Claude Code | Codex | Antigravity |
+| --- | --- | --- | --- |
+| Models from | `initialize` control request | `model/list` | `agy models`, a process of its own |
+| Reaches the CLI | at once: `set_model`, `apply_flag_settings`, `set_permission_mode` | with the next `turn/start` | with the next message, on a new process that resumes the conversation |
+| Read back | `get_settings`' `applied`; the reply to `set_permission_mode` | `thread/start`'s result | `init` |
+| Supervised | `default` | `untrusted`, read-only sandbox | not offered: it cannot ask from a chat |
+| Auto-accept edits | `acceptEdits` | `on-request`, workspace-write, reviewer `user` | `--mode accept-edits` |
+| Auto | `auto`, on models that list it | `on-request`, workspace-write, reviewer `auto_review` | `--mode auto`, when the account has it |
+| Full access | `bypassPermissions` | `never`, `dangerFullAccess` | `--dangerously-skip-permissions` |
+
+- **The wire was read off live sessions** on 2026-10-31 (Claude Code 2.1.312,
+  codex-cli 0.166.0, the agy build of that day). None of the listings spends a
+  turn, so the chips are right before the first message.
+- Claude starts with `--allow-dangerously-skip-permissions`, which enables
+  nothing by itself. Without it `set_permission_mode` refuses
+  `bypassPermissions` (`bypass_not_launched`), and Full access would need a
+  restart. The mode on the command line is still what applies.
+- Codex is told `approvalsReviewer` on every thread and turn. The operator's
+  `config.toml` routes approvals to `auto_review`, and left alone that would
+  turn Auto-accept edits into Auto.
+- Antigravity's model ids carry the level (`gemini-3.8-flash-low`), so the
+  picker folds them to one row per model and the effort chip picks the suffix.
+  `--mode auto` is refused for this account with only a stderr warning, after
+  which agy continues in its default mode. The chat reads that warning, puts the
+  choice back and says so.
+- **Remembered per agent, in `agents.json` beside `ui.json`, except Full
+  access.** The rule from WX-4 stands: Full access is the operator's choice, made
+  per chat, and nothing turns it on by default. A hand-written `"full"` in the
+  file is refused. A remembered model the CLI stopped listing falls back to the
+  default with a notice, rather than failing the first turn.
+- **A refused choice goes back.** The chip shows what the CLI accepted, and the
+  refusal is a notice in the chat. Claude's effort chip reads `applied`, because
+  it may apply less than it was asked for.
+- Gate: `tools/agent_controls_check.sh`. Each choice is pressed through egui's
+  own pointer events and read back from the fake's reply, which says what its
+  protocol told it. Eight source mutants, each failing on GPU and CPU:
+  choices never written, no allow flag, a refused row taking the press, no
+  Antigravity restart, Full access remembered, no read-back after an effort
+  change, the wrong sandbox on Full, Antigravity's stderr ignored.
 
 
 ## Integrated follow-up evidence (2026-10-30)

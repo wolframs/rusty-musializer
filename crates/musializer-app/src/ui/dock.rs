@@ -33,6 +33,7 @@ use egui::{Context, Rect};
 
 use musializer_runtime::terminal::{GridSize, Session, Spawn};
 
+use super::agent_choices::{self, AgentChoices};
 use chat_view::ChatTab;
 use terminal_view::TerminalView;
 
@@ -229,6 +230,11 @@ pub struct Dock {
     /// The empty state's Start buttons and discovery states as last drawn,
     /// for `dock:`; empty while a chat is shown.
     start_rects: Vec<(&'static str, egui::Rect, &'static str)>,
+    /// What each agent's chips last chose (`agent_choices`).
+    choices: AgentChoices,
+    choices_loaded: bool,
+    /// The file could not be read; it is never written over.
+    choices_refused: bool,
 }
 
 impl Dock {
@@ -303,13 +309,82 @@ impl Dock {
     pub fn open_chat(&mut self, agent: Agent, context: &DockContext) {
         musializer_runtime::agent_process::warm_shell_path();
         let id = self.next_id();
-        let chat = ChatTab::new(agent, context, id);
+        let selection = self.choices().get(agent.command());
+        let chat = ChatTab::new(agent, context, id, selection);
         self.tabs.push(Tab {
             label: agent.label().to_string(),
             body: Body::Chat(chat),
             id,
         });
         self.chat_active = Some(self.tabs.len() - 1);
+    }
+
+    /// What each agent last chose, read once. A file that cannot be read
+    /// is left alone: chats run on defaults and nothing writes over it.
+    fn choices(&mut self) -> &AgentChoices {
+        if !self.choices_loaded {
+            self.choices_loaded = true;
+            match agent_choices::default_path().map(|path| agent_choices::load(&path)) {
+                Some(Ok(Some(choices))) => self.choices = choices,
+                Some(Ok(None)) => {}
+                None => self.choices_refused = true,
+                Some(Err(error)) => {
+                    self.choices_refused = true;
+                    eprintln!("agent choices: {error}; not saving over them");
+                }
+            }
+        }
+        &self.choices
+    }
+
+    /// Keeps a chat's changed chips for the next chat with that agent.
+    fn save_choices(&mut self) {
+        let mut changed = false;
+        let changes: Vec<_> = self
+            .tabs
+            .iter_mut()
+            .filter_map(|tab| match &mut tab.body {
+                Body::Chat(chat) => chat
+                    .take_selection_change()
+                    .map(|selection| (chat.agent, selection)),
+                Body::Terminal(_) => None,
+            })
+            .collect();
+        self.choices();
+        for (agent, selection) in changes {
+            self.choices.remember(agent.command(), &selection);
+            changed = true;
+        }
+        if !changed || self.choices_refused {
+            return;
+        }
+        if let Some(path) = agent_choices::default_path() {
+            if let Err(error) = agent_choices::save(&path, &self.choices) {
+                eprintln!("agent choices: {error}");
+            }
+        }
+    }
+
+    /// A control of the shown chat, by the name the `dock:` line gives it
+    /// (`--ui-probe agent-press=`).
+    #[must_use]
+    pub fn probe_point(&self, name: &str) -> Option<egui::Pos2> {
+        let index = self.current_chat()?;
+        let Body::Chat(chat) = &self.tabs.get(index)?.body else {
+            return None;
+        };
+        chat.layout
+            .iter()
+            .find(|(kind, _)| *kind == name)
+            .map(|(_, rect)| rect)
+            .or_else(|| {
+                let row = name.strip_prefix("row:")?;
+                chat.menu_rows
+                    .iter()
+                    .find(|(id, _)| id == row)
+                    .map(|(_, rect)| rect)
+            })
+            .map(|rect| rect.center())
     }
 
     /// Sends `text` to the active chat as if typed (`--ui-probe agent-say=`).
@@ -342,6 +417,7 @@ impl Dock {
                 Body::Chat(chat) => chat.tick(),
             }
         }
+        self.save_choices();
     }
 
     /// Types `text` into the active terminal (`--ui-probe dock-run=`). Xvfb

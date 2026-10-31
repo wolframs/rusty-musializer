@@ -335,7 +335,7 @@ Keys invented here so far include `hover`, `click`, `wheel`, `wheel-shift`, `whe
 `middle-drag`, `drop`, `scene-pick`, `save-to`, `lyric-tap`, `lyric-undo`,
 `tune-seed`, `tune-explore`, `tune-type`, `protocol-flip`, `protocol-answer`,
 `sidebar`, `inspector`, `timeline-height`, `audio-stall`, `route`, `picker`,
-`tune`, `assist`, `dock`, `dock-run`, `dock-focus`, `follow`, `agent`, `agent-say` and `agent-decide`. What is *not* negotiable is the shape and the refusal
+`tune`, `assist`, `dock`, `dock-run`, `dock-focus`, `follow`, `agent`, `agent-say`, `agent-decide` and `agent-press`. What is *not* negotiable is the shape and the refusal
 rules in this section — one argv word, at most one occurrence of each key, an
 unknown key is an error rather than last-wins — because a capture script's typo
 must not quietly photograph the wrong state.

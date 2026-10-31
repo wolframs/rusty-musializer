@@ -195,8 +195,7 @@ def run_check():
         entry = None
         if surface == 'artist': entry = rect(line(log, 'top bar'), 'artist')
         if surface == 'chat':
-            entry = rect(line(log, 'dock'), 'composer')
-            entry[1] -= 20
+            entry = rect(line(log, 'dock'), 'entry')
         if surface == 'look': entry = rect(line(log, 'tune layout'), 'value')
         if surface == 'pixel': entry = rect(line(log, 'pixel look'), 'value')
         if surface == 'lyric': entry = rect(line(log, 'lyrics column'), 'text')

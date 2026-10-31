@@ -14,6 +14,10 @@ exact package version, declared SPDX expression and repository. Run
 offline, fails on missing source notices, and records Cargo.lock's SHA-256.
 An exact unit test pins both the complete package set and lockfile digest.
 
+`t3code-MIT.txt` is T3 Code's licence, copied verbatim from
+https://github.com/pingdotgg/t3code on 2026-10-31. The dock's agent chat follows
+its design, and the access levels keep its names and descriptions.
+
 The registry omits the monorepo licences for some packages. Their notices were
 retrieved from these original repositories on 2026-10-30:
 

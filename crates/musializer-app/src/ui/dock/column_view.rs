@@ -797,6 +797,11 @@ impl Dock {
                     chat.layout
                         .iter()
                         .map(|(kind, rect)| format!("{kind}@{}", at(rect)))
+                        .chain(
+                            chat.menu_rows
+                                .iter()
+                                .map(|(row, rect)| format!("row:{row}@{}", at(rect)))
+                        )
                         .collect::<Vec<_>>()
                         .join(";")
                 ),

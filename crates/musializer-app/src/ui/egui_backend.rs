@@ -24,6 +24,10 @@ use std::collections::HashMap;
 pub struct EguiBackend {
     /// Draw the existing dock/welcome under About without forwarding any input.
     pub input_suspended: bool,
+    /// `--ui-probe agent-press=` for this frame: where the pointer is, and a
+    /// press (`Some(true)`) or release on it. Xvfb has no button, so `click=`
+    /// reaches only the raylib widgets; this reaches egui's own.
+    pub probe_pointer: Option<(egui::Pos2, Option<bool>)>,
     ctx: Context,
     textures: HashMap<TextureId, Texture2D>,
     pixels_per_point: f32,
@@ -54,6 +58,23 @@ impl EguiBackend {
             input.events.push(egui::Event::PointerGone);
             input.modifiers = egui::Modifiers::default();
             input.focused = false;
+        }
+        if let Some((point, press)) = self.probe_pointer {
+            // The parked hardware pointer must not move this one away between
+            // the press and the release, or the release is a drag.
+            for event in &mut input.events {
+                if let egui::Event::PointerMoved(moved) = event {
+                    *moved = point;
+                }
+            }
+            if let Some(pressed) = press {
+                input.events.push(egui::Event::PointerButton {
+                    pos: point,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::default(),
+                });
+            }
         }
         self.ctx.set_pixels_per_point(self.pixels_per_point);
         self.ctx.begin_pass(input);

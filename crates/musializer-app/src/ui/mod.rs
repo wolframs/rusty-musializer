@@ -16,6 +16,7 @@
 //! fixed by the ownership map and this geometry belongs to nobody else.
 
 pub mod about;
+pub mod agent_choices;
 pub mod assist_settings;
 pub mod column;
 pub mod dock;

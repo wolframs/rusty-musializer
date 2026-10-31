@@ -281,4 +281,5 @@ timed-lyric comparisons when a judgment needs human ears.
 
 Rusty Musializer grew from Alexey Kutepov (Tsoding) and the Musializer contributors' original project.
 Phosphor Dream is adapted with permission from Digi's `dreamscape.py`.
+The agent chat follows [T3 Code](https://github.com/pingdotgg/t3code) (MIT).
 The app's About window has the full credits and licence notices.

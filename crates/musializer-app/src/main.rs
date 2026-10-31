@@ -1804,6 +1804,7 @@ fn run(
                     dock.ensure_terminal(&context);
                 }
                 dock_probes(&mut dock, probe, report.frames, &context);
+                egui_backend.probe_pointer = agent_press(&dock, probe, report.frames);
                 if report.frames == 40 {
                     if let Some(view) = probe.column_switch {
                         app.shell
@@ -6936,7 +6937,13 @@ fn dock_probes(
             dock.open_chat(agent, context);
         }
     }
-    if frame == 30 {
+    // After the presses, when there are any: the message then proves what
+    // they changed reached the agent.
+    let say_at = match probe.agent_press.len() as u64 {
+        0 => 30,
+        presses => 40 + presses * 12 + 6,
+    };
+    if frame == say_at {
         if let Some(text) = probe.agent_say.as_deref() {
             dock.probe_say(text, context);
         }
@@ -6954,6 +6961,32 @@ fn dock_probes(
             dock.focus_active();
         }
     }
+}
+
+/// `--ui-probe agent-press=`: the pointer for this frame. Each press takes
+/// three frames of its slot, so egui sees it arrive, go down and come up, and
+/// the rest of the slot lets a menu open before the next name is looked up.
+fn agent_press(
+    dock: &ui::dock::Dock,
+    probe: &cli::UiProbe,
+    frame: u64,
+) -> Option<(egui::Pos2, Option<bool>)> {
+    let since = frame.checked_sub(40)?;
+    let name = probe.agent_press.get(usize::try_from(since / 12).ok()?)?;
+    let step = since % 12;
+    if step > 2 {
+        return None;
+    }
+    let Some(point) = dock.probe_point(name) else {
+        if step == 0 {
+            println!("agent press: {name} not on screen");
+        }
+        return None;
+    };
+    if step == 0 {
+        println!("agent press: {name} at {:.0},{:.0}", point.x, point.y);
+    }
+    Some((point, [None, Some(true), Some(false)][step as usize]))
 }
 
 #[cfg(test)]

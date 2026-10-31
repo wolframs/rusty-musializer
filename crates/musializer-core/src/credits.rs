@@ -383,6 +383,16 @@ pub const CREDITS: &[Credit] = &[
     },
     Credit {
         group: "Inspired by",
+        name: "T3 Code (the agent chat and its controls)",
+        author: "T3 Tools Inc.",
+        license: Some("MIT"),
+        urls: &["https://github.com/pingdotgg/t3code"],
+        notice: Some(include_str!("../../../resources/licenses/t3code-MIT.txt")),
+        dependency: None,
+        font: None,
+    },
+    Credit {
+        group: "Inspired by",
         name: "Le Biniou feedback family (ideas only)",
         author: "Le Biniou contributors",
         license: None,

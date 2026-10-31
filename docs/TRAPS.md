@@ -262,3 +262,13 @@ it. Mask every underlay widget, including the late tray; restore real input in
 the final overlay after native chrome and egui. `about_check.py` addresses that
 covered close from `notices:` and pins the unchanged tray, alongside the normal
 interior-gap control. No fixed pixel is a substitute for that report target.
+
+## `click=` never reaches egui
+
+`--ui-probe click=` feeds `Widgets`' pointer seam, and parks the hardware pointer.
+egui reads the hardware button through raylib, which Xvfb never presses, so a
+`click=` on a dock control passes through it silently and the dock's controls
+had no press in any gate. Use `agent-press=`, which adds egui events by report
+name. That seam must also rewrite the frame's `PointerMoved`: the parked pointer
+otherwise moves egui's between press and release, and the release reads as a
+drag with no `clicked()`. Found building the composer's menus, 2026-10-31.

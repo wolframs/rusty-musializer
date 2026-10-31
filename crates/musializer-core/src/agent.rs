@@ -5,9 +5,9 @@
 //!
 //! | Agent | Process | Protocol |
 //! | --- | --- | --- |
-//! | Claude Code | `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio` | NDJSON `type`-tagged events; permission prompts arrive as `control_request` and are answered with `control_response` |
+//! | Claude Code | `claude -p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --permission-prompt-tool stdio` | NDJSON `type`-tagged events; permission prompts arrive as `control_request` and are answered with `control_response`; models, effort and permission mode change live over the same channel |
 //! | Antigravity | `agy --input-format stream-json --output-format stream-json --print=` | NDJSON `event`-tagged `step_update`s; it cannot ask for a permission in this mode, so a denied action is reported in its `result` |
-//! | Codex | `codex app-server` | JSON-RPC over stdio: `initialize`, `thread/start`, `turn/start`; approvals arrive as server requests |
+//! | Codex | `codex app-server` | JSON-RPC over stdio: `initialize`, `model/list`, `thread/start`, `turn/start`, which carries the model, effort and access of that turn; approvals arrive as server requests |
 //!
 //! The shapes were read off live sessions of each CLI on 2026-10-21 (Claude
 //! Code 2.1.301, codex-cli 0.163.0, the agy build of that day), and the tests
@@ -21,6 +21,16 @@
 //! broken by the next CLI update. What *is* refused is a line that is not JSON
 //! at all: it is shown as a notice, because an agent printing prose to stdout
 //! has been started wrong.
+//!
+//! **What the composer picks.** A [`Selection`] is a model, an effort and an
+//! [`Access`]. Claude and Codex list their own models over the protocol, so the
+//! picker offers what this account can run rather than a list that ages here.
+//! Antigravity lists them from `agy models`, which the app runs and hands to
+//! [`antigravity_models`]. A choice reaches each CLI differently, as far as its
+//! protocol allows: Claude takes it live, Codex with the next turn, and
+//! Antigravity only on a new process, so its choices raise
+//! [`Transcript::take_restart_owed`]. The access names and their mapping onto
+//! each CLI's modes follow T3 Code (MIT, credited in the About window).
 
 use std::collections::HashMap;
 
@@ -32,6 +42,214 @@ pub enum Protocol {
     Claude,
     Antigravity,
     Codex,
+}
+
+/// How much an agent may do without asking.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Access {
+    Supervised,
+    /// What a chat has always started in: the CLI's edit-accepting mode.
+    #[default]
+    AcceptEdits,
+    Auto,
+    Full,
+}
+
+impl Access {
+    pub const ALL: [Self; 4] = [Self::Supervised, Self::AcceptEdits, Self::Auto, Self::Full];
+
+    /// The name in a preference file and on a probe line.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Supervised => "supervised",
+            Self::AcceptEdits => "accept-edits",
+            Self::Auto => "auto",
+            Self::Full => "full",
+        }
+    }
+
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|access| access.key() == key)
+    }
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Supervised => "Supervised",
+            Self::AcceptEdits => "Auto-accept edits",
+            Self::Auto => "Auto",
+            Self::Full => "Full access",
+        }
+    }
+
+    /// The name on the composer's chip, where width is short.
+    #[must_use]
+    pub const fn chip(self) -> &'static str {
+        match self {
+            Self::AcceptEdits => "Edits",
+            other => other.label(),
+        }
+    }
+
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Supervised => "Ask before commands and file changes.",
+            Self::AcceptEdits => "Auto-approve edits, ask before other actions.",
+            Self::Auto => "The agent approves routine actions and asks about the rest.",
+            Self::Full => "Allow commands and edits without prompts.",
+        }
+    }
+
+    const fn claude_mode(self) -> &'static str {
+        match self {
+            Self::Supervised => "default",
+            Self::AcceptEdits => "acceptEdits",
+            Self::Auto => "auto",
+            Self::Full => "bypassPermissions",
+        }
+    }
+
+    const fn codex_approval(self) -> &'static str {
+        match self {
+            Self::Supervised => "untrusted",
+            Self::AcceptEdits | Self::Auto => "on-request",
+            Self::Full => "never",
+        }
+    }
+
+    /// Named on every thread and turn, because the user's own Codex config
+    /// may route approvals to its reviewer agent, and then Auto-accept edits
+    /// would quietly mean Auto.
+    const fn codex_reviewer(self) -> &'static str {
+        match self {
+            Self::Auto => "auto_review",
+            _ => "user",
+        }
+    }
+
+    const fn codex_sandbox_mode(self) -> &'static str {
+        match self {
+            Self::Supervised => "read-only",
+            Self::AcceptEdits | Self::Auto => "workspace-write",
+            Self::Full => "danger-full-access",
+        }
+    }
+
+    fn codex_sandbox_policy(self) -> Value {
+        match self {
+            Self::Supervised => json!({"type": "readOnly"}),
+            Self::AcceptEdits | Self::Auto => json!({"type": "workspaceWrite"}),
+            Self::Full => json!({"type": "dangerFullAccess"}),
+        }
+    }
+}
+
+/// One entry of a model picker, as the CLI listed it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelChoice {
+    /// What the CLI is asked for. For Antigravity, the id without its effort
+    /// suffix: `gemini-3.8-flash` stands for its `-low`, `-medium` and `-high`.
+    pub id: String,
+    /// The full model name behind an alias (`opus` is `claude-opus-5-5`).
+    pub resolved: String,
+    pub label: String,
+    pub description: String,
+    /// In the CLI's order. Empty: this model takes no effort.
+    pub efforts: Vec<String>,
+    pub default_effort: Option<String>,
+    /// Whether [`Access::Auto`] works with this model.
+    pub auto: bool,
+}
+
+impl ModelChoice {
+    fn answers_to(&self, id: &str) -> bool {
+        id == self.id
+            || id == self.resolved
+            || self
+                .efforts
+                .iter()
+                .any(|effort| id.strip_suffix(effort.as_str()) == Some(&format!("{}-", self.id)))
+    }
+}
+
+/// What the composer's three chips say. `None` leaves the choice to the CLI.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Selection {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub access: Access,
+}
+
+/// Effort levels, lowest first. `agy models` writes the level into the id.
+const EFFORT_LEVELS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+
+/// An effort level as a chip says it.
+#[must_use]
+pub fn effort_title(level: &str) -> String {
+    match level {
+        "xhigh" => "XHigh".to_owned(),
+        _ => {
+            let mut letters = level.chars();
+            letters.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(letters).collect()
+            })
+        }
+    }
+}
+
+/// `agy models`: one `id<TAB>label` line per model and effort, folded to one
+/// entry per model. Lines without a tab are its progress text.
+#[must_use]
+pub fn antigravity_models(listing: &str) -> Vec<ModelChoice> {
+    let mut models: Vec<ModelChoice> = Vec::new();
+    for line in listing.lines() {
+        let Some((id, label)) = line.trim().split_once('\t') else {
+            continue;
+        };
+        let (family, level) = EFFORT_LEVELS
+            .iter()
+            .find_map(|level| {
+                id.strip_suffix(level)?
+                    .strip_suffix('-')
+                    .map(|family| (family, *level))
+            })
+            .unwrap_or((id, ""));
+        let label = label.rsplit_once(" (").map_or(label, |(name, _)| name);
+        let index = models
+            .iter()
+            .position(|model| model.id == family)
+            .unwrap_or_else(|| {
+                models.push(ModelChoice {
+                    id: family.to_owned(),
+                    resolved: family.to_owned(),
+                    label: label.to_owned(),
+                    auto: true,
+                    ..ModelChoice::default()
+                });
+                models.len() - 1
+            });
+        if !level.is_empty() {
+            models[index].efforts.push(level.to_owned());
+        }
+    }
+    for model in &mut models {
+        model.efforts.sort_by_key(|effort| {
+            EFFORT_LEVELS
+                .iter()
+                .position(|level| level == effort)
+                .unwrap_or(EFFORT_LEVELS.len())
+        });
+        model.default_effort = model
+            .efforts
+            .iter()
+            .find(|effort| *effort == "medium")
+            .or(model.efforts.first())
+            .cloned();
+    }
+    models
 }
 
 /// Where a tool call is.
@@ -99,9 +317,26 @@ struct CodexState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CodexCall {
     Initialize,
+    ModelList,
     ThreadStart,
     TurnStart,
     Other,
+}
+
+#[derive(Debug, Default)]
+struct ClaudeState {
+    next_id: u64,
+    pending: HashMap<String, ClaudeCall>,
+}
+
+/// A control request of ours, and what to put back if Claude refuses it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ClaudeCall {
+    Initialize,
+    Settings,
+    SetModel(Option<String>),
+    SetEffort(Option<String>),
+    SetAccess(Access),
 }
 
 /// One conversation.
@@ -116,6 +351,22 @@ pub struct Transcript {
     pub session: Option<String>,
     /// The last turn's cost or token count, as one short phrase.
     pub usage: Option<String>,
+    /// What the composer has chosen.
+    pub selection: Selection,
+    /// What the CLI offers; empty until it has listed them.
+    pub models: Vec<ModelChoice>,
+    /// Why the list is missing, when it could not be read.
+    pub models_error: Option<String>,
+    /// The effort the CLI says it is using.
+    pub applied_effort: Option<String>,
+    /// The permission mode the CLI last said it is in, in its own word.
+    pub reported_mode: Option<String>,
+    /// A refusal put a choice back; what was saved is out of date.
+    pub selection_reverted: bool,
+    /// Antigravity said this account has no auto mode.
+    auto_unavailable: bool,
+    /// A choice that only a new process can take.
+    restart_owed: bool,
     /// Text being streamed, keyed by the protocol's own handle for it, so the
     /// final message replaces the streamed text rather than repeating it.
     open_text: HashMap<String, usize>,
@@ -124,6 +375,7 @@ pub struct Transcript {
     /// Claude's id for the message being streamed.
     message: Option<String>,
     codex: CodexState,
+    claude: ClaudeState,
 }
 
 fn truncate(text: &str, limit: usize) -> String {
@@ -175,6 +427,52 @@ fn content_text(content: &Value) -> String {
     }
 }
 
+/// One entry of Claude's `initialize` reply.
+fn claude_model(model: &Value) -> ModelChoice {
+    let text = |key: &str| model[key].as_str().unwrap_or("").to_owned();
+    ModelChoice {
+        id: text("value"),
+        resolved: text("resolvedModel"),
+        label: text("displayName"),
+        description: text("description"),
+        efforts: model["supportedEffortLevels"]
+            .as_array()
+            .map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        default_effort: None,
+        auto: model["supportsAutoMode"].as_bool().unwrap_or(false),
+    }
+}
+
+/// One entry of Codex's `model/list`.
+fn codex_model(model: &Value) -> ModelChoice {
+    let text = |key: &str| model[key].as_str().unwrap_or("").to_owned();
+    ModelChoice {
+        id: text("id"),
+        resolved: text("model"),
+        label: text("displayName"),
+        description: text("description"),
+        efforts: model["supportedReasoningEfforts"]
+            .as_array()
+            .map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(|level| level["reasoningEffort"].as_str())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        default_effort: model["defaultReasoningEffort"].as_str().map(str::to_owned),
+        auto: true,
+    }
+}
+
 impl Transcript {
     #[must_use]
     pub fn new(protocol: Protocol) -> Self {
@@ -185,10 +483,352 @@ impl Transcript {
             model: None,
             session: None,
             usage: None,
+            selection: Selection::default(),
+            models: Vec::new(),
+            models_error: None,
+            applied_effort: None,
+            reported_mode: None,
+            selection_reverted: false,
+            auto_unavailable: false,
+            restart_owed: false,
             open_text: HashMap::new(),
             tools: HashMap::new(),
             message: None,
             codex: CodexState::default(),
+            claude: ClaudeState::default(),
+        }
+    }
+
+    /// The flags that carry the selection into a new process. Codex takes
+    /// nothing here: its thread and turn requests carry it.
+    #[must_use]
+    pub fn launch_flags(&self) -> Vec<String> {
+        let mut flags: Vec<String> = Vec::new();
+        match self.protocol {
+            Protocol::Claude => {
+                flags.push("--permission-mode".into());
+                flags.push(self.selection.access.claude_mode().into());
+                // Only makes Full access reachable from a running session;
+                // the mode above is still what applies.
+                flags.push("--allow-dangerously-skip-permissions".into());
+                if let Some(model) = &self.selection.model {
+                    flags.push("--model".into());
+                    flags.push(model.clone());
+                }
+                if let Some(effort) = &self.selection.effort {
+                    flags.push("--effort".into());
+                    flags.push(effort.clone());
+                }
+            }
+            Protocol::Antigravity => {
+                flags.push("--mode".into());
+                flags.push(
+                    match self.selection.access {
+                        Access::Auto => "auto",
+                        _ => "accept-edits",
+                    }
+                    .into(),
+                );
+                if self.selection.access == Access::Full {
+                    flags.push("--dangerously-skip-permissions".into());
+                }
+                if let Some(model) = &self.selection.model {
+                    flags.push("--model".into());
+                    flags.push(match &self.selection.effort {
+                        Some(effort) => format!("{model}-{effort}"),
+                        None => model.clone(),
+                    });
+                }
+            }
+            Protocol::Codex => {}
+        }
+        flags
+    }
+
+    /// The listed model the chat is on: the chosen one, else the one the CLI
+    /// reports. An alias answers for its model, so `default` never wins over
+    /// the name of what it stands for.
+    #[must_use]
+    pub fn current_model(&self) -> Option<&ModelChoice> {
+        let id = self.selection.model.as_deref().or(self.model.as_deref())?;
+        let listed = self.models.iter().find(|model| model.answers_to(id))?;
+        self.models
+            .iter()
+            .find(|model| model.id != "default" && model.resolved == listed.resolved)
+            .or(Some(listed))
+    }
+
+    /// The model chip's words.
+    #[must_use]
+    pub fn model_label(&self) -> String {
+        self.current_model().map_or_else(
+            || {
+                self.selection
+                    .model
+                    .clone()
+                    .or_else(|| self.model.clone())
+                    .unwrap_or_else(|| "Default".to_owned())
+            },
+            |model| model.label.clone(),
+        )
+    }
+
+    /// The level the chat is on. Claude's word for it wins over the choice,
+    /// because it can apply less than it was asked for. Otherwise: chosen,
+    /// else reported, else the model's own.
+    #[must_use]
+    pub fn current_effort(&self) -> Option<String> {
+        let reported = self.applied_effort.clone();
+        if self.protocol == Protocol::Claude && reported.is_some() {
+            return reported;
+        }
+        self.selection
+            .effort
+            .clone()
+            .or(reported)
+            .or_else(|| self.current_model()?.default_effort.clone())
+    }
+
+    /// The effort chip's words.
+    #[must_use]
+    pub fn effort_label(&self) -> String {
+        self.current_effort()
+            .map_or_else(|| "Default".to_owned(), |effort| effort_title(&effort))
+    }
+
+    /// Why this chat cannot use `access`, in words for the menu.
+    #[must_use]
+    pub fn access_refusal(&self, access: Access) -> Option<String> {
+        match (self.protocol, access) {
+            (Protocol::Antigravity, Access::Supervised) => {
+                Some("Antigravity cannot ask from a chat.".to_owned())
+            }
+            (Protocol::Antigravity, Access::Auto) if self.auto_unavailable => {
+                Some("This Antigravity account has no auto mode.".to_owned())
+            }
+            (Protocol::Claude, Access::Auto) => self
+                .current_model()
+                .filter(|model| !model.auto)
+                .map(|model| format!("{} has no auto mode.", model.label)),
+            _ => None,
+        }
+    }
+
+    /// A line the agent wrote to stderr. Antigravity's only word that it did
+    /// not take `--mode auto` is a warning there, and it carries on in its
+    /// default mode. Unmatched wording only loses the explanation.
+    pub fn diagnostic(&mut self, line: &str) {
+        if self.protocol == Protocol::Antigravity
+            && line.contains("--mode auto is not available")
+            && !self.auto_unavailable
+        {
+            self.auto_unavailable = true;
+            self.selection.access = Access::default();
+            self.selection_reverted = true;
+            self.notice(
+                "Antigravity has no auto mode on this account, so it stays on Auto-accept edits.",
+                true,
+            );
+        }
+    }
+
+    /// Whether a choice waits for a new process. Asking clears it.
+    pub fn take_restart_owed(&mut self) -> bool {
+        std::mem::take(&mut self.restart_owed)
+    }
+
+    /// Whether a refusal has put a choice back since the last time of asking.
+    pub fn take_selection_reverted(&mut self) -> bool {
+        std::mem::take(&mut self.selection_reverted)
+    }
+
+    /// Chooses a model. Returns the lines to write.
+    pub fn choose_model(&mut self, id: &str) -> Vec<String> {
+        let previous = self.selection.model.replace(id.to_owned());
+        let listed = self.models.iter().find(|model| model.id == id).cloned();
+        let mut out = Vec::new();
+        if let Some(model) = &listed {
+            // A level this model does not have would fail the next turn.
+            if self
+                .selection
+                .effort
+                .as_ref()
+                .is_some_and(|effort| !model.efforts.contains(effort))
+            {
+                self.selection.effort = None;
+            }
+            if self.protocol == Protocol::Antigravity && self.selection.effort.is_none() {
+                self.selection.effort.clone_from(&model.default_effort);
+            }
+            if self.protocol == Protocol::Claude
+                && self.selection.access == Access::Auto
+                && !model.auto
+            {
+                out = self.choose_access(Access::AcceptEdits);
+            }
+        }
+        match self.protocol {
+            Protocol::Claude => out.insert(
+                0,
+                self.claude_control(
+                    "set_model",
+                    json!({"model": id}),
+                    ClaudeCall::SetModel(previous),
+                ),
+            ),
+            // The thread's own level belongs to the model it started on.
+            Protocol::Codex => self.applied_effort = None,
+            Protocol::Antigravity => self.restart_owed = true,
+        }
+        out
+    }
+
+    /// Chooses an effort level. Returns the lines to write.
+    pub fn choose_effort(&mut self, effort: &str) -> Vec<String> {
+        let previous = self.selection.effort.replace(effort.to_owned());
+        match self.protocol {
+            Protocol::Claude => vec![self.claude_control(
+                "apply_flag_settings",
+                json!({"settings": {"effortLevel": effort}}),
+                ClaudeCall::SetEffort(previous),
+            )],
+            Protocol::Codex => Vec::new(),
+            Protocol::Antigravity => {
+                // The model is in the flag; with the CLI's default model
+                // there is nothing to attach the level to.
+                self.restart_owed = true;
+                if self.selection.model.is_none() {
+                    self.selection.model = self.current_model().map(|model| model.id.clone());
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    /// Chooses an access level. Returns the lines to write.
+    pub fn choose_access(&mut self, access: Access) -> Vec<String> {
+        let previous = std::mem::replace(&mut self.selection.access, access);
+        match self.protocol {
+            Protocol::Claude => vec![self.claude_control(
+                "set_permission_mode",
+                json!({"mode": access.claude_mode()}),
+                ClaudeCall::SetAccess(previous),
+            )],
+            Protocol::Codex => Vec::new(),
+            Protocol::Antigravity => {
+                self.restart_owed = true;
+                Vec::new()
+            }
+        }
+    }
+
+    /// Takes a model list from outside the protocol (`agy models`). Returns
+    /// the lines to write.
+    pub fn set_models(&mut self, models: Vec<ModelChoice>) -> Vec<String> {
+        self.models = models;
+        self.reconcile_selection()
+    }
+
+    /// A remembered model the CLI no longer offers must not fail the first
+    /// turn. It says so and goes back to the CLI's default.
+    fn reconcile_selection(&mut self) -> Vec<String> {
+        let Some(id) = self.selection.model.clone() else {
+            return Vec::new();
+        };
+        if self.models.is_empty() || self.models.iter().any(|model| model.answers_to(&id)) {
+            return Vec::new();
+        }
+        self.selection.model = None;
+        self.selection.effort = None;
+        self.selection_reverted = true;
+        self.notice(
+            format!("{id} is no longer offered, so this chat uses the default model."),
+            false,
+        );
+        match self.protocol {
+            Protocol::Claude => vec![self.claude_control(
+                "set_model",
+                json!({"model": "default"}),
+                ClaudeCall::SetModel(None),
+            )],
+            Protocol::Codex => Vec::new(),
+            Protocol::Antigravity => {
+                self.restart_owed = true;
+                Vec::new()
+            }
+        }
+    }
+
+    fn claude_control(&mut self, subtype: &str, fields: Value, call: ClaudeCall) -> String {
+        self.claude.next_id += 1;
+        let request_id = format!("musializer-{}", self.claude.next_id);
+        self.claude.pending.insert(request_id.clone(), call);
+        let mut request = json!({"subtype": subtype});
+        if let (Some(request), Value::Object(fields)) = (request.as_object_mut(), fields) {
+            request.extend(fields);
+        }
+        json!({"type": "control_request", "request_id": request_id, "request": request}).to_string()
+    }
+
+    fn claude_settings(&mut self) -> String {
+        self.claude_control("get_settings", json!({}), ClaudeCall::Settings)
+    }
+
+    fn claude_response(&mut self, response: &Value) -> Vec<String> {
+        let id = response["request_id"].as_str().unwrap_or("");
+        let Some(call) = self.claude.pending.remove(id) else {
+            return Vec::new();
+        };
+        if response["subtype"].as_str() == Some("error") {
+            let message = response["error"].as_str().unwrap_or("refused").to_owned();
+            match call {
+                ClaudeCall::Initialize => self.models_error = Some(truncate(&message, 200)),
+                ClaudeCall::Settings => {}
+                ClaudeCall::SetModel(previous) => {
+                    self.selection.model = previous;
+                    self.selection_reverted = true;
+                }
+                ClaudeCall::SetEffort(previous) => {
+                    self.selection.effort = previous;
+                    self.selection_reverted = true;
+                }
+                ClaudeCall::SetAccess(previous) => {
+                    self.selection.access = previous;
+                    self.selection_reverted = true;
+                }
+            }
+            self.notice(format!("Claude: {}", truncate(&message, 400)), true);
+            return Vec::new();
+        }
+        let body = &response["response"];
+        match call {
+            ClaudeCall::Initialize => {
+                self.models = body["models"]
+                    .as_array()
+                    .map(|models| models.iter().map(claude_model).collect())
+                    .unwrap_or_default();
+                self.reported_mode = body["current_permission_mode"].as_str().map(str::to_owned);
+                self.reconcile_selection()
+            }
+            ClaudeCall::Settings => {
+                let applied = &body["applied"];
+                if let Some(model) = applied["model"].as_str() {
+                    self.model = Some(model.to_owned());
+                }
+                self.applied_effort = applied["effort"].as_str().map(str::to_owned);
+                Vec::new()
+            }
+            ClaudeCall::SetModel(_) => {
+                if let Some(model) = body["model"].as_str() {
+                    self.model = Some(model.to_owned());
+                }
+                vec![self.claude_settings()]
+            }
+            ClaudeCall::SetEffort(_) => vec![self.claude_settings()],
+            ClaudeCall::SetAccess(_) => {
+                self.reported_mode = body["mode"].as_str().map(str::to_owned);
+                Vec::new()
+            }
         }
     }
 
@@ -272,13 +912,18 @@ impl Transcript {
         match self.protocol {
             Protocol::Codex => {
                 self.busy = true;
+                self.models.clear();
                 vec![self.codex_request(
                     "initialize",
                     json!({"clientInfo": {"name": "musializer", "title": "Musializer", "version": env!("CARGO_PKG_VERSION")}}),
                     CodexCall::Initialize,
                 )]
             }
-            Protocol::Claude | Protocol::Antigravity => Vec::new(),
+            Protocol::Claude => vec![
+                self.claude_control("initialize", json!({}), ClaudeCall::Initialize),
+                self.claude_settings(),
+            ],
+            Protocol::Antigravity => Vec::new(),
         }
     }
 
@@ -291,11 +936,22 @@ impl Transcript {
 
     fn codex_turn(&mut self, text: &str) -> String {
         let thread = self.codex.thread.clone().unwrap_or_default();
-        self.codex_request(
-            "turn/start",
-            json!({"threadId": thread, "input": [{"type": "text", "text": text}]}),
-            CodexCall::TurnStart,
-        )
+        let access = self.selection.access;
+        let mut params = json!({
+            "threadId": thread,
+            "input": [{"type": "text", "text": text}],
+            "approvalPolicy": access.codex_approval(),
+            "approvalsReviewer": access.codex_reviewer(),
+            "sandboxPolicy": access.codex_sandbox_policy(),
+        });
+        if let Some(model) = self.selection.model.clone() {
+            params["model"] = json!(model);
+            self.model = Some(model);
+        }
+        if let Some(effort) = &self.selection.effort {
+            params["effort"] = json!(effort);
+        }
+        self.codex_request("turn/start", params, CodexCall::TurnStart)
     }
 
     /// The user says `text`. Returns the lines to write.
@@ -509,6 +1165,7 @@ impl Transcript {
                     self.notice(truncate(text, 600), true);
                 }
             }
+            "control_response" => return self.claude_response(&value["response"]),
             "control_request" => {
                 let request = &value["request"];
                 if request.get("subtype").and_then(Value::as_str) == Some("can_use_tool") {
@@ -534,6 +1191,12 @@ impl Transcript {
             "init" => {
                 self.model = value["init"]["model"].as_str().map(str::to_owned);
                 self.session = value["conversation_id"].as_str().map(str::to_owned);
+                self.applied_effort = self.model.as_deref().and_then(|model| {
+                    EFFORT_LEVELS
+                        .iter()
+                        .find(|level| model.ends_with(&format!("-{level}")))
+                        .map(|level| (*level).to_owned())
+                });
             }
             "step_update" => {
                 let step = &value["step_update"];
@@ -585,7 +1248,7 @@ impl Transcript {
                         self.notice(
                             format!(
                                 "Antigravity was not allowed to: {}. It cannot ask in this \
-                                 mode; turn on \"let it run commands\" to allow them.",
+                                 mode; set its access to Full access to allow them.",
                                 names.join(", ")
                             ),
                             true,
@@ -610,6 +1273,10 @@ impl Transcript {
                     .unwrap_or(CodexCall::Other);
                 if let Some(error) = value.get("error") {
                     let message = error["message"].as_str().unwrap_or("request failed");
+                    if call == CodexCall::ModelList {
+                        self.models_error = Some(truncate(message, 200));
+                        return out;
+                    }
                     self.notice(format!("Codex: {}", truncate(message, 400)), true);
                     if call != CodexCall::Other {
                         self.busy = false;
@@ -620,10 +1287,17 @@ impl Transcript {
                 match call {
                     CodexCall::Initialize => {
                         out.push(json!({"method": "initialized"}).to_string());
+                        out.push(self.codex_request("model/list", json!({}), CodexCall::ModelList));
+                        let access = self.selection.access;
                         let mut params = json!({
                             "cwd": self.codex.cwd,
-                            "approvalPolicy": "on-request",
+                            "approvalPolicy": access.codex_approval(),
+                            "approvalsReviewer": access.codex_reviewer(),
+                            "sandbox": access.codex_sandbox_mode(),
                         });
+                        if let Some(model) = &self.selection.model {
+                            params["model"] = json!(model);
+                        }
                         if !self.codex.instructions.is_empty() {
                             params["developerInstructions"] = json!(self.codex.instructions);
                         }
@@ -633,8 +1307,30 @@ impl Transcript {
                             CodexCall::ThreadStart,
                         ));
                     }
+                    CodexCall::ModelList => {
+                        self.models.extend(
+                            result["data"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter(|model| !model["hidden"].as_bool().unwrap_or(false))
+                                .map(codex_model),
+                        );
+                        match result["nextCursor"].as_str() {
+                            Some(cursor) => {
+                                let cursor = cursor.to_owned();
+                                out.push(self.codex_request(
+                                    "model/list",
+                                    json!({"cursor": cursor}),
+                                    CodexCall::ModelList,
+                                ));
+                            }
+                            None => out.extend(self.reconcile_selection()),
+                        }
+                    }
                     CodexCall::ThreadStart => {
                         self.codex.thread = result["thread"]["id"].as_str().map(str::to_owned);
+                        self.applied_effort = result["reasoningEffort"].as_str().map(str::to_owned);
                         self.session.clone_from(&self.codex.thread);
                         self.model = result["model"]
                             .as_str()
@@ -969,8 +1665,8 @@ mod tests {
                     .to_string()
             })
             .collect();
-        assert_eq!(methods, ["initialized", "thread/start"]);
-        let thread_start: Value = serde_json::from_str(&after_init[1]).unwrap();
+        assert_eq!(methods, ["initialized", "model/list", "thread/start"]);
+        let thread_start: Value = serde_json::from_str(&after_init[2]).unwrap();
         assert_eq!(thread_start["params"]["cwd"], "/music");
         assert_eq!(
             thread_start["params"]["developerInstructions"],
@@ -1015,6 +1711,362 @@ mod tests {
         let answer: Value = serde_json::from_str(&t.decide(permission, true)[0]).unwrap();
         assert_eq!(answer, json!({"id": 41, "result": {"decision": "accept"}}));
         assert!(t.entries.iter().any(|e| matches!(e, Entry::Tool { detail, output, state: ToolState::Done, .. } if detail == "ls" && output == "a\nb\n")));
+    }
+
+    fn wire(line: &str) -> Value {
+        serde_json::from_str(line).unwrap()
+    }
+
+    fn claude_listing() -> Value {
+        json!({"models": [
+            {"value": "default", "resolvedModel": "claude-opus-5-5", "displayName": "Default (recommended)",
+             "description": "Opus 5.5", "supportedEffortLevels": ["low", "high", "max"], "supportsAutoMode": true},
+            {"value": "opus", "resolvedModel": "claude-opus-5-5", "displayName": "Opus 5.5",
+             "supportedEffortLevels": ["low", "high", "max"], "supportsAutoMode": true},
+            {"value": "claude-haiku-4-5", "resolvedModel": "claude-haiku-4-5", "displayName": "Haiku 4.5"},
+        ], "current_permission_mode": "acceptEdits"})
+    }
+
+    /// Answers `line`, a request of ours, as Claude would.
+    fn claude_answers(t: &mut Transcript, line: &str, body: Value) -> Vec<String> {
+        let id = wire(line)["request_id"].clone();
+        t.receive(
+            &json!({"type": "control_response", "response": {"subtype": "success", "request_id": id, "response": body}})
+                .to_string(),
+        )
+    }
+
+    #[test]
+    fn claude_lists_its_models_and_says_what_it_applied_before_any_turn() {
+        let mut t = Transcript::new(Protocol::Claude);
+        let start = t.start("/music", "");
+        assert_eq!(wire(&start[0])["request"]["subtype"], "initialize");
+        assert_eq!(wire(&start[1])["request"]["subtype"], "get_settings");
+        assert_eq!(t.model_label(), "Default");
+        assert_eq!(t.effort_label(), "Default");
+        assert!(claude_answers(&mut t, &start[0], claude_listing()).is_empty());
+        claude_answers(
+            &mut t,
+            &start[1],
+            json!({"applied": {"model": "claude-opus-5-5", "effort": "high"}}),
+        );
+        assert_eq!(t.models.len(), 3);
+        // The alias never names the chip while the model it stands for has one.
+        assert_eq!(t.model_label(), "Opus 5.5");
+        assert_eq!(t.effort_label(), "High");
+        assert_eq!(t.reported_mode.as_deref(), Some("acceptEdits"));
+        assert!(t.entries.is_empty(), "the catalogue is not a conversation");
+        assert!(!t.busy);
+    }
+
+    #[test]
+    fn claude_takes_each_choice_live_and_reads_back_what_applied() {
+        let mut t = Transcript::new(Protocol::Claude);
+        let start = t.start("/music", "");
+        claude_answers(&mut t, &start[0], claude_listing());
+
+        let model = t.choose_model("opus");
+        assert_eq!(wire(&model[0])["request"]["subtype"], "set_model");
+        assert_eq!(wire(&model[0])["request"]["model"], "opus");
+        let settings = claude_answers(&mut t, &model[0], json!({"model": "claude-opus-5-5"}));
+        assert_eq!(wire(&settings[0])["request"]["subtype"], "get_settings");
+
+        claude_answers(
+            &mut t,
+            &settings[0],
+            json!({"applied": {"model": "claude-opus-5-5", "effort": "high"}}),
+        );
+        let effort = t.choose_effort("max");
+        assert_eq!(
+            wire(&effort[0])["request"]["subtype"],
+            "apply_flag_settings"
+        );
+        assert_eq!(
+            wire(&effort[0])["request"]["settings"]["effortLevel"],
+            "max"
+        );
+        let settings = claude_answers(&mut t, &effort[0], json!({}));
+        assert_eq!(t.effort_label(), "High", "not read back yet");
+        claude_answers(
+            &mut t,
+            &settings[0],
+            json!({"applied": {"model": "claude-opus-5-5", "effort": "max"}}),
+        );
+        assert_eq!(t.effort_label(), "Max");
+
+        let access = t.choose_access(Access::Full);
+        assert_eq!(
+            wire(&access[0])["request"]["subtype"],
+            "set_permission_mode"
+        );
+        assert_eq!(wire(&access[0])["request"]["mode"], "bypassPermissions");
+        claude_answers(&mut t, &access[0], json!({"mode": "bypassPermissions"}));
+        assert_eq!(t.reported_mode.as_deref(), Some("bypassPermissions"));
+        assert!(!t.take_restart_owed());
+    }
+
+    #[test]
+    fn a_refused_choice_goes_back_and_says_why() {
+        let mut t = Transcript::new(Protocol::Claude);
+        let lines = t.choose_access(Access::Full);
+        assert_eq!(t.selection.access, Access::Full);
+        let id = wire(&lines[0])["request_id"].clone();
+        t.receive(
+            &json!({"type": "control_response", "response": {"subtype": "error", "request_id": id, "error": "bypass_not_launched"}})
+                .to_string(),
+        );
+        assert_eq!(t.selection.access, Access::AcceptEdits);
+        assert!(t.take_selection_reverted());
+        assert!(t.entries.iter().any(
+            |e| matches!(e, Entry::Notice { text, error: true } if text.contains("bypass_not_launched"))
+        ));
+    }
+
+    #[test]
+    fn a_new_model_drops_what_it_cannot_do() {
+        let mut t = Transcript::new(Protocol::Claude);
+        let start = t.start("/music", "");
+        claude_answers(&mut t, &start[0], claude_listing());
+        t.selection.effort = Some("max".into());
+        t.selection.access = Access::Auto;
+        let lines = t.choose_model("claude-haiku-4-5");
+        assert_eq!(t.selection.effort, None, "this model has no levels");
+        assert_eq!(t.selection.access, Access::AcceptEdits);
+        let subtypes: Vec<Value> = lines
+            .iter()
+            .map(|line| wire(line)["request"]["subtype"].clone())
+            .collect();
+        assert_eq!(subtypes, ["set_model", "set_permission_mode"]);
+        assert!(t
+            .access_refusal(Access::Auto)
+            .unwrap()
+            .contains("Haiku 4.5"));
+        assert_eq!(t.access_refusal(Access::Full), None);
+    }
+
+    #[test]
+    fn a_remembered_model_the_cli_dropped_does_not_fail_the_first_turn() {
+        let mut t = Transcript::new(Protocol::Claude);
+        t.selection.model = Some("claude-gone".into());
+        t.selection.effort = Some("high".into());
+        let start = t.start("/music", "");
+        let reply = claude_answers(&mut t, &start[0], claude_listing());
+        assert_eq!(wire(&reply[0])["request"]["model"], "default");
+        assert_eq!(t.selection.model, None);
+        assert_eq!(t.selection.effort, None);
+        assert!(t.take_selection_reverted());
+    }
+
+    #[test]
+    fn launch_flags_carry_the_selection_into_a_new_process() {
+        let mut t = Transcript::new(Protocol::Claude);
+        t.selection = Selection {
+            model: Some("opus".into()),
+            effort: Some("xhigh".into()),
+            access: Access::Supervised,
+        };
+        assert_eq!(
+            t.launch_flags(),
+            [
+                "--permission-mode",
+                "default",
+                "--allow-dangerously-skip-permissions",
+                "--model",
+                "opus",
+                "--effort",
+                "xhigh"
+            ]
+        );
+        let mut t = Transcript::new(Protocol::Antigravity);
+        assert_eq!(t.launch_flags(), ["--mode", "accept-edits"]);
+        t.selection = Selection {
+            model: Some("gemini-x".into()),
+            effort: Some("high".into()),
+            access: Access::Full,
+        };
+        assert_eq!(
+            t.launch_flags(),
+            [
+                "--mode",
+                "accept-edits",
+                "--dangerously-skip-permissions",
+                "--model",
+                "gemini-x-high"
+            ]
+        );
+        t.selection.access = Access::Auto;
+        assert_eq!(t.launch_flags()[..2], ["--mode", "auto"]);
+        assert!(Transcript::new(Protocol::Codex).launch_flags().is_empty());
+    }
+
+    #[test]
+    fn every_access_level_has_its_wire_words_on_each_protocol() {
+        #[rustfmt::skip]
+        let table = [
+            (Access::Supervised,  "default",           "untrusted",  "user",        "read-only",          "readOnly"),
+            (Access::AcceptEdits, "acceptEdits",       "on-request", "user",        "workspace-write",    "workspaceWrite"),
+            (Access::Auto,        "auto",              "on-request", "auto_review", "workspace-write",    "workspaceWrite"),
+            (Access::Full,        "bypassPermissions", "never",      "user",        "danger-full-access", "dangerFullAccess"),
+        ];
+        for (access, claude, approval, reviewer, sandbox, policy) in table {
+            assert_eq!(access.claude_mode(), claude);
+            assert_eq!(access.codex_approval(), approval);
+            assert_eq!(access.codex_reviewer(), reviewer);
+            assert_eq!(access.codex_sandbox_mode(), sandbox);
+            assert_eq!(access.codex_sandbox_policy()["type"], policy);
+            assert_eq!(Access::from_key(access.key()), Some(access));
+        }
+        assert_eq!(Access::from_key("everything"), None);
+    }
+
+    #[test]
+    fn codex_lists_models_and_each_turn_carries_the_selection() {
+        let mut t = Transcript::new(Protocol::Codex);
+        t.selection.access = Access::Full;
+        let start = t.start("/music", "");
+        let after_init = t.receive(&json!({"id": wire(&start[0])["id"], "result": {}}).to_string());
+        let methods: Vec<Value> = after_init
+            .iter()
+            .map(|l| wire(l)["method"].clone())
+            .collect();
+        assert_eq!(methods, ["initialized", "model/list", "thread/start"]);
+        let thread_start = wire(&after_init[2]);
+        assert_eq!(thread_start["params"]["approvalPolicy"], "never");
+        assert_eq!(thread_start["params"]["sandbox"], "danger-full-access");
+        assert_eq!(thread_start["params"]["approvalsReviewer"], "user");
+
+        let page = t.receive(
+            &json!({"id": wire(&after_init[1])["id"], "result": {"nextCursor": "c2", "data": [
+                {"id": "gpt-a", "model": "gpt-a", "displayName": "GPT A", "hidden": false,
+                 "defaultReasoningEffort": "low",
+                 "supportedReasoningEfforts": [{"reasoningEffort": "low"}, {"reasoningEffort": "ultra"}]},
+                {"id": "gpt-hidden", "model": "gpt-hidden", "displayName": "Hidden", "hidden": true},
+            ]}})
+            .to_string(),
+        );
+        assert_eq!(wire(&page[0])["params"]["cursor"], "c2");
+        t.receive(
+            &json!({"id": wire(&page[0])["id"], "result": {"data": [
+                {"id": "gpt-b", "model": "gpt-b", "displayName": "GPT B", "hidden": false,
+                 "defaultReasoningEffort": "medium", "supportedReasoningEfforts": [{"reasoningEffort": "medium"}]},
+            ]}})
+            .to_string(),
+        );
+        assert_eq!(
+            t.models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["gpt-a", "gpt-b"]
+        );
+        t.receive(
+            &json!({"id": thread_start["id"], "result": {"thread": {"id": "th"}, "model": "gpt-b", "reasoningEffort": "medium"}})
+                .to_string(),
+        );
+        assert_eq!(t.model_label(), "GPT B");
+        assert_eq!(t.effort_label(), "Medium");
+
+        // Nothing is written until the turn that carries it.
+        assert!(t.choose_model("gpt-a").is_empty());
+        assert_eq!(t.effort_label(), "Low", "the new model's own default");
+        assert!(t.choose_effort("ultra").is_empty());
+        assert!(t.choose_access(Access::Auto).is_empty());
+        let turn = wire(&t.send("go", None)[0]);
+        assert_eq!(turn["params"]["model"], "gpt-a");
+        assert_eq!(turn["params"]["effort"], "ultra");
+        assert_eq!(turn["params"]["approvalPolicy"], "on-request");
+        assert_eq!(turn["params"]["approvalsReviewer"], "auto_review");
+        assert_eq!(turn["params"]["sandboxPolicy"]["type"], "workspaceWrite");
+    }
+
+    #[test]
+    fn codex_without_a_model_list_keeps_its_turn_alive() {
+        let mut t = Transcript::new(Protocol::Codex);
+        let start = t.start("/music", "");
+        let after_init = t.receive(&json!({"id": wire(&start[0])["id"], "result": {}}).to_string());
+        t.receive(
+            &json!({"id": wire(&after_init[1])["id"], "error": {"message": "no catalogue"}})
+                .to_string(),
+        );
+        assert_eq!(t.models_error.as_deref(), Some("no catalogue"));
+        assert!(t.busy, "the handshake is still running");
+        assert!(t.entries.is_empty());
+    }
+
+    #[test]
+    fn agy_models_fold_to_one_entry_per_model() {
+        let models = antigravity_models(
+            "Fetching available models...\n\
+             gemini-4-argon-medium\tGemini 4 Argon (Medium)\n\
+             gemini-4-argon-high\tGemini 4 Argon (High)\n\
+             gemini-4-argon-low\tGemini 4 Argon (Low)\n\
+             gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n\
+             plain-model\tPlain Model\n",
+        );
+        assert_eq!(models.len(), 3);
+        assert_eq!(models[0].id, "gemini-4-argon");
+        assert_eq!(models[0].label, "Gemini 4 Argon");
+        assert_eq!(models[0].efforts, ["low", "medium", "high"]);
+        assert_eq!(models[0].default_effort.as_deref(), Some("medium"));
+        assert_eq!(models[1].efforts, ["medium"]);
+        assert_eq!(models[2].id, "plain-model");
+        assert!(models[2].efforts.is_empty());
+        assert_eq!(models[2].default_effort, None);
+    }
+
+    #[test]
+    fn antigravity_choices_wait_for_a_new_process() {
+        let mut t = Transcript::new(Protocol::Antigravity);
+        t.set_models(antigravity_models(
+            "m-low\tM (Low)\nm-high\tM (High)\nn-medium\tN (Medium)\n",
+        ));
+        assert!(t.choose_access(Access::Full).is_empty());
+        assert!(t.take_restart_owed());
+        assert!(!t.take_restart_owed(), "asking clears it");
+        assert!(t.choose_model("m").is_empty());
+        assert!(t.take_restart_owed());
+        assert_eq!(t.selection.effort.as_deref(), Some("low"));
+        t.model = Some("m-high".into());
+        t.selection.model = None;
+        assert_eq!(t.model_label(), "M", "the reported id names its model");
+        assert!(t.choose_effort("high").is_empty());
+        assert_eq!(t.selection.model.as_deref(), Some("m"));
+        assert!(t.launch_flags().contains(&"m-high".to_owned()));
+        assert!(t.access_refusal(Access::Supervised).is_some());
+        assert_eq!(t.access_refusal(Access::Auto), None);
+    }
+
+    #[test]
+    fn antigravity_reports_its_level_in_the_model_id() {
+        let mut t = Transcript::new(Protocol::Antigravity);
+        t.set_models(antigravity_models("m-low\tM (Low)\nm-medium\tM (Medium)\n"));
+        t.receive(
+            &json!({"event": "init", "conversation_id": "c", "init": {"model": "m-low"}})
+                .to_string(),
+        );
+        assert_eq!(t.model_label(), "M");
+        assert_eq!(t.effort_label(), "Low");
+    }
+
+    #[test]
+    fn antigravity_saying_it_has_no_auto_mode_puts_the_choice_back() {
+        let mut t = Transcript::new(Protocol::Antigravity);
+        t.choose_access(Access::Auto);
+        t.diagnostic("warning: --mode auto is not available for this account; continuing");
+        assert_eq!(t.selection.access, Access::AcceptEdits);
+        assert!(t.take_selection_reverted());
+        assert!(t.access_refusal(Access::Auto).is_some());
+        // One word about it, and only Antigravity's stderr means this.
+        t.diagnostic("warning: --mode auto is not available for this account; continuing");
+        assert_eq!(t.entries.len(), 1);
+        let mut claude = Transcript::new(Protocol::Claude);
+        claude.selection.access = Access::Auto;
+        claude.diagnostic("warning: --mode auto is not available");
+        assert_eq!(claude.selection.access, Access::Auto);
+    }
+
+    #[test]
+    fn effort_titles() {
+        assert_eq!(effort_title("xhigh"), "XHigh");
+        assert_eq!(effort_title("medium"), "Medium");
+        assert_eq!(effort_title(""), "");
     }
 
     #[test]

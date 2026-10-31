@@ -42,6 +42,7 @@ tools/headless_run.sh ARGS...      # any hand launch: isolated, muted, on the GP
 tools/treatment_check.sh           # directing gate: --treatment, sheets, stills
 tools/poster_check.sh              # poster frames gate
 tools/column_check.sh              # the right column: views, frame, census, dock, render
+tools/agent_controls_check.sh      # the composer's model, effort and access, against a fake agent
 tools/align_lyrics.py song.mp3 song.lyrics.json   # time known lyrics (MMS CTC)
 tools/install-linux-launcher.sh    # desktop entry; --uninstall removes it
 cargo build --release              # ALWAYS last in a work stream
@@ -203,6 +204,7 @@ number disagrees, grep it there before debugging from scratch.
 - **A lifetime ring peak includes startup**; injected-stall assertions use raw counter boundaries, and zero counters are parsed numerically.
 - **`--ui-probe route=` opens on the scene frame 0 draws**; read `plot@` in
   the report before believing the editor is open.
+- **`click=` never reaches egui**; press dock controls with `agent-press=`.
 
 ## Judge by what a user or a file can observe
 
