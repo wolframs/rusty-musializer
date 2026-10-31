@@ -1739,6 +1739,17 @@ impl Transcript {
                             self.finish_tool(&id, failed, "");
                         }
                     }
+                    // The two items that carry a picture, each by a path. A
+                    // Claude `Read` gives base64 in its result, and only the
+                    // tool's input says which file.
+                    "imageView" | "imageGeneration" => {
+                        if let Some(path) = item["path"].as_str().or(item["savedPath"].as_str()) {
+                            self.start_tool(&id, "picture", path.to_string());
+                            if completed {
+                                self.finish_tool(&id, false, "");
+                            }
+                        }
+                    }
                     "mcpToolCall" | "webSearch" | "dynamicToolCall" => {
                         let name = item["tool"]
                             .as_str()
@@ -1814,6 +1825,179 @@ impl Transcript {
             }
         }
         counts
+    }
+}
+
+/// The file types the chat shows, lower case.
+const IMAGE_EXTENSIONS: [&str; 4] = [".png", ".jpg", ".jpeg", ".webp"];
+/// Longer than any path a chat will name; also what bounds the quote search.
+const IMAGE_PATH_LONGEST: usize = 1024;
+
+/// Ends in a picture's extension, after a file name of at least one letter.
+fn names_image(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or("");
+    path.len() <= IMAGE_PATH_LONGEST
+        && IMAGE_EXTENSIONS
+            .iter()
+            .any(|extension| name.len() > extension.len() && name.ends_with(extension))
+}
+
+/// A word of prose or output as the path it spells: the sentence's and
+/// Markdown's marks off both ends. `None` when it is no path to a picture.
+fn image_token(token: &str) -> Option<&str> {
+    let mut path = token
+        .trim_start_matches(['\'', '\u{00ab}'])
+        .trim_end_matches(['\'', '.', '!', '?', '\\', '\u{2026}', '\u{00bb}']);
+    // A name may start with `_` and a home path with `~`, so these two only
+    // come off in pairs; no path this reads may hold a `*`.
+    for mark in ["__", "_", "~~"] {
+        if let Some(inner) = path
+            .strip_prefix(mark)
+            .and_then(|rest| rest.strip_suffix(mark))
+        {
+            path = inner;
+        }
+    }
+    let path = path.trim_matches('*');
+    (!path.contains(['*', '?', '$', '#', '%']) && names_image(path)).then_some(path)
+}
+
+/// Every path to a picture a text names, in order, each once: quoted,
+/// backticked or plain, `file://` or not. Nothing here looks at a disk, so
+/// the candidates are spellings: the caller decides which exist. A quoted span
+/// with spaces gives the span and its words, since `"I wrote a.png"` and
+/// `"my sheet.png"` look alike from here.
+#[must_use]
+pub fn image_paths(text: &str) -> Vec<String> {
+    let mut found: Vec<(usize, String)> = Vec::new();
+    // Quoted spans first: the only place a path may hold a space. An opening
+    // quote follows no letter, so the apostrophe in `it's` opens nothing.
+    for line in text.split_inclusive('\n') {
+        let line_start = line.as_ptr() as usize - text.as_ptr() as usize;
+        let mut before = None;
+        for (at, quote) in line.char_indices() {
+            let opens = matches!(quote, '"' | '`' | '\'' | '\u{201c}' | '\u{2018}')
+                && before.is_none_or(|c: char| !c.is_alphanumeric());
+            before = Some(quote);
+            if !opens {
+                continue;
+            }
+            let close = match quote {
+                '\u{201c}' => '\u{201d}',
+                '\u{2018}' => '\u{2019}',
+                other => other,
+            };
+            let body = &line[at + quote.len_utf8()..];
+            let body = &body[..body.floor_char_boundary(IMAGE_PATH_LONGEST)];
+            let Some(length) = body.find(close) else {
+                continue;
+            };
+            let inner = body[..length].trim();
+            if inner.contains(char::is_whitespace) && !inner.contains("://") && names_image(inner) {
+                found.push((line_start + at + 1, inner.to_owned()));
+            }
+        }
+    }
+    // Then the words. A token is what no delimiter splits, `\ ` keeping its
+    // space, and a literal `\n` from JSON ending the word it follows.
+    let mut token = String::new();
+    let mut start = 0;
+    let mut chars = text.char_indices().peekable();
+    loop {
+        let next = chars.next();
+        let split = match next {
+            None => true,
+            Some((_, '\\')) => match chars.peek() {
+                Some((_, ' ')) => {
+                    chars.next();
+                    if token.is_empty() {
+                        start = next.map_or(0, |(at, _)| at);
+                    }
+                    token.push(' ');
+                    continue;
+                }
+                Some((_, 'n' | 'r' | 't' | '"')) => {
+                    chars.next();
+                    true
+                }
+                _ => false,
+            },
+            Some((_, c)) => {
+                c.is_whitespace()
+                    || matches!(
+                        c,
+                        '"' | '`'
+                            | ','
+                            | ';'
+                            | '='
+                            | '|'
+                            | '('
+                            | ')'
+                            | '['
+                            | ']'
+                            | '{'
+                            | '}'
+                            | '<'
+                            | '>'
+                            | '\u{201c}'
+                            | '\u{201d}'
+                            | '\u{2018}'
+                            | '\u{2019}'
+                    )
+            }
+        };
+        if !split {
+            if let Some((at, c)) = next {
+                if token.is_empty() {
+                    start = at;
+                }
+                token.push(c);
+            }
+            continue;
+        }
+        let word = std::mem::take(&mut token);
+        if let Some(rest) = word.strip_prefix("file://") {
+            found.extend(image_token(rest).map(|path| (start, path.to_owned())));
+        } else if !word.contains("://") {
+            // `path:/tmp/a.png`, `a.png:12:3:`, a ratio beside a name.
+            for part in word.split(':') {
+                found.extend(image_token(part).map(|path| (start, path.to_owned())));
+            }
+        }
+        if next.is_none() {
+            break;
+        }
+    }
+    found.sort_by_key(|(at, _)| *at);
+    let mut seen = std::collections::HashSet::new();
+    found
+        .into_iter()
+        .filter_map(|(_, path)| seen.insert(path.clone()).then_some(path))
+        .collect()
+}
+
+impl Transcript {
+    /// Whether an entry's words are final, so that reading them cannot catch
+    /// half a path: a tool that has returned, text the agent has moved on from
+    /// or the turn has ended. Streamed text stays open across a `Notice` or an
+    /// `Image`, neither of which is the agent speaking again.
+    #[must_use]
+    pub fn entry_settled(&self, index: usize) -> bool {
+        match self.entries.get(index) {
+            Some(Entry::Tool { state, .. }) => *state != ToolState::Running,
+            Some(Entry::Assistant { .. }) => {
+                !self.busy
+                    || !self.open_text.values().any(|open| *open == index)
+                    || self.entries[index + 1..].iter().any(|entry| {
+                        matches!(
+                            entry,
+                            Entry::Assistant { .. } | Entry::Tool { .. } | Entry::Permission { .. }
+                        )
+                    })
+            }
+            _ => true,
+        }
     }
 }
 
@@ -2546,5 +2730,200 @@ mod tests {
         // Unknown but well-formed events are ignored.
         t.receive(&json!({"type":"rate_limit_event","rate_limit_info":{}}).to_string());
         assert_eq!(t.entries.len(), 1);
+    }
+
+    fn paths(text: &str) -> Vec<String> {
+        super::image_paths(text)
+    }
+
+    #[test]
+    fn image_paths_reads_plain_quoted_and_backticked_paths() {
+        assert_eq!(paths("wrote build/mv/sheet.png"), ["build/mv/sheet.png"]);
+        assert_eq!(
+            paths("`stills/a.jpg` and \"b.jpeg\""),
+            ["stills/a.jpg", "b.jpeg"]
+        );
+        assert_eq!(paths("Here: 'c.webp'"), ["c.webp"]);
+        assert_eq!(paths("LOUD.PNG"), ["LOUD.PNG"]);
+        assert_eq!(paths("\u{201c}curly.png\u{201d}"), ["curly.png"]);
+    }
+
+    #[test]
+    fn image_paths_takes_the_sentence_off_the_path() {
+        assert_eq!(paths("See sheet.png."), ["sheet.png"]);
+        assert_eq!(paths("(sheet.png)"), ["sheet.png"]);
+        assert_eq!(
+            paths("sheet.png, then two.png; done"),
+            ["sheet.png", "two.png"]
+        );
+        assert_eq!(paths("is it sheet.png?"), ["sheet.png"]);
+        assert_eq!(paths("**sheet.png**"), ["sheet.png"]);
+        assert_eq!(paths("_sheet.png_"), ["sheet.png"]);
+        assert_eq!(paths("~~sheet.png~~"), ["sheet.png"]);
+        assert_eq!(paths("sheet.png\u{2026}"), ["sheet.png"]);
+        assert_eq!(paths("![the sheet](build/sheet.png)"), ["build/sheet.png"]);
+        assert_eq!(
+            paths("[sheet](build/sheet.png \"title\")"),
+            ["build/sheet.png"]
+        );
+    }
+
+    #[test]
+    fn image_paths_keeps_what_belongs_to_the_path() {
+        assert_eq!(paths("~/Pictures/still.png"), ["~/Pictures/still.png"]);
+        assert_eq!(paths("_private.png"), ["_private.png"]);
+        assert_eq!(
+            paths("../up/a.png ./here.png"),
+            ["../up/a.png", "./here.png"]
+        );
+        assert_eq!(
+            paths("Bilder/\u{00e4}\u{00f6}\u{00fc}/caf\u{00e9}.png."),
+            ["Bilder/\u{00e4}\u{00f6}\u{00fc}/caf\u{00e9}.png"]
+        );
+        assert_eq!(paths("cat's-sheet.png"), ["cat's-sheet.png"]);
+        assert_eq!(paths("v1.2.final.png"), ["v1.2.final.png"]);
+    }
+
+    #[test]
+    fn image_paths_holds_a_space_only_where_a_quote_or_escape_does() {
+        assert_eq!(paths("\"my sheet.png\""), ["my sheet.png", "sheet.png"]);
+        assert_eq!(paths("`my sheet.png`"), ["my sheet.png", "sheet.png"]);
+        assert_eq!(paths("open my\\ sheet.png now"), ["my sheet.png"]);
+        assert_eq!(paths("a sheet.png"), ["sheet.png"]);
+        // The quoted sentence names two spellings; the disk picks.
+        assert_eq!(paths("\"I wrote a.png\""), ["I wrote a.png", "a.png"]);
+    }
+
+    #[test]
+    fn image_paths_is_not_fooled_by_an_apostrophe() {
+        assert_eq!(paths("it's at build/a.png and it's good"), ["build/a.png"]);
+        assert_eq!(paths("the cat's 'b c.png'"), ["b c.png", "c.png"]);
+    }
+
+    #[test]
+    fn image_paths_reads_flags_commands_and_json() {
+        assert_eq!(
+            paths("--out=build/a.png -o b.jpg"),
+            ["build/a.png", "b.jpg"]
+        );
+        assert_eq!(
+            paths("{\"file_path\":\"/tmp/a.png\",\"n\":1}"),
+            ["/tmp/a.png"]
+        );
+        assert_eq!(paths("{\\\"path\\\":\\\"a.png\\\"}"), ["a.png"]);
+        assert_eq!(paths("saved\\na.png\\nb.png"), ["a.png", "b.png"]);
+        assert_eq!(paths("path:/tmp/a.png"), ["/tmp/a.png"]);
+        assert_eq!(paths("a.png:12:3: matched"), ["a.png"]);
+        assert_eq!(paths("a.png,b.png"), ["a.png", "b.png"]);
+        assert_eq!(paths("file:///tmp/a.png"), ["/tmp/a.png"]);
+    }
+
+    #[test]
+    fn image_paths_refuses_what_is_not_a_path_to_a_picture() {
+        for text in [
+            "",
+            "no pictures here",
+            ".png",
+            "dir/.png",
+            "the .png files",
+            "a.png.bak",
+            "a.pngx",
+            "a.png/b.txt",
+            "https://example.com/a.png",
+            "http://example.com/a.png?size=2",
+            "build/*.png",
+            "$OUT/a.png",
+            "%04d.png",
+            "frame-#.png",
+            "'unterminated quote.txt",
+            "\"not a picture.txt\"",
+        ] {
+            assert!(paths(text).is_empty(), "{text:?} gave {:?}", paths(text));
+        }
+    }
+
+    #[test]
+    fn image_paths_names_each_path_once_in_order() {
+        assert_eq!(
+            paths("b.png a.png b.png `a.png` c.png"),
+            ["b.png", "a.png", "c.png"]
+        );
+    }
+
+    #[test]
+    fn image_paths_survives_awkward_text() {
+        // Multi-byte around every delimiter, a quote at the end of the text,
+        // and a line with far more quotes than any path.
+        assert_eq!(
+            paths("\u{1f63c} `\u{1f63c}.png`\u{1f63c}"),
+            ["\u{1f63c}.png"]
+        );
+        assert!(paths("'").is_empty());
+        assert!(paths("\\").is_empty());
+        let noise = "\"' ".repeat(20_000);
+        assert_eq!(paths(&format!("{noise}a.png")), ["a.png"]);
+        let long = "a".repeat(super::IMAGE_PATH_LONGEST + 1);
+        assert!(paths(&format!("{long}.png")).is_empty());
+    }
+
+    #[test]
+    fn a_streaming_reply_is_not_settled_until_the_agent_moves_on() {
+        let mut t = Transcript::new(Protocol::Claude);
+        t.busy = true;
+        t.receive(
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m"}}}"#,
+        );
+        t.receive(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"see a.p"}}}"#);
+        assert!(!t.entry_settled(0));
+        // Neither of these is the agent speaking again.
+        t.entries.push(Entry::Image {
+            path: "b.png".into(),
+        });
+        t.entries.push(Entry::Notice {
+            text: "applied".into(),
+            error: false,
+        });
+        assert!(!t.entry_settled(0));
+        t.receive(r#"{"type":"assistant","message":{"id":"m","content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"x"}}]}}"#);
+        assert!(t.entry_settled(0), "a tool call ends the text before it");
+        assert!(!t.entry_settled(3), "a tool has not returned");
+        t.receive(r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"done","is_error":false}]}}"#);
+        assert!(t.entry_settled(3));
+    }
+
+    #[test]
+    fn codex_says_which_picture_it_looked_at_and_generated() {
+        let mut t = Transcript::new(Protocol::Codex);
+        t.receive(&json!({"method":"item/completed","params":{"item":{"type":"imageView","id":"v1","path":"/s/a.png"}}}).to_string());
+        t.receive(&json!({"method":"item/started","params":{"item":{"type":"imageGeneration","id":"g1","status":"inProgress"}}}).to_string());
+        assert_eq!(t.entries.len(), 1, "no path yet, nothing to say");
+        t.receive(&json!({"method":"item/completed","params":{"item":{"type":"imageGeneration","id":"g1","status":"completed","savedPath":"/s/b.png"}}}).to_string());
+        let details: Vec<&str> = t
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Tool {
+                    detail,
+                    state: ToolState::Done,
+                    ..
+                } => Some(detail.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(details, ["/s/a.png", "/s/b.png"]);
+    }
+
+    #[test]
+    fn the_end_of_a_turn_settles_its_text() {
+        let mut t = Transcript::new(Protocol::Claude);
+        t.busy = true;
+        t.receive(
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m"}}}"#,
+        );
+        t.receive(r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"a.png"}}}"#);
+        assert!(!t.entry_settled(0));
+        t.receive(r#"{"type":"result","subtype":"success","is_error":false}"#);
+        assert!(t.entry_settled(0));
+        assert!(t.entry_settled(99), "past the end is nothing to wait for");
     }
 }

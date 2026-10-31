@@ -488,6 +488,9 @@ pub struct Shell {
     /// Whether a dock surface holds the keyboard this frame. Written by the
     /// composition root, read by [`Shell::text_entry_has_focus`].
     pub dock_keyboard: bool,
+    /// A chat's picture is open over the window (`Dock::picture_open`): as
+    /// with About, nothing under it takes a press.
+    pub dock_picture_open: bool,
     /// The runs the plan lane drew this frame and wants posters for (WX-5b),
     /// drained by the composition root after the frame.
     pub(crate) poster_requests: Vec<crate::posters::PosterRequest>,
@@ -1294,6 +1297,7 @@ impl Shell {
             about: super::about::About::default(),
             dock_open: ui_preferences.dock_open,
             dock_keyboard: false,
+            dock_picture_open: false,
             poster_requests: Vec::new(),
             probe_run_open: None,
             probe_escape: false,
@@ -1698,6 +1702,7 @@ impl Shell {
         // means nothing underneath can be pressed. The dialog draws its controls
         // into a bank of its own, which this claim cannot reach. See
         // `ui/assist_settings.rs`'s module comment.
+        let covered = self.about.open || self.dock_picture_open;
         let modal = self.assist_settings.is_open() || self.about.open;
         if self.assist_settings.is_open() {
             self.widgets.button(
@@ -1718,7 +1723,7 @@ impl Shell {
         // it gets a copy of this frame's input whose pointer is not there
         // (`UiScale::occluded`), and the widget bank reads the same scale, so
         // a press on a tile cannot also start a scrub on the lane below it.
-        let flyout = if modal {
+        let flyout = if modal || covered {
             None
         } else {
             self.flyout_begin(d, frame)
@@ -1727,7 +1732,7 @@ impl Shell {
         // the scenes flyout; a stale line would read as a picker on screen.
         self.scene_picker_report = "not drawn".to_owned();
         let occluded = ShellInput {
-            ui_scale: input.ui_scale.occluded(if self.about.open {
+            ui_scale: input.ui_scale.occluded(if covered {
                 Some(UiRect::new(0.0, 0.0, input.window.0, input.window.1))
             } else {
                 flyout
@@ -1780,7 +1785,8 @@ impl Shell {
         self.widgets.set_ui_scale(pointer_scale);
         // About also covers the late notice tray. The final overlay restores
         // real input after both native chrome and egui have drawn underneath.
-        if self.about.open {
+        // A chat's picture covers it too, and has no native overlay.
+        if covered {
             self.widgets.set_ui_scale(under.ui_scale);
         }
         // The protocol question card sits over the preview's bottom edge, and

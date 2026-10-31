@@ -28,6 +28,9 @@ pub struct EguiBackend {
     /// press (`Some(true)`) or release on it. Xvfb has no button, so `click=`
     /// reaches only the raylib widgets; this reaches egui's own.
     pub probe_pointer: Option<(egui::Pos2, Option<bool>)>,
+    /// `--ui-probe agent-press=key:escape`, this frame. It is dropped unless
+    /// keyboard input is enabled, so it proves who owns the keyboard.
+    pub probe_escape: bool,
     ctx: Context,
     textures: HashMap<TextureId, Texture2D>,
     pixels_per_point: f32,
@@ -72,6 +75,17 @@ impl EguiBackend {
                     pos: point,
                     button: egui::PointerButton::Primary,
                     pressed,
+                    modifiers: egui::Modifiers::default(),
+                });
+            }
+        }
+        if self.probe_escape && keyboard_enabled {
+            for pressed in [true, false] {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
                     modifiers: egui::Modifiers::default(),
                 });
             }

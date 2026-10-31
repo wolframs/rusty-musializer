@@ -29,6 +29,7 @@ use musializer_core::agent::{
 };
 use musializer_runtime::agent_process::{AgentProcess, Launch, Output};
 
+use super::chat_images::ChatImages;
 use super::{Agent, DockContext};
 use crate::ui::chat_store;
 use crate::ui::theme::color32;
@@ -102,6 +103,8 @@ pub struct ChatTab {
     pub layout: Vec<(&'static str, egui::Rect)>,
     /// The rows of the open menu, `model:ID`, `effort:LEVEL` or `access:KEY`.
     pub menu_rows: Vec<(String, egui::Rect)>,
+    /// The pictures the agent named, found and drawn (`chat_images`).
+    pub(super) images: ChatImages,
 }
 
 /// What a frame of the chat asks for.
@@ -189,6 +192,7 @@ impl ChatTab {
             note_times: std::collections::HashMap::new(),
             layout: Vec::new(),
             menu_rows: Vec::new(),
+            images: ChatImages::default(),
         }
     }
 
@@ -319,6 +323,7 @@ impl ChatTab {
     }
 
     fn start(&mut self, context: &DockContext, resume: Option<&str>) {
+        self.images.set_directory(self.working_directory.clone());
         if let Some(process) = self.process.as_mut() {
             process.close();
         }
@@ -345,6 +350,7 @@ impl ChatTab {
     /// Pumps the agent's output into the transcript; called every frame,
     /// visible or not, so a long turn keeps running while the dock is hidden.
     pub fn tick(&mut self) {
+        self.images.scan(&mut self.transcript);
         self.tick_listing();
         self.selection_changed |= self.transcript.take_selection_reverted();
         let busy = self.transcript.busy;
@@ -539,7 +545,7 @@ impl ChatTab {
             })
             .collect();
         format!(
-            "chat users={users} replies={replies} tools={tools} prompts={prompts} busy={} model={} last={:?}{} notes={notes:?} draft-lines={} pick=model:{}/effort:{}/access:{} chips=\"{}|{}|{}\" listed={} mode={}",
+            "chat users={users} replies={replies} tools={tools} prompts={prompts} busy={} model={} last={:?}{} notes={notes:?} draft-lines={} pick=model:{}/effort:{}/access:{} chips=\"{}|{}|{}\" listed={} mode={} {}",
             self.transcript.busy,
             self.transcript.model.as_deref().unwrap_or("?"),
             self.transcript.last_reply().unwrap_or("").chars().take(120).collect::<String>(),
@@ -555,7 +561,16 @@ impl ChatTab {
             self.transcript.selection.access.chip(),
             self.transcript.models.len(),
             self.transcript.reported_mode.as_deref().unwrap_or("-"),
+            self.images.describe(&self.transcript),
         )
+    }
+
+    /// Adds a picture as a saved chat holds one: the entry, nothing else
+    /// (`--ui-probe agent-image=`).
+    pub(super) fn add_image(&mut self, path: &str) {
+        self.transcript.entries.push(Entry::Image {
+            path: path.to_owned(),
+        });
     }
 }
 
@@ -705,6 +720,10 @@ impl ChatTab {
         let mut decisions = Vec::new();
         let mut toggled = None;
         let mut layout: Vec<(&'static str, egui::Rect)> = Vec::new();
+        // Out of `self` for the frame: the transcript's closure reads `self`
+        // whole and draws these mutably.
+        let mut images = std::mem::take(&mut self.images);
+        images.begin_frame(ui.ctx(), self.composer_focused);
         let mut transcript_ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(transcript_rect)
@@ -938,15 +957,7 @@ impl ChatTab {
                                     layout.push(("permission", card.response.rect));
                                 }
                                 Entry::Image { path } => {
-                                    let line = ui.add(
-                                        egui::Label::new(
-                                            RichText::new(path.as_str())
-                                                .font(mono.clone())
-                                                .color(c.weak),
-                                        )
-                                        .truncate(),
-                                    );
-                                    layout.push(("image", line.rect));
+                                    images.show(ui, path, &mut layout);
                                 }
                                 Entry::Notice { text, error } => {
                                     let text = self.note_times.get(&index).map_or_else(
@@ -1160,6 +1171,10 @@ impl ChatTab {
         }
         layout.push(("composer", composer.response.rect));
         layout.push(("send", send_rect));
+        let picture = images.show_large(ui.ctx(), self.id, &mut layout);
+        output.has_focus |= picture.takes_keyboard;
+        self.focus_next |= picture.refocus;
+        self.images = images;
         self.layout = layout;
         if send && !self.composer.trim().is_empty() {
             self.send(context);

@@ -272,3 +272,13 @@ had no press in any gate. Use `agent-press=`, which adds egui events by report
 name. That seam must also rewrite the frame's `PointerMoved`: the parked pointer
 otherwise moves egui's between press and release, and the release reads as a
 drag with no `clicked()`. Found building the composer's menus, 2026-10-31.
+
+## A probe run's view outlives it
+
+`column-switch=` saves the view it switched to, so the next run with the same
+`MZ_STATE_DIR` starts on it, and a chat that is working but off screen reports
+`direct=[chat ]` with no rects and an empty `images=`. It reads as a drawing
+failure, in a gate that passed a minute ago, on the first case of the next run.
+A gate that leaves Direct gives that run a state directory of its own, and
+clears both at its start. Found building `tools/agent_images_check.py`,
+2026-10-31.

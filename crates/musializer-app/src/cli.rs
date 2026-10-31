@@ -366,6 +366,20 @@ pub struct UiProbe {
     /// presses. A menu is a sequence, so it takes several presses in one run,
     /// addressed by name because a row only exists once its menu is open.
     pub agent_press: Vec<String>,
+    /// `agent-press-at=FRAME`: start the presses on this frame instead of 40.
+    /// `agent-say=` then goes first, at frame 30, so the presses can reach
+    /// what the reply puts on screen.
+    pub agent_press_at: Option<u64>,
+    /// `agent-image=PATH+PATH+...`: add pictures to the shown chat on frame
+    /// 20, as a saved chat holds them: the entry alone, past the check a
+    /// mention has to pass, which is how a missing file gets on screen.
+    pub agent_image: Vec<String>,
+    /// `agent-image-hold=FRAME`: hold finished decodes back until this frame,
+    /// so a capture can see the placeholder a slow file shows.
+    pub agent_image_hold: Option<u64>,
+    /// `click-after=FRAME`: hold `click=`'s press back until this frame, for a
+    /// press on something that takes frames to open.
+    pub click_after: u64,
     /// `follow=1`: follow `--treatment` in a probe run too (WX-3). A batch
     /// run applies it once; this lets the gate edit the file mid-run.
     pub follow: bool,
@@ -1445,6 +1459,15 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
                 return None;
             }
         }
+        "agent-press-at" => probe.agent_press_at = Some(value.parse().ok()?),
+        "click-after" => probe.click_after = value.parse().ok()?,
+        "agent-image" => {
+            probe.agent_image = value.split('+').map(str::to_owned).collect();
+            if probe.agent_image.iter().any(String::is_empty) {
+                return None;
+            }
+        }
+        "agent-image-hold" => probe.agent_image_hold = Some(value.parse().ok()?),
         "dock-run" => {
             probe.dock = true;
             probe.dock_run = Some(value.to_string());

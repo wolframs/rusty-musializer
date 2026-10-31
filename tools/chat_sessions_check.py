@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from PIL import Image
+
 out = Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
 root = Path.cwd()
@@ -196,6 +198,10 @@ check(has(dock, 'tabs=2', 'Claude', 'Codex'), 'the + menu reopens a chat beside 
 edit(kept, entries=json.loads(kept.read_text())['entries'] + [{'kind': 'image', 'path': 'sheet.png'}])
 dock = run('image', ['agent-press=earlier:0'])
 check('image@' in dock, 'a picture entry comes back', dock)
+Image.new('RGB', (64, 36), (200, 40, 40)).save(elsewhere / 'sheet.png')
+edit(kept, cwd=str(elsewhere))
+dock = run('image-cwd', ['agent-press=earlier:0'])
+check('sheet.png:' in dock and 'sheet.png:missing' not in dock, "it is found in the chat's own folder", dock)
 
 # --- A probe run keeps nothing unless told where ---
 scratch = out / 'xdg'

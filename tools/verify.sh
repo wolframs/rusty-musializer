@@ -188,6 +188,7 @@ if [ "$QUICK" -eq 0 ]; then
         step "column (views, the frame, census, dock, render, progress)" tools/column_check.sh
         step "agent controls (model, effort, access, on each protocol)" tools/agent_controls_check.sh
         step "saved chats (reopen, resume, per project, forget)" tools/chat_sessions_check.sh
+        step "agent images (found, shown, large, on each protocol)" tools/agent_images_check.sh
         step "lyrics column (cues, style, sample caption, 292 px browser)" tools/lyrics_column_check.sh
         step "pixel look (video, sections, appearance, persistence)" tools/pixel_look_check.sh
         fixture_step "look & assist column (rows, trial, cards, dialog, 64 captures)" tools/look_assist_check.sh
