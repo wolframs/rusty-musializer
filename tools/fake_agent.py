@@ -15,11 +15,14 @@ A message containing `state?` adds what the fake was told about its model,
 effort and access to the reply, as each real CLI would hold it: Claude's from
 its flags and control requests, Codex's from its thread and turn requests,
 Antigravity's from its flags. `agy models` is answered as a listing.
+A message containing `resume?` adds which conversation it was resumed into and
+how many lines the message had. Resuming `lost-session` fails as each CLI does.
 
 It never touches the network, never runs the "tool" it reports, and exits
 when its input closes. The real agents are never started by any check.
 """
 import json
+import os
 import sys
 
 ARGS = sys.argv[1:]
@@ -81,6 +84,10 @@ def claude():
     session = "fake-session"
     turn = 0
     stream = lines()
+    if flag("--resume") == "lost-session":
+        sys.stderr.write("No conversation found with session ID: lost-session\n")
+        sys.stderr.flush()
+        sys.exit(1)
     state = {"model": flag("--model", "default"), "effort": flag("--effort", "high"),
              "mode": flag("--permission-mode", "default")}
 
@@ -154,6 +161,8 @@ def claude():
             reply += f" (permission: {decision})"
         if "state?" in last:
             reply += f" [{resolved()}/{state['effort']}/{state['mode']}]"
+        if "resume?" in last:
+            reply += resumed(text, flag("--resume", "-"))
         out({"type": "stream_event", "event": {"type": "message_start", "message": {"id": mid}}})
         half = len(reply) // 2
         for part in (reply[:half], reply[half:]):
@@ -166,6 +175,9 @@ def claude():
 
 def antigravity():
     turn = 0
+    if flag("--conversation") == "lost-session":
+        sys.stderr.write('warning: conversation "lost-session" not found\n')
+        sys.stderr.flush()
     if flag("--mode") == "auto":
         sys.stderr.write("warning: --mode auto is not available for this account; "
                          "continuing in the default mode.\n")
@@ -184,6 +196,8 @@ def antigravity():
         if "state?" in last:
             skip = "--dangerously-skip-permissions" in ARGS
             reply += f" [{flag('--model', '-')}/{flag('--mode', '-')}/{'skip' if skip else 'ask'}]"
+        if "resume?" in last:
+            reply += resumed(text, flag("--conversation", "-"))
         out({"event": "step_update", "step_update": {"step_index": 2, "state": "ACTIVE",
              "step_type": "agent_response", "text_delta": reply}})
         out({"event": "result", "result": {"conversation_id": "fake-conversation", "status": "SUCCESS",
@@ -192,6 +206,7 @@ def antigravity():
 
 def codex():
     thread = None
+    resumed_thread = "-"
     turn = 0
     pending = {}
     state = {"model": "fake-sol", "effort": "low", "access": "-"}
@@ -207,6 +222,14 @@ def codex():
             state["model"] = params.get("model") or state["model"]
             out({"id": message["id"], "result": {"thread": {"id": thread}, "model": state["model"],
                                                  "reasoningEffort": state["effort"]}})
+        elif method == "thread/resume":
+            params = message["params"]
+            if params["threadId"] == "lost-session":
+                out({"id": message["id"], "error": {"message": "no rollout found"}})
+                continue
+            thread = resumed_thread = params["threadId"]
+            out({"id": message["id"], "result": {"thread": {"id": thread}, "model": state["model"],
+                                                 "reasoningEffort": state["effort"]}})
         elif method == "turn/start":
             turn += 1
             params = message["params"]
@@ -218,6 +241,8 @@ def codex():
                                         params.get("sandboxPolicy", {}).get("type", "-")])
             if "state?" in last:
                 last += f" [{state['model']}/{state['effort']}/{state['access']}]"
+            if "resume?" in last:
+                last += resumed(text, resumed_thread)
             out({"id": message["id"], "result": {"turn": {"id": f"turn{turn}"}}})
             out({"method": "turn/started", "params": {"turn": {"id": f"turn{turn}"}}})
             if "ask" in last:
@@ -244,6 +269,10 @@ def finish_codex(turn, last, decision):
     out({"method": "item/completed", "params": {"item": {"type": "agentMessage", "id": f"a{turn}", "text": reply}}})
     out({"method": "thread/tokenUsage/updated", "params": {"tokenUsage": {"total": {"totalTokens": 42}}}})
     out({"method": "turn/completed", "params": {"turn": {"id": f"turn{turn}"}}})
+
+
+def resumed(text, conversation):
+    return f" [resumed={conversation} lines={len(text.splitlines())} cwd={os.path.basename(os.getcwd())}]"
 
 
 def main():

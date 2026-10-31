@@ -28,12 +28,14 @@ pub mod terminal_view;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver};
 
 use egui::{Context, Rect};
 
 use musializer_runtime::terminal::{GridSize, Session, Spawn};
 
 use super::agent_choices::{self, AgentChoices};
+use super::chat_store::{self, ChatSummary, Saver};
 use chat_view::ChatTab;
 use terminal_view::TerminalView;
 
@@ -87,6 +89,9 @@ pub struct DockContext {
     pub env: HashMap<String, String>,
     /// Shown in the header, so it is clear which folder a new tab opens in.
     pub place: String,
+    /// What chats are kept under: the `.musi`, else the audio file, else the
+    /// folder. Empty for a dock that keeps none.
+    pub project: String,
     /// The treatment the window follows (WX-3), if any.
     pub following: Option<Following>,
     /// Where the user is, for a chat message's context line (WX-4):
@@ -235,6 +240,22 @@ pub struct Dock {
     choices_loaded: bool,
     /// The file could not be read; it is never written over.
     choices_refused: bool,
+    /// The project's saved chats, newest first, for `earlier_for`.
+    earlier: Vec<ChatSummary>,
+    earlier_for: Option<String>,
+    earlier_loading: Option<Receiver<(String, Vec<ChatSummary>, usize)>>,
+    /// Files in the project's folder that could not be read.
+    earlier_refused: usize,
+    /// The chat whose × was pressed, waiting for Forget or Keep.
+    forget_pending: Option<String>,
+    /// Why the last reopen or forget failed.
+    earlier_error: Option<String>,
+    /// Where the rows were drawn, by the name `agent-press=` uses.
+    earlier_rects: Vec<(String, egui::Rect)>,
+    saver: Option<Saver>,
+    /// A probe run keeps chats only in a place it was given (`chat_store`).
+    probe_run: bool,
+    chats_opened: u64,
 }
 
 impl Dock {
@@ -310,13 +331,167 @@ impl Dock {
         musializer_runtime::agent_process::warm_shell_path();
         let id = self.next_id();
         let selection = self.choices().get(agent.command());
-        let chat = ChatTab::new(agent, context, id, selection);
+        self.chats_opened += 1;
+        let chat_id = chat_store::new_id(self.chats_opened);
+        let chat = ChatTab::new(agent, context, id, selection, chat_id);
         self.tabs.push(Tab {
             label: agent.label().to_string(),
             body: Body::Chat(chat),
             id,
         });
         self.chat_active = Some(self.tabs.len() - 1);
+    }
+
+    /// Runs without keeping chats unless a place is named (`chat_store`).
+    pub fn set_probe_run(&mut self, probe_run: bool) {
+        self.probe_run = probe_run;
+    }
+
+    /// Reads `context`'s project's chats when the project changes, off the
+    /// UI thread, and takes the answer when it comes.
+    pub(super) fn refresh_earlier(&mut self, context: &DockContext) {
+        if self.earlier_for.as_deref() != Some(context.project.as_str()) {
+            self.earlier_for = Some(context.project.clone());
+            self.earlier.clear();
+            self.earlier_refused = 0;
+            self.forget_pending = None;
+            self.earlier_loading = None;
+            if let Some(root) =
+                chat_store::root(self.probe_run).filter(|_| !context.project.is_empty())
+            {
+                let folder = chat_store::project_folder(&root, &context.project);
+                let project = context.project.clone();
+                let (done, answer) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let (chats, refused) = chat_store::list(&folder);
+                    let _ = done.send((project, chats, refused));
+                });
+                self.earlier_loading = Some(answer);
+            }
+        }
+        if let Some(answer) = &self.earlier_loading {
+            if let Ok((project, chats, refused)) = answer.try_recv() {
+                self.earlier_loading = None;
+                if self.earlier_for.as_deref() == Some(project.as_str()) {
+                    // A chat saved while the list was read is newer than it.
+                    for chat in chats {
+                        if !self.earlier.iter().any(|kept| kept.id == chat.id) {
+                            self.earlier.push(chat);
+                        }
+                    }
+                    self.earlier
+                        .sort_by_key(|chat| std::cmp::Reverse(chat.updated_unix));
+                    self.earlier_refused = refused;
+                }
+            }
+        }
+    }
+
+    /// The project's saved chats that are not open in a tab.
+    pub(super) fn earlier_closed(&self) -> Vec<ChatSummary> {
+        self.earlier
+            .iter()
+            .filter(|chat| {
+                !self
+                    .tabs
+                    .iter()
+                    .any(|tab| matches!(&tab.body, Body::Chat(open) if open.chat_id == chat.id))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Opens a saved chat, or shows it if it is already open.
+    pub(super) fn reopen(&mut self, chat_id: &str, context: &DockContext) {
+        self.earlier_error = None;
+        if let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| matches!(&tab.body, Body::Chat(open) if open.chat_id == chat_id))
+        {
+            self.chat_active = Some(index);
+            return;
+        }
+        let Some(path) = self
+            .earlier
+            .iter()
+            .find(|chat| chat.id == chat_id)
+            .map(|chat| chat.path.clone())
+        else {
+            return;
+        };
+        musializer_runtime::agent_process::warm_shell_path();
+        let id = self.next_id();
+        match chat_store::load(&path).and_then(|saved| ChatTab::reopen(&saved, context, id)) {
+            Some(chat) => {
+                self.tabs.push(Tab {
+                    label: chat.agent.label().to_string(),
+                    body: Body::Chat(chat),
+                    id,
+                });
+                self.chat_active = Some(self.tabs.len() - 1);
+            }
+            None => self.earlier_error = Some("That chat could not be read.".to_owned()),
+        }
+    }
+
+    /// Removes a saved chat from this project, and only from here: the
+    /// agent's own history is its CLI's.
+    pub(super) fn forget(&mut self, chat_id: &str) {
+        self.forget_pending = None;
+        let Some(index) = self.earlier.iter().position(|chat| chat.id == chat_id) else {
+            return;
+        };
+        // A write still queued would bring the file back.
+        if let Some(saver) = self.saver.as_mut() {
+            saver.finish();
+        }
+        self.saver = None;
+        match chat_store::forget(&self.earlier[index].path) {
+            Ok(()) => {
+                self.earlier.remove(index);
+            }
+            Err(error) => self.earlier_error = Some(format!("Could not forget it: {error}")),
+        }
+    }
+
+    /// Writes the chats that want writing, without stalling the frame.
+    fn save_chats(&mut self) {
+        let root = chat_store::root(self.probe_run);
+        for tab in &mut self.tabs {
+            let Body::Chat(chat) = &mut tab.body else {
+                continue;
+            };
+            if !chat.take_save_due() {
+                continue;
+            }
+            let (Some(root), Some(saved)) = (root.as_ref(), chat.saved()) else {
+                continue;
+            };
+            if saved.project.is_empty() {
+                continue;
+            }
+            let Ok(bytes) = serde_json::to_vec_pretty(&saved) else {
+                continue;
+            };
+            if bytes.len() > chat_store::MAX_CHAT_BYTES {
+                chat.note_too_long();
+                continue;
+            }
+            let folder = chat_store::project_folder(root, &saved.project);
+            let path = chat_store::chat_path(&folder, &saved.id);
+            self.saver
+                .get_or_insert_with(Saver::start)
+                .save(path.clone(), bytes);
+            if self.earlier_for.as_deref() == Some(saved.project.as_str()) {
+                self.earlier.retain(|kept| kept.id != saved.id);
+                self.earlier.insert(0, ChatSummary::of(&saved, path));
+            }
+        }
+        if let Some(failure) = self.saver.as_ref().and_then(Saver::failure) {
+            self.earlier_error = Some("A chat could not be saved.".to_owned());
+            eprintln!("chat store: {failure}");
+        }
     }
 
     /// What each agent last chose, read once. A file that cannot be read
@@ -369,6 +544,9 @@ impl Dock {
     /// (`--ui-probe agent-press=`).
     #[must_use]
     pub fn probe_point(&self, name: &str) -> Option<egui::Pos2> {
+        if let Some((_, rect)) = self.earlier_rects.iter().find(|(row, _)| row == name) {
+            return Some(rect.center());
+        }
         let index = self.current_chat()?;
         let Body::Chat(chat) = &self.tabs.get(index)?.body else {
             return None;
@@ -418,6 +596,7 @@ impl Dock {
             }
         }
         self.save_choices();
+        self.save_chats();
     }
 
     /// Types `text` into the active terminal (`--ui-probe dock-run=`). Xvfb
@@ -449,6 +628,10 @@ impl Dock {
 
     fn close_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
+            if let Body::Chat(chat) = &mut self.tabs[index].body {
+                chat.mark_save_due();
+            }
+            self.save_chats();
             let mut tab = self.tabs.remove(index);
             tab.close();
             // Both selections are indices into the same mixed tab list.
@@ -471,6 +654,10 @@ impl Dock {
     pub fn shutdown(&mut self) {
         while !self.tabs.is_empty() {
             self.close_tab(0);
+        }
+        // The window closing is the last chance for these to land.
+        if let Some(saver) = self.saver.as_mut() {
+            saver.finish();
         }
     }
 

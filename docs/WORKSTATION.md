@@ -350,8 +350,7 @@ remaining workstation work is:
   [HEADLESS_GPU.md](HEADLESS_GPU.md).
 - **Lyric lane resizing.** Decide whether dragging the lane grip should grow
   the whole band. The current band limits downward growth.
-- **Native agent sessions.** Add inline images, Codex thread resume after
-  process exit, and a treatment file picker.
+- **Native agent sessions.** Add inline images and a treatment file picker.
 - **Generated video as material.** The scope is in
   [VIDEO_GENERATION.md](VIDEO_GENERATION.md). Implementation needs the consent
   and price display before paid generation, followed by treatment support for
@@ -554,8 +553,48 @@ notice cards still in the pre-redesign style.
   live only through the protocol probes above, not through the dock, to keep
   Codex's weekly limit for real work.
 - **Not done yet:** inline images (a contact sheet the agent wrote should
-  show in the chat), and resuming a Codex thread after its process dies (Claude
-  and Antigravity resume, Codex starts a new thread).
+  show in the chat).
+
+**Saved chats (2026-10-31).** A chat survives closing its tab and quitting.
+Anything said to an agent is kept, per project, and reopens from Earlier chats
+in the empty Direct view or from the head's `+`.
+
+- **Where:** one file per chat, `chat_store` in the app, under
+  `$MUSIALIZER_CHATS`, else `$XDG_DATA_HOME/musializer/chats`, else
+  `~/.local/share/musializer/chats`, in a folder named by the hash of the
+  project's path. Folders are 0700 and files 0600, because a transcript holds
+  whatever a tool printed. Never in a `.musi`, which travels.
+- **A project is the `.musi`, not the folder.** `~/Music` holds many projects,
+  so the working directory would mix their chats. An unsaved track goes by its
+  audio file, and a chat kept under one does not follow it into a `.musi` made
+  later.
+- **What the file holds is what the window showed.** The conversation itself
+  stays in the CLI's own history, and a reopened chat resumes it: Claude's
+  `--resume`, Antigravity's `--conversation`, Codex's `thread/resume`, which now
+  also covers a Codex process that died. Only a press reopens one. Nothing
+  starts an agent by itself at launch.
+- **A chat runs where it ran.** Claude keys a session by its folder, so a chat
+  keeps its working directory for life, also across a restart after the project
+  changed, which used to look for the session in the wrong place.
+- **A chat comes back on its own settings, Full access included.** That is a
+  press on that one chat, not a default. What a new chat starts on stays
+  `agents.json`, which still never holds Full access.
+- What was in flight ended with its process: a running tool reads as failed, an
+  unanswered prompt becomes a record of what was asked.
+- **A CLI that lost the conversation** says so differently each: Claude exits
+  naming it, Codex answers with an error, agy warns on stderr and carries on in
+  a new one. Each ends in the same notice, and the next message starts over.
+- A chat is written when a message goes out, when a turn ends, when a chip
+  changes, every 15 s during a long turn, when its tab closes and when the window
+  closes, on one thread, so a save never stalls a frame. The draft goes with it.
+- **A probe run keeps nothing** unless `MUSIALIZER_CHATS` names a place, so no
+  gate's fake agent can land in the operator's list.
+- A file this build cannot read is counted under the list and left alone. Forget
+  asks first, and removes the chat here only: the CLI keeps its own history.
+- Gate: `tools/chat_sessions_check.sh`. Every launch is a new process, and
+  "resumed" is what the fake says its CLI was told.
+- **Live check, by hand:** a real Claude, Codex and Antigravity chat each told a
+  word, quit, reopened in a new process, asked for it, and each answered it.
 
 **Composer controls (2026-10-31).** Model, effort and access, after T3 Code,
 whose access names and per-CLI mapping these are.

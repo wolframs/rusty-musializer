@@ -24,6 +24,9 @@ const PANE_DEFAULT: f32 = 250.0;
 const PANE_MINIMUM: f32 = 90.0;
 /// What the chat keeps above the pane, however tall the pane is dragged.
 const CHAT_MINIMUM: f32 = 220.0;
+/// How many earlier chats the head's `+` lists, and how wide.
+const HEAD_MENU_CHATS: usize = 6;
+const MENU_ROW_WIDTH: f32 = 260.0;
 
 fn of(value: u32) -> egui::Color32 {
     color32::of(value)
@@ -136,6 +139,8 @@ impl Dock {
         context: &DockContext,
     ) -> DockOutput {
         let mut output = DockOutput::default();
+        self.refresh_earlier(context);
+        self.earlier_rects.clear();
         let palette = crate::ui::theme::palette();
         let surface = of(palette.ui_surface);
         let rule = of(palette.ui_rule);
@@ -307,25 +312,43 @@ impl Dock {
         }
         let mut open_chat = None;
         let mut open_terminal = false;
-        ui.menu_button(RichText::new("+").size(15.0).color(weak), |ui| {
-            for agent in Agent::ALL {
-                if ui.button(format!("Chat with {}", agent.label())).clicked() {
-                    open_chat = Some(agent);
+        let earlier = self.earlier_closed();
+        let mut reopen = None;
+        let mut past_rects = Vec::new();
+        let plus = ui
+            .menu_button(RichText::new("+").size(15.0).color(weak), |ui| {
+                for agent in Agent::ALL {
+                    if ui.button(format!("Chat with {}", agent.label())).clicked() {
+                        open_chat = Some(agent);
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button("New terminal").clicked() {
+                    open_terminal = true;
                     ui.close();
                 }
-            }
-            ui.separator();
-            if ui.button("New terminal").clicked() {
-                open_terminal = true;
-                ui.close();
-            }
-        })
-        .response
-        .on_hover_text("A new chat or terminal");
+                if !earlier.is_empty() {
+                    ui.separator();
+                    ui.label(micro("Earlier chats", weak));
+                    for (index, chat) in earlier.iter().take(HEAD_MENU_CHATS).enumerate() {
+                        let row = earlier_row(ui, chat, MENU_ROW_WIDTH);
+                        past_rects.push((format!("past:{index}"), row.rect));
+                        if row.clicked() {
+                            reopen = Some(chat.id.clone());
+                            ui.close();
+                        }
+                    }
+                }
+            })
+            .response;
+        self.earlier_rects.push(("head-plus".to_owned(), plus.rect));
+        self.earlier_rects.append(&mut past_rects);
+        plus.on_hover_text("A new chat or terminal, or an earlier chat");
         if let Some(index) = shown {
             if ui
                 .add(egui::Button::new(RichText::new("\u{00d7}").color(weak)).frame(false))
-                .on_hover_text("Close this chat and discard its transcript and draft")
+                .on_hover_text("Close this chat. What was said stays under Earlier chats")
                 .clicked()
             {
                 if matches!(&self.tabs[index].body, Body::Chat(chat) if chat.needs_close_confirmation())
@@ -344,7 +367,7 @@ impl Dock {
                 .collapsible(false)
                 .resizable(false)
                 .show(ui.ctx(), |ui| {
-                    ui.label("This stops any running turn and discards the transcript and draft.");
+                    ui.label("This stops any running turn. The chat stays under Earlier chats.");
                     ui.horizontal(|ui| {
                         cancel = ui.button("Keep chat").clicked();
                         close = ui.button("Close chat").clicked();
@@ -385,6 +408,9 @@ impl Dock {
         if let Some(agent) = open_chat {
             self.open_chat(agent, context);
         }
+        if let Some(chat_id) = reopen {
+            self.reopen(&chat_id, context);
+        }
         if open_terminal {
             self.open_tab(None, context, true);
             self.terminal_open = true;
@@ -398,112 +424,227 @@ impl Dock {
         let weak = ui.visuals().weak_text_color();
         let mut start = None;
         let mut starts = Vec::new();
-        egui::Frame::new()
-            .inner_margin(egui::Margin::symmetric(14, 18))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.spacing_mut().item_spacing.y = 10.0;
-                ui.label(
-                    RichText::new("Talk the video through with an agent")
-                        .size(crate::ui::theme::metric::UI_FONT_HEADER + 2.0)
-                        .color(ink),
-                );
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(
-                            "Say what a section should feel like, or ask for a still or a \
+        let mut reopen = None;
+        let mut forget = None;
+        let mut ask_forget = None;
+        let mut keep = false;
+        let earlier = self.earlier_closed();
+        let mut rows = Vec::new();
+        let scroll = egui::ScrollArea::vertical().auto_shrink([false, false]);
+        scroll.show(ui, |ui| {
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(14, 18))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.spacing_mut().item_spacing.y = 10.0;
+                    ui.label(
+                        RichText::new("Talk the video through with an agent")
+                            .size(crate::ui::theme::metric::UI_FONT_HEADER + 2.0)
+                            .color(ink),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(
+                                "Say what a section should feel like, or ask for a still or a \
                              clip. It reads the project, writes the treatment, and the \
                              preview follows at the playhead.",
+                            )
+                            .color(weak),
                         )
-                        .color(weak),
-                    )
-                    .wrap(),
-                );
-                ui.add_space(6.0);
-                for agent in Agent::ALL {
-                    let state = installed(agent);
-                    let found = state == "installed";
-                    if state == "checking" {
-                        ui.ctx()
-                            .request_repaint_after(std::time::Duration::from_millis(50));
-                    }
-                    egui::Frame::new()
-                        .fill(of(palette.ui_raised))
-                        .stroke(Stroke::new(1.0, of(palette.ui_rule)))
-                        .corner_radius(6.0)
-                        .inner_margin(egui::Margin::symmetric(12, 10))
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                dot(ui, if found { color32::ui_success() } else { weak });
-                                ui.add_space(4.0);
-                                ui.vertical(|ui| {
-                                    ui.spacing_mut().item_spacing.y = 2.0;
-                                    ui.label(RichText::new(agent.label()).size(14.0).color(ink));
-                                    ui.label(micro(
-                                        match state {
-                                            "installed" => "Installed",
-                                            "checking" => "Checking…",
-                                            _ => "Not found on PATH",
+                        .wrap(),
+                    );
+                    ui.add_space(6.0);
+                    for agent in Agent::ALL {
+                        let state = installed(agent);
+                        let found = state == "installed";
+                        if state == "checking" {
+                            ui.ctx()
+                                .request_repaint_after(std::time::Duration::from_millis(50));
+                        }
+                        egui::Frame::new()
+                            .fill(of(palette.ui_raised))
+                            .stroke(Stroke::new(1.0, of(palette.ui_rule)))
+                            .corner_radius(6.0)
+                            .inner_margin(egui::Margin::symmetric(12, 10))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    dot(ui, if found { color32::ui_success() } else { weak });
+                                    ui.add_space(4.0);
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 2.0;
+                                        ui.label(
+                                            RichText::new(agent.label()).size(14.0).color(ink),
+                                        );
+                                        ui.label(micro(
+                                            match state {
+                                                "installed" => "Installed",
+                                                "checking" => "Checking…",
+                                                _ => "Not found on PATH",
+                                            },
+                                            weak,
+                                        ));
+                                    });
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let label = if self.agents_in_terminal {
+                                                "Open"
+                                            } else {
+                                                "Start"
+                                            };
+                                            let button = egui::Button::new(
+                                                RichText::new(label).color(if found {
+                                                    of(palette.ui_surface)
+                                                } else {
+                                                    ink
+                                                }),
+                                            )
+                                            .fill(if found { ink } else { of(palette.ui_control) })
+                                            .corner_radius(4.0)
+                                            .min_size(egui::vec2(64.0, 28.0));
+                                            let tip = if self.agents_in_terminal {
+                                                format!(
+                                                    "{} in a terminal, in {}",
+                                                    agent.label(),
+                                                    context.place
+                                                )
+                                            } else {
+                                                format!(
+                                                    "Chat with {}, working in {}",
+                                                    agent.label(),
+                                                    context.place
+                                                )
+                                            };
+                                            let response = ui.add(button).on_hover_text(tip);
+                                            starts.push((agent.command(), response.rect, state));
+                                            if response.clicked() {
+                                                start = Some(agent);
+                                            }
                                         },
-                                        weak,
-                                    ));
+                                    );
                                 });
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let label = if self.agents_in_terminal {
-                                            "Open"
-                                        } else {
-                                            "Start"
-                                        };
-                                        let button = egui::Button::new(RichText::new(label).color(
-                                            if found { of(palette.ui_surface) } else { ink },
-                                        ))
-                                        .fill(if found { ink } else { of(palette.ui_control) })
-                                        .corner_radius(4.0)
-                                        .min_size(egui::vec2(64.0, 28.0));
-                                        let tip = if self.agents_in_terminal {
-                                            format!(
-                                                "{} in a terminal, in {}",
-                                                agent.label(),
-                                                context.place
-                                            )
-                                        } else {
-                                            format!(
-                                                "Chat with {}, working in {}",
-                                                agent.label(),
-                                                context.place
-                                            )
-                                        };
-                                        let response = ui.add(button).on_hover_text(tip);
-                                        starts.push((agent.command(), response.rect, state));
-                                        if response.clicked() {
-                                            start = Some(agent);
-                                        }
-                                    },
-                                );
                             });
-                        });
-                }
-                ui.checkbox(
-                    &mut self.agents_in_terminal,
-                    RichText::new("run in a terminal instead")
-                        .size(12.0)
-                        .color(weak),
-                )
-                .on_hover_text("Open the agent's own interface in the terminal pane");
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(format!("in {}", context.place))
+                    }
+                    ui.checkbox(
+                        &mut self.agents_in_terminal,
+                        RichText::new("run in a terminal instead")
                             .size(12.0)
                             .color(weak),
                     )
-                    .truncate(),
-                )
-                .on_hover_text("New chats and terminals start in this folder");
-            });
+                    .on_hover_text("Open the agent's own interface in the terminal pane");
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("in {}", context.place))
+                                .size(12.0)
+                                .color(weak),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text("New chats and terminals start in this folder");
+                    if !earlier.is_empty()
+                        || self.earlier_error.is_some()
+                        || self.earlier_refused > 0
+                    {
+                        ui.add_space(8.0);
+                        ui.label(micro("Earlier chats", weak));
+                    }
+                    if let Some(error) = &self.earlier_error {
+                        ui.label(RichText::new(error).size(12.0).color(color32::ui_danger()));
+                    }
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for (index, chat) in earlier.iter().enumerate() {
+                        if self.forget_pending.as_deref() == Some(chat.id.as_str()) {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(format!(
+                                            "Forget \u{201c}{}\u{201d}?",
+                                            chat.title
+                                        ))
+                                        .size(12.0)
+                                        .color(ink),
+                                    )
+                                    .truncate(),
+                                )
+                                .on_hover_text(
+                                    "Removes it from this list. The agent keeps its own history.",
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let no = ui.add(egui::Button::new(
+                                            RichText::new("Keep").size(12.0).color(ink),
+                                        ));
+                                        let yes = ui.add(egui::Button::new(
+                                            RichText::new("Forget")
+                                                .size(12.0)
+                                                .color(color32::ui_danger()),
+                                        ));
+                                        rows.push((format!("forget-yes:{index}"), yes.rect));
+                                        rows.push((format!("forget-no:{index}"), no.rect));
+                                        if yes.clicked() {
+                                            forget = Some(chat.id.clone());
+                                        }
+                                        keep |= no.clicked();
+                                    },
+                                );
+                            });
+                            continue;
+                        }
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            let row = earlier_row(ui, chat, ui.available_width() - 28.0);
+                            rows.push((format!("earlier:{index}"), row.rect));
+                            if row.on_hover_text("Open this chat again").clicked() {
+                                reopen = Some(chat.id.clone());
+                            }
+                            let close = ui
+                                .add(
+                                    egui::Button::new(RichText::new("\u{00d7}").color(weak))
+                                        .frame(false),
+                                )
+                                .on_hover_text("Forget this chat");
+                            rows.push((format!("forget:{index}"), close.rect));
+                            if close.clicked() {
+                                ask_forget = Some(chat.id.clone());
+                            }
+                        });
+                    }
+                    if self.earlier_refused > 0 {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "{} saved chat{} could not be read and {} left alone.",
+                                self.earlier_refused,
+                                if self.earlier_refused == 1 { "" } else { "s" },
+                                if self.earlier_refused == 1 {
+                                    "is"
+                                } else {
+                                    "are"
+                                },
+                            ))
+                            .size(11.0)
+                            .color(weak),
+                        );
+                    }
+                })
+        });
         self.start_rects = starts;
+        self.earlier_rects.append(&mut rows);
+        if keep {
+            self.forget_pending = None;
+        }
+        if ask_forget.is_some() {
+            self.forget_pending = ask_forget;
+        }
+        if let Some(chat_id) = forget {
+            self.forget(&chat_id);
+        }
+        if let Some(chat_id) = reopen {
+            self.reopen(&chat_id, context);
+        }
         if let Some(agent) = start {
             if self.agents_in_terminal {
                 self.open_tab(Some(agent), context, true);
@@ -688,6 +829,48 @@ impl Dock {
     }
 }
 
+/// One saved chat: what it was about, over who and when.
+fn earlier_row(
+    ui: &mut egui::Ui,
+    chat: &crate::ui::chat_store::ChatSummary,
+    width: f32,
+) -> egui::Response {
+    use egui::text::{LayoutJob, TextWrapping};
+    let palette = crate::ui::theme::palette();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 40.0), egui::Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, 4.0, of(palette.ui_selected));
+    }
+    let weak = ui.visuals().weak_text_color();
+    let agent = Agent::from_name(&chat.agent)
+        .map_or_else(|| chat.agent.clone(), |agent| agent.label().to_owned());
+    let age = crate::ui::preferences::recent::describe_age(
+        Some(chat.updated_unix),
+        Some(crate::ui::chat_store::now_unix()),
+    )
+    .unwrap_or_default();
+    let line = |words: String, size: f32, colour: egui::Color32, top: f32| {
+        let mut job = LayoutJob::simple_singleline(words, egui::FontId::proportional(size), colour);
+        job.wrap = TextWrapping::truncate_at_width((rect.width() - 12.0).max(0.0));
+        let galley = ui.painter().layout_job(job);
+        ui.painter()
+            .galley(egui::pos2(rect.left() + 6.0, top), galley, colour);
+    };
+    line(
+        chat.title.clone(),
+        13.0,
+        color32::ui_ink(),
+        rect.top() + 4.0,
+    );
+    line(
+        format!("{agent} \u{00b7} {age}"),
+        11.0,
+        weak,
+        rect.top() + 22.0,
+    );
+    response
+}
+
 fn following_status(following: &super::Following) -> String {
     let Some(at) = following.last_applied_at else {
         return "applies on save".to_owned();
@@ -816,6 +999,16 @@ impl Dock {
                     .join(";")
             ),
         };
+        let earlier = format!(
+            "{} refused={} rows=[{}]",
+            self.earlier.len(),
+            self.earlier_refused,
+            self.earlier_rects
+                .iter()
+                .map(|(name, rect)| format!("{name}@{}", at(rect)))
+                .collect::<Vec<_>>()
+                .join(";")
+        );
         let agents = self
             .start_rects
             .iter()
@@ -823,7 +1016,7 @@ impl Dock {
             .collect::<Vec<_>>()
             .join(";");
         format!(
-            "open={open} tabs={} [{}] keyboard={} pane={} direct=[{direct}] agents=[{agents}] chat=[{chat}] terminal=[{terminal}]",
+            "open={open} tabs={} [{}] keyboard={} pane={} direct=[{direct}] agents=[{agents}] earlier={earlier} chat=[{chat}] terminal=[{terminal}]",
             tabs.len(),
             tabs.join(", "),
             self.keyboard,

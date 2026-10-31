@@ -1597,6 +1597,23 @@ Top level: `schema` and `segments` are required; `title`, `notes`, `audio`,
 An absent `lyrics` or `events` key leaves that lane of the track untouched; an
 empty array replaces it with nothing.
 
+### Per-user agent files (2026-10-31)
+
+Neither is in a project. `docs/WORKSTATION.md` says why each field is there.
+
+- `musializer.agent-choices/v1`, `agents.json` beside `ui.json`,
+  `$MUSIALIZER_AGENT_CHOICES`: per agent, `model`, `effort`, `access`. Unknown
+  fields are refused, and so is `access: "full"`, which this application never
+  writes there.
+- `musializer.agent-chat/v1`, one file per chat under `$MUSIALIZER_CHATS`, else
+  `$XDG_DATA_HOME/musializer/chats`, else `~/.local/share/musializer/chats`,
+  then `<16 bytes of the project path's SHA-256, hex>/<id>.json`. `id`, `agent`,
+  `project`, `cwd`, `title`, `created_unix`, `updated_unix`, `session`, `model`,
+  `selected_model`, `selected_effort`, `access`, `draft`, and `entries`, tagged
+  by `kind`: `user`, `assistant`, `tool`, `permission`, `notice`, `image`.
+  Unknown fields, another schema, or an `id` that is not the file's name: the
+  file is counted and left alone.
+
 ## 7. Resources
 
 ### 7.1 The tree

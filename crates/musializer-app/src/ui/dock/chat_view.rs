@@ -24,12 +24,17 @@
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{Key, Modifiers, RichText, Stroke};
 use musializer_core::agent::{
-    antigravity_models, effort_title, Access, Entry, Protocol, Selection, ToolState, Transcript,
+    antigravity_models, effort_title, split_context, Access, Entry, Protocol, SavedChat, Selection,
+    ToolState, Transcript, SAVED_CHAT_SCHEMA,
 };
 use musializer_runtime::agent_process::{AgentProcess, Launch, Output};
 
 use super::{Agent, DockContext};
+use crate::ui::chat_store;
 use crate::ui::theme::color32;
+
+/// How often a turn that is still running is saved, for a crash mid-turn.
+const SAVE_WHILE_BUSY: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// The composer's height with its gap to the column's edge: the context row,
 /// the words, the controls row.
@@ -61,6 +66,18 @@ struct ModelListing {
 
 pub struct ChatTab {
     pub agent: Agent,
+    /// This chat's name in its project's folder (`chat_store`).
+    pub chat_id: String,
+    pub project: String,
+    /// Where it runs, fixed when it opens: Claude keys a session by its
+    /// folder, so a restart after the project changed must not move it.
+    working_directory: Option<std::path::PathBuf>,
+    created_unix: i64,
+    save_due: bool,
+    was_busy: bool,
+    last_save: std::time::Instant,
+    /// The chat outgrew the store; said once.
+    too_long_said: bool,
     transcript: Transcript,
     process: Option<AgentProcess>,
     composer: String,
@@ -102,11 +119,60 @@ fn protocol(agent: Agent) -> Protocol {
 }
 
 impl ChatTab {
-    pub fn new(agent: Agent, context: &DockContext, id: egui::Id, selection: Selection) -> Self {
+    pub fn new(
+        agent: Agent,
+        context: &DockContext,
+        id: egui::Id,
+        selection: Selection,
+        chat_id: String,
+    ) -> Self {
         let mut transcript = Transcript::new(protocol(agent));
         transcript.selection = selection;
-        let mut tab = Self {
+        let mut tab = Self::assemble(agent, context, id, transcript, chat_id);
+        tab.start(context, None);
+        if agent == Agent::Antigravity {
+            tab.list_models(context);
+        }
+        tab
+    }
+
+    /// A chat from `saved`, with its process started and resuming its session.
+    /// `None` when the file names an agent or access this build does not have.
+    pub fn reopen(saved: &SavedChat, context: &DockContext, id: egui::Id) -> Option<Self> {
+        let agent = Agent::from_name(&saved.agent)?;
+        let transcript = Transcript::restore(protocol(agent), saved)?;
+        let mut tab = Self::assemble(agent, context, id, transcript, saved.id.clone());
+        tab.project.clone_from(&saved.project);
+        tab.working_directory =
+            (!saved.cwd.is_empty()).then(|| std::path::PathBuf::from(&saved.cwd));
+        tab.created_unix = saved.created_unix;
+        tab.composer.clone_from(&saved.draft);
+        tab.preamble_pending = agent == Agent::Antigravity && !tab.transcript.has_user_words();
+        let session = tab.transcript.session.clone();
+        tab.start(context, session.as_deref());
+        if agent == Agent::Antigravity {
+            tab.list_models(context);
+        }
+        Some(tab)
+    }
+
+    fn assemble(
+        agent: Agent,
+        context: &DockContext,
+        id: egui::Id,
+        transcript: Transcript,
+        chat_id: String,
+    ) -> Self {
+        Self {
             agent,
+            chat_id,
+            project: context.project.clone(),
+            working_directory: context.working_directory.clone(),
+            created_unix: chat_store::now_unix(),
+            save_due: false,
+            was_busy: false,
+            last_save: std::time::Instant::now(),
+            too_long_said: false,
             transcript,
             process: None,
             composer: String::new(),
@@ -123,12 +189,54 @@ impl ChatTab {
             note_times: std::collections::HashMap::new(),
             layout: Vec::new(),
             menu_rows: Vec::new(),
-        };
-        tab.start(context, None);
-        if agent == Agent::Antigravity {
-            tab.list_models(context);
         }
-        tab
+    }
+
+    /// The chat as a file, when anything was said to the agent.
+    #[must_use]
+    pub fn saved(&self) -> Option<SavedChat> {
+        if !self.transcript.has_user_words() {
+            return None;
+        }
+        let mut chat = SavedChat {
+            schema: SAVED_CHAT_SCHEMA.to_owned(),
+            id: self.chat_id.clone(),
+            agent: self.agent.command().to_owned(),
+            project: self.project.clone(),
+            cwd: self
+                .working_directory
+                .as_ref()
+                .map(|dir| dir.display().to_string())
+                .unwrap_or_default(),
+            created_unix: self.created_unix,
+            updated_unix: chat_store::now_unix(),
+            draft: self.composer.clone(),
+            ..SavedChat::default()
+        };
+        self.transcript.save_into(&mut chat);
+        Some(chat)
+    }
+
+    /// Whether this chat wants writing now. Asking clears it.
+    pub fn take_save_due(&mut self) -> bool {
+        if std::mem::take(&mut self.save_due) {
+            self.last_save = std::time::Instant::now();
+            return true;
+        }
+        false
+    }
+
+    pub fn mark_save_due(&mut self) {
+        self.save_due = true;
+    }
+
+    pub fn note_too_long(&mut self) {
+        if !std::mem::replace(&mut self.too_long_said, true) {
+            self.note(
+                "This chat has outgrown what is kept, so nothing since this is saved.".to_owned(),
+                None,
+            );
+        }
     }
 
     /// The agent's program: its override, else its command on the shell's PATH.
@@ -140,7 +248,7 @@ impl ChatTab {
                 .clone()
                 .unwrap_or_else(|| self.agent.command().to_string()),
             args,
-            working_directory: context.working_directory.clone(),
+            working_directory: self.working_directory.clone(),
             env: context.env.clone(),
             use_shell_path: overridden.is_none(),
         }
@@ -216,7 +324,7 @@ impl ChatTab {
         }
         match AgentProcess::spawn(&self.launch(context, resume)) {
             Ok(mut process) => {
-                let cwd = context
+                let cwd = self
                     .working_directory
                     .as_ref()
                     .map(|dir| dir.display().to_string())
@@ -239,6 +347,11 @@ impl ChatTab {
     pub fn tick(&mut self) {
         self.tick_listing();
         self.selection_changed |= self.transcript.take_selection_reverted();
+        let busy = self.transcript.busy;
+        if (self.was_busy && !busy) || (busy && self.last_save.elapsed() >= SAVE_WHILE_BUSY) {
+            self.save_due = true;
+        }
+        self.was_busy = busy;
         let Some(process) = self.process.as_mut() else {
             return;
         };
@@ -299,6 +412,7 @@ impl ChatTab {
         };
         self.write(lines);
         self.selection_changed = true;
+        self.save_due = true;
     }
 
     /// The selection to save, once per change.
@@ -378,6 +492,7 @@ impl ChatTab {
             }
         }
         self.composer.clear();
+        self.save_due = true;
     }
 
     /// Answers every open permission prompt (`--ui-probe agent-decide=`).
@@ -522,18 +637,6 @@ fn micro(text: &str, colour: egui::Color32) -> RichText {
         .size(crate::ui::theme::metric::UI_FONT_MICRO)
         .extra_letter_spacing(1.0)
         .color(colour)
-}
-
-/// A message's context line (`[Musializer: playhead 3:12.0 · …]`), split
-/// from its words, so the bubble shows what was typed and the micro line
-/// above it says where.
-fn split_context(text: &str) -> (Option<&str>, &str) {
-    if let Some(rest) = text.strip_prefix("[Musializer: ") {
-        if let Some((context, words)) = rest.split_once("]\n") {
-            return (Some(context), words);
-        }
-    }
-    (None, text)
 }
 
 /// What a tool call is called on its chip: the verb the agent used.
@@ -1517,6 +1620,7 @@ mod polish_tests {
             &context,
             egui::Id::new("failed"),
             super::Selection::default(),
+            "test".to_owned(),
         );
         chat.composer = "keep this prompt".into();
         let before = chat.transcript.counts();
@@ -1526,6 +1630,36 @@ mod polish_tests {
         assert_eq!(chat.composer, "keep this prompt");
         assert_eq!(chat.transcript.counts(), before);
         assert!(!chat.transcript.busy);
+    }
+
+    #[test]
+    fn a_long_turn_is_saved_along_the_way_and_when_it_ends() {
+        let context = super::DockContext {
+            working_directory: Some("/nonexistent/musializer-chat-test".into()),
+            ..super::DockContext::default()
+        };
+        let mut chat = super::ChatTab::new(
+            super::Agent::Claude,
+            &context,
+            egui::Id::new("saving"),
+            super::Selection::default(),
+            "test".to_owned(),
+        );
+        chat.transcript.busy = true;
+        chat.tick();
+        assert!(!chat.take_save_due(), "not yet");
+        chat.last_save -= super::SAVE_WHILE_BUSY;
+        chat.tick();
+        assert!(chat.take_save_due());
+        assert!(!chat.take_save_due(), "once");
+        chat.transcript.busy = false;
+        chat.tick();
+        assert!(chat.take_save_due(), "the turn ended");
+        assert_eq!(chat.saved(), None, "nothing was said to it");
+        chat.transcript.send("hello", None);
+        let saved = chat.saved().unwrap();
+        assert_eq!(saved.title, "hello");
+        assert_eq!(saved.cwd, "/nonexistent/musializer-chat-test");
     }
 
     #[test]

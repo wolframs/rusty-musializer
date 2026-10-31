@@ -34,6 +34,7 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// Which wire protocol a transcript speaks.
@@ -253,11 +254,84 @@ pub fn antigravity_models(listing: &str) -> Vec<ModelChoice> {
 }
 
 /// Where a tool call is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolState {
     Running,
     Done,
     Failed,
+}
+
+/// The `schema` of a saved chat.
+pub const SAVED_CHAT_SCHEMA: &str = "musializer.agent-chat/v1";
+
+/// A transcript entry on disk. `Tool::id` and a permission's wire key belong
+/// to a process that is gone, so neither is kept.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SavedEntry {
+    User {
+        text: String,
+    },
+    Assistant {
+        text: String,
+    },
+    Tool {
+        name: String,
+        detail: String,
+        state: ToolState,
+        output: String,
+    },
+    Permission {
+        tool: String,
+        detail: String,
+        allowed: Option<bool>,
+    },
+    Notice {
+        text: String,
+        error: bool,
+    },
+    Image {
+        path: String,
+    },
+}
+
+/// A chat as it is kept between launches. The app owns the file, the id and
+/// the times; [`Transcript::save_into`] and [`Transcript::restore`] own the rest.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SavedChat {
+    pub schema: String,
+    pub id: String,
+    /// The agent's command: `claude`, `codex` or `agy`.
+    pub agent: String,
+    /// The project it belongs to.
+    pub project: String,
+    /// Where it ran. Claude keys its sessions by this folder.
+    pub cwd: String,
+    pub title: String,
+    pub created_unix: i64,
+    pub updated_unix: i64,
+    pub session: Option<String>,
+    pub model: Option<String>,
+    pub selected_model: Option<String>,
+    pub selected_effort: Option<String>,
+    /// [`Access::key`].
+    pub access: String,
+    pub draft: String,
+    pub entries: Vec<SavedEntry>,
+}
+
+/// Splits a message's context line (`[Musializer: playhead 3:12.0 · …]`) from
+/// the words typed under it.
+#[must_use]
+pub fn split_context(text: &str) -> (Option<&str>, &str) {
+    if let Some(rest) = text.strip_prefix("[Musializer: ") {
+        if let Some((context, words)) = rest.split_once("]\n") {
+            return (Some(context), words);
+        }
+    }
+    (None, text)
 }
 
 /// How a permission prompt is answered on the wire.
@@ -304,6 +378,10 @@ pub enum Entry {
     },
 }
 
+/// Said when a CLI no longer has the conversation a chat was resuming.
+const CONVERSATION_LOST: &str = "The agent no longer has this conversation. Your next \
+    message starts a new one, and it has not seen what is on screen here.";
+
 /// How much of a tool's output a transcript keeps. The chat shows a preview;
 /// the whole output stays in the agent's own context.
 pub const OUTPUT_PREVIEW: usize = 2_000;
@@ -324,6 +402,7 @@ enum CodexCall {
     Initialize,
     ModelList,
     ThreadStart,
+    ThreadResume,
     TurnStart,
     Other,
 }
@@ -432,6 +511,87 @@ fn content_text(content: &Value) -> String {
     }
 }
 
+fn saved_entry(entry: &Entry) -> SavedEntry {
+    match entry.clone() {
+        Entry::User { text } => SavedEntry::User { text },
+        Entry::Assistant { text } => SavedEntry::Assistant { text },
+        Entry::Tool {
+            name,
+            detail,
+            state,
+            output,
+            ..
+        } => SavedEntry::Tool {
+            name,
+            detail,
+            state,
+            output,
+        },
+        Entry::Permission {
+            tool,
+            detail,
+            allowed,
+            ..
+        } => SavedEntry::Permission {
+            tool,
+            detail,
+            allowed,
+        },
+        Entry::Notice { text, error } => SavedEntry::Notice { text, error },
+        Entry::Image { path } => SavedEntry::Image { path },
+    }
+}
+
+fn restored_entry(entry: &SavedEntry) -> Entry {
+    match entry.clone() {
+        SavedEntry::User { text } => Entry::User { text },
+        SavedEntry::Assistant { text } => Entry::Assistant { text },
+        SavedEntry::Tool {
+            name,
+            detail,
+            state,
+            output,
+        } => {
+            let unfinished = state == ToolState::Running;
+            Entry::Tool {
+                id: String::new(),
+                name,
+                detail,
+                state: if unfinished { ToolState::Failed } else { state },
+                output: if unfinished {
+                    "The chat ended before this finished.".to_owned()
+                } else {
+                    output
+                },
+            }
+        }
+        // A prompt nobody answered cannot be answered now: the request
+        // belonged to the process that asked.
+        SavedEntry::Permission {
+            tool,
+            detail,
+            allowed: None,
+        } => Entry::Notice {
+            text: format!("The chat ended before you answered: {tool} {detail}"),
+            error: false,
+        },
+        SavedEntry::Permission {
+            tool,
+            detail,
+            allowed,
+        } => Entry::Permission {
+            key: PermissionKey::Codex {
+                rpc_id: Value::Null,
+            },
+            tool,
+            detail,
+            allowed,
+        },
+        SavedEntry::Notice { text, error } => Entry::Notice { text, error },
+        SavedEntry::Image { path } => Entry::Image { path },
+    }
+}
+
 /// One entry of Claude's `initialize` reply.
 fn claude_model(model: &Value) -> ModelChoice {
     let text = |key: &str| model[key].as_str().unwrap_or("").to_owned();
@@ -502,6 +662,58 @@ impl Transcript {
             codex: CodexState::default(),
             claude: ClaudeState::default(),
         }
+    }
+
+    /// Fills in what a saved chat holds of this conversation.
+    pub fn save_into(&self, chat: &mut SavedChat) {
+        chat.title = self.title();
+        chat.session.clone_from(&self.session);
+        chat.model.clone_from(&self.model);
+        chat.selected_model.clone_from(&self.selection.model);
+        chat.selected_effort.clone_from(&self.selection.effort);
+        chat.access = self.selection.access.key().to_owned();
+        chat.entries = self.entries.iter().map(saved_entry).collect();
+    }
+
+    /// A conversation from a saved chat. What was still in flight when it was
+    /// saved ended with that process and reads as such; `None` when the file
+    /// names an access level that does not exist.
+    #[must_use]
+    pub fn restore(protocol: Protocol, chat: &SavedChat) -> Option<Self> {
+        let mut transcript = Self::new(protocol);
+        transcript.session.clone_from(&chat.session);
+        transcript.model.clone_from(&chat.model);
+        transcript.selection = Selection {
+            model: chat.selected_model.clone(),
+            effort: chat.selected_effort.clone(),
+            access: Access::from_key(&chat.access)?,
+        };
+        transcript.entries = chat.entries.iter().map(restored_entry).collect();
+        Some(transcript)
+    }
+
+    /// What the chat is called in a list: the first thing said to it.
+    #[must_use]
+    pub fn title(&self) -> String {
+        self.entries
+            .iter()
+            .find_map(|entry| match entry {
+                Entry::User { text } => {
+                    let words = split_context(text).1.trim();
+                    Some(truncate(words.lines().next().unwrap_or(""), 80))
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether anything was said to the agent, which is what makes a chat
+    /// worth keeping.
+    #[must_use]
+    pub fn has_user_words(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| matches!(entry, Entry::User { .. }))
     }
 
     /// The flags that carry the selection into a new process. Codex takes
@@ -623,6 +835,14 @@ impl Transcript {
     /// not take `--mode auto` is a warning there, and it carries on in its
     /// default mode. Unmatched wording only loses the explanation.
     pub fn diagnostic(&mut self, line: &str) {
+        // agy carries on with a new conversation after this warning.
+        if self.protocol == Protocol::Antigravity
+            && line.contains("conversation")
+            && line.contains("not found")
+        {
+            self.notice(CONVERSATION_LOST, true);
+            return;
+        }
         if self.protocol == Protocol::Antigravity
             && line.contains("--mode auto is not available")
             && !self.auto_unavailable
@@ -918,6 +1138,10 @@ impl Transcript {
             Protocol::Codex => {
                 self.busy = true;
                 self.models.clear();
+                // The old process's thread is gone with it: anything said
+                // now waits for this one's `thread/start` or `thread/resume`.
+                self.codex.thread = None;
+                self.codex.turn = None;
                 vec![self.codex_request(
                     "initialize",
                     json!({"clientInfo": {"name": "musializer", "title": "Musializer", "version": env!("CARGO_PKG_VERSION")}}),
@@ -930,6 +1154,24 @@ impl Transcript {
             ],
             Protocol::Antigravity => Vec::new(),
         }
+    }
+
+    /// What `thread/start` and `thread/resume` both take.
+    fn codex_thread_params(&self) -> Value {
+        let access = self.selection.access;
+        let mut params = json!({
+            "cwd": self.codex.cwd,
+            "approvalPolicy": access.codex_approval(),
+            "approvalsReviewer": access.codex_reviewer(),
+            "sandbox": access.codex_sandbox_mode(),
+        });
+        if let Some(model) = &self.selection.model {
+            params["model"] = json!(model);
+        }
+        if !self.codex.instructions.is_empty() {
+            params["developerInstructions"] = json!(self.codex.instructions);
+        }
+        params
     }
 
     fn codex_request(&mut self, method: &str, params: Value, call: CodexCall) -> String {
@@ -1051,6 +1293,13 @@ impl Transcript {
     /// The process ended.
     pub fn exited(&mut self, how: &str) {
         self.busy = false;
+        // Its CLI has lost the conversation: resuming would fail the same way
+        // on every message, so the next one starts over.
+        if self.protocol == Protocol::Claude && how.contains("No conversation found") {
+            self.session = None;
+            self.notice(CONVERSATION_LOST, true);
+            return;
+        }
         self.notice(format!("The agent stopped ({how})."), true);
     }
 
@@ -1282,6 +1531,17 @@ impl Transcript {
                         self.models_error = Some(truncate(message, 200));
                         return out;
                     }
+                    if call == CodexCall::ThreadResume {
+                        self.session = None;
+                        self.notice(CONVERSATION_LOST, true);
+                        let params = self.codex_thread_params();
+                        out.push(self.codex_request(
+                            "thread/start",
+                            params,
+                            CodexCall::ThreadStart,
+                        ));
+                        return out;
+                    }
                     self.notice(format!("Codex: {}", truncate(message, 400)), true);
                     if call != CodexCall::Other {
                         self.busy = false;
@@ -1293,24 +1553,22 @@ impl Transcript {
                     CodexCall::Initialize => {
                         out.push(json!({"method": "initialized"}).to_string());
                         out.push(self.codex_request("model/list", json!({}), CodexCall::ModelList));
-                        let access = self.selection.access;
-                        let mut params = json!({
-                            "cwd": self.codex.cwd,
-                            "approvalPolicy": access.codex_approval(),
-                            "approvalsReviewer": access.codex_reviewer(),
-                            "sandbox": access.codex_sandbox_mode(),
-                        });
-                        if let Some(model) = &self.selection.model {
-                            params["model"] = json!(model);
+                        let mut params = self.codex_thread_params();
+                        match self.session.clone() {
+                            Some(thread) => {
+                                params["threadId"] = json!(thread);
+                                out.push(self.codex_request(
+                                    "thread/resume",
+                                    params,
+                                    CodexCall::ThreadResume,
+                                ));
+                            }
+                            None => out.push(self.codex_request(
+                                "thread/start",
+                                params,
+                                CodexCall::ThreadStart,
+                            )),
                         }
-                        if !self.codex.instructions.is_empty() {
-                            params["developerInstructions"] = json!(self.codex.instructions);
-                        }
-                        out.push(self.codex_request(
-                            "thread/start",
-                            params,
-                            CodexCall::ThreadStart,
-                        ));
                     }
                     CodexCall::ModelList => {
                         self.models.extend(
@@ -1333,7 +1591,7 @@ impl Transcript {
                             None => out.extend(self.reconcile_selection()),
                         }
                     }
-                    CodexCall::ThreadStart => {
+                    CodexCall::ThreadStart | CodexCall::ThreadResume => {
                         self.codex.thread = result["thread"]["id"].as_str().map(str::to_owned);
                         self.applied_effort = result["reasoningEffort"].as_str().map(str::to_owned);
                         self.session.clone_from(&self.codex.thread);
@@ -2065,6 +2323,147 @@ mod tests {
         claude.selection.access = Access::Auto;
         claude.diagnostic("warning: --mode auto is not available");
         assert_eq!(claude.selection.access, Access::Auto);
+    }
+
+    #[test]
+    fn a_chat_comes_back_as_it_was_except_what_ended_with_its_process() {
+        let mut t = Transcript::new(Protocol::Claude);
+        t.selection = Selection {
+            model: Some("opus".into()),
+            effort: Some("max".into()),
+            access: Access::Full,
+        };
+        t.send(
+            "[Musializer: playhead 0:03.000]\nmake it colder\nand slower",
+            None,
+        );
+        feed(
+            &mut t,
+            &[
+                json!({"type":"system","subtype":"init","model":"claude-x","session_id":"s9"}),
+                json!({"type":"assistant","message":{"id":"m","content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":"ls"}}]}}),
+                json!({"type":"control_request","request_id":"r","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"rm x"}}}),
+            ],
+        );
+        t.entries.push(Entry::Image {
+            path: "sheet.png".into(),
+        });
+        let mut chat = SavedChat::default();
+        t.save_into(&mut chat);
+        assert_eq!(chat.title, "make it colder");
+        assert_eq!(chat.access, "full");
+        let text = serde_json::to_string(&chat).unwrap();
+        let chat: SavedChat = serde_json::from_str(&text).unwrap();
+        let back = Transcript::restore(Protocol::Claude, &chat).unwrap();
+        assert_eq!(back.session.as_deref(), Some("s9"));
+        assert_eq!(back.model.as_deref(), Some("claude-x"));
+        assert_eq!(back.selection, t.selection);
+        assert!(!back.busy);
+        assert!(
+            !back.awaiting_permission(),
+            "that request died with its process"
+        );
+        assert!(matches!(
+            &back.entries[1],
+            Entry::Tool { state: ToolState::Failed, output, .. } if output.contains("ended")
+        ));
+        assert!(
+            matches!(&back.entries[2], Entry::Notice { text, error: false } if text.contains("rm x"))
+        );
+        assert_eq!(back.entries[3], t.entries[3]);
+        assert_eq!(back.counts().0, 1);
+    }
+
+    #[test]
+    fn a_saved_chat_with_an_unknown_access_or_field_is_refused() {
+        let chat = SavedChat {
+            access: "everything".into(),
+            ..SavedChat::default()
+        };
+        assert!(Transcript::restore(Protocol::Claude, &chat).is_none());
+        let mut value = serde_json::to_value(SavedChat::default()).unwrap();
+        value["from_the_future"] = json!(1);
+        assert!(serde_json::from_value::<SavedChat>(value).is_err());
+    }
+
+    #[test]
+    fn an_answered_prompt_stays_a_record_nothing_can_answer_again() {
+        let mut t = Transcript::new(Protocol::Claude);
+        t.entries.push(Entry::Permission {
+            key: PermissionKey::Codex { rpc_id: json!(1) },
+            tool: "Bash".into(),
+            detail: "ls".into(),
+            allowed: Some(true),
+        });
+        let mut chat = SavedChat::default();
+        t.save_into(&mut chat);
+        let mut back = Transcript::restore(Protocol::Claude, &chat).unwrap();
+        assert!(back.decide(0, false).is_empty());
+        assert!(matches!(
+            &back.entries[0],
+            Entry::Permission {
+                allowed: Some(true),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn codex_resumes_its_thread_and_starts_over_if_that_fails() {
+        let mut t = Transcript::new(Protocol::Codex);
+        t.session = Some("th-old".into());
+        let start = t.start("/music", "direct");
+        assert!(t.send("hello", None).is_empty(), "it waits for the thread");
+        let after_init = t.receive(&json!({"id": wire(&start[0])["id"], "result": {}}).to_string());
+        let resume = wire(&after_init[2]);
+        assert_eq!(resume["method"], "thread/resume");
+        assert_eq!(resume["params"]["threadId"], "th-old");
+        assert_eq!(resume["params"]["developerInstructions"], "direct");
+        let after = t.receive(
+            &json!({"id": resume["id"], "result": {"thread": {"id": "th-old"}, "model": "gpt-x"}})
+                .to_string(),
+        );
+        let turn = wire(&after[0]);
+        assert_eq!(turn["method"], "turn/start");
+        assert_eq!(turn["params"]["threadId"], "th-old");
+
+        let mut t = Transcript::new(Protocol::Codex);
+        t.session = Some("th-gone".into());
+        let start = t.start("/music", "");
+        let after_init = t.receive(&json!({"id": wire(&start[0])["id"], "result": {}}).to_string());
+        let again = t.receive(
+            &json!({"id": wire(&after_init[2])["id"], "error": {"message": "no rollout"}})
+                .to_string(),
+        );
+        assert_eq!(wire(&again[0])["method"], "thread/start");
+        assert_eq!(t.session, None);
+        assert!(t.busy, "the new thread is still on its way");
+    }
+
+    #[test]
+    fn a_restart_holds_a_message_until_the_new_thread_exists() {
+        let mut t = Transcript::new(Protocol::Codex);
+        let start = t.start("/music", "");
+        let after = t.receive(&json!({"id": wire(&start[0])["id"], "result": {}}).to_string());
+        t.receive(
+            &json!({"id": wire(&after[2])["id"], "result": {"thread": {"id": "th"}}}).to_string(),
+        );
+        t.start("/music", "");
+        assert!(t.send("after the crash", None).is_empty());
+    }
+
+    #[test]
+    fn a_cli_that_lost_the_conversation_is_not_asked_for_it_again() {
+        let mut t = Transcript::new(Protocol::Claude);
+        t.session = Some("gone".into());
+        t.exited("exit status: 1: No conversation found with session ID: gone");
+        assert_eq!(t.session, None);
+        let mut a = Transcript::new(Protocol::Antigravity);
+        a.diagnostic("warning: conversation \"gone\" not found");
+        assert!(a
+            .entries
+            .iter()
+            .any(|e| matches!(e, Entry::Notice { error: true, .. })));
     }
 
     #[test]

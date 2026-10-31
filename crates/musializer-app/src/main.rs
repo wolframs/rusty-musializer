@@ -433,6 +433,7 @@ fn run(
     // WX-1/2: terminals and agents beside the workspace. Declared after the
     // egui backend, so it drops (and hangs up on its shells) first.
     let mut dock = ui::dock::Dock::default();
+    dock.set_probe_run(options.probe_frames.is_some());
     let mut dock_cache = DockContextCache::new();
     if let Some(probe) = options.ui_probe.as_ref() {
         app.shell.dock_open |= probe.dock;
@@ -5405,10 +5406,20 @@ fn dock_context(
         ));
     }
     let instructions = cache.instructions.as_ref().unwrap().1.clone();
+    // A folder like ~/Music holds many projects, so the folder alone would
+    // mix their chats. With nothing open, the folder is all there is.
+    let project = app
+        .workspace
+        .current()
+        .map(|track| track.project_path.as_ref().unwrap_or(&track.file_path))
+        .or(directory.as_ref())
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
     ui::dock::DockContext {
         working_directory: directory,
         env,
         place,
+        project,
         following,
         now: now.join(" · "),
         instructions,

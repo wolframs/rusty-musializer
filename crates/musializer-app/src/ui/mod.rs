@@ -18,6 +18,7 @@
 pub mod about;
 pub mod agent_choices;
 pub mod assist_settings;
+pub mod chat_store;
 pub mod column;
 pub mod dock;
 pub mod egui_backend;
