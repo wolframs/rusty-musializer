@@ -409,7 +409,7 @@ impl Dock {
             self.open_chat(agent, context);
         }
         if let Some(chat_id) = reopen {
-            self.reopen(&chat_id, context);
+            self.reopen(&chat_id);
         }
         if open_terminal {
             self.open_tab(None, context, true);
@@ -643,7 +643,7 @@ impl Dock {
             self.forget(&chat_id);
         }
         if let Some(chat_id) = reopen {
-            self.reopen(&chat_id, context);
+            self.reopen(&chat_id);
         }
         if let Some(agent) = start {
             if self.agents_in_terminal {
@@ -1000,9 +1000,10 @@ impl Dock {
             ),
         };
         let earlier = format!(
-            "{} refused={} rows=[{}]",
+            "{} refused={} error={:?} rows=[{}]",
             self.earlier.len(),
             self.earlier_refused,
+            self.earlier_error.as_deref().unwrap_or(""),
             self.earlier_rects
                 .iter()
                 .map(|(name, rect)| format!("{name}@{}", at(rect)))

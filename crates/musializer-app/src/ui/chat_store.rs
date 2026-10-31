@@ -11,11 +11,18 @@
 //! gate's fake agent never lands in the operator's list, and a gate that is
 //! about saved chats opts in by naming one.
 //!
-//! Writes go through one thread, in order, so a turn ending never stalls a
-//! frame. A file this build cannot read is skipped and never touched.
+//! **Everything goes through one thread, in order.** A turn ending never stalls
+//! a frame, and a chat closed and reopened at once is read after its last write,
+//! not before it. That thread holds a lock on each chat it has open: a
+//! `<id>.lock` beside the file, because a write replaces the file's inode. So two
+//! windows cannot both own a chat, and the lock goes when the process does.
+//!
+//! A file this build cannot read is skipped and never touched.
 
+use std::collections::HashMap;
+use std::fs::{File, TryLockError};
 use std::io::Read;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
@@ -121,7 +128,7 @@ pub fn load(path: &Path) -> Option<SavedChat> {
 /// A project's chats, newest first. Blocks on the disk, so it runs off the
 /// UI thread. The second value counts files it would not read.
 #[must_use]
-pub fn list(folder: &Path) -> (Vec<ChatSummary>, usize) {
+pub fn list(folder: &Path, project: &str) -> (Vec<ChatSummary>, usize) {
     let Ok(entries) = std::fs::read_dir(folder) else {
         return (Vec::new(), 0);
     };
@@ -135,7 +142,7 @@ pub fn list(folder: &Path) -> (Vec<ChatSummary>, usize) {
     let mut chats = Vec::new();
     for (_, path) in files.into_iter().take(MAX_LISTED) {
         match load(&path) {
-            Some(chat) if chat_path(folder, &chat.id) == path => {
+            Some(chat) if chat_path(folder, &chat.id) == path && chat.project == project => {
                 chats.push(ChatSummary::of(&chat, path));
             }
             _ => refused += 1,
@@ -145,28 +152,119 @@ pub fn list(folder: &Path) -> (Vec<ChatSummary>, usize) {
     (chats, refused)
 }
 
-/// Removes a chat here. The agent's own history is its CLI's.
-pub fn forget(path: &Path) -> std::io::Result<()> {
-    std::fs::remove_file(path)
+/// The folder a chat lives in, private even if it already existed wider. The
+/// write's staging file takes the umask, so this is what keeps it unread.
+fn private_folder(path: &Path) -> Result<(), String> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)
+        .map_err(|error| error.to_string())?;
+    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+        .map_err(|error| error.to_string())
 }
 
 fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)
-            .map_err(|error| error.to_string())?;
-    }
+    private_folder(path)?;
     musializer_runtime::process::publish::atomic_write(path, bytes)
         .map_err(|error| error.to_string())?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .map_err(|error| error.to_string())
 }
 
-/// The one thread that writes chats.
+/// Takes `path`'s lock for this thread, or says who has it.
+fn acquire(held: &mut HashMap<PathBuf, File>, path: &Path) -> Result<(), String> {
+    if held.contains_key(path) {
+        return Ok(());
+    }
+    private_folder(path)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(path.with_extension("lock"))
+        .map_err(|error| error.to_string())?;
+    match lock.try_lock() {
+        Ok(()) => {
+            held.insert(path.to_path_buf(), lock);
+            Ok(())
+        }
+        Err(TryLockError::WouldBlock) => Err("That chat is open in another window.".to_owned()),
+        Err(TryLockError::Error(error)) => Err(error.to_string()),
+    }
+}
+
+/// What a press on a row expects to find, checked against the file as it is
+/// now rather than as it was listed.
+fn load_expected(path: &Path, id: &str, project: &str) -> Option<SavedChat> {
+    load(path).filter(|chat| {
+        chat.id == id && chat.project == project && path.file_stem().is_some_and(|stem| stem == id)
+    })
+}
+
+enum Job {
+    Write(PathBuf, Vec<u8>),
+    Load {
+        path: PathBuf,
+        id: String,
+        project: String,
+        reply: Sender<Result<SavedChat, String>>,
+    },
+    Forget {
+        path: PathBuf,
+        reply: Sender<Result<(), String>>,
+    },
+    Release(PathBuf),
+}
+
+fn work(inbox: &Receiver<Job>, report: &Sender<String>) {
+    let mut held = HashMap::new();
+    for job in inbox {
+        match job {
+            Job::Write(path, bytes) => {
+                let done = acquire(&mut held, &path).and_then(|()| write(&path, &bytes));
+                if let Err(error) = done {
+                    let _ = report.send(format!("{}: {error}", path.display()));
+                }
+            }
+            Job::Load {
+                path,
+                id,
+                project,
+                reply,
+            } => {
+                let chat = acquire(&mut held, &path).and_then(|()| {
+                    load_expected(&path, &id, &project)
+                        .ok_or_else(|| "That chat could not be read.".to_owned())
+                });
+                if chat.is_err() {
+                    held.remove(&path);
+                }
+                let _ = reply.send(chat);
+            }
+            Job::Forget { path, reply } => {
+                let gone = acquire(&mut held, &path)
+                    .and_then(|()| std::fs::remove_file(&path).map_err(|error| error.to_string()));
+                if gone.is_ok() {
+                    let _ = std::fs::remove_file(path.with_extension("lock"));
+                }
+                held.remove(&path);
+                let _ = reply.send(gone);
+            }
+            Job::Release(path) => {
+                held.remove(&path);
+            }
+        }
+    }
+}
+
+/// The one thread that touches chat files once a chat is in use.
 pub struct Saver {
-    jobs: Option<Sender<(PathBuf, Vec<u8>)>>,
+    jobs: Option<Sender<Job>>,
     failures: Receiver<String>,
     thread: Option<JoinHandle<()>>,
 }
@@ -174,15 +272,9 @@ pub struct Saver {
 impl Saver {
     #[must_use]
     pub fn start() -> Self {
-        let (jobs, inbox) = mpsc::channel::<(PathBuf, Vec<u8>)>();
+        let (jobs, inbox) = mpsc::channel();
         let (report, failures) = mpsc::channel();
-        let thread = std::thread::spawn(move || {
-            for (path, bytes) in inbox {
-                if let Err(error) = write(&path, &bytes) {
-                    let _ = report.send(format!("{}: {error}", path.display()));
-                }
-            }
-        });
+        let thread = std::thread::spawn(move || work(&inbox, &report));
         Self {
             jobs: Some(jobs),
             failures,
@@ -190,10 +282,46 @@ impl Saver {
         }
     }
 
-    pub fn save(&self, path: PathBuf, bytes: Vec<u8>) {
+    fn send(&self, job: Job) {
         if let Some(jobs) = &self.jobs {
-            let _ = jobs.send((path, bytes));
+            let _ = jobs.send(job);
         }
+    }
+
+    pub fn save(&self, path: PathBuf, bytes: Vec<u8>) {
+        self.send(Job::Write(path, bytes));
+    }
+
+    /// Reads a chat after every write queued so far, and takes its lock.
+    #[must_use]
+    pub fn load(
+        &self,
+        path: PathBuf,
+        id: String,
+        project: String,
+    ) -> Receiver<Result<SavedChat, String>> {
+        let (reply, answer) = mpsc::channel();
+        self.send(Job::Load {
+            path,
+            id,
+            project,
+            reply,
+        });
+        answer
+    }
+
+    /// Removes a chat here, after every write queued so far. The agent's own
+    /// history is its CLI's.
+    #[must_use]
+    pub fn forget(&self, path: PathBuf) -> Receiver<Result<(), String>> {
+        let (reply, answer) = mpsc::channel();
+        self.send(Job::Forget { path, reply });
+        answer
+    }
+
+    /// Lets another window have a chat this one closed.
+    pub fn release(&self, path: PathBuf) {
+        self.send(Job::Release(path));
     }
 
     /// A write that failed since the last time of asking.
@@ -254,7 +382,7 @@ mod tests {
         let newest = put(&dir, &chat("new", 200));
         assert_eq!(std::fs::metadata(&newest).unwrap().mode() & 0o777, 0o600);
         assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
-        let (chats, refused) = list(&dir);
+        let (chats, refused) = list(&dir, "");
         assert_eq!(
             chats.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
             ["new", "old"]
@@ -276,11 +404,104 @@ mod tests {
         // A file whose id does not match its name is not this store's.
         let renamed = dir.join("renamed.json");
         std::fs::write(&renamed, serde_json::to_vec(&chat("other", 3)).unwrap()).unwrap();
-        let (chats, refused) = list(&dir);
+        // Nor is one carrying another project's name.
+        let mut stray = chat("stray", 4);
+        stray.project = "/elsewhere.musi".into();
+        std::fs::write(
+            chat_path(&dir, "stray"),
+            serde_json::to_vec(&stray).unwrap(),
+        )
+        .unwrap();
+        let (chats, refused) = list(&dir, "");
         assert_eq!(chats.len(), 1);
-        assert_eq!(refused, 3);
+        assert_eq!(refused, 4);
         assert_eq!(std::fs::read(&broken).unwrap(), b"{");
         assert!(future.exists() && renamed.exists());
+    }
+
+    #[test]
+    fn a_chat_read_right_after_a_write_sees_that_write() {
+        let dir = folder("order");
+        let path = chat_path(&dir, "a");
+        let saver = Saver::start();
+        let mut latest = chat("a", 1);
+        latest.draft = "x".repeat(4 * 1024 * 1024);
+        saver.save(path.clone(), serde_json::to_vec(&chat("a", 0)).unwrap());
+        saver.save(path.clone(), serde_json::to_vec(&latest).unwrap());
+        saver.release(path.clone());
+        let read = saver.load(path, "a".into(), String::new()).recv().unwrap();
+        assert_eq!(read.unwrap(), latest);
+    }
+
+    #[test]
+    fn two_windows_cannot_own_one_chat() {
+        let dir = folder("two");
+        let path = chat_path(&dir, "a");
+        let (mut one, mut two) = (Saver::start(), Saver::start());
+        one.save(path.clone(), serde_json::to_vec(&chat("a", 1)).unwrap());
+        let load = |saver: &Saver| {
+            saver
+                .load(path.clone(), "a".into(), String::new())
+                .recv()
+                .unwrap()
+        };
+        assert!(load(&one).is_ok());
+        assert!(load(&two).unwrap_err().contains("another window"));
+        // Nor can the other one write over it or forget it.
+        two.save(path.clone(), serde_json::to_vec(&chat("a", 2)).unwrap());
+        assert!(two.forget(path.clone()).recv().unwrap().is_err());
+        two.finish();
+        assert_eq!(load(&one).unwrap().updated_unix, 1);
+        assert!(two_failed(&two));
+        one.release(path.clone());
+        one.finish();
+        let three = Saver::start();
+        assert!(three.forget(path.clone()).recv().unwrap().is_ok());
+        assert!(!path.exists() && !path.with_extension("lock").exists());
+    }
+
+    fn two_failed(saver: &Saver) -> bool {
+        saver
+            .failure()
+            .is_some_and(|text| text.contains("another window"))
+    }
+
+    #[test]
+    fn a_row_gets_the_chat_it_named_or_nothing() {
+        let dir = folder("named");
+        let path = chat_path(&dir, "a");
+        let saver = Saver::start();
+        let mut edited = chat("b", 1);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, serde_json::to_vec(&edited).unwrap()).unwrap();
+        assert!(saver
+            .load(path.clone(), "a".into(), String::new())
+            .recv()
+            .unwrap()
+            .is_err());
+        edited.id = "a".into();
+        edited.project = "/other.musi".into();
+        std::fs::write(&path, serde_json::to_vec(&edited).unwrap()).unwrap();
+        assert!(saver
+            .load(path.clone(), "a".into(), String::new())
+            .recv()
+            .unwrap()
+            .is_err());
+        assert!(saver
+            .load(path, "a".into(), "/other.musi".into())
+            .recv()
+            .unwrap()
+            .is_ok());
+    }
+
+    #[test]
+    fn an_existing_folder_is_made_private_before_a_transcript_lands_in_it() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = folder("wide");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        put(&dir, &chat("a", 1));
+        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
     }
 
     #[test]

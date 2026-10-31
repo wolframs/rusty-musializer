@@ -582,11 +582,22 @@ in the empty Direct view or from the head's `+`.
 - What was in flight ended with its process: a running tool reads as failed, an
   unanswered prompt becomes a record of what was asked.
 - **A CLI that lost the conversation** says so differently each: Claude exits
-  naming it, Codex answers with an error, agy warns on stderr and carries on in
-  a new one. Each ends in the same notice, and the next message starts over.
+  naming it, Codex answers `no rollout found`, agy warns on stderr and carries on
+  in a new one. Each ends in the same notice, and the next message starts over.
+  Any other Codex resume error keeps the conversation and tries again with the
+  next message, since a new thread would lose it for a passing failure.
 - A chat is written when a message goes out, when a turn ends, when a chip
   changes, every 15 s during a long turn, when its tab closes and when the window
-  closes, on one thread, so a save never stalls a frame. The draft goes with it.
+  closes. The draft goes with it.
+- **One thread does every read and write of a chat in use, in order.** A frame
+  never waits on the disk, and a chat closed and reopened at once is read after
+  its last write. That thread holds a `<id>.lock` beside each chat it has open,
+  because a write replaces the file's inode, so a second window is told the chat
+  is open elsewhere instead of overwriting it, and cannot forget it either. The
+  lock goes with the process. The file is checked again when a row is pressed:
+  the id and project must still be the ones listed.
+- The store's folders are forced to 0700 before a transcript lands in them,
+  because the write's staging file takes the umask until its rename.
 - **A probe run keeps nothing** unless `MUSIALIZER_CHATS` names a place, so no
   gate's fake agent can land in the operator's list.
 - A file this build cannot read is counted under the list and left alone. Forget

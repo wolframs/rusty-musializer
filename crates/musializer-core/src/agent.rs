@@ -378,6 +378,9 @@ pub enum Entry {
     },
 }
 
+/// What Claude prints, and exits on, for a session it does not have.
+const CLAUDE_LOST: &str = "No conversation found";
+
 /// Said when a CLI no longer has the conversation a chat was resuming.
 const CONVERSATION_LOST: &str = "The agent no longer has this conversation. Your next \
     message starts a new one, and it has not seen what is on screen here.";
@@ -449,6 +452,8 @@ pub struct Transcript {
     pub selection_reverted: bool,
     /// Antigravity said this account has no auto mode.
     auto_unavailable: bool,
+    /// [`CONVERSATION_LOST`] was said for this process.
+    lost_said: bool,
     /// A choice that only a new process can take.
     restart_owed: bool,
     /// Text being streamed, keyed by the protocol's own handle for it, so the
@@ -655,6 +660,7 @@ impl Transcript {
             reported_mode: None,
             selection_reverted: false,
             auto_unavailable: false,
+            lost_said: false,
             restart_owed: false,
             open_text: HashMap::new(),
             tools: HashMap::new(),
@@ -835,12 +841,16 @@ impl Transcript {
     /// not take `--mode auto` is a warning there, and it carries on in its
     /// default mode. Unmatched wording only loses the explanation.
     pub fn diagnostic(&mut self, line: &str) {
+        if self.protocol == Protocol::Claude && line.contains(CLAUDE_LOST) {
+            self.conversation_lost();
+            return;
+        }
         // agy carries on with a new conversation after this warning.
         if self.protocol == Protocol::Antigravity
             && line.contains("conversation")
             && line.contains("not found")
         {
-            self.notice(CONVERSATION_LOST, true);
+            self.conversation_lost();
             return;
         }
         if self.protocol == Protocol::Antigravity
@@ -1132,6 +1142,7 @@ impl Transcript {
     /// thread's developer instructions, and Antigravity, which takes neither,
     /// with the first message.
     pub fn start(&mut self, cwd: &str, instructions: &str) -> Vec<String> {
+        self.lost_said = false;
         self.codex.cwd = cwd.to_string();
         self.codex.instructions = instructions.to_string();
         match self.protocol {
@@ -1293,14 +1304,22 @@ impl Transcript {
     /// The process ended.
     pub fn exited(&mut self, how: &str) {
         self.busy = false;
-        // Its CLI has lost the conversation: resuming would fail the same way
-        // on every message, so the next one starts over.
-        if self.protocol == Protocol::Claude && how.contains("No conversation found") {
-            self.session = None;
-            self.notice(CONVERSATION_LOST, true);
-            return;
+        if self.protocol == Protocol::Claude && how.contains(CLAUDE_LOST) {
+            self.conversation_lost();
         }
-        self.notice(format!("The agent stopped ({how})."), true);
+        // Stderr usually beats stdout's end here, but they race.
+        if !self.lost_said {
+            self.notice(format!("The agent stopped ({how})."), true);
+        }
+    }
+
+    /// Its CLI has lost the conversation: resuming would fail the same way on
+    /// every message, so the next one starts over.
+    fn conversation_lost(&mut self) {
+        self.session = None;
+        if !std::mem::replace(&mut self.lost_said, true) {
+            self.notice(CONVERSATION_LOST, true);
+        }
     }
 
     /// One line the agent printed. Returns the lines to write back.
@@ -1532,14 +1551,28 @@ impl Transcript {
                         return out;
                     }
                     if call == CodexCall::ThreadResume {
-                        self.session = None;
-                        self.notice(CONVERSATION_LOST, true);
-                        let params = self.codex_thread_params();
-                        out.push(self.codex_request(
-                            "thread/start",
-                            params,
-                            CodexCall::ThreadStart,
-                        ));
+                        // Only a thread that is really gone may be replaced
+                        // by a new one. Anything else tries again.
+                        if message.contains("no rollout found") {
+                            self.conversation_lost();
+                            let params = self.codex_thread_params();
+                            out.push(self.codex_request(
+                                "thread/start",
+                                params,
+                                CodexCall::ThreadStart,
+                            ));
+                        } else {
+                            self.notice(
+                                format!(
+                                    "Codex could not resume this chat, and will try again with \
+                                     your next message: {}",
+                                    truncate(message, 300)
+                                ),
+                                true,
+                            );
+                            self.busy = false;
+                            self.restart_owed = true;
+                        }
                         return out;
                     }
                     self.notice(format!("Codex: {}", truncate(message, 400)), true);
@@ -2432,12 +2465,28 @@ mod tests {
         let start = t.start("/music", "");
         let after_init = t.receive(&json!({"id": wire(&start[0])["id"], "result": {}}).to_string());
         let again = t.receive(
-            &json!({"id": wire(&after_init[2])["id"], "error": {"message": "no rollout"}})
+            &json!({"id": wire(&after_init[2])["id"], "error": {"message": "no rollout found for thread id x"}})
                 .to_string(),
         );
         assert_eq!(wire(&again[0])["method"], "thread/start");
         assert_eq!(t.session, None);
         assert!(t.busy, "the new thread is still on its way");
+    }
+
+    #[test]
+    fn a_resume_that_fails_for_another_reason_keeps_the_conversation() {
+        let mut t = Transcript::new(Protocol::Codex);
+        t.session = Some("th".into());
+        let start = t.start("/music", "");
+        let after_init = t.receive(&json!({"id": wire(&start[0])["id"], "result": {}}).to_string());
+        let reply = t.receive(
+            &json!({"id": wire(&after_init[2])["id"], "error": {"message": "stream disconnected"}})
+                .to_string(),
+        );
+        assert!(reply.is_empty());
+        assert_eq!(t.session.as_deref(), Some("th"));
+        assert!(!t.busy);
+        assert!(t.take_restart_owed(), "the next message tries again");
     }
 
     #[test]
@@ -2458,6 +2507,20 @@ mod tests {
         t.session = Some("gone".into());
         t.exited("exit status: 1: No conversation found with session ID: gone");
         assert_eq!(t.session, None);
+        // Stdout can end before stderr's last line is read: the exit then
+        // cannot say why, and the line must still count, once.
+        let mut late = Transcript::new(Protocol::Claude);
+        late.session = Some("gone".into());
+        late.exited("exit status: 1");
+        late.diagnostic("No conversation found with session ID: gone");
+        assert_eq!(late.session, None);
+        late.diagnostic("No conversation found with session ID: gone");
+        let notices = late
+            .entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Notice { .. }))
+            .count();
+        assert_eq!(notices, 2, "the stop, and one word on why");
         let mut a = Transcript::new(Protocol::Antigravity);
         a.diagnostic("warning: conversation \"gone\" not found");
         assert!(a

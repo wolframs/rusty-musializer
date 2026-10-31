@@ -37,6 +37,7 @@ use musializer_runtime::terminal::{GridSize, Session, Spawn};
 use super::agent_choices::{self, AgentChoices};
 use super::chat_store::{self, ChatSummary, Saver};
 use chat_view::ChatTab;
+use musializer_core::agent::SavedChat;
 use terminal_view::TerminalView;
 
 /// An agent CLI the dock can start in a tab.
@@ -244,6 +245,9 @@ pub struct Dock {
     earlier: Vec<ChatSummary>,
     earlier_for: Option<String>,
     earlier_loading: Option<Receiver<(String, Vec<ChatSummary>, usize)>>,
+    /// A press on a row, on its way through the store's thread.
+    reopening: Option<Receiver<Result<SavedChat, String>>>,
+    forgetting: Option<(String, Receiver<Result<(), String>>)>,
     /// Files in the project's folder that could not be read.
     earlier_refused: usize,
     /// The chat whose × was pressed, waiting for Forget or Keep.
@@ -363,7 +367,7 @@ impl Dock {
                 let project = context.project.clone();
                 let (done, answer) = mpsc::channel();
                 std::thread::spawn(move || {
-                    let (chats, refused) = chat_store::list(&folder);
+                    let (chats, refused) = chat_store::list(&folder, &project);
                     let _ = done.send((project, chats, refused));
                 });
                 self.earlier_loading = Some(answer);
@@ -385,6 +389,32 @@ impl Dock {
                 }
             }
         }
+        if let Some(Ok(answer)) = self.reopening.as_ref().map(Receiver::try_recv) {
+            self.reopening = None;
+            self.reopened(answer, context);
+        }
+        if let Some((chat_id, Ok(answer))) = self
+            .forgetting
+            .as_ref()
+            .map(|(chat_id, answer)| (chat_id.clone(), answer.try_recv()))
+        {
+            self.forgetting = None;
+            match answer {
+                Ok(()) => self.earlier.retain(|chat| chat.id != chat_id),
+                Err(error) => self.earlier_error = Some(error),
+            }
+        }
+    }
+
+    /// Where `chat` is kept, when chats are kept.
+    fn chat_file(&self, chat: &ChatTab) -> Option<PathBuf> {
+        let root = chat_store::root(self.probe_run)?;
+        (!chat.project.is_empty()).then(|| {
+            chat_store::chat_path(
+                &chat_store::project_folder(&root, &chat.project),
+                &chat.chat_id,
+            )
+        })
     }
 
     /// The project's saved chats that are not open in a tab.
@@ -402,7 +432,7 @@ impl Dock {
     }
 
     /// Opens a saved chat, or shows it if it is already open.
-    pub(super) fn reopen(&mut self, chat_id: &str, context: &DockContext) {
+    pub(super) fn reopen(&mut self, chat_id: &str) {
         self.earlier_error = None;
         if let Some(index) = self
             .tabs
@@ -410,6 +440,9 @@ impl Dock {
             .position(|tab| matches!(&tab.body, Body::Chat(open) if open.chat_id == chat_id))
         {
             self.chat_active = Some(index);
+            return;
+        }
+        if self.reopening.is_some() {
             return;
         }
         let Some(path) = self
@@ -420,9 +453,23 @@ impl Dock {
         else {
             return;
         };
+        let project = self.earlier_for.clone().unwrap_or_default();
+        let saver = self.saver.get_or_insert_with(Saver::start);
+        self.reopening = Some(saver.load(path, chat_id.to_owned(), project));
+    }
+
+    /// The store's answer to a reopen, which holds the chat's lock.
+    fn reopened(&mut self, answer: Result<SavedChat, String>, context: &DockContext) {
+        let saved = match answer {
+            Ok(saved) => saved,
+            Err(error) => {
+                self.earlier_error = Some(error);
+                return;
+            }
+        };
         musializer_runtime::agent_process::warm_shell_path();
         let id = self.next_id();
-        match chat_store::load(&path).and_then(|saved| ChatTab::reopen(&saved, context, id)) {
+        match ChatTab::reopen(&saved, context, id) {
             Some(chat) => {
                 self.tabs.push(Tab {
                     label: chat.agent.label().to_string(),
@@ -431,7 +478,13 @@ impl Dock {
                 });
                 self.chat_active = Some(self.tabs.len() - 1);
             }
-            None => self.earlier_error = Some("That chat could not be read.".to_owned()),
+            None => {
+                self.earlier_error = Some("That chat could not be read.".to_owned());
+                let path = self.earlier.iter().find(|chat| chat.id == saved.id);
+                if let (Some(chat), Some(saver)) = (path, &self.saver) {
+                    saver.release(chat.path.clone());
+                }
+            }
         }
     }
 
@@ -439,20 +492,19 @@ impl Dock {
     /// agent's own history is its CLI's.
     pub(super) fn forget(&mut self, chat_id: &str) {
         self.forget_pending = None;
-        let Some(index) = self.earlier.iter().position(|chat| chat.id == chat_id) else {
+        if self.forgetting.is_some() {
+            return;
+        }
+        let Some(path) = self
+            .earlier
+            .iter()
+            .find(|chat| chat.id == chat_id)
+            .map(|chat| chat.path.clone())
+        else {
             return;
         };
-        // A write still queued would bring the file back.
-        if let Some(saver) = self.saver.as_mut() {
-            saver.finish();
-        }
-        self.saver = None;
-        match chat_store::forget(&self.earlier[index].path) {
-            Ok(()) => {
-                self.earlier.remove(index);
-            }
-            Err(error) => self.earlier_error = Some(format!("Could not forget it: {error}")),
-        }
+        let saver = self.saver.get_or_insert_with(Saver::start);
+        self.forgetting = Some((chat_id.to_owned(), saver.forget(path)));
     }
 
     /// Writes the chats that want writing, without stalling the frame.
@@ -633,6 +685,11 @@ impl Dock {
             }
             self.save_chats();
             let mut tab = self.tabs.remove(index);
+            if let Body::Chat(chat) = &tab.body {
+                if let (Some(path), Some(saver)) = (self.chat_file(chat), &self.saver) {
+                    saver.release(path);
+                }
+            }
             tab.close();
             // Both selections are indices into the same mixed tab list.
             for active in [&mut self.chat_active, &mut self.terminal_active] {
