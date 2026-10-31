@@ -80,7 +80,7 @@ def write_pictures():
     (out / 'not-image.png').write_text('this is a text file with a picture\'s name\n')
     for n in range(9):
         quadrants().save(out / f's{n}.png')
-    for n in range(7):
+    for n in range(12):
         quadrants((640, 480)).save(out / f'f{n}.png')
 
 
@@ -196,14 +196,20 @@ check(any(i.startswith('sheet.png:shown:') for i in images(dock)), 'an absolute 
 dock, _ = run('unwritten', say='unwritten', frames=90)
 check(entries(dock) == 0 and not rects(dock, 'image') and 'later.png' in dock,
       'a name with no file behind it adds nothing', dock)
-dock, log = run('missing', extra=['agent-image=gone.png'], frames=70)
-check(images(dock) == ['gone.png:missing'], 'a missing file says so', dock)
-area = patch(pixels('missing'), rects(dock, 'image')[0], 0, 0, 1, 1)
-check(np.abs(area - area[1, 12]).max() > 90, 'its words are on the frame, not a blank', str(rects(dock, 'image')))
+def danger_words(name, rect):
+    """Pixels of danger ink: a red the card's fill and its grey folder line are not."""
+    area = patch(pixels(name), rect, 0, 0, 1, 1)
+    return int((area[..., 0] - area[..., 1:].max(axis=2) > 50).sum())
+
+
+for theme in ('dark', 'light'):
+    dock, log = run(f'missing-{theme}', extra=['agent-image=gone.png'], frames=70, theme=theme)
+    check(images(dock) == ['gone.png:missing'], f'{theme}: a missing file says so', dock)
+    check(danger_words(f'missing-{theme}', rects(dock, 'image')[0]) > 40,
+          f'{theme}: its words are on the frame, not a blank', str(rects(dock, 'image')))
 dock, _ = run('broken', say='broken', frames=90)
 check(images(dock) == ['not-image.png:undecodable'], 'a text file called .png fails by name', dock)
-area = patch(pixels('broken'), rects(dock, 'image')[0], 0, 0, 1, 1)
-check(np.abs(area - area[1, 12]).max() > 90, 'its failure is on the frame', dock)
+check(danger_words('broken', rects(dock, 'image')[0]) > 40, 'its failure is on the frame', dock)
 
 # --- Once per file, again when it changes ---
 dock, _ = run('repeat', say='repeat', frames=100)
@@ -229,18 +235,22 @@ dock, _ = run('released', extra=['agent-image=sheet.png', 'agent-image-hold=45']
 check(any(i.startswith('sheet.png:shown') for i in images(dock)), 'released, the picture arrives', dock)
 check(rects(dock, 'image')[0] == held_rect, 'a 16:9 picture lands exactly in its placeholder',
       f'{held_rect} {rects(dock, "image")[0]}')
-many = '+'.join(f'f{n}.png' for n in range(7))
+# Twelve: on its first frame a reopened chat is still at the top, so the top
+# few decode as well as the bottom few.
+many = '+'.join(f'f{n}.png' for n in range(12))
 dock, _ = run('stack-held', extra=[f'agent-image={many}', 'agent-image-hold=500'], frames=60)
 held = rects(dock, 'image')
 composer = rects(dock, 'composer')[0]
 check(held[-1][1] + held[-1][3] <= composer[1] and held[-1][1] > composer[1] - 400,
       'the newest placeholder sits at the bottom of the chat', dock)
-check(any(i.endswith(':off-screen') for i in images(dock)), 'pictures scrolled away are not decoded', dock)
 dock, _ = run('stack-released', extra=[f'agent-image={many}', 'agent-image-hold=45'], frames=75)
 done = rects(dock, 'image')
 check(done[-1][1] + done[-1][3] <= composer[1] and done[-1][1] + done[-1][3] >= held[-1][1] + held[-1][3] - 2,
       'pictures of another shape growing from it do not move the bottom', f'{held[-1]} {done[-1]}')
-check(images(dock)[-1].startswith('f6.png:shown'), 'the newest is the one drawn', dock)
+check(images(dock)[-1].startswith('f11.png:shown'), 'the newest is the one drawn', dock)
+# Past the hold, a decoded picture reports its sizes, even scrolled away.
+check(any(re.fullmatch(r'f\d+\.png:off-screen', i) for i in images(dock)),
+      'pictures scrolled away are not decoded', dock)
 
 # --- Formats, shapes and alpha ---
 for name, colours in (('photo.jpg', 8), ('mislabelled.png', 8), ('still.webp', 2)):
@@ -321,10 +331,14 @@ dock, log = run('play-covered', presses=['image'], extra=['agent-image=sheet.png
 check(large(dock).startswith('sheet.png:') and 'claimed=nothing' in line(log, 'click probe:'),
       'with it open, play under it does not', line(log, 'click probe:'))
 check('gesture=none' in line(log, 'timeline:'), 'and nothing is left holding the pointer', line(log, 'timeline:'))
-lane = ['click=700x960', 'click-after=62']
-dock, log = run('lane-covered', presses=['image'], extra=['agent-image=sheet.png', *lane], frames=90)
+x, y, w, h = map(int, re.search(r' split=(\d+),(\d+),(\d+),(\d+)', line(log, 'lane head:')).groups())
+split = [f'click={x + w // 2}x{y + h // 2}', 'click-after=62']
+dock, log = run('split-bare', extra=['agent-image=sheet.png', *split], frames=90)
+check('claimed=nothing' not in line(log, 'click probe:'), 'with it closed, the band takes a press',
+      line(log, 'click probe:'))
+dock, log = run('split-covered', presses=['image'], extra=['agent-image=sheet.png', *split], frames=90)
 check('claimed=nothing' in line(log, 'click probe:') and 'gesture=none' in line(log, 'timeline:'),
-      'nor does the timeline under it', line(log, 'click probe:') + line(log, 'timeline:'))
+      'with it open, nor does the band', line(log, 'click probe:') + line(log, 'timeline:'))
 dock, log = run('column-left', presses=['image'], press_at=30, state='state-look',
                 extra=['agent-image=sheet.png', 'column-switch=look', *press], frames=90)
 check(large(dock) == 'closed' and 'claimed=nothing' not in line(log, 'click probe:'),

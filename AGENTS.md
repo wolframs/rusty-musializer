@@ -206,6 +206,7 @@ number disagrees, grep it there before debugging from scratch.
 - **`--ui-probe route=` opens on the scene frame 0 draws**; read `plot@` in
   the report before believing the editor is open.
 - **`click=` never reaches egui**; press dock controls with `agent-press=`.
+- **A probe run's column view persists** in `MZ_STATE_DIR`; a run that leaves Direct gets its own, or the next chat draws nothing.
 
 ## Judge by what a user or a file can observe
 

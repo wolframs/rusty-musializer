@@ -350,8 +350,8 @@ remaining workstation work is:
   [HEADLESS_GPU.md](HEADLESS_GPU.md).
 - **Lyric lane resizing.** Decide whether dragging the lane grip should grow
   the whole band. The current band limits downward growth.
-- **Native agent sessions.** Add inline images, Codex thread resume after
-  process exit, and a treatment file picker.
+- **Native agent sessions.** Add Codex thread resume after process exit and a
+  treatment file picker.
 - **Generated video as material.** The scope is in
   [VIDEO_GENERATION.md](VIDEO_GENERATION.md). Implementation needs the consent
   and price display before paid generation, followed by treatment support for
@@ -553,9 +553,8 @@ notice cards still in the pre-redesign style.
   chat answered "pong" on Opus 5.5. Codex and Antigravity were exercised
   live only through the protocol probes above, not through the dock, to keep
   Codex's weekly limit for real work.
-- **Not done yet:** inline images (a contact sheet the agent wrote should
-  show in the chat), and resuming a Codex thread after its process dies (Claude
-  and Antigravity resume, Codex starts a new thread).
+- **Not done yet:** resuming a Codex thread after its process dies (Claude and
+  Antigravity resume, Codex starts a new thread).
 
 **Composer controls (2026-10-31).** Model, effort and access, after T3 Code,
 whose access names and per-CLI mapping these are.
@@ -599,6 +598,54 @@ whose access names and per-CLI mapping these are.
   choices never written, no allow flag, a refused row taking the press, no
   Antigravity restart, Full access remembered, no read-back after an effort
   change, the wrong sandbox on Full, Antigravity's stderr ignored.
+
+
+**Pictures in the chat (2026-10-31).** The agent says "here is the contact
+sheet" and the picture is in the chat. `core::agent::image_paths` reads the
+paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
+
+- **Found** once per entry, on the tick after `Transcript::entry_settled` says
+  its words are final: a tool that returned, text the agent moved on from, the
+  end of a turn. A `Notice` or `Image` in between does not end streamed text.
+  The name must lead to a regular file of 1 byte to 64 MiB. Six per entry.
+- **Shown** from the entry and the working directory alone, so a saved chat
+  draws by itself. A chat's first tick takes what it already holds as read; a
+  transcript swapped in after that needs `ChatImages::resume`.
+- **Decoded** on one thread per chat, only for what is on screen. On a reopened
+  chat's first frame the view is still at the top, so the top few decode too.
+  Thumbnails shrink to the column's width at the size asked for first, at most
+  360 pt tall, never magnified, 24 textures or 128 MiB. The large view is a
+  second decode at the window's size, with the thumbnail until it lands.
+- **The egui backend needed no change.** Texture bytes go up unconverted, the
+  blend is premultiplied, and `shrink` premultiplies. The gate pins mid grey
+  and half alpha in the capture on both renderers.
+- **The large view** is an `egui::Modal`, so nothing in egui under it takes a
+  press, and `Shell::dock_picture_open` occludes the raylib widgets as About
+  does. Its frame keeps `has_focus` through the frame that closes it, so Escape
+  does not also reach the shell. Closing returns the keyboard to the composer
+  only if the composer had it.
+- **What the CLIs say about a picture**, read 2026-10-31. Claude Code 2.1.312:
+  a `Read` of a PNG gives base64 in `tool_result`, with no path; the path is
+  the `tool_use`'s `file_path`, which the scan reads as the tool's detail.
+  codex-cli 0.166.0, from `codex app-server generate-json-schema`, not a live
+  turn: `imageView` carries `path` and `imageGeneration` `savedPath`, both
+  taken as tool entries. Antigravity's picture tools were not read; a path in
+  its parameters or its reply is found like any other.
+- **Live check, by hand, once:** a real Claude turn on Haiku at low effort,
+  through the dock. It read a 1600 x 675 PNG, and the picture stood under the
+  `Read` chip, over its reply.
+- Gate: `tools/agent_images_check.sh`, 112 checks on GPU and CPU. Twenty-one
+  source mutants, each failing on both, built as copied binaries from a tree
+  proved clean after each: unsettled text read, no dedupe, mtime ignored, no
+  listing cap, red and blue swapped, straight alpha uploaded, a washed-out
+  upload, no working directory, no JPEG, no WebP, another placeholder height,
+  off-screen pictures decoded, thumbnails magnified, a blank failure card, the
+  backdrop not closing, the picture not holding the keyboard, the shell not
+  covered, the cover going stale when Direct leaves, focus always returned, no
+  caption, Codex's `imageView` dropped. Two survived the first gate (blank
+  failure card, off-screen decoding), and the shell mutant showed a timeline
+  check with no teeth. Those three checks were rewritten and those three
+  mutants rerun; the other eighteen ran against the gate before that rewrite.
 
 
 ## Integrated follow-up evidence (2026-10-30)
