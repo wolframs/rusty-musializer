@@ -16,11 +16,22 @@ effort and access to the reply, as each real CLI would hold it: Claude's from
 its flags and control requests, Codex's from its thread and turn requests,
 Antigravity's from its flags. `agy models` is answered as a listing.
 
+Words for the chat's pictures, each read from the fake's working directory,
+where the gate wrote them with PIL: `picture` names `sheet.png` in the reply on
+every protocol; on Claude `broken` names a file that is no picture, `unwritten`
+one that does not exist, `repeat` names the sheet in a tool call, its output and
+the reply, `rewrite` shows the sheet and changes its mtime before naming it
+again, `half` pauses the stream after `sheet.png`, the head of a longer name,
+and `listing` makes a tool print nine names. On Codex `viewed` is an
+`imageView` item, which holds the path and nothing else.
+
 It never touches the network, never runs the "tool" it reports, and exits
 when its input closes. The real agents are never started by any check.
 """
 import json
+import os
 import sys
+import time
 
 ARGS = sys.argv[1:]
 
@@ -77,6 +88,10 @@ def lines():
             yield json.loads(raw)
 
 
+def picture_words(last):
+    return " Here is the contact sheet: `sheet.png`." if "picture" in last else ""
+
+
 def claude():
     session = "fake-session"
     turn = 0
@@ -122,6 +137,20 @@ def claude():
             reply.update(subtype="success", response=body)
         out({"type": "control_response", "response": reply})
 
+    def tool(tool_id, command, result, during=None):
+        out({"type": "assistant", "message": {"id": f"p{tool_id}", "content": [
+            {"type": "tool_use", "id": tool_id, "name": "Bash", "input": {"command": command}}]}})
+        if during:
+            during()
+        out({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": tool_id, "content": result, "is_error": False}]}})
+
+    def touch_sheet():
+        # Time for the window to read the mention above before the file moves.
+        time.sleep(0.6)
+        status = os.stat("sheet.png")
+        os.utime("sheet.png", (status.st_atime, status.st_mtime + 10))
+
     for message in stream:
         if message.get("type") == "control_request":
             control(message)
@@ -148,15 +177,36 @@ def claude():
              "input": {"command": "tools/headless_run.sh --still 3 fake.png"}}]}})
         out({"type": "user", "message": {"content": [
             {"type": "tool_result", "tool_use_id": f"t{turn}", "content": "wrote fake.png", "is_error": False}]}})
+        if "repeat" in last:
+            tool(f"r{turn}", "open sheet.png", "showing ./sheet.png")
+        if "rewrite" in last:
+            out({"type": "assistant", "message": {"id": f"w{turn}", "content": [
+                {"type": "text", "text": "first cut: sheet.png"}]}})
+            tool(f"w{turn}", "render --again", "done", touch_sheet)
+        if "listing" in last:
+            tool(f"l{turn}", "ls", " ".join(f"s{n}.png" for n in range(9)))
         mid = f"n{turn}"
         reply = f"fake reply to: {last}"
         if decision:
             reply += f" (permission: {decision})"
         if "state?" in last:
             reply += f" [{resolved()}/{state['effort']}/{state['mode']}]"
+        reply += picture_words(last)
+        if "broken" in last:
+            reply += " Here is `not-image.png`."
+        if "unwritten" in last:
+            reply += " I will write later.png next."
+        if "repeat" in last or "rewrite" in last:
+            reply += " Here is sheet.png."
         out({"type": "stream_event", "event": {"type": "message_start", "message": {"id": mid}}})
         half = len(reply) // 2
-        for part in (reply[:half], reply[half:]):
+        parts = (reply[:half], reply[half:])
+        if "half" in last:
+            reply = "Here is sheet.png-old.png."
+            parts = (reply[:len("Here is sheet.png")], reply[len("Here is sheet.png"):])
+        for part in parts:
+            if part is parts[1] and "half" in last:
+                time.sleep(0.5)
             out({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
                                                    "delta": {"type": "text_delta", "text": part}}})
         out({"type": "assistant", "message": {"id": mid, "content": [{"type": "text", "text": reply}]}})
@@ -184,6 +234,7 @@ def antigravity():
         if "state?" in last:
             skip = "--dangerously-skip-permissions" in ARGS
             reply += f" [{flag('--model', '-')}/{flag('--mode', '-')}/{'skip' if skip else 'ask'}]"
+        reply += picture_words(last)
         out({"event": "step_update", "step_update": {"step_index": 2, "state": "ACTIVE",
              "step_type": "agent_response", "text_delta": reply}})
         out({"event": "result", "result": {"conversation_id": "fake-conversation", "status": "SUCCESS",
@@ -237,9 +288,13 @@ def finish_codex(turn, last, decision):
     out({"method": "item/completed", "params": {"item": {"type": "commandExecution", "id": f"x{turn}",
          "commandActions": [{"command": "echo fake"}], "status": "completed", "exitCode": 0,
          "aggregatedOutput": "fake\n"}}})
+    if "viewed" in last:
+        out({"method": "item/completed", "params": {"item": {"type": "imageView", "id": f"v{turn}",
+             "path": os.path.abspath("sheet.png")}}})
     reply = f"fake reply to: {last}"
     if decision:
         reply += f" (permission: {decision})"
+    reply += picture_words(last)
     out({"method": "item/agentMessage/delta", "params": {"itemId": f"a{turn}", "delta": reply}})
     out({"method": "item/completed", "params": {"item": {"type": "agentMessage", "id": f"a{turn}", "text": reply}}})
     out({"method": "thread/tokenUsage/updated", "params": {"tokenUsage": {"total": {"totalTokens": 42}}}})

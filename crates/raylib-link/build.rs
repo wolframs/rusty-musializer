@@ -54,6 +54,9 @@ fn main() {
         .define("PLATFORM_DESKTOP_GLFW", None)
         .define("_GLFW_X11", None)
         .define("SUPPORT_FILEFORMAT_FLAC", "1")
+        // Off by default in `config.h`. Image drops and the import dialog
+        // offer JPEG, and an agent's stills may be one.
+        .define("SUPPORT_FILEFORMAT_JPG", "1")
         // Cadence's signed-distance-field type (`runtime::font::rasterize_sdf`).
         // raylib's defaults fall from the outline to zero in two texels: steep
         // enough that bilinear filtering cannot reconstruct a corner, which

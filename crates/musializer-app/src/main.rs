@@ -1427,6 +1427,7 @@ fn run(
             if dock.wants_keyboard() {
                 dock.release_keyboard(egui_backend.ctx());
             }
+            dock.close_picture();
         }
         // Reasserted every frame rather than set once, so the tooltip a capture is
         // after is in the shot regardless of how many frames the run lasts — and
@@ -1448,7 +1449,11 @@ fn run(
         // rule takes a press on the press edge and only cashes it on the release
         // edge, and a widget that saw both in one frame is exactly the case it
         // drops (`Widgets::button_at`).
-        if click_at.is_some() {
+        let click_after = options
+            .ui_probe
+            .as_ref()
+            .map_or(0, |probe| probe.click_after);
+        if click_at.is_some() && report.frames >= click_after {
             app.shell.widgets.set_pointer_probe(match click_phase {
                 3 => Some(ui::widgets::PointerProbe {
                     down: true,
@@ -1805,6 +1810,8 @@ fn run(
                 }
                 dock_probes(&mut dock, probe, report.frames, &context);
                 egui_backend.probe_pointer = agent_press(&dock, probe, report.frames);
+                egui_backend.probe_escape =
+                    agent_press_step(probe, report.frames) == Some((ESCAPE_PRESS, 0));
                 if report.frames == 40 {
                     if let Some(view) = probe.column_switch {
                         app.shell
@@ -1865,6 +1872,8 @@ fn run(
             }
             egui_backend.end_frame(&mut rl);
         }
+        // Past the block: with Direct gone there is no egui pass to clear it.
+        app.shell.dock_picture_open = dock.picture_open();
 
         // The Direct tab's dot, and one notice when an agent starts waiting
         // on Allow/Deny while another view has the column (WX-5d §2).
@@ -6939,14 +6948,25 @@ fn dock_probes(
     }
     // After the presses, when there are any: the message then proves what
     // they changed reached the agent.
-    let say_at = match probe.agent_press.len() as u64 {
-        0 => 30,
-        presses => 40 + presses * 12 + 6,
+    let say_at = match (probe.agent_press.len() as u64, probe.agent_press_at) {
+        (0, _) | (_, Some(_)) => 30,
+        (presses, None) => 40 + presses * 12 + 6,
     };
     if frame == say_at {
         if let Some(text) = probe.agent_say.as_deref() {
             dock.probe_say(text, context);
         }
+    }
+    if frame == 20 {
+        for path in &probe.agent_image {
+            dock.probe_image(path);
+        }
+        if probe.agent_image_hold.is_some() {
+            dock.probe_image_hold(true);
+        }
+    }
+    if Some(frame) == probe.agent_image_hold {
+        dock.probe_image_hold(false);
     }
     if frame == 60 {
         if let Some(allow) = probe.agent_decide {
@@ -6963,6 +6983,17 @@ fn dock_probes(
     }
 }
 
+/// An `agent-press=` name that is a key, not a control: Escape through egui's
+/// input, and only while the dock holds the keyboard, as a real one is.
+const ESCAPE_PRESS: &str = "key:escape";
+
+/// Which `agent-press=` name this frame belongs to, and how far into its slot.
+fn agent_press_step(probe: &cli::UiProbe, frame: u64) -> Option<(&str, u64)> {
+    let since = frame.checked_sub(probe.agent_press_at.unwrap_or(40))?;
+    let name = probe.agent_press.get(usize::try_from(since / 12).ok()?)?;
+    Some((name.as_str(), since % 12))
+}
+
 /// `--ui-probe agent-press=`: the pointer for this frame. Each press takes
 /// three frames of its slot, so egui sees it arrive, go down and come up, and
 /// the rest of the slot lets a menu open before the next name is looked up.
@@ -6971,10 +7002,8 @@ fn agent_press(
     probe: &cli::UiProbe,
     frame: u64,
 ) -> Option<(egui::Pos2, Option<bool>)> {
-    let since = frame.checked_sub(40)?;
-    let name = probe.agent_press.get(usize::try_from(since / 12).ok()?)?;
-    let step = since % 12;
-    if step > 2 {
+    let (name, step) = agent_press_step(probe, frame)?;
+    if step > 2 || name == ESCAPE_PRESS {
         return None;
     }
     let Some(point) = dock.probe_point(name) else {

@@ -43,6 +43,7 @@ tools/treatment_check.sh           # directing gate: --treatment, sheets, stills
 tools/poster_check.sh              # poster frames gate
 tools/column_check.sh              # the right column: views, frame, census, dock, render
 tools/agent_controls_check.sh      # the composer's model, effort and access, against a fake agent
+tools/agent_images_check.sh        # pictures in the chat: found, drawn in their colours, large
 tools/align_lyrics.py song.mp3 song.lyrics.json   # time known lyrics (MMS CTC)
 tools/install-linux-launcher.sh    # desktop entry; --uninstall removes it
 cargo build --release              # ALWAYS last in a work stream

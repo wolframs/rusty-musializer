@@ -155,6 +155,58 @@ pub fn image_rgba8(path: &Path) -> Result<DecodedImage, ImageError> {
     })
 }
 
+/// Decodes a picture an agent named, by what the file holds rather than what
+/// it is called: a `.png` that is a JPEG shows, and a text file called `.png`
+/// is refused. Safe off the main thread: `LoadImageFromMemory` is CPU-side and
+/// keeps no state between calls.
+///
+/// `stb_image` reads PNG, JPEG, BMP and GIF from the same entry point, which
+/// raylib reaches for `.png`. It has no WebP, so that one goes through FFmpeg,
+/// already this application's other half, as a one-frame PNG.
+pub fn picture_rgba8(path: &Path) -> Result<DecodedImage, ImageError> {
+    let mut bytes = std::fs::read(path).map_err(|_| ImageError::Decode)?;
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        bytes = webp_as_png(path)?;
+    }
+    // `load_image_from_mem` unwraps this conversion.
+    i32::try_from(bytes.len()).map_err(|_| ImageError::Decode)?;
+    let mut image = Image::load_image_from_mem(".png", &bytes).map_err(|_| ImageError::Decode)?;
+    let (width, height) = (
+        image.width().max(0) as usize,
+        image.height().max(0) as usize,
+    );
+    let pixels = image_pixels_rgba8(&mut image)?.to_vec();
+    Ok(DecodedImage {
+        pixels,
+        width,
+        height,
+    })
+}
+
+fn webp_as_png(path: &Path) -> Result<Vec<u8>, ImageError> {
+    let output = std::process::Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-i"])
+        .arg(path)
+        .args([
+            "-frames:v",
+            "1",
+            "-f",
+            "image2pipe",
+            "-c:v",
+            "png",
+            "pipe:1",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|_| ImageError::Decode)?;
+    if output.status.success() && !output.stdout.is_empty() {
+        Ok(output.stdout)
+    } else {
+        Err(ImageError::Decode)
+    }
+}
+
 /// Borrows an already-loaded image's pixels as tightly packed RGBA8.
 ///
 /// The same checks [`image_rgba8`] makes, without the copy: an export reads back

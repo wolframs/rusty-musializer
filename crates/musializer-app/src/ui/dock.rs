@@ -17,6 +17,8 @@
 //! and rc files as in any other terminal, and quitting it leaves a shell in
 //! the tab rather than a dead one.
 
+#[path = "dock/chat_images.rs"]
+mod chat_images;
 #[path = "dock/chat_view.rs"]
 pub mod chat_view;
 #[path = "dock/column_view.rs"]
