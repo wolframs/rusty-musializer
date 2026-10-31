@@ -200,6 +200,13 @@ impl Terminal {
     }
 }
 
+/// A saved chat on its way back: its file's lock is ours once it answers.
+struct Reopening {
+    project: String,
+    path: PathBuf,
+    answer: Receiver<Result<SavedChat, String>>,
+}
+
 /// What a frame of the dock asks the composition root to do.
 #[derive(Default)]
 pub struct DockOutput {
@@ -246,7 +253,7 @@ pub struct Dock {
     earlier_for: Option<String>,
     earlier_loading: Option<Receiver<(String, Vec<ChatSummary>, usize)>>,
     /// A press on a row, on its way through the store's thread.
-    reopening: Option<Receiver<Result<SavedChat, String>>>,
+    reopening: Option<Reopening>,
     forgetting: Option<(String, Receiver<Result<(), String>>)>,
     /// Files in the project's folder that could not be read.
     earlier_refused: usize,
@@ -389,9 +396,14 @@ impl Dock {
                 }
             }
         }
-        if let Some(Ok(answer)) = self.reopening.as_ref().map(Receiver::try_recv) {
-            self.reopening = None;
-            self.reopened(answer, context);
+        if let Some(Ok(answer)) = self
+            .reopening
+            .as_ref()
+            .map(|reopening| reopening.answer.try_recv())
+        {
+            if let Some(reopening) = self.reopening.take() {
+                self.reopened(reopening, answer, context);
+            }
         }
         if let Some((chat_id, Ok(answer))) = self
             .forgetting
@@ -442,7 +454,9 @@ impl Dock {
             self.chat_active = Some(index);
             return;
         }
-        if self.reopening.is_some() {
+        // One at a time: a Forget overtaken by a reopen of the same chat
+        // would come back as a tab that saves the file again.
+        if self.reopening.is_some() || self.forgetting.is_some() {
             return;
         }
         let Some(path) = self
@@ -455,11 +469,21 @@ impl Dock {
         };
         let project = self.earlier_for.clone().unwrap_or_default();
         let saver = self.saver.get_or_insert_with(Saver::start);
-        self.reopening = Some(saver.load(path, chat_id.to_owned(), project));
+        let answer = saver.load(path.clone(), chat_id.to_owned(), project.clone());
+        self.reopening = Some(Reopening {
+            project,
+            path,
+            answer,
+        });
     }
 
     /// The store's answer to a reopen, which holds the chat's lock.
-    fn reopened(&mut self, answer: Result<SavedChat, String>, context: &DockContext) {
+    fn reopened(
+        &mut self,
+        reopening: Reopening,
+        answer: Result<SavedChat, String>,
+        context: &DockContext,
+    ) {
         let saved = match answer {
             Ok(saved) => saved,
             Err(error) => {
@@ -467,6 +491,17 @@ impl Dock {
                 return;
             }
         };
+        let release = |dock: &Self| {
+            if let Some(saver) = &dock.saver {
+                saver.release(reopening.path.clone());
+            }
+        };
+        // The project moved on since the press: this context's instructions
+        // and environment are another project's.
+        if reopening.project != context.project {
+            release(self);
+            return;
+        }
         musializer_runtime::agent_process::warm_shell_path();
         let id = self.next_id();
         match ChatTab::reopen(&saved, context, id) {
@@ -480,10 +515,7 @@ impl Dock {
             }
             None => {
                 self.earlier_error = Some("That chat could not be read.".to_owned());
-                let path = self.earlier.iter().find(|chat| chat.id == saved.id);
-                if let (Some(chat), Some(saver)) = (path, &self.saver) {
-                    saver.release(chat.path.clone());
-                }
+                release(self);
             }
         }
     }
@@ -492,7 +524,7 @@ impl Dock {
     /// agent's own history is its CLI's.
     pub(super) fn forget(&mut self, chat_id: &str) {
         self.forget_pending = None;
-        if self.forgetting.is_some() {
+        if self.forgetting.is_some() || self.reopening.is_some() {
             return;
         }
         let Some(path) = self
