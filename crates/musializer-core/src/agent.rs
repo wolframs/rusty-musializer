@@ -297,6 +297,11 @@ pub enum Entry {
         text: String,
         error: bool,
     },
+    /// A picture on disk the agent produced or pointed at. The file is the
+    /// picture: a transcript holds its path, never its pixels.
+    Image {
+        path: String,
+    },
 }
 
 /// How much of a tool's output a transcript keeps. The chat shows a preview;
@@ -1514,7 +1519,7 @@ impl Transcript {
                 Entry::Assistant { .. } => counts.1 += 1,
                 Entry::Tool { .. } => counts.2 += 1,
                 Entry::Permission { .. } => counts.3 += 1,
-                Entry::Notice { .. } => {}
+                Entry::Notice { .. } | Entry::Image { .. } => {}
             }
         }
         counts

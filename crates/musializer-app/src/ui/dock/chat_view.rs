@@ -834,6 +834,17 @@ impl ChatTab {
                                         });
                                     layout.push(("permission", card.response.rect));
                                 }
+                                Entry::Image { path } => {
+                                    let line = ui.add(
+                                        egui::Label::new(
+                                            RichText::new(path.as_str())
+                                                .font(mono.clone())
+                                                .color(c.weak),
+                                        )
+                                        .truncate(),
+                                    );
+                                    layout.push(("image", line.rect));
+                                }
                                 Entry::Notice { text, error } => {
                                     let text = self.note_times.get(&index).map_or_else(
                                         || text.clone(),
