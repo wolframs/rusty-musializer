@@ -300,6 +300,9 @@ dock, _ = run('viewer-outside', presses=['image', 'viewer-outside'], extra=['age
 check(large(dock) == 'closed', 'a press outside closes it', dock)
 check('viewer@' not in dock, 'closed, it is off the report too', dock)
 check('keyboard=true' in dock, 'the composer has the keyboard back', dock)
+dock, _ = run('viewer-idle', presses=['image-caption', 'image', 'viewer-outside'], extra=['agent-image=sheet.png'])
+check(large(dock) == 'closed' and 'keyboard=false' in dock,
+      'a composer nobody was typing in does not take the keyboard on close', dock)
 line = lambda log, name: next((l for l in log.splitlines() if l.startswith(name)), '')
 dock, log = run('viewer-escape', presses=['image', 'key:escape'], extra=['agent-image=sheet.png'])
 check(large(dock) == 'closed', 'Escape closes it, through the keyboard the dock holds', dock)

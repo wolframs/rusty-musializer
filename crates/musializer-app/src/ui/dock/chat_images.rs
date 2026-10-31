@@ -218,6 +218,10 @@ struct Large {
     failed: Option<Failure>,
     /// `true` until its first frame: the composer keeps egui's focus until then.
     opening: bool,
+    /// The composer had the keyboard. Closing gives it back then and only
+    /// then: a chat nobody was typing in must not take Space from the
+    /// transport.
+    return_focus: bool,
 }
 
 /// What the large picture did this frame.
@@ -226,7 +230,8 @@ pub struct LargeFrame {
     /// Open now, or closed by this frame's Escape, which must not also reach
     /// the shell.
     pub takes_keyboard: bool,
-    pub closed: bool,
+    /// Closed, and the composer should have the keyboard back.
+    pub refocus: bool,
 }
 
 #[derive(Default)]
@@ -249,6 +254,9 @@ pub struct ChatImages {
     sizes: HashMap<PathBuf, [usize; 2]>,
     large: Option<Large>,
     frame: u64,
+    /// The composer's focus as this frame started; a press on a thumbnail
+    /// takes it away on the frame it lands.
+    composer_focused: bool,
     /// `--ui-probe agent-image-hold=`: finished decodes wait here.
     held: bool,
     /// What the frame drew, for `dock:`.
@@ -306,10 +314,9 @@ impl ChatImages {
             for (path, real, modified) in found.into_iter().take(MOST_FROM_ONE_ENTRY) {
                 // A rewritten picture has to be read again, where it first
                 // showed too: an entry is a path, not a moment.
-                if self.seen.insert(real, modified).is_some() {
-                    self.thumbs.remove(&path);
-                    self.sizes.remove(&path);
-                }
+                self.seen.insert(real, modified);
+                self.thumbs.remove(&path);
+                self.sizes.remove(&path);
                 transcript.entries.push(Entry::Image {
                     path: path.display().to_string(),
                 });
@@ -383,8 +390,9 @@ impl ChatImages {
             .is_some_and(|jobs| jobs.send(job).is_ok())
     }
 
-    pub fn begin_frame(&mut self, ctx: &egui::Context) {
+    pub fn begin_frame(&mut self, ctx: &egui::Context, composer_focused: bool) {
         self.frame += 1;
+        self.composer_focused = composer_focused;
         self.drawn.clear();
         self.evict();
         if self.held {
@@ -629,6 +637,7 @@ impl ChatImages {
             full: None,
             failed: (!sent).then_some(Failure::Undecodable),
             opening: true,
+            return_focus: self.composer_focused,
         });
     }
 
@@ -716,12 +725,13 @@ impl ChatImages {
             egui::Rect::from_min_size(window.min, egui::vec2(8.0, 8.0)),
         ));
         let closed = modal.should_close();
+        let refocus = closed && open.return_focus;
         if closed {
             self.large = None;
         }
         LargeFrame {
             takes_keyboard: true,
-            closed,
+            refocus,
         }
     }
 

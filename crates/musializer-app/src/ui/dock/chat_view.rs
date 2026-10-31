@@ -620,7 +620,7 @@ impl ChatTab {
         // Out of `self` for the frame: the transcript's closure reads `self`
         // whole and draws these mutably.
         let mut images = std::mem::take(&mut self.images);
-        images.begin_frame(ui.ctx());
+        images.begin_frame(ui.ctx(), self.composer_focused);
         let mut transcript_ui = ui.new_child(
             egui::UiBuilder::new()
                 .max_rect(transcript_rect)
@@ -1070,7 +1070,7 @@ impl ChatTab {
         layout.push(("send", send_rect));
         let picture = images.show_large(ui.ctx(), self.id, &mut layout);
         output.has_focus |= picture.takes_keyboard;
-        self.focus_next |= picture.closed;
+        self.focus_next |= picture.refocus;
         self.images = images;
         self.layout = layout;
         if send && !self.composer.trim().is_empty() {
