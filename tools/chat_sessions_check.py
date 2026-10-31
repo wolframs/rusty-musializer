@@ -5,6 +5,7 @@ Every launch is a new process, so whatever a run sees was read back from the
 store, and "resumed" is what the fake says its CLI was told, never the dock's
 own idea. Chats are kept per project; the second track is the control for that.
 """
+import fcntl
 import json
 import os
 import shutil
@@ -119,7 +120,8 @@ edit(saved[0], draft='')
 
 # Closing the window keeps what happened after the last turn ended.
 fresh()
-run('asked', ['agent=claude', 'agent-say=ask me'])
+# Slowly, so the prompt lands after the save the message itself caused.
+run('asked', ['agent=claude', 'agent-say=ask me slowly'], frames=240)
 chat = json.loads(files()[0].read_text())
 check(any(e['kind'] == 'permission' and e['allowed'] is None for e in chat['entries']),
       'a prompt still open when the window closes is kept', str(chat['entries'])[:500])
@@ -162,6 +164,19 @@ dock = run('refused', ['dock=1'])
 check(has(dock, 'earlier=1 ', 'refused=1'), 'a file it cannot read is counted, not listed', dock)
 check(broken.read_text() == '{', 'and left alone')
 broken.unlink()
+
+# --- Another window has it ---
+lock = os.open(kept.with_suffix('.lock'), os.O_CREAT | os.O_WRONLY, 0o600)
+fcntl.flock(lock, fcntl.LOCK_EX)
+before = kept.read_text()
+dock = run('other-window', ['agent-press=earlier:0'])
+check(has(dock, 'tabs=0', 'open in another window'), 'a chat open in another window stays there and says so', dock)
+dock = run('other-window-forget', ['agent-press=forget:0+forget-yes:0'])
+check(kept.read_text() == before and 'open in another window' in dock, 'and cannot be forgotten from here', dock)
+os.close(lock)
+
+listed = run('listed-then-edited', ['agent-press=earlier:0'])
+check('tabs=1' in listed, 'the lock is free again once the other window lets go', listed)
 
 # --- Forgetting ---
 run('second', ['agent=claude', 'agent-say=forget me'])

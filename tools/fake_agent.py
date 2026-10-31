@@ -11,6 +11,7 @@ echoes the user's words, so the gate can see its own message came back.
 
 A message containing the word `ask` makes the Claude and Codex fakes request
 permission first and report the answer in their reply ("permission: allow").
+With `slowly`, Claude's prompt arrives a second later.
 A message containing `state?` adds what the fake was told about its model,
 effort and access to the reply, as each real CLI would hold it: Claude's from
 its flags and control requests, Codex's from its thread and turn requests,
@@ -24,6 +25,7 @@ when its input closes. The real agents are never started by any check.
 import json
 import os
 import sys
+import time
 
 ARGS = sys.argv[1:]
 
@@ -141,6 +143,8 @@ def claude():
         out({"type": "system", "subtype": "init", "model": resolved(), "session_id": session})
         decision = None
         if "ask" in last:
+            if "slowly" in last:
+                time.sleep(1)
             out({"type": "control_request", "request_id": f"req-{turn}",
                  "request": {"subtype": "can_use_tool", "tool_name": "Bash",
                              "input": {"command": "rm -rf build/fake"}}})

@@ -603,7 +603,12 @@ in the empty Direct view or from the head's `+`.
 - A file this build cannot read is counted under the list and left alone. Forget
   asks first, and removes the chat here only: the CLI keeps its own history.
 - Gate: `tools/chat_sessions_check.sh`. Every launch is a new process, and
-  "resumed" is what the fake says its CLI was told.
+  "resumed" is what the fake says its CLI was told. Eleven source mutants, each
+  failing on GPU and CPU: no resume, wrong working directory, one folder for all
+  projects, no file permissions, a lost session kept, the instructions sent
+  again, a probe run writing, Forget without asking, no save on close, an open
+  chat listed, no lock. The close-and-reopen ordering is pinned by a unit test,
+  as a press cannot beat a write reliably.
 - **Live check, by hand:** a real Claude, Codex and Antigravity chat each told a
   word, quit, reopened in a new process, asked for it, and each answered it.
 
