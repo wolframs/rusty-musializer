@@ -616,7 +616,7 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
   Thumbnails shrink to the column's width at the size asked for first, at most
   360 pt tall, never magnified, 24 textures or 128 MiB. The large view is a
   second decode at the window's size, with the thumbnail until it lands.
-- **The egui backend needed no change.** Texture bytes go up unconverted, the
+- **The egui texture path needed no change.** Texture bytes go up unconverted, the
   blend is premultiplied, and `shrink` premultiplies. The gate pins mid grey
   and half alpha in the capture on both renderers.
 - **The large view** is an `egui::Modal`, so nothing in egui under it takes a
