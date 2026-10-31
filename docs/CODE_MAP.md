@@ -13,7 +13,7 @@ regeneration with unchanged inputs is byte-for-byte stable.
 
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
-| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 76 | 86,665 | 562 |
+| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 76 | 86,666 | 562 |
 | [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `atmosphere_probe` (example), `beat_tracker_dump` (example), `cat_probe` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `fluid_probe` (example), `layout_dump` (example), `listening_defaults` (example), `organic_probe` (example), `pixel_cats_bench` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 143 | 95,320 | 1,298 |
 | [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 33 | 18,676 | 202 |
 | [`raylib-link`](../crates/raylib-link/Cargo.toml) | Builds and links raylib 6.0 from vendored source, for raylib-sys nobuild mode | `raylib_link` (lib), `build-script-build` (custom-build) | 2 | 109 | 0 |
@@ -102,7 +102,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/ui/agent_choices.rs`](../crates/musializer-app/src/ui/agent_choices.rs) | 222 | 3 | What each agent's composer last chose (model, effort, access). |
 | [`src/ui/assist_settings.rs`](../crates/musializer-app/src/ui/assist_settings.rs) | 9,647 | 67 | The **AI settings** dialog: one modal surface for assist routing, local runtimes, Codex, OpenRouter and the privacy/provenance summary. |
 | [`src/ui/column.rs`](../crates/musializer-app/src/ui/column.rs) | 363 | 4 | The right column: one place every secondary view draws (WX-5d). |
-| [`src/ui/dock/chat_view.rs`](../crates/musializer-app/src/ui/dock/chat_view.rs) | 1,527 | 2 | A native chat with Claude Code, Codex or Antigravity in the dock (WX-4). |
+| [`src/ui/dock/chat_view.rs`](../crates/musializer-app/src/ui/dock/chat_view.rs) | 1,528 | 2 | A native chat with Claude Code, Codex or Antigravity in the dock (WX-4). |
 | [`src/ui/dock/column_view.rs`](../crates/musializer-app/src/ui/dock/column_view.rs) | 833 | 0 | The dock as the column's Direct view (WX-5d §3.1, `direct-1920x1080.png`). |
 | [`src/ui/dock/keys.rs`](../crates/musializer-app/src/ui/dock/keys.rs) | 244 | 6 | What a key press sends to a terminal program: the xterm encoding that shells, `less`, `vim` and the agent TUIs (Claude Code, Codex, Antigravity) all expect. |
 | [`src/ui/dock/terminal_view.rs`](../crates/musializer-app/src/ui/dock/terminal_view.rs) | 519 | 0 | Draws a [`Session`]'s grid with egui and turns egui input into the bytes the program expects (WX-2). |
