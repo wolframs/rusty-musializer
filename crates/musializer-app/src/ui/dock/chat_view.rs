@@ -350,7 +350,7 @@ impl ChatTab {
     /// Pumps the agent's output into the transcript; called every frame,
     /// visible or not, so a long turn keeps running while the dock is hidden.
     pub fn tick(&mut self) {
-        self.images.scan(&mut self.transcript);
+        self.save_due |= self.images.scan(&mut self.transcript);
         self.tick_listing();
         self.selection_changed |= self.transcript.take_selection_reverted();
         let busy = self.transcript.busy;
