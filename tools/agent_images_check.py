@@ -14,8 +14,11 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
+import time
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -41,7 +44,7 @@ subprocess.run(['cargo', 'run', '--quiet', '--bin', 'make-fixture-wav', '--', st
 choices = out / 'agents.json'
 # Preferences outlive a run, and a run that leaves Direct would start the next
 # one on another view, with the chat off screen.
-for leftover in ('state', 'state-look'):
+for leftover in ('state', 'state-look', 'state-hung'):
     shutil.rmtree(out / leftover, ignore_errors=True)
 env = dict(os.environ, MZ_BIN=str(Path(os.environ.get('MZ_BIN', 'target/debug/musializer')).resolve()),
            MZ_STATE_DIR=str(out / 'state'), SHELL='/bin/sh', MUSIALIZER_AGENT_CHOICES=str(choices),
@@ -82,13 +85,41 @@ def write_pictures():
         quadrants().save(out / f's{n}.png')
     for n in range(12):
         quadrants((640, 480)).save(out / f'f{n}.png')
+    long_path = out / ('l' * 100) / ('o' * 100) / 'long sheet.png'
+    long_path.parent.mkdir(parents=True, exist_ok=True)
+    quadrants().save(long_path)
+    # `link/../up.png` is other/up.png, whatever spelling suggests.
+    (out / 'other/sub').mkdir(parents=True, exist_ok=True)
+    quadrants().save(out / 'other/up.png')
+    (out / 'link').unlink(missing_ok=True)
+    (out / 'link').symlink_to(out / 'other/sub')
+    # Swapped in under a name a saved chat holds. A blocking open never returns.
+    (out / 'pipe.png').unlink(missing_ok=True)
+    os.mkfifo(out / 'pipe.png')
+
+
+def chunk(tag, body):
+    return struct.pack('>I', len(body)) + tag + body + struct.pack('>I', zlib.crc32(tag + body))
+
+
+def write_bomb():
+    """A real PNG: 268 MP of nothing, a few hundred KB on disk, past the file check."""
+    if (out / 'bomb.png').exists():
+        return
+    side = 16384
+    packer = zlib.compressobj(9)
+    row = bytes(side + 1)
+    body = b''.join(packer.compress(row) for _ in range(side)) + packer.flush()
+    (out / 'bomb.png').write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', side, side, 8, 0, 0, 0, 0))
+                                   + chunk(b'IDAT', body) + chunk(b'IEND', b''))
 
 
 write_pictures()
+write_bomb()
 
 
 def run(name, agent='claude', presses=(), say=None, frames=None, size='1920x1080', extra=(), theme=None,
-        press_at=None, state=None):
+        press_at=None, state=None, path=None):
     spec = [f'agent={agent}', f'size={size}', 'play=0']
     if presses:
         spec.append('agent-press=' + '+'.join(presses))
@@ -104,7 +135,9 @@ def run(name, agent='claude', presses=(), say=None, frames=None, size='1920x1080
     if theme:
         command += ['--ui-theme', theme]
     command += ['--ui-probe', ','.join(spec), '--probe-frames', str(frames), '--probe-shot', str(png)]
-    launch = dict(env, MZ_STATE_DIR=str(out / state)) if state else env
+    launch = dict(env, MZ_STATE_DIR=str(out / state)) if state else dict(env)
+    if path:
+        launch['PATH'] = f'{path}:{launch["PATH"]}'
     done = subprocess.run(command, env=launch, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     (out / f'{name}.log').write_text(done.stdout)
     dock = next((l for l in reversed(done.stdout.splitlines()) if l.startswith('dock:')), '')
@@ -192,6 +225,12 @@ shows_quadrants('reopened', rects(dock, 'image')[0], 'the reopened picture')
 dock, _ = run('absolute', extra=[f'agent-image={out}/sheet.png'], frames=70)
 check(any(i.startswith('sheet.png:shown:') for i in images(dock)), 'an absolute path draws too', dock)
 
+dock, _ = run('long-path', say='longpath', frames=100)
+check(any(i.startswith('long sheet.png:shown:') for i in images(dock)),
+      'a path longer than the tool chip shows, spaces and all', dock)
+dock, _ = run('symlink', extra=['agent-image=link/../up.png'], frames=70)
+check(any(i.startswith('up.png:shown:') for i in images(dock)), 'a .. through a symlink is the filesystem\'s', dock)
+
 # --- What is not a picture ---
 dock, _ = run('unwritten', say='unwritten', frames=90)
 check(entries(dock) == 0 and not rects(dock, 'image') and 'later.png' in dock,
@@ -210,6 +249,43 @@ for theme in ('dark', 'light'):
 dock, _ = run('broken', say='broken', frames=90)
 check(images(dock) == ['not-image.png:undecodable'], 'a text file called .png fails by name', dock)
 check(danger_words('broken', rects(dock, 'image')[0]) > 40, 'its failure is on the frame', dock)
+
+dock, _ = run('fifo', extra=['agent-image=pipe.png'], frames=70)
+check(images(dock) == ['pipe.png:undecodable'], 'a FIFO under the name is refused, and nothing waits on it', dock)
+check(danger_words('fifo', rects(dock, 'image')[0]) > 40, 'that refusal is on the frame', dock)
+dock, _ = run('bomb', extra=['agent-image=bomb.png'], frames=70)
+check((out / 'bomb.png').stat().st_size < 4 * 1024 * 1024 and images(dock) == ['bomb.png:too-large'],
+      'a small file claiming 268 MP is refused from its header', dock)
+check(danger_words('bomb', rects(dock, 'image')[0]) > 40, 'and says so', dock)
+
+# --- FFmpeg that never answers, in a run that ends while it hangs ---
+hung = out / 'hung-bin'
+hung.mkdir(exist_ok=True)
+pid_file = out / 'hung-ffmpeg.pid'
+pid_file.unlink(missing_ok=True)
+(hung / 'ffmpeg').write_text(f'#!/bin/sh\necho $$ > "{pid_file}"\nexec /usr/bin/sleep 300\n')
+(hung / 'ffmpeg').chmod(0o755)
+dock, _ = run('hung-ffmpeg', extra=['agent-image=still.webp'], frames=70, state='state-hung', path=hung)
+check(images(dock) == ['still.webp:decoding'], 'a hung FFmpeg leaves the picture loading and the window running', dock)
+
+
+def alive(pid):
+    try:
+        return ' Z ' not in Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1][:4]
+    except OSError:
+        return False
+
+
+pid = pid_file.read_text().strip() if pid_file.exists() else ''
+check(pid.isdigit(), 'the stand-in FFmpeg did start', str(pid_file))
+if pid.isdigit():
+    for _ in range(100):
+        if not alive(pid):
+            break
+        time.sleep(0.02)
+    check(not alive(pid), 'closing the window kills it, and nothing is left running', pid)
+    if alive(pid):
+        os.kill(int(pid), 9)
 
 # --- Once per file, again when it changes ---
 dock, _ = run('repeat', say='repeat', frames=100)
@@ -305,15 +381,24 @@ for theme in ('dark', 'light'):
 dock, _ = run('viewer-stays', presses=['image', 'viewer'], extra=['agent-image=sheet.png'])
 check(large(dock).startswith('sheet.png:'), 'a press on the picture leaves it open', dock)
 dock, log = run('viewer-under', presses=['image', 'chip-model'], extra=['agent-image=sheet.png'])
-check('row:model' not in dock, 'a press through the picture reaches nothing under it', dock)
+check(large(dock).startswith('sheet.png:') and 'row:model' not in dock,
+      'a press through the picture reaches nothing under it', dock)
 dock, _ = run('viewer-outside', presses=['image', 'viewer-outside'], extra=['agent-image=sheet.png'])
 check(large(dock) == 'closed', 'a press outside closes it', dock)
-check('viewer@' not in dock, 'closed, it is off the report too', dock)
+check(dock and 'viewer@' not in dock, 'closed, it is off the report too', dock)
 check('keyboard=true' in dock, 'the composer has the keyboard back', dock)
 dock, _ = run('viewer-idle', presses=['image-caption', 'image', 'viewer-outside'], extra=['agent-image=sheet.png'])
 check(large(dock) == 'closed' and 'keyboard=false' in dock,
       'a composer nobody was typing in does not take the keyboard on close', dock)
 line = lambda log, name: next((l for l in log.splitlines() if l.startswith(name)), '')
+
+
+def claimed(log):
+    """What a press claimed, from the report; `None` when there is no report to say."""
+    found = re.search(r'claimed=(nothing|0x[0-9a-f]+)$', line(log, 'click probe:'))
+    return found.group(1) if found else None
+
+
 dock, log = run('viewer-escape', presses=['image', 'key:escape'], extra=['agent-image=sheet.png'])
 check(large(dock) == 'closed', 'Escape closes it, through the keyboard the dock holds', dock)
 check('gesture=none' in line(log, 'timeline:'), 'nothing kept a pointer claim', line(log, 'timeline:'))
@@ -325,23 +410,25 @@ dock, log = run('transport', extra=['agent-image=sheet.png'], frames=70)
 x, y, w, h = map(int, re.search(r'play=(\d+),(\d+),(\d+),(\d+)', line(log, 'transport:')).groups())
 press = [f'click={x + w // 2}x{y + h // 2}', 'click-after=62']
 dock, log = run('play-bare', extra=['agent-image=sheet.png', *press], frames=90)
-check('claimed=nothing' not in line(log, 'click probe:') and 'claimed=' in line(log, 'click probe:'),
-      'with the picture closed, play takes a press', line(log, 'click probe:'))
+play_claim = claimed(log)
+check(bool(re.fullmatch('0x[0-9a-f]+', play_claim or '')), 'with the picture closed, play takes a press',
+      line(log, 'click probe:') or log[-300:])
 dock, log = run('play-covered', presses=['image'], extra=['agent-image=sheet.png', *press], frames=90)
-check(large(dock).startswith('sheet.png:') and 'claimed=nothing' in line(log, 'click probe:'),
+check(large(dock).startswith('sheet.png:') and claimed(log) == 'nothing',
       'with it open, play under it does not', line(log, 'click probe:'))
 check('gesture=none' in line(log, 'timeline:'), 'and nothing is left holding the pointer', line(log, 'timeline:'))
 x, y, w, h = map(int, re.search(r' split=(\d+),(\d+),(\d+),(\d+)', line(log, 'lane head:')).groups())
 split = [f'click={x + w // 2}x{y + h // 2}', 'click-after=62']
 dock, log = run('split-bare', extra=['agent-image=sheet.png', *split], frames=90)
-check('claimed=nothing' not in line(log, 'click probe:'), 'with it closed, the band takes a press',
-      line(log, 'click probe:'))
+split_claim = claimed(log)
+check(bool(re.fullmatch('0x[0-9a-f]+', split_claim or '')) and split_claim != play_claim,
+      'with it closed, the band takes a press of its own', line(log, 'click probe:') or log[-300:])
 dock, log = run('split-covered', presses=['image'], extra=['agent-image=sheet.png', *split], frames=90)
-check('claimed=nothing' in line(log, 'click probe:') and 'gesture=none' in line(log, 'timeline:'),
+check(claimed(log) == 'nothing' and 'gesture=none' in line(log, 'timeline:'),
       'with it open, nor does the band', line(log, 'click probe:') + line(log, 'timeline:'))
 dock, log = run('column-left', presses=['image'], press_at=30, state='state-look',
                 extra=['agent-image=sheet.png', 'column-switch=look', *press], frames=90)
-check(large(dock) == 'closed' and 'claimed=nothing' not in line(log, 'click probe:'),
+check(large(dock) == 'closed' and claimed(log) == play_claim,
       'when Direct leaves the column the picture goes with it, and the window has its pointer back',
       dock + line(log, 'click probe:'))
 

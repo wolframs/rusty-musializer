@@ -3,43 +3,64 @@
 //! **Finding.** `ChatImages::scan` runs once a frame from `ChatTab::tick`,
 //! visible or not. An entry is read once, when `Transcript::entry_settled` says
 //! its words are final, so streamed text cannot give half a path and no text
-//! is read twice. `core::agent::image_paths` says what it spells; this file
-//! looks at the disk. Each picture is appended as one `Entry::Image`, and a
-//! later mention only shows again when the file's mtime moved.
+//! is read twice. `core::agent::image_paths` says what it spells, and a thread
+//! of the chat's own looks at the disk: **nothing here waits on a filesystem on
+//! the UI thread**, because a dead network mount would freeze the window for a
+//! chat nobody is looking at. That thread answers in the order it was asked,
+//! holds what has shown, and each answer appends one `Entry::Image` per picture.
+//! A later mention only shows again when the file's mtime moved.
 //!
 //! **Drawing needs the entry and the working directory, nothing else**, which
 //! is what lets a saved chat reopen. A transcript put into a chat after its
 //! first tick needs `resume`, or its old text reads as new mentions.
 //!
-//! Decoding happens on a thread of its own, one per chat, started by the first
-//! picture. Each picture is shrunk to the size it is drawn at, and only the
-//! ones on screen are decoded, so a long chat holds `MOST_THUMBS` textures
-//! however many pictures it mentions. The large view takes a second decode,
-//! at the window's size, and shows the thumbnail until that arrives.
+//! **Decoding** happens on a second thread, one per chat, started by the first
+//! picture, so a slow disk under one file cannot hold up the search for the
+//! next. Each picture is shrunk to the size it is drawn at, and only the ones
+//! on screen are decoded, so a long chat holds `MOST_THUMBS` textures however
+//! many pictures it mentions. The large view takes a second decode, at the
+//! window's size, and shows the thumbnail until that arrives. Every job carries
+//! a generation, and only the current one is accepted. Pixels waiting for the
+//! UI thread are bounded in count and bytes; the worker waits for room, and a
+//! chat that is not on screen throws them away, since it has no frame to
+//! upload them in. Reading and budgets are `runtime::decode::with_picture`'s.
 
-use std::collections::HashMap;
-use std::path::{Component, Path, PathBuf};
+use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::SystemTime;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, SystemTime};
 
 use egui::emath::GuiRounding;
 use egui::{Color32, ColorImage, RichText, Stroke, StrokeKind, TextureHandle, TextureOptions};
 use musializer_core::agent::{image_paths, Entry, Transcript};
-use musializer_runtime::decode::picture_rgba8;
+use musializer_runtime::decode::{with_picture, PictureError, PICTURE_LARGEST_FILE};
 
 use super::{Body, Dock};
 use crate::ui::theme::color32;
 
-/// Past this a file is not a still or a contact sheet.
-const LARGEST_FILE: u64 = 64 * 1024 * 1024;
 /// A tool listing a folder of stills must not fill the chat. A picture past
 /// this stays unseen, so naming it again shows it.
 const MOST_FROM_ONE_ENTRY: usize = 6;
-/// Bounds the disk checks one entry can cost the UI thread.
+/// Bounds the disk checks one entry can cost.
 const MOST_CANDIDATES: usize = 64;
 const MOST_THUMBS: usize = 24;
 /// The same bound in bytes: a thumbnail at 4× scale is sixteen times one at 1×.
 const MOST_THUMB_BYTES: usize = 128 * 1024 * 1024;
+/// Jobs waiting for the decoder. Past this a picture stays `Loading…` and asks
+/// again next frame, if it is still on screen.
+const MOST_JOBS: usize = 16;
+/// Finished pictures waiting for the UI thread, by count and by bytes. The
+/// worker starts nothing while either is full, so one result can overrun the
+/// bytes, and no more than one.
+const MOST_RESULTS: usize = 4;
+const MOST_RESULT_BYTES: usize = 64 * 1024 * 1024;
+/// A queued picture nothing has drawn for this many frames has scrolled away.
+const STALE_FRAMES: u64 = 30;
+/// What closing a chat waits for its worker, which has a running FFmpeg to
+/// kill. A worker stuck in a dead mount is left behind, not waited for.
+const WORKER_EXIT: Duration = Duration::from_millis(300);
 /// A portrait still at the column's width would be taller than the column.
 const TALLEST_THUMB: f32 = 360.0;
 /// What a picture of unknown shape holds: most stills are 16:9.
@@ -79,6 +100,10 @@ impl Failure {
 struct Job {
     path: PathBuf,
     large: bool,
+    /// Which request this is; only the newest for a picture counts.
+    generation: u64,
+    /// Up when nobody wants the answer any more.
+    cancel: Arc<AtomicBool>,
     /// The most pixels it will be drawn at.
     bounds: [usize; 2],
 }
@@ -91,24 +116,259 @@ struct Decoded {
 struct Done {
     path: PathBuf,
     large: bool,
+    generation: u64,
     result: Result<Decoded, Failure>,
 }
 
-fn decode(job: &Job) -> Result<Decoded, Failure> {
-    let metadata = std::fs::metadata(&job.path).map_err(|_| Failure::Missing)?;
-    if !metadata.is_file() {
-        return Err(Failure::Missing);
+impl Done {
+    fn bytes(&self) -> usize {
+        self.result
+            .as_ref()
+            .map_or(0, |decoded| decoded.image.pixels.len() * 4)
     }
-    if metadata.len() > LARGEST_FILE {
-        return Err(Failure::TooLarge);
-    }
-    let decoded = picture_rgba8(&job.path).map_err(|_| Failure::Undecodable)?;
-    let natural = [decoded.width, decoded.height];
-    let size = shrunk(natural, job.bounds);
-    Ok(Decoded {
-        image: shrink(&decoded.pixels, natural, size),
+}
+
+/// `None` when cancelled: nobody is waiting for that answer.
+fn decode(job: &Job) -> Option<Result<Decoded, Failure>> {
+    let bounds = job.bounds;
+    let decoded = with_picture(&job.path, &job.cancel, |pixels, natural| Decoded {
+        image: shrink(pixels, natural, shrunk(natural, bounds)),
         natural,
-    })
+    });
+    match decoded {
+        Ok(decoded) => Some(Ok(decoded)),
+        Err(PictureError::Missing) => Some(Err(Failure::Missing)),
+        Err(PictureError::TooLarge) => Some(Err(Failure::TooLarge)),
+        Err(PictureError::Undecodable) => Some(Err(Failure::Undecodable)),
+        Err(PictureError::Cancelled) => None,
+    }
+}
+
+#[derive(Default)]
+struct Queue {
+    jobs: VecDeque<Job>,
+    results: VecDeque<Done>,
+    result_bytes: usize,
+    /// What the worker is on, so closing can stop it.
+    running: Option<Arc<AtomicBool>>,
+    closed: bool,
+    /// The worker has returned.
+    finished: bool,
+}
+
+#[derive(Default)]
+struct Shared {
+    queue: Mutex<Queue>,
+    changed: Condvar,
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, Queue> {
+        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+fn decode_jobs(shared: &Shared) {
+    loop {
+        let job = {
+            let mut queue = shared.lock();
+            loop {
+                if queue.closed {
+                    queue.finished = true;
+                    shared.changed.notify_all();
+                    return;
+                }
+                let room =
+                    queue.results.len() < MOST_RESULTS && queue.result_bytes < MOST_RESULT_BYTES;
+                // Newest first: that is what the user is looking at.
+                let next = if room { queue.jobs.pop_back() } else { None };
+                if let Some(job) = next {
+                    queue.running = Some(job.cancel.clone());
+                    break job;
+                }
+                queue = shared
+                    .changed
+                    .wait(queue)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        };
+        let result = decode(&job);
+        let mut queue = shared.lock();
+        queue.running = None;
+        if let Some(result) = result.filter(|_| !job.cancel.load(Ordering::Relaxed)) {
+            let done = Done {
+                path: job.path,
+                large: job.large,
+                generation: job.generation,
+                result,
+            };
+            queue.result_bytes += done.bytes();
+            queue.results.push_back(done);
+        }
+    }
+}
+
+/// The chat's end of the decoding thread.
+struct Decoder {
+    shared: Arc<Shared>,
+}
+
+impl Decoder {
+    fn start() -> Option<Self> {
+        let shared = Arc::new(Shared::default());
+        let worker = shared.clone();
+        std::thread::Builder::new()
+            .name("chat-images".to_owned())
+            .spawn(move || decode_jobs(&worker))
+            .ok()?;
+        Some(Self { shared })
+    }
+
+    /// Queues `job`. A large view always fits: there is one, and it replaced
+    /// the last. Hands the job back when the queue is full.
+    fn submit(&self, job: Job) -> Result<(), Job> {
+        let mut queue = self.shared.lock();
+        if !job.large && queue.jobs.len() >= MOST_JOBS {
+            return Err(job);
+        }
+        queue.jobs.push_back(job);
+        self.shared.changed.notify_all();
+        Ok(())
+    }
+
+    fn withdraw(&self, generation: u64) {
+        self.shared
+            .lock()
+            .jobs
+            .retain(|job| job.generation != generation);
+    }
+
+    /// Everything queued goes, and what is running stops.
+    fn stop_all(&self) {
+        let mut queue = self.shared.lock();
+        for job in queue.jobs.drain(..) {
+            job.cancel.store(true, Ordering::Relaxed);
+        }
+        if let Some(running) = &queue.running {
+            running.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// The finished pictures, which makes room for more.
+    fn take_results(&self) -> VecDeque<Done> {
+        let mut queue = self.shared.lock();
+        queue.result_bytes = 0;
+        let results = std::mem::take(&mut queue.results);
+        self.shared.changed.notify_all();
+        results
+    }
+}
+
+impl Drop for Decoder {
+    /// Waits, a little, so a running FFmpeg is dead before the application is.
+    fn drop(&mut self) {
+        self.stop_all();
+        let mut queue = self.shared.lock();
+        queue.closed = true;
+        self.shared.changed.notify_all();
+        let (queue, _) = self
+            .shared
+            .changed
+            .wait_timeout_while(queue, WORKER_EXIT, |queue| !queue.finished)
+            .unwrap_or_else(PoisonError::into_inner);
+        drop(queue);
+    }
+}
+
+/// What the disk thread is asked, in order.
+enum Ask {
+    /// What a reopened chat already shows, so it does not show it twice.
+    Seed {
+        directory: Option<PathBuf>,
+        paths: Vec<String>,
+    },
+    /// What one settled entry named.
+    Look {
+        directory: Option<PathBuf>,
+        candidates: Vec<String>,
+    },
+    /// Stands in for a dead mount in a test.
+    #[cfg(test)]
+    Wedge(Receiver<()>),
+}
+
+/// The pictures to append for one `Look`, and how many there were to show.
+struct Answer {
+    paths: Vec<PathBuf>,
+    total: usize,
+}
+
+/// A rewritten picture has to be read again, where it first showed too: an
+/// entry is a path, not a moment. Hence the caller forgets its texture.
+fn look(
+    seen: &mut HashMap<PathBuf, SystemTime>,
+    directory: Option<&Path>,
+    candidates: &[String],
+) -> Answer {
+    let mut found: Vec<(PathBuf, PathBuf, SystemTime)> = Vec::new();
+    for candidate in candidates.iter().take(MOST_CANDIDATES) {
+        let path = resolve(directory, candidate);
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > PICTURE_LARGEST_FILE {
+            continue;
+        }
+        let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if seen.get(&real) != Some(&modified) && found.iter().all(|(_, r, _)| *r != real) {
+            found.push((path, real, modified));
+        }
+    }
+    let total = found.len();
+    let paths = found
+        .into_iter()
+        .take(MOST_FROM_ONE_ENTRY)
+        .map(|(path, real, modified)| {
+            seen.insert(real, modified);
+            path
+        })
+        .collect();
+    Answer { paths, total }
+}
+
+/// Holds what has shown, by real path and mtime. Ends with the chat's sender,
+/// and a thread stuck in a dead mount ends when the mount answers.
+fn answer_lookups(asks: Receiver<Ask>, answers: Sender<Answer>) {
+    let mut seen = HashMap::new();
+    for ask in asks {
+        match ask {
+            Ask::Seed { directory, paths } => {
+                for path in paths {
+                    let path = resolve(directory.as_deref(), &path);
+                    if let Ok(modified) = std::fs::metadata(&path).and_then(|m| m.modified()) {
+                        let real = std::fs::canonicalize(&path).unwrap_or(path);
+                        seen.insert(real, modified);
+                    }
+                }
+            }
+            Ask::Look {
+                directory,
+                candidates,
+            } => {
+                let answer = look(&mut seen, directory.as_deref(), &candidates);
+                if answers.send(answer).is_err() {
+                    return;
+                }
+            }
+            #[cfg(test)]
+            Ask::Wedge(release) => {
+                let _ = release.recv();
+            }
+        }
+    }
 }
 
 /// The size that fits `bounds` and keeps the shape, never larger than `natural`.
@@ -161,8 +421,8 @@ fn shrink(pixels: &[u8], from: [usize; 2], to: [usize; 2]) -> ColorImage {
 }
 
 /// `path` as a file: `~/` is the home folder, and anything else not absolute
-/// is under the chat's working directory. Lexical, so a path through a
-/// symlink keeps the name it was given.
+/// is under the chat's working directory. A `..` stays: through a symlink only
+/// the filesystem knows what it means. Touches no disk, so `show` can call it.
 fn resolve(directory: Option<&Path>, path: &str) -> PathBuf {
     let home = path
         .strip_prefix("~/")
@@ -177,17 +437,7 @@ fn resolve(directory: Option<&Path>, path: &str) -> PathBuf {
             .unwrap_or_default()
             .join(path)
     };
-    let mut clean = PathBuf::new();
-    for part in whole.components() {
-        match part {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                clean.pop();
-            }
-            other => clean.push(other),
-        }
-    }
-    clean
+    whole.components().collect()
 }
 
 fn file_name(path: &Path) -> String {
@@ -198,7 +448,12 @@ fn file_name(path: &Path) -> String {
 }
 
 enum Thumb {
-    Decoding,
+    Decoding {
+        generation: u64,
+        cancel: Arc<AtomicBool>,
+        /// The last frame it was on screen.
+        wanted: u64,
+    },
     Ready {
         texture: TextureHandle,
         natural: [usize; 2],
@@ -214,6 +469,9 @@ struct Large {
     natural: [usize; 2],
     thumbnail: TextureHandle,
     full: Option<TextureHandle>,
+    generation: u64,
+    cancel: Arc<AtomicBool>,
+    bounds: [usize; 2],
     /// The full-size decode failed; the thumbnail stays and says so.
     failed: Option<Failure>,
     /// `true` until its first frame: the composer keeps egui's focus until then.
@@ -243,11 +501,14 @@ pub struct ChatImages {
     first_unread: usize,
     /// The first tick has run: whatever was already there is not news.
     started: bool,
-    /// What each file's mtime was when it last showed, by its real path.
-    seen: HashMap<PathBuf, SystemTime>,
+    /// The disk thread's two ends, once something has been asked.
+    asks: Option<Sender<Ask>>,
+    answers: Option<Receiver<Answer>>,
+    /// Looks sent and not yet answered.
+    unanswered: usize,
 
-    jobs: Option<Sender<Job>>,
-    results: Option<Receiver<Done>>,
+    decoder: Option<Decoder>,
+    next_generation: u64,
     thumbs: HashMap<PathBuf, Thumb>,
     /// Pictures' natural sizes, outliving their textures, so one that was
     /// evicted comes back into exactly the room it left.
@@ -259,6 +520,10 @@ pub struct ChatImages {
     composer_focused: bool,
     /// `--ui-probe agent-image-hold=`: finished decodes wait here.
     held: bool,
+    /// Ticks so far, and the last one a frame drew this chat. A chat ticks
+    /// whether or not it is on screen.
+    ticks: u64,
+    shown_at: u64,
     /// What the frame drew, for `dock:`.
     drawn: Vec<String>,
 }
@@ -270,32 +535,64 @@ impl ChatImages {
         self.directory = directory.map(|dir| std::path::absolute(&dir).unwrap_or(dir));
     }
 
+    fn ask(&mut self, ask: Ask) {
+        if self.asks.is_none() {
+            let (asks, incoming) = mpsc::channel();
+            let (answering, answers) = mpsc::channel();
+            let worker = std::thread::Builder::new()
+                .name("chat-image-lookups".to_owned())
+                .spawn(move || answer_lookups(incoming, answering));
+            if worker.is_err() {
+                return;
+            }
+            self.asks = Some(asks);
+            self.answers = Some(answers);
+        }
+        // Words, not pixels, and no more of them than the transcript holds,
+        // so a stuck disk cannot grow this past the chat itself.
+        if let Some(asks) = &self.asks {
+            let _ = asks.send(ask);
+        }
+    }
+
     /// Takes everything in `entries` as already read, and what is already
-    /// shown as seen. The first tick does this by itself.
+    /// shown as seen. The first tick does this by itself. The thread takes
+    /// asks in order, so any later mention finds this done.
     pub fn resume(&mut self, entries: &[Entry]) {
         self.started = true;
         self.read = vec![true; entries.len()];
         self.first_unread = entries.len();
-        for entry in entries {
-            if let Entry::Image { path } = entry {
-                let path = resolve(self.directory.as_deref(), path);
-                if let Ok(modified) = std::fs::metadata(&path).and_then(|m| m.modified()) {
-                    let real = std::fs::canonicalize(&path).unwrap_or(path);
-                    self.seen.insert(real, modified);
-                }
-            }
+        let paths: Vec<String> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Image { path } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        if !paths.is_empty() {
+            self.ask(Ask::Seed {
+                directory: self.directory.clone(),
+                paths,
+            });
         }
     }
 
-    /// Reads the entries that have settled since the last frame.
-    pub fn scan(&mut self, transcript: &mut Transcript) {
+    /// Reads the entries that have settled since the last frame, appends
+    /// what the disk thread has answered, and keeps a hidden chat's decoding
+    /// from piling up. Returns whether the transcript grew.
+    pub fn scan(&mut self, transcript: &mut Transcript) -> bool {
+        self.ticks += 1;
+        if self.ticks > self.shown_at + 1 {
+            self.stand_down();
+        }
         if !self.started {
             self.resume(&transcript.entries);
-            return;
+            return false;
         }
+        let grew = self.take_answers(transcript);
         let end = transcript.entries.len();
         if self.first_unread == end {
-            return;
+            return grew;
         }
         self.read.resize(end, false);
         for index in self.first_unread..end {
@@ -303,112 +600,217 @@ impl ChatImages {
                 continue;
             }
             self.read[index] = true;
-            let found = match &transcript.entries[index] {
-                Entry::Assistant { text } => self.fresh(&[text.as_str()]),
+            let candidates = match &transcript.entries[index] {
+                Entry::Assistant { text } => image_paths(text),
                 Entry::Tool { detail, output, .. } => {
-                    self.fresh(&[detail.as_str(), output.as_str()])
+                    let mut candidates = image_paths(detail);
+                    candidates.extend(image_paths(output));
+                    let mut named = transcript.take_tool_image_paths(index);
+                    named.append(&mut candidates);
+                    named
                 }
                 _ => Vec::new(),
             };
-            let total = found.len();
-            for (path, real, modified) in found.into_iter().take(MOST_FROM_ONE_ENTRY) {
-                // A rewritten picture has to be read again, where it first
-                // showed too: an entry is a path, not a moment.
-                self.seen.insert(real, modified);
-                self.thumbs.remove(&path);
-                self.sizes.remove(&path);
-                transcript.entries.push(Entry::Image {
-                    path: path.display().to_string(),
-                });
-            }
-            if total > MOST_FROM_ONE_ENTRY {
-                transcript.entries.push(Entry::Notice {
-                    text: format!("Showing {MOST_FROM_ONE_ENTRY} of {total} pictures named here"),
-                    error: false,
+            if !candidates.is_empty() {
+                self.unanswered += 1;
+                self.ask(Ask::Look {
+                    directory: self.directory.clone(),
+                    candidates,
                 });
             }
         }
         while self.read.get(self.first_unread) == Some(&true) {
             self.first_unread += 1;
         }
-        // What this appended is read on the next tick, and is not text.
+        grew
     }
 
-    /// The files `texts` name that are not showing already: path, real path,
-    /// mtime. An agent says "I will write x.png" as readily as "I wrote it",
-    /// so a name with no file behind it is no picture yet.
-    fn fresh(&self, texts: &[&str]) -> Vec<(PathBuf, PathBuf, SystemTime)> {
-        let mut found: Vec<(PathBuf, PathBuf, SystemTime)> = Vec::new();
-        let candidates = texts.iter().flat_map(|text| image_paths(text));
-        for candidate in candidates.take(MOST_CANDIDATES) {
-            let path = resolve(self.directory.as_deref(), &candidate);
-            let Ok(metadata) = std::fs::metadata(&path) else {
-                continue;
-            };
-            let Ok(modified) = metadata.modified() else {
-                continue;
-            };
-            if !metadata.is_file() || metadata.len() == 0 || metadata.len() > LARGEST_FILE {
-                continue;
-            }
-            let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-            if self.seen.get(&real) != Some(&modified) && found.iter().all(|(_, r, _)| *r != real) {
-                found.push((path, real, modified));
-            }
-        }
-        found
-    }
-
-    fn request(&mut self, job: Job) -> bool {
-        if self.jobs.is_none() {
-            let (jobs, incoming) = mpsc::channel::<Job>();
-            let (finished, results) = mpsc::channel();
-            let worker = std::thread::Builder::new()
-                .name("chat-images".to_owned())
-                .spawn(move || {
-                    // Ends when the chat drops its sender.
-                    for job in incoming {
-                        let result = decode(&job);
-                        let done = Done {
-                            path: job.path,
-                            large: job.large,
-                            result,
-                        };
-                        if finished.send(done).is_err() {
-                            break;
-                        }
-                    }
+    fn take_answers(&mut self, transcript: &mut Transcript) -> bool {
+        let mut grew = false;
+        let Some(answers) = self.answers.take() else {
+            return false;
+        };
+        while let Ok(answer) = answers.try_recv() {
+            self.unanswered = self.unanswered.saturating_sub(1);
+            let shown = answer.paths.len();
+            for path in answer.paths {
+                self.forget(&path);
+                transcript.entries.push(Entry::Image {
+                    path: path.display().to_string(),
                 });
-            if worker.is_err() {
-                return false;
+                grew = true;
             }
-            self.jobs = Some(jobs);
-            self.results = Some(results);
+            if answer.total > shown {
+                transcript.entries.push(Entry::Notice {
+                    text: format!("Showing {shown} of {} pictures named here", answer.total),
+                    error: false,
+                });
+            }
         }
-        self.jobs
-            .as_ref()
-            .is_some_and(|jobs| jobs.send(job).is_ok())
+        self.answers = Some(answers);
+        grew
+    }
+
+    /// Drops what is known of a picture, because its file changed: a decode
+    /// still running is stale, and an open large view reads the new one.
+    fn forget(&mut self, path: &Path) {
+        if let Some(Thumb::Decoding {
+            generation, cancel, ..
+        }) = self.thumbs.get(path)
+        {
+            cancel.store(true, Ordering::Relaxed);
+            if let Some(decoder) = &self.decoder {
+                decoder.withdraw(*generation);
+            }
+        }
+        self.thumbs.remove(path);
+        self.sizes.remove(path);
+        let bounds = match self.large.as_ref().filter(|open| open.path == path) {
+            Some(open) => open.bounds,
+            None => return,
+        };
+        self.request_large(path.to_path_buf(), bounds);
+    }
+
+    /// This chat is not on screen, so it has no frame to upload pixels in and
+    /// nothing to decode for. Whatever comes back into view asks again.
+    fn stand_down(&mut self) {
+        let Some(decoder) = &self.decoder else {
+            return;
+        };
+        decoder.take_results();
+        if self
+            .thumbs
+            .values()
+            .any(|thumb| matches!(thumb, Thumb::Decoding { .. }))
+        {
+            decoder.stop_all();
+            self.thumbs
+                .retain(|_, thumb| !matches!(thumb, Thumb::Decoding { .. }));
+        }
+    }
+
+    fn generation(&mut self) -> (u64, Arc<AtomicBool>) {
+        self.next_generation += 1;
+        (self.next_generation, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// `None` when there is no worker to give it to.
+    fn decoder(&mut self) -> Option<&Decoder> {
+        if self.decoder.is_none() {
+            self.decoder = Decoder::start();
+        }
+        self.decoder.as_ref()
+    }
+
+    /// Asks for a thumbnail. A full queue leaves it unasked, for the next
+    /// frame; no worker at all is a failure to say out loud.
+    fn request_thumb(&mut self, path: PathBuf, bounds: [usize; 2]) {
+        let (generation, cancel) = self.generation();
+        let job = Job {
+            path: path.clone(),
+            large: false,
+            generation,
+            cancel: cancel.clone(),
+            bounds,
+        };
+        let Some(decoder) = self.decoder() else {
+            self.thumbs
+                .insert(path, Thumb::Failed(Failure::Undecodable));
+            return;
+        };
+        if decoder.submit(job).is_ok() {
+            let wanted = self.frame;
+            self.thumbs.insert(
+                path,
+                Thumb::Decoding {
+                    generation,
+                    cancel,
+                    wanted,
+                },
+            );
+        }
+    }
+
+    /// Starts the large view's decode, in place of any before it.
+    fn request_large(&mut self, path: PathBuf, bounds: [usize; 2]) {
+        let (generation, cancel) = self.generation();
+        let job = Job {
+            path,
+            large: true,
+            generation,
+            cancel: cancel.clone(),
+            bounds,
+        };
+        self.stop_large_decode();
+        let sent = self.decoder().is_some_and(|d| d.submit(job).is_ok());
+        if let Some(open) = self.large.as_mut() {
+            open.generation = generation;
+            open.cancel = cancel;
+            open.failed = (!sent).then_some(Failure::Undecodable);
+        }
+    }
+
+    fn stop_large_decode(&self) {
+        if let Some(open) = &self.large {
+            open.cancel.store(true, Ordering::Relaxed);
+            if let Some(decoder) = &self.decoder {
+                decoder.withdraw(open.generation);
+            }
+        }
     }
 
     pub fn begin_frame(&mut self, ctx: &egui::Context, composer_focused: bool) {
         self.frame += 1;
+        self.shown_at = self.ticks;
         self.composer_focused = composer_focused;
         self.drawn.clear();
         self.evict();
+        self.drop_scrolled_away();
         if self.held {
             return;
         }
-        let Some(results) = self.results.take() else {
-            return;
-        };
-        while let Ok(done) = results.try_recv() {
+        let results = self
+            .decoder
+            .as_ref()
+            .map(Decoder::take_results)
+            .unwrap_or_default();
+        for done in results {
             self.finish(ctx, done);
         }
-        self.results = Some(results);
+    }
+
+    /// A decode still waiting for a picture that has left the screen is work
+    /// for nothing, and holds a queue place something on screen could use.
+    fn drop_scrolled_away(&mut self) {
+        let frame = self.frame;
+        let decoder = self.decoder.as_ref();
+        self.thumbs.retain(|_, thumb| {
+            let Thumb::Decoding {
+                generation,
+                cancel,
+                wanted,
+            } = thumb
+            else {
+                return true;
+            };
+            if *wanted + STALE_FRAMES >= frame {
+                return true;
+            }
+            cancel.store(true, Ordering::Relaxed);
+            if let Some(decoder) = decoder {
+                decoder.withdraw(*generation);
+            }
+            false
+        });
     }
 
     /// Drops the thumbnails drawn longest ago, past the bounds. One drawn on
-    /// the last frame stays whatever the count: it is on screen.
+    /// the last frame stays whatever the count, which is safe: a texture holds
+    /// one texel per pixel it is drawn at, so what is on screen at once cannot
+    /// hold much more than a column of window height, plus the two cut by its
+    /// edges, or twice that for thumbnails decoded before the column narrowed.
+    /// Evicting one of those would only bring it straight back.
     fn evict(&mut self) {
         let mut ready: Vec<(u64, usize, PathBuf)> = self
             .thumbs
@@ -442,11 +844,16 @@ impl ChatImages {
         let Done {
             path,
             large,
+            generation,
             result,
         } = done;
         let name = format!("chat-image:{}", path.display());
         if large {
-            if let Some(open) = self.large.as_mut().filter(|open| open.path == path) {
+            if let Some(open) = self
+                .large
+                .as_mut()
+                .filter(|open| open.path == path && open.generation == generation)
+            {
                 match result {
                     Ok(decoded) => {
                         open.natural = decoded.natural;
@@ -458,8 +865,12 @@ impl ChatImages {
             }
             return;
         }
-        // Forgotten since it was asked for: the file changed, a newer job runs.
-        if !matches!(self.thumbs.get(&path), Some(Thumb::Decoding)) {
+        // Forgotten or asked again since: the file changed, a newer job runs.
+        let current = matches!(
+            self.thumbs.get(&path),
+            Some(Thumb::Decoding { generation: asked, .. }) if *asked == generation
+        );
+        if !current {
             return;
         }
         let thumb = match result {
@@ -572,24 +983,18 @@ impl ChatImages {
                     egui::FontId::proportional(12.0),
                     weak,
                 );
-                if visible && !self.thumbs.contains_key(&resolved) {
-                    let bounds = [
-                        (width.max(1.0) * scale).ceil() as usize,
-                        (TALLEST_THUMB * scale).ceil() as usize,
-                    ];
-                    let sent = self.request(Job {
-                        path: resolved.clone(),
-                        large: false,
-                        bounds,
-                    });
-                    self.thumbs.insert(
-                        resolved.clone(),
-                        if sent {
-                            Thumb::Decoding
-                        } else {
-                            Thumb::Failed(Failure::Undecodable)
-                        },
-                    );
+                if visible {
+                    match self.thumbs.get_mut(&resolved) {
+                        Some(Thumb::Decoding { wanted, .. }) => *wanted = self.frame,
+                        Some(_) => {}
+                        None => {
+                            let bounds = [
+                                (width.max(1.0) * scale).ceil() as usize,
+                                (TALLEST_THUMB * scale).ceil() as usize,
+                            ];
+                            self.request_thumb(resolved.clone(), bounds);
+                        }
+                    }
                 }
                 self.drawn.push(format!(
                     "{name}:{}",
@@ -624,21 +1029,21 @@ impl ChatImages {
         natural: [usize; 2],
     ) {
         let window = ctx.content_rect().size() * ctx.pixels_per_point();
-        let sent = self.request(Job {
-            path: path.clone(),
-            large: true,
-            bounds: [window.x.ceil() as usize, window.y.ceil() as usize],
-        });
+        let bounds = [window.x.ceil() as usize, window.y.ceil() as usize];
         self.large = Some(Large {
-            path,
+            path: path.clone(),
             name,
             natural,
             thumbnail,
             full: None,
-            failed: (!sent).then_some(Failure::Undecodable),
+            generation: 0,
+            cancel: Arc::new(AtomicBool::new(false)),
+            bounds,
+            failed: None,
             opening: true,
             return_focus: self.composer_focused,
         });
+        self.request_large(path, bounds);
     }
 
     /// Whether the picture is open over the window.
@@ -648,6 +1053,7 @@ impl ChatImages {
     }
 
     pub fn close_large(&mut self) {
+        self.stop_large_decode();
         self.large = None;
     }
 
@@ -727,7 +1133,7 @@ impl ChatImages {
         let closed = modal.should_close();
         let refocus = closed && open.return_focus;
         if closed {
-            self.large = None;
+            self.close_large();
         }
         LargeFrame {
             takes_keyboard: true,
@@ -913,6 +1319,269 @@ mod tests {
         images.scan(transcript);
     }
 
+    /// Ticks until the disk thread has answered everything asked.
+    fn settle(images: &mut ChatImages, transcript: &mut Transcript) {
+        for _ in 0..5000 {
+            images.scan(transcript);
+            if images.unanswered == 0 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the disk thread never answered");
+    }
+
+    #[test]
+    fn a_stuck_disk_holds_up_no_tick() {
+        let scratch = Scratch::new("wedged");
+        scratch.write("a.png");
+        let mut images = scratch.images();
+        let mut t = transcript();
+        started(&mut images, &mut t);
+        let (release, wedged) = mpsc::channel();
+        images.ask(Ask::Wedge(wedged));
+        say(&mut t, "here is a.png");
+        for _ in 0..50 {
+            images.scan(&mut t);
+        }
+        assert!(shown(&t).is_empty(), "the answer has not come");
+        assert_eq!(images.unanswered, 1);
+        release.send(()).unwrap();
+        settle(&mut images, &mut t);
+        assert_eq!(shown(&t), ["a.png"]);
+    }
+
+    #[test]
+    fn a_mention_on_the_heels_of_a_reopen_finds_it_seeded() {
+        let scratch = Scratch::new("heels");
+        let path = scratch.write("a.png");
+        let mut t = transcript();
+        t.entries.push(Entry::Image {
+            path: path.display().to_string(),
+        });
+        let mut images = scratch.images();
+        images.scan(&mut t);
+        say(&mut t, "a.png again");
+        settle(&mut images, &mut t);
+        assert_eq!(shown(&t), ["a.png"]);
+    }
+
+    #[test]
+    fn a_tools_whole_arguments_are_read_past_its_chip() {
+        let scratch = Scratch::new("long");
+        let deep = scratch.0.join("d".repeat(120)).join("e".repeat(120));
+        std::fs::create_dir_all(&deep).unwrap();
+        let path = deep.join("my sheet.png");
+        std::fs::write(&path, b"bytes").unwrap();
+        let mut images = scratch.images();
+        let mut t = transcript();
+        started(&mut images, &mut t);
+        t.receive(
+            &serde_json::json!({"type":"assistant","message":{"id":"m","content":[
+                {"type":"tool_use","id":"u","name":"Read","input":{"file_path":path}}]}})
+            .to_string(),
+        );
+        t.receive(
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"u","content":[{"type":"image"}],"is_error":false}]}}"#,
+        );
+        settle(&mut images, &mut t);
+        assert_eq!(shown(&t), ["my sheet.png"]);
+    }
+
+    #[test]
+    fn dot_dot_goes_through_a_symlink_as_the_filesystem_does() {
+        let scratch = Scratch::new("symlink");
+        std::fs::create_dir_all(scratch.0.join("other/sub")).unwrap();
+        std::fs::write(scratch.0.join("other/a.png"), b"the one").unwrap();
+        std::os::unix::fs::symlink(scratch.0.join("other/sub"), scratch.0.join("link")).unwrap();
+        let mut images = scratch.images();
+        let mut t = transcript();
+        started(&mut images, &mut t);
+        say(&mut t, "link/../a.png");
+        settle(&mut images, &mut t);
+        let Some(Entry::Image { path }) = t.entries.last() else {
+            panic!("nothing shown");
+        };
+        assert_eq!(
+            std::fs::read(path).unwrap(),
+            b"the one",
+            "{path} must not lose its .."
+        );
+        // The same file by its other names is one picture.
+        say(&mut t, "other/a.png");
+        settle(&mut images, &mut t);
+        assert_eq!(shown(&t).len(), 1);
+    }
+
+    fn pixel() -> Result<Decoded, Failure> {
+        Ok(Decoded {
+            image: ColorImage::filled([1, 1], Color32::RED),
+            natural: [1, 1],
+        })
+    }
+
+    fn done(path: &Path, large: bool, generation: u64) -> Done {
+        Done {
+            path: path.to_path_buf(),
+            large,
+            generation,
+            result: pixel(),
+        }
+    }
+
+    #[test]
+    fn only_the_newest_decode_of_a_thumbnail_counts() {
+        let ctx = egui::Context::default();
+        let path = Path::new("/s/a.png");
+        let mut images = ChatImages::default();
+        // A running, a rewrite, B asked for: A lands first.
+        images.thumbs.insert(
+            path.to_path_buf(),
+            Thumb::Decoding {
+                generation: 2,
+                cancel: Arc::new(AtomicBool::new(false)),
+                wanted: 0,
+            },
+        );
+        images.finish(&ctx, done(path, false, 1));
+        assert!(matches!(
+            images.thumbs.get(path),
+            Some(Thumb::Decoding { generation: 2, .. })
+        ));
+        assert!(!images.sizes.contains_key(path), "A's size is not B's");
+        images.finish(&ctx, done(path, false, 2));
+        assert!(matches!(images.thumbs.get(path), Some(Thumb::Ready { .. })));
+    }
+
+    #[test]
+    fn a_decode_of_a_forgotten_thumbnail_is_dropped() {
+        let ctx = egui::Context::default();
+        let path = Path::new("/s/a.png");
+        let mut images = ChatImages::default();
+        images.finish(&ctx, done(path, false, 7));
+        assert!(images.thumbs.is_empty());
+    }
+
+    #[test]
+    fn only_the_newest_decode_of_the_large_view_counts() {
+        let ctx = egui::Context::default();
+        let path = Path::new("/s/a.png");
+        let large = Large {
+            path: path.to_path_buf(),
+            name: "a.png".into(),
+            natural: [1, 1],
+            thumbnail: ctx.load_texture(
+                "t",
+                ColorImage::filled([1, 1], Color32::RED),
+                TextureOptions::LINEAR,
+            ),
+            full: None,
+            generation: 2,
+            cancel: Arc::new(AtomicBool::new(false)),
+            bounds: [1, 1],
+            failed: None,
+            opening: false,
+            return_focus: false,
+        };
+        let mut images = ChatImages {
+            large: Some(large),
+            ..ChatImages::default()
+        };
+        images.finish(&ctx, done(path, true, 1));
+        assert!(images.large.as_ref().unwrap().full.is_none());
+        images.finish(&ctx, done(path, true, 2));
+        assert!(images.large.as_ref().unwrap().full.is_some());
+    }
+
+    fn job(path: &Path, generation: u64) -> Job {
+        Job {
+            path: path.to_path_buf(),
+            large: false,
+            generation,
+            cancel: Arc::new(AtomicBool::new(false)),
+            bounds: [8, 8],
+        }
+    }
+
+    fn wait_until(mut ready: impl FnMut() -> bool) {
+        for _ in 0..5000 {
+            if ready() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("never happened");
+    }
+
+    #[test]
+    fn the_queues_are_bounded_and_the_worker_waits_for_room() {
+        let scratch = Scratch::new("queues");
+        let bad = scratch.write("bad.png");
+        let decoder = Decoder::start().unwrap();
+        for generation in 0..MOST_RESULTS as u64 {
+            assert!(decoder.submit(job(&bad, generation)).is_ok());
+        }
+        wait_until(|| decoder.shared.lock().results.len() == MOST_RESULTS);
+        // Nothing drains, so nothing more runs and the queue fills to its bound.
+        for generation in 0..MOST_JOBS as u64 {
+            assert!(decoder.submit(job(&bad, 100 + generation)).is_ok());
+        }
+        assert!(decoder.submit(job(&bad, 999)).is_err(), "full is full");
+        std::thread::sleep(Duration::from_millis(50));
+        {
+            let queue = decoder.shared.lock();
+            assert_eq!(queue.results.len(), MOST_RESULTS);
+            assert_eq!(queue.jobs.len(), MOST_JOBS);
+        }
+        assert_eq!(decoder.take_results().len(), MOST_RESULTS);
+        wait_until(|| decoder.shared.lock().results.len() == MOST_RESULTS);
+        // Newest first: what was asked last is what is on screen.
+        let first = decoder.take_results().pop_front().unwrap();
+        assert_eq!(first.generation, 100 + MOST_JOBS as u64 - 1);
+    }
+
+    #[test]
+    fn a_hidden_chat_keeps_no_decoding_and_no_pixels() {
+        let scratch = Scratch::new("hidden");
+        let bad = scratch.write("bad.png");
+        let mut images = scratch.images();
+        let mut t = transcript();
+        images.scan(&mut t);
+        images.request_thumb(bad.clone(), [8, 8]);
+        assert!(images.thumbs.contains_key(&bad));
+        images.scan(&mut t);
+        images.scan(&mut t);
+        assert!(images.thumbs.is_empty(), "asked again when it is seen");
+        let decoder = images.decoder.as_ref().unwrap();
+        wait_until(|| decoder.shared.lock().running.is_none());
+        images.scan(&mut t);
+        let queue = images.decoder.as_ref().unwrap().shared.lock();
+        assert!(queue.jobs.is_empty() && queue.results.is_empty());
+    }
+
+    #[test]
+    fn a_picture_scrolled_away_gives_up_its_place() {
+        let scratch = Scratch::new("scrolled");
+        let bad = scratch.write("bad.png");
+        let mut images = scratch.images();
+        images.frame = 1;
+        images.request_thumb(bad.clone(), [8, 8]);
+        images.frame = 1 + STALE_FRAMES;
+        images.drop_scrolled_away();
+        assert!(images.thumbs.contains_key(&bad), "not yet");
+        images.frame += 1;
+        images.drop_scrolled_away();
+        assert!(!images.thumbs.contains_key(&bad));
+    }
+
+    #[test]
+    fn dropping_a_chat_stops_its_worker() {
+        let decoder = Decoder::start().unwrap();
+        let shared = decoder.shared.clone();
+        drop(decoder);
+        assert!(shared.lock().finished);
+    }
+
     #[test]
     fn a_mention_shows_once_while_the_file_stands_still() {
         let scratch = Scratch::new("once");
@@ -921,10 +1590,10 @@ mod tests {
         let mut t = transcript();
         started(&mut images, &mut t);
         say(&mut t, "here is a.png");
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
         say(&mut t, "a.png again, and ./a.png");
-        images.scan(&mut t);
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
+        settle(&mut images, &mut t);
         assert_eq!(shown(&t), ["a.png"]);
     }
 
@@ -936,7 +1605,7 @@ mod tests {
         let mut t = transcript();
         started(&mut images, &mut t);
         say(&mut t, "a.png");
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
         let later = SystemTime::now() + Duration::from_secs(60);
         std::fs::File::options()
             .write(true)
@@ -945,7 +1614,7 @@ mod tests {
             .set_modified(later)
             .unwrap();
         say(&mut t, "a.png");
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
         assert_eq!(shown(&t), ["a.png", "a.png"]);
     }
 
@@ -961,7 +1630,7 @@ mod tests {
             &mut t,
             "I will write later.png, see folder.png and empty.png",
         );
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
         assert!(shown(&t).is_empty());
     }
 
@@ -979,12 +1648,12 @@ mod tests {
             state: ToolState::Running,
             output: String::new(),
         });
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
         assert!(shown(&t).is_empty(), "the file may not be written yet");
         if let Entry::Tool { state, .. } = &mut t.entries[0] {
             *state = ToolState::Done;
         }
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
         assert_eq!(shown(&t), ["a.png"]);
     }
 
@@ -1003,7 +1672,7 @@ mod tests {
             output: String::new(),
         });
         say(&mut t, "meanwhile a.png");
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
         assert_eq!(shown(&t), ["a.png"]);
     }
 
@@ -1018,14 +1687,14 @@ mod tests {
         let mut t = transcript();
         started(&mut images, &mut t);
         say(&mut t, &names.join(" "));
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
         assert_eq!(shown(&t).len(), MOST_FROM_ONE_ENTRY);
         assert!(t.entries.iter().any(
             |entry| matches!(entry, Entry::Notice { text, .. } if text == "Showing 6 of 9 pictures named here")
         ));
         // One past the limit was left unseen, so naming it shows it.
         say(&mut t, "s8.png");
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
         assert_eq!(shown(&t).last().map(String::as_str), Some("s8.png"));
     }
 
@@ -1040,18 +1709,18 @@ mod tests {
             path: path.display().to_string(),
         });
         let mut images = scratch.images();
-        images.scan(&mut t);
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
+        settle(&mut images, &mut t);
         assert_eq!(shown(&t), ["a.png"]);
         say(&mut t, "a.png once more");
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
         assert_eq!(
             shown(&t),
             ["a.png"],
             "seeded by what the chat already shows"
         );
         say(&mut t, "b.png now");
-        images.scan(&mut t);
+        settle(&mut images, &mut t);
         assert_eq!(shown(&t), ["a.png", "b.png"]);
     }
 
@@ -1063,12 +1732,13 @@ mod tests {
             Path::new("/work/song/a.png")
         );
         assert_eq!(
-            resolve(Some(directory), "./x/../a.png"),
-            Path::new("/work/song/a.png")
+            resolve(Some(directory), "./x/a.png"),
+            Path::new("/work/song/x/a.png")
         );
         assert_eq!(
             resolve(Some(directory), "../a.png"),
-            Path::new("/work/a.png")
+            Path::new("/work/song/../a.png"),
+            "only the filesystem knows what .. is"
         );
         assert_eq!(
             resolve(Some(directory), "/tmp/a.png"),

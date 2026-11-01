@@ -25,7 +25,8 @@ every protocol; on Claude `broken` names a file that is no picture, `unwritten`
 one that does not exist, `repeat` names the sheet in a tool call, its output and
 the reply, `rewrite` shows the sheet and changes its mtime before naming it
 again, `half` pauses the stream after `sheet.png`, the head of a longer name,
-and `listing` makes a tool print nine names. On Codex `viewed` is an
+`listing` makes a tool print nine names, and `longpath` reads a picture whose
+path is longer than the tool's chip. On Codex `viewed` is an
 `imageView` item, which holds the path and nothing else.
 
 It never touches the network, never runs the "tool" it reports, and exits
@@ -89,6 +90,9 @@ def lines():
         raw = raw.strip()
         if raw:
             yield json.loads(raw)
+
+
+LONG_PICTURE = "l" * 100 + "/" + "o" * 100 + "/long sheet.png"
 
 
 def picture_words(last):
@@ -194,6 +198,14 @@ def claude():
             tool(f"w{turn}", "render --again", "done", touch_sheet)
         if "listing" in last:
             tool(f"l{turn}", "ls", " ".join(f"s{n}.png" for n in range(9)))
+        if "longpath" in last:
+            out({"type": "assistant", "message": {"id": f"g{turn}", "content": [
+                {"type": "tool_use", "id": f"g{turn}", "name": "Read",
+                 "input": {"file_path": os.path.abspath(LONG_PICTURE)}}]}})
+            out({"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": f"g{turn}", "is_error": False,
+                 "content": [{"type": "image", "source": {"type": "base64", "data": "AAAA",
+                                                          "media_type": "image/png"}}]}]}})
         mid = f"n{turn}"
         reply = f"fake reply to: {last}"
         if decision:

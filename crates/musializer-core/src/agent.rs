@@ -461,6 +461,10 @@ pub struct Transcript {
     open_text: HashMap<String, usize>,
     /// Tool entries by the protocol's id.
     tools: HashMap<String, usize>,
+    /// Paths to pictures in the tool calls' whole arguments, by entry index,
+    /// until they are taken. The chip's detail is cut to 160 bytes, which can
+    /// take a path's extension with it. In-flight only: nothing saved holds this.
+    tool_pictures: HashMap<usize, Vec<String>>,
     /// Claude's id for the message being streamed.
     message: Option<String>,
     codex: CodexState,
@@ -478,19 +482,22 @@ fn truncate(text: &str, limit: usize) -> String {
     format!("{}…", &text[..end])
 }
 
+/// The argument that says what a tool call is doing, by name.
+const TOOL_DETAIL_KEYS: [&str; 9] = [
+    "command",
+    "CommandLine",
+    "file_path",
+    "path",
+    "pattern",
+    "url",
+    "query",
+    "description",
+    "prompt",
+];
+
 /// One line of a tool's input, for the chip.
 fn tool_detail(input: &Value) -> String {
-    for key in [
-        "command",
-        "CommandLine",
-        "file_path",
-        "path",
-        "pattern",
-        "url",
-        "query",
-        "description",
-        "prompt",
-    ] {
+    for key in TOOL_DETAIL_KEYS {
         if let Some(text) = input.get(key).and_then(Value::as_str) {
             return truncate(text.lines().next().unwrap_or(""), 160);
         }
@@ -664,6 +671,7 @@ impl Transcript {
             restart_owed: false,
             open_text: HashMap::new(),
             tools: HashMap::new(),
+            tool_pictures: HashMap::new(),
             message: None,
             codex: CodexState::default(),
             claude: ClaudeState::default(),
@@ -1107,9 +1115,12 @@ impl Transcript {
         }
     }
 
-    fn start_tool(&mut self, id: &str, name: &str, detail: String) {
+    fn start_tool(&mut self, id: &str, name: &str, detail: String, pictures: Vec<String>) {
         if self.tools.contains_key(id) {
             return;
+        }
+        if !pictures.is_empty() {
+            self.tool_pictures.insert(self.entries.len(), pictures);
         }
         self.entries.push(Entry::Tool {
             id: id.to_string(),
@@ -1405,7 +1416,12 @@ impl Transcript {
                             "tool_use" => {
                                 let tool_id = block["id"].as_str().unwrap_or("").to_string();
                                 let name = block["name"].as_str().unwrap_or("tool").to_string();
-                                self.start_tool(&tool_id, &name, tool_detail(&block["input"]));
+                                self.start_tool(
+                                    &tool_id,
+                                    &name,
+                                    tool_detail(&block["input"]),
+                                    tool_image_paths(&block["input"]),
+                                );
                             }
                             _ => {}
                         }
@@ -1483,8 +1499,9 @@ impl Transcript {
                     }
                     "tool" => {
                         let name = step["tool_name"].as_str().unwrap_or("tool");
-                        let detail = tool_detail(&step["tool_info"]["parameters"]);
-                        self.start_tool(&key, name, detail);
+                        let parameters = &step["tool_info"]["parameters"];
+                        let pictures = tool_image_paths(parameters);
+                        self.start_tool(&key, name, tool_detail(parameters), pictures);
                         if done {
                             let failed = step["error"].is_string();
                             self.finish_tool(&key, failed, step["error"].as_str().unwrap_or(""));
@@ -1715,7 +1732,8 @@ impl Transcript {
                             .or(item["command"].as_str())
                             .unwrap_or("")
                             .to_string();
-                        self.start_tool(&id, "command", truncate(&detail, 160));
+                        let pictures = text_image_paths(&detail);
+                        self.start_tool(&id, "command", truncate(&detail, 160), pictures);
                         if completed {
                             let failed = item["exitCode"].as_i64().is_some_and(|code| code != 0)
                                 || item["status"].as_str() == Some("failed");
@@ -1733,7 +1751,8 @@ impl Transcript {
                                     .collect()
                             })
                             .unwrap_or_default();
-                        self.start_tool(&id, "edit", truncate(&paths.join(", "), 160));
+                        let pictures = paths.iter().flat_map(|p| text_image_paths(p)).collect();
+                        self.start_tool(&id, "edit", truncate(&paths.join(", "), 160), pictures);
                         if completed {
                             let failed = item["status"].as_str() == Some("failed");
                             self.finish_tool(&id, failed, "");
@@ -1744,7 +1763,8 @@ impl Transcript {
                     // tool's input says which file.
                     "imageView" | "imageGeneration" => {
                         if let Some(path) = item["path"].as_str().or(item["savedPath"].as_str()) {
-                            self.start_tool(&id, "picture", path.to_string());
+                            let pictures = text_image_paths(path);
+                            self.start_tool(&id, "picture", path.to_string(), pictures);
                             if completed {
                                 self.finish_tool(&id, false, "");
                             }
@@ -1756,7 +1776,8 @@ impl Transcript {
                             .or(item["query"].as_str())
                             .unwrap_or("tool")
                             .to_string();
-                        self.start_tool(&id, &name, tool_detail(&item["arguments"]));
+                        let pictures = tool_image_paths(&item["arguments"]);
+                        self.start_tool(&id, &name, tool_detail(&item["arguments"]), pictures);
                         if completed {
                             let failed = item["status"].as_str() == Some("failed");
                             self.finish_tool(&id, failed, "");
@@ -1977,7 +1998,51 @@ pub fn image_paths(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// What one value of a tool's arguments names: all of it, when all of it is a
+/// path, since an argument needs no quotes around a space; then its words.
+fn text_image_paths(text: &str) -> Vec<String> {
+    let whole = text.trim();
+    let mut paths = Vec::new();
+    if !whole.contains(['\n', '\r']) && !whole.contains("://") && names_image(whole) {
+        paths.push(whole.to_owned());
+    }
+    paths.extend(image_paths(text));
+    paths
+}
+
+/// The pictures in a tool's whole arguments: the argument the chip shows, or
+/// with none it knows, every string in them. Bounded, as a tool's arguments
+/// can be a whole file's text.
+fn tool_image_paths(input: &Value) -> Vec<String> {
+    const MOST_STRINGS: usize = 32;
+    fn strings<'a>(value: &'a Value, depth: usize, out: &mut Vec<&'a str>) {
+        match value {
+            Value::String(text) if out.len() < MOST_STRINGS => out.push(text),
+            Value::Array(items) if depth > 0 => {
+                items.iter().for_each(|item| strings(item, depth - 1, out));
+            }
+            Value::Object(map) if depth > 0 => {
+                map.values().for_each(|item| strings(item, depth - 1, out));
+            }
+            _ => {}
+        }
+    }
+    for key in TOOL_DETAIL_KEYS {
+        if let Some(text) = input.get(key).and_then(Value::as_str) {
+            return text_image_paths(text);
+        }
+    }
+    let mut texts = Vec::new();
+    strings(input, 4, &mut texts);
+    texts.into_iter().flat_map(text_image_paths).collect()
+}
+
 impl Transcript {
+    /// The pictures a tool's arguments named, once. Read when it has returned.
+    pub fn take_tool_image_paths(&mut self, index: usize) -> Vec<String> {
+        self.tool_pictures.remove(&index).unwrap_or_default()
+    }
+
     /// Whether an entry's words are final, so that reading them cannot catch
     /// half a path: a tool that has returned, text the agent has moved on from
     /// or the turn has ended. Streamed text stays open across a `Notice` or an
@@ -2911,6 +2976,34 @@ mod tests {
             })
             .collect();
         assert_eq!(details, ["/s/a.png", "/s/b.png"]);
+    }
+
+    #[test]
+    fn a_long_path_survives_the_chip_that_cuts_it() {
+        let path = format!("/stills/{}/my sheet.png", "deep/".repeat(60));
+        assert!(path.len() > 300);
+        let mut t = Transcript::new(Protocol::Claude);
+        t.receive(
+            &json!({"type":"assistant","message":{"id":"m","content":[
+            {"type":"tool_use","id":"t","name":"Read","input":{"file_path":path}}]}})
+            .to_string(),
+        );
+        let Entry::Tool { detail, .. } = &t.entries[0] else {
+            panic!("a tool");
+        };
+        assert!(detail.len() < 170 && !detail.contains(".png"), "{detail}");
+        assert_eq!(t.take_tool_image_paths(0).first(), Some(&path));
+        assert!(t.take_tool_image_paths(0).is_empty(), "read once");
+    }
+
+    #[test]
+    fn a_tool_with_arguments_nobody_named_is_read_string_by_string() {
+        let input =
+            json!({"AbsolutePath": "/a b/c.png", "Options": [{"out": "--to=d.jpg"}], "n": 3});
+        let found = super::tool_image_paths(&input);
+        for wanted in ["/a b/c.png", "d.jpg"] {
+            assert!(found.iter().any(|p| p == wanted), "{found:?}");
+        }
     }
 
     #[test]
