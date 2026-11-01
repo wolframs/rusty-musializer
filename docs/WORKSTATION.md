@@ -661,6 +661,15 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
   its words are final: a tool that returned, text the agent moved on from, the
   end of a turn. A `Notice` or `Image` in between does not end streamed text.
   The name must lead to a regular file of 1 byte to 64 MiB. Six per entry.
+  A tool's whole arguments are read, not its 160-byte chip: the transcript
+  keeps their paths until the tool has returned, in memory only, and an
+  argument that is a path whole keeps its spaces.
+- **No disk on the UI thread.** A chat's own thread stats, canonicalizes and
+  de-duplicates, in the order it was asked, and each answer appends the
+  entries. So an entry lands a few ticks after its mention, later if the disk
+  is slow, and a dead mount leaves the window running. A reopen seeds that
+  thread first, which is why a later mention cannot repeat a saved picture.
+  A `..` stays in the path: through a symlink only the filesystem knows it.
 - **Shown** from the entry and the working directory alone, so a saved chat
   draws by itself. A chat's first tick takes what it already holds as read; a
   transcript swapped in after that needs `ChatImages::resume`.
@@ -669,6 +678,23 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
   Thumbnails shrink to the column's width at the size asked for first, at most
   360 pt tall, never magnified, 24 textures or 128 MiB. The large view is a
   second decode at the window's size, with the thumbnail until it lands.
+- **What a file may cost** (`runtime::decode::with_picture`). The path is opened
+  once, without blocking, the handle is checked, and at most 64 MiB is read;
+  everything after works from those bytes. The size comes from the header,
+  before any decoder allocates: at most 100 MP, and at most 1 GiB of working
+  memory by a checked estimate. A format with no header reader goes to no
+  decoder, so a `.png` that is really a GIF or BMP is refused. WebP goes to
+  FFmpeg by stdin, with `-max_pixels`, its output cut at the size the header
+  promised, its own process group, and 15 s. These budgets are per decode, one
+  per chat, so several busy chats add up.
+- **Queues.** At most 16 jobs wait, newest first, and a picture that finds the
+  queue full asks again next frame. At most 4 finished pictures or 64 MiB wait
+  for the UI thread, and the worker starts nothing until there is room. Every
+  job has a generation, and only the newest for a picture is accepted. One that
+  has been off screen for 30 frames gives up its place; a chat that is not on
+  screen drops its pixels and stops its work, since uploading needs a frame.
+  Closing a chat stops its worker and waits up to 300 ms, so a running FFmpeg
+  dies before the application does. A worker inside a dead mount is left there.
 - **The egui texture path needed no change.** Texture bytes go up unconverted, the
   blend is premultiplied, and `shrink` premultiplies. The gate pins mid grey
   and half alpha in the capture on both renderers.
@@ -687,7 +713,7 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
 - **Live check, by hand, once:** a real Claude turn on Haiku at low effort,
   through the dock. It read a 1600 x 675 PNG, and the picture stood under the
   `Read` chip, over its reply.
-- Gate: `tools/agent_images_check.sh`, 112 checks on GPU and CPU. Twenty-one
+- Gate: `tools/agent_images_check.sh`, 121 checks on GPU and CPU. Twenty-one
   source mutants, each failing on both, built as copied binaries from a tree
   proved clean after each: unsettled text read, no dedupe, mtime ignored, no
   listing cap, red and blue swapped, straight alpha uploaded, a washed-out
@@ -699,6 +725,20 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
   failure card, off-screen decoding), and the shell mutant showed a timeline
   check with no teeth. Those three checks were rewritten and those three
   mutants rerun; the other eighteen ran against the gate before that rewrite.
+  None of the twenty-one has been rerun since the review's fixes below.
+- **Review fixes (2026-11-01).** A GPT-6.1-Sol review found eight defects, all
+  confirmed in the code and fixed; the bullets above are the result. Seven more
+  gate mutants, each failing on GPU and CPU: a blocking open of a FIFO, no
+  budget against a real 268 MP PNG of a few hundred KB, cancellation ignored by
+  the FFmpeg watch, a close that cancels nothing (both leave a hung stand-in
+  FFmpeg alive after the window exits), long tool paths dropped, lexical `..`,
+  and a missing `click probe:` line, which the old assertions passed. Thirteen
+  unit mutants of the threads, queues and FFmpeg watch were run through
+  `chat_images` and `decode` tests. Twelve failed, one only after its test
+  was tightened to tell the cap from the deadline. The other, dropping the
+  handle's `is_file` check, survives as an equivalent: a FIFO opened without
+  blocking reads as empty or `EAGAIN`, so it is refused either way, and the
+  check stays because it says why.
 
 
 ## Integrated follow-up evidence (2026-10-30)

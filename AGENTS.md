@@ -208,6 +208,8 @@ number disagrees, grep it there before debugging from scratch.
   the report before believing the editor is open.
 - **`click=` never reaches egui**; press dock controls with `agent-press=`.
 - **A probe run's column view persists** in `MZ_STATE_DIR`; a run that leaves Direct gets its own, or the next chat draws nothing.
+- **A check on a name says nothing about the file you then open**: open once without blocking, ask the handle, read through a cap, and feed FFmpeg by stdin. See `docs/TRAPS.md`.
+- **A small file can claim a huge picture**: budget from the header bytes before any decoder allocates, and refuse a format with no header reader.
 
 ## Judge by what a user or a file can observe
 

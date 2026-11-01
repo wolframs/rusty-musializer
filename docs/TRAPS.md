@@ -282,3 +282,22 @@ failure, in a gate that passed a minute ago, on the first case of the next run.
 A gate that leaves Direct gives that run a state directory of its own, and
 clears both at its start. Found building `tools/agent_images_check.py`,
 2026-10-31.
+
+## A check on a name says nothing about the file you then open
+
+`metadata(path)` and then `read(path)` are two lookups, and a FIFO swapped in
+between them parks the thread in `open(2)` for good. Open once with
+`O_NONBLOCK`, ask the handle what it is, read through a cap, and work from the
+bytes. The same goes for FFmpeg: a path handed to it is a second open, so it is
+fed by stdin. And `Child::output()` cannot be interrupted, so anything that must
+be cancellable reads its pipes on threads while another watches the deadline.
+A stdout cap alone does not stop a child that keeps writing: it needs the kill.
+Found by review of `chat_images`, 2026-11-01.
+
+## A small file can claim a huge picture
+
+File size says nothing about decoded size: a PNG of a few hundred KB can
+inflate to 268 MP. `stb_image` allocates from the header's dimensions without
+asking, so the budget has to run on the header bytes first, and a format with
+no header reader must be refused, not passed through. Checked multiplies: two
+`u32`s times bytes per pixel wraps a `u64`.
