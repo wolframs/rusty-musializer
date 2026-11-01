@@ -1,5 +1,5 @@
 All registry packages in Cargo.lock, including other targets and build/test tools.
-Cargo.lock SHA-256: bb7cfb2aee7e6ed8a007ef4005785142ce454af8ff228a8e4212b200e8a841dc
+Cargo.lock SHA-256: 7b2b80f3149bd2845a5cab2b7cb11ed11d85c830143ece09c402b61f56c0107e
 
 ========================================================================
 Package: accesskit 0.24.1

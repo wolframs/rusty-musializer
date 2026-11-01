@@ -113,7 +113,10 @@ def png_file(path, side, deflated):
 def write_bombs():
     """Real PNGs a few MB on disk, past the file check. One claims 268 MP. The
     other is honest about being 1 x 1, and then inflates to 1.5 GiB."""
-    if not (out / 'bomb.png').exists():
+    # Slow to deflate, so kept between runs, but only once its header says so:
+    # a capture left under this name by an older gate would pass for it.
+    bomb = out / 'bomb.png'
+    if not bomb.exists() or bomb.read_bytes()[16:20] != struct.pack('>I', 16384):
         side = 16384
         packer = zlib.compressobj(9)
         row = bytes(side + 1)
