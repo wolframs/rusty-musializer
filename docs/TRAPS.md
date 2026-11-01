@@ -292,6 +292,8 @@ bytes. The same goes for FFmpeg: a path handed to it is a second open, so it is
 fed by stdin. And `Child::output()` cannot be interrupted, so anything that must
 be cancellable reads its pipes on threads while another watches the deadline.
 A stdout cap alone does not stop a child that keeps writing: it needs the kill.
+A child can also close stdout and stay, so the wait for its exit is under the
+same deadline. Never signal `child.id()` once it has been reaped: the id is free.
 Found by review of `chat_images`, 2026-11-01.
 
 ## A small file can claim a huge picture
@@ -301,3 +303,10 @@ inflate to 268 MP. `stb_image` allocates from the header's dimensions without
 asking, so the budget has to run on the header bytes first, and a format with
 no header reader must be refused, not passed through. Checked multiplies: two
 `u32`s times bytes per pixel wraps a `u64`.
+
+An honest header does not save you either. `stb_image` inflates a PNG's IDAT
+into a growing buffer whatever IHDR said, so a 1 x 1 PNG can take gigabytes,
+which is why PNG goes to FFmpeg. A JPEG's memory depends on more than its size:
+four components, progressive, 9000 x 9000 holds 1.2 GB. And `-max_pixels` is
+checked against FFmpeg's aligned buffer, so a limit of exactly width x height
+refuses a real 1 x 1 picture as "64x1".

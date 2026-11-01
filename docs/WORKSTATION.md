@@ -682,19 +682,38 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
   once, without blocking, the handle is checked, and at most 64 MiB is read;
   everything after works from those bytes. The size comes from the header,
   before any decoder allocates: at most 100 MP, and at most 1 GiB of working
-  memory by a checked estimate. A format with no header reader goes to no
-  decoder, so a `.png` that is really a GIF or BMP is refused. WebP goes to
-  FFmpeg by stdin, with `-max_pixels`, its output cut at the size the header
-  promised, its own process group, and 15 s. These budgets are per decode, one
-  per chat, so several busy chats add up.
+  memory by a checked estimate, which for a JPEG is what `stb_image` allocates
+  from its frame header: planes by component and MCU padding, coefficients if
+  progressive. A format with no header reader goes to no decoder, so a `.png`
+  that is really a GIF or BMP is refused. These budgets are per decode, one per
+  chat, so several busy chats add up.
+- **PNG and WebP go to FFmpeg, JPEG to `stb_image`.** A 1 x 1 PNG can front
+  gigabytes of compressed zeros, and `stb_image` inflates into a growing buffer.
+  Nothing in `Cargo.lock` inflates, so nothing here could count them first.
+  FFmpeg inflates a row at a time into a row-sized buffer: a 1.5 GiB bomb peaked
+  at 62 MB, and took 20 s, so the 15 s deadline ends it and the chat's other
+  pictures wait that long. Each PNG costs a process. Without FFmpeg on `PATH`,
+  PNG and WebP read as "could not be read as a picture". FFmpeg is fed by stdin,
+  with `-max_pixels`, its output cut at the size the header promised, in its own
+  process group. The deadline and the cancel flag also cover a child that has
+  closed stdout and stays.
 - **Queues.** At most 16 jobs wait, newest first, and a picture that finds the
   queue full asks again next frame. At most 4 finished pictures or 64 MiB wait
   for the UI thread, and the worker starts nothing until there is room. Every
   job has a generation, and only the newest for a picture is accepted. One that
   has been off screen for 30 frames gives up its place; a chat that is not on
   screen drops its pixels and stops its work, since uploading needs a frame.
-  Closing a chat stops its worker and waits up to 300 ms, so a running FFmpeg
-  dies before the application does. A worker inside a dead mount is left there.
+  Closing a chat never waits. A running FFmpeg's group is published where
+  `PictureCancel::cancel` can reach it, so closing signals it directly and it
+  dies before the application does, and the worker reaps it. A worker inside a
+  dead mount is left there.
+- **Known limits.** A picture whose lookup has not answered when its chat
+  closes is not looked up again on reopen, so it stays unshown until it is named
+  again. It takes a close within the lookup's few milliseconds, and the file is
+  still on disk, so the cost is one mention. And each reopen of a chat whose
+  picture sits on a dead mount can leave one wedged lookup thread until the mount
+  answers or the application exits: the seed has to stat that file, and a thread
+  in a dead mount cannot be interrupted.
 - **The egui texture path needed no change.** Texture bytes go up unconverted, the
   blend is premultiplied, and `shrink` premultiplies. The gate pins mid grey
   and half alpha in the capture on both renderers.
