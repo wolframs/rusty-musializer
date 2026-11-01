@@ -1732,7 +1732,7 @@ impl Transcript {
                             .or(item["command"].as_str())
                             .unwrap_or("")
                             .to_string();
-                        let pictures = text_image_paths(&detail);
+                        let pictures = text_image_paths(&detail, MOST_TOOL_PICTURES);
                         self.start_tool(&id, "command", truncate(&detail, 160), pictures);
                         if completed {
                             let failed = item["exitCode"].as_i64().is_some_and(|code| code != 0)
@@ -1751,7 +1751,11 @@ impl Transcript {
                                     .collect()
                             })
                             .unwrap_or_default();
-                        let pictures = paths.iter().flat_map(|p| text_image_paths(p)).collect();
+                        let pictures = paths
+                            .iter()
+                            .flat_map(|path| text_image_paths(path, MOST_TOOL_PICTURES))
+                            .take(MOST_TOOL_PICTURES)
+                            .collect();
                         self.start_tool(&id, "edit", truncate(&paths.join(", "), 160), pictures);
                         if completed {
                             let failed = item["status"].as_str() == Some("failed");
@@ -1763,7 +1767,7 @@ impl Transcript {
                     // tool's input says which file.
                     "imageView" | "imageGeneration" => {
                         if let Some(path) = item["path"].as_str().or(item["savedPath"].as_str()) {
-                            let pictures = text_image_paths(path);
+                            let pictures = text_image_paths(path, MOST_TOOL_PICTURES);
                             self.start_tool(&id, "picture", path.to_string(), pictures);
                             if completed {
                                 self.finish_tool(&id, false, "");
@@ -1891,10 +1895,16 @@ fn image_token(token: &str) -> Option<&str> {
 /// `"my sheet.png"` look alike from here.
 #[must_use]
 pub fn image_paths(text: &str) -> Vec<String> {
+    first_image_paths(text, usize::MAX)
+}
+
+/// [`image_paths`], stopping once it holds `most` different paths.
+fn first_image_paths(text: &str, most: usize) -> Vec<String> {
     let mut found: Vec<(usize, String)> = Vec::new();
+    let mut distinct = std::collections::HashSet::new();
     // Quoted spans first: the only place a path may hold a space. An opening
     // quote follows no letter, so the apostrophe in `it's` opens nothing.
-    for line in text.split_inclusive('\n') {
+    'lines: for line in text.split_inclusive('\n') {
         let line_start = line.as_ptr() as usize - text.as_ptr() as usize;
         let mut before = None;
         for (at, quote) in line.char_indices() {
@@ -1917,6 +1927,10 @@ pub fn image_paths(text: &str) -> Vec<String> {
             let inner = body[..length].trim();
             if inner.contains(char::is_whitespace) && !inner.contains("://") && names_image(inner) {
                 found.push((line_start + at + 1, inner.to_owned()));
+                distinct.insert(inner.to_owned());
+                if distinct.len() >= most {
+                    break 'lines;
+                }
             }
         }
     }
@@ -1925,7 +1939,7 @@ pub fn image_paths(text: &str) -> Vec<String> {
     let mut token = String::new();
     let mut start = 0;
     let mut chars = text.char_indices().peekable();
-    loop {
+    while distinct.len() < most {
         let next = chars.next();
         let split = match next {
             None => true,
@@ -1978,13 +1992,15 @@ pub fn image_paths(text: &str) -> Vec<String> {
             continue;
         }
         let word = std::mem::take(&mut token);
-        if let Some(rest) = word.strip_prefix("file://") {
-            found.extend(image_token(rest).map(|path| (start, path.to_owned())));
-        } else if !word.contains("://") {
-            // `path:/tmp/a.png`, `a.png:12:3:`, a ratio beside a name.
-            for part in word.split(':') {
-                found.extend(image_token(part).map(|path| (start, path.to_owned())));
-            }
+        // `path:/tmp/a.png`, `a.png:12:3:`, a ratio beside a name.
+        let parts = match word.strip_prefix("file://") {
+            Some(rest) => vec![rest],
+            None if word.contains("://") => Vec::new(),
+            None => word.split(':').collect(),
+        };
+        for path in parts.into_iter().filter_map(image_token) {
+            distinct.insert(path.to_owned());
+            found.push((start, path.to_owned()));
         }
         if next.is_none() {
             break;
@@ -1995,18 +2011,25 @@ pub fn image_paths(text: &str) -> Vec<String> {
     found
         .into_iter()
         .filter_map(|(_, path)| seen.insert(path.clone()).then_some(path))
+        .take(most)
         .collect()
 }
 
-/// What one value of a tool's arguments names: all of it, when all of it is a
-/// path, since an argument needs no quotes around a space; then its words.
-fn text_image_paths(text: &str) -> Vec<String> {
+/// How many paths one tool call may leave waiting to be read. Past this an
+/// argument is a listing, and the chat would show only six of them anyway.
+const MOST_TOOL_PICTURES: usize = 64;
+
+/// What one value of a tool's arguments names, up to `most`: all of it, when
+/// all of it is a path, since an argument needs no quotes around a space; then
+/// its words.
+fn text_image_paths(text: &str, most: usize) -> Vec<String> {
     let whole = text.trim();
     let mut paths = Vec::new();
     if !whole.contains(['\n', '\r']) && !whole.contains("://") && names_image(whole) {
         paths.push(whole.to_owned());
     }
-    paths.extend(image_paths(text));
+    paths.extend(first_image_paths(text, most));
+    paths.truncate(most);
     paths
 }
 
@@ -2029,12 +2052,20 @@ fn tool_image_paths(input: &Value) -> Vec<String> {
     }
     for key in TOOL_DETAIL_KEYS {
         if let Some(text) = input.get(key).and_then(Value::as_str) {
-            return text_image_paths(text);
+            return text_image_paths(text, MOST_TOOL_PICTURES);
         }
     }
     let mut texts = Vec::new();
     strings(input, 4, &mut texts);
-    texts.into_iter().flat_map(text_image_paths).collect()
+    let mut paths = Vec::new();
+    for text in texts {
+        let room = MOST_TOOL_PICTURES - paths.len();
+        if room == 0 {
+            break;
+        }
+        paths.extend(text_image_paths(text, room));
+    }
+    paths
 }
 
 impl Transcript {
@@ -2994,6 +3025,37 @@ mod tests {
         assert!(detail.len() < 170 && !detail.contains(".png"), "{detail}");
         assert_eq!(t.take_tool_image_paths(0).first(), Some(&path));
         assert!(t.take_tool_image_paths(0).is_empty(), "read once");
+    }
+
+    #[test]
+    fn a_tool_can_leave_only_so_many_paths_waiting() {
+        let listing: String = (0..5000).map(|n| format!("still-{n}.png ")).collect();
+        let mut t = Transcript::new(Protocol::Claude);
+        t.receive(
+            &json!({"type":"assistant","message":{"id":"m","content":[
+            {"type":"tool_use","id":"t","name":"Bash","input":{"command":listing}}]}})
+            .to_string(),
+        );
+        let paths = t.take_tool_image_paths(0);
+        assert_eq!(paths.len(), super::MOST_TOOL_PICTURES);
+        assert_eq!(paths[0], "still-0.png");
+        assert_eq!(paths[63], "still-63.png");
+        let scattered: Vec<Value> = (0..30)
+            .map(|n| json!((0..10).map(|m| format!("{n}-{m}.png ")).collect::<String>()))
+            .collect();
+        let found = super::tool_image_paths(&json!({"Items": scattered}));
+        assert_eq!(found.len(), super::MOST_TOOL_PICTURES, "across strings too");
+        // One path said a thousand times does not use up the bound.
+        let repeated = format!("{}last.png", "a.png ".repeat(1000));
+        assert_eq!(
+            super::first_image_paths(&repeated, 2),
+            ["a.png", "last.png"]
+        );
+        assert_eq!(
+            super::image_paths(&listing).len(),
+            5000,
+            "prose keeps them all"
+        );
     }
 
     #[test]

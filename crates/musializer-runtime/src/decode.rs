@@ -26,17 +26,16 @@ use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use raylib::audio::{RaylibAudio, Wave};
 use raylib::consts::PixelFormat;
 use raylib::texture::Image;
 
-use crate::process::process_group::{
-    kill_group_and_reap, wait_bounded, ShutdownPolicy, WaitOutcome,
-};
+use crate::process::process_group::{kill_group_and_reap, signal_group_or_process, Signal};
 
 /// A decoded track: interleaved PCM plus the format needed to interpret it.
 ///
@@ -180,6 +179,8 @@ const O_NONBLOCK: i32 = 0o4000;
 /// How long FFmpeg gets for one still. A healthy decode takes milliseconds.
 const FFMPEG_DEADLINE: Duration = Duration::from_secs(15);
 const FFMPEG_POLL: Duration = Duration::from_millis(5);
+/// What FFmpeg rounds a frame up to before it checks `-max_pixels`.
+const FFMPEG_ALIGNMENT: usize = 128;
 /// How much a read takes between looks at the cancel flag.
 const READ_CHUNK: usize = 1024 * 1024;
 
@@ -194,13 +195,52 @@ pub enum PictureError {
     Cancelled,
 }
 
+/// Stops a decode from any thread. A running FFmpeg's process group is kept
+/// here, so that stopping it does not wait for the thread watching it: `kill`
+/// does not block, and that thread may be anywhere. The lock is what keeps the
+/// group from being signalled after the watcher has reaped it and the id is
+/// free for reuse.
+#[derive(Debug, Default)]
+pub struct PictureCancel {
+    raised: AtomicBool,
+    group: Mutex<Option<u32>>,
+}
+
+impl PictureCancel {
+    fn lock_group(&self) -> MutexGuard<'_, Option<u32>> {
+        self.group.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn cancel(&self) {
+        self.raised.store(true, Ordering::Relaxed);
+        if let Some(group) = *self.lock_group() {
+            let _ = signal_group_or_process(group, Signal::Kill);
+        }
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.raised.load(Ordering::Relaxed)
+    }
+
+    fn publish(&self, group: Option<u32>) {
+        *self.lock_group() = group;
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PictureFormat {
     /// One row's bytes as the inflater holds them, from bit depth and channels.
     Png {
         row_bits: u64,
     },
-    Jpeg,
+    /// What `stb_image` allocates from the frame header.
+    Jpeg {
+        /// The component planes in bytes, each padded to whole MCUs.
+        planes: u64,
+        components: u64,
+        progressive: bool,
+    },
     WebP,
 }
 
@@ -214,23 +254,42 @@ struct PictureHeader {
 
 impl PictureHeader {
     /// An upper bound on one decode's peak, checked so a claimed size cannot
-    /// wrap. Eight bytes a pixel in every case is the RGBA8 the decoder
-    /// produces plus `ImageFormat`'s second copy while it converts. PNG adds
-    /// the inflated rows, a filter byte each, at 16 bits a channel if it says
-    /// so; `stb_image` keeps those beside its output. JPEG adds its planes.
+    /// wrap. PNG and WebP go through FFmpeg: the rows it inflates or the frame
+    /// it decodes, the `rgba` it converts to, and the same again read back.
+    /// JPEG is `stb_image`, whose peak is worked out from what it allocates
+    /// (`stb_image.h:3337-3346`, `:3922`): a byte plane per component, a 16-bit
+    /// coefficient plane each if progressive, and three bytes a pixel out, one
+    /// for grey. Then `ImageFormat` holds that beside its RGBA8, by when the
+    /// planes have gone.
     fn working_bytes(&self) -> Option<u64> {
         let (width, height) = (u64::from(self.width), u64::from(self.height));
         let pixels = width.checked_mul(height)?;
-        let rgba = pixels.checked_mul(8)?;
-        let extra = match self.format {
+        let rgba = pixels.checked_mul(4)?;
+        match self.format {
             PictureFormat::Png { row_bits } => {
                 let row = width.checked_mul(row_bits)?.checked_add(7)? / 8 + 1;
-                row.checked_mul(height)?
+                row.checked_mul(height)?.checked_add(rgba.checked_mul(2)?)
             }
-            PictureFormat::Jpeg => pixels.checked_mul(4)?,
-            PictureFormat::WebP => 0,
-        };
-        rgba.checked_add(extra)
+            PictureFormat::Jpeg {
+                planes,
+                components,
+                progressive,
+            } => {
+                let coefficients = if progressive {
+                    planes.checked_mul(2)?
+                } else {
+                    0
+                };
+                let lines = width.checked_add(3)?.checked_mul(components)?;
+                let out = pixels.checked_mul(if components >= 3 { 3 } else { 1 })?;
+                let decoding = planes
+                    .checked_add(coefficients)?
+                    .checked_add(lines)?
+                    .checked_add(out)?;
+                Some(decoding.max(out.checked_add(rgba)?))
+            }
+            PictureFormat::WebP => rgba.checked_mul(2),
+        }
     }
 
     fn within_budget(&self) -> bool {
@@ -293,16 +352,50 @@ fn jpeg_header(bytes: &[u8]) -> Option<PictureHeader> {
             0x01 | 0xd0..=0xd7 => {}
             // Start of scan or end of image with no frame header before it.
             0xd9 | 0xda => return None,
-            0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf => {
-                return Some(PictureHeader {
-                    format: PictureFormat::Jpeg,
-                    height: be16(bytes, at + 3)?,
-                    width: be16(bytes, at + 5)?,
-                });
-            }
+            0xc0..=0xc2 => return jpeg_frame(bytes, at, marker == 0xc2),
+            // The other frame types, which `stb_image` refuses too.
+            0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf => return None,
             _ => at += usize::try_from(be16(bytes, at)?).ok()?,
         }
     }
+}
+
+/// A frame header: size, components, and each one's sampling, which is what
+/// its plane's padding hangs on (`stb_image.h:3313-3332`).
+fn jpeg_frame(bytes: &[u8], at: usize, progressive: bool) -> Option<PictureHeader> {
+    let height = be16(bytes, at + 3)?;
+    let width = be16(bytes, at + 5)?;
+    let components = usize::from(*bytes.get(at + 7)?);
+    if !matches!(components, 1 | 3 | 4) {
+        return None;
+    }
+    let mut factors = [(1_u64, 1_u64); 4];
+    for (index, factor) in factors.iter_mut().enumerate().take(components) {
+        let sampling = *bytes.get(at + 9 + index * 3)?;
+        let (h, v) = (u64::from(sampling >> 4), u64::from(sampling & 15));
+        if !(1..=4).contains(&h) || !(1..=4).contains(&v) {
+            return None;
+        }
+        *factor = (h, v);
+    }
+    let factors = &factors[..components];
+    let h_max = factors.iter().map(|f| f.0).max()?;
+    let v_max = factors.iter().map(|f| f.1).max()?;
+    let across = u64::from(width).div_ceil(h_max * 8);
+    let down = u64::from(height).div_ceil(v_max * 8);
+    let planes = factors
+        .iter()
+        .map(|(h, v)| (across * h * 8) * (down * v * 8))
+        .sum();
+    Some(PictureHeader {
+        format: PictureFormat::Jpeg {
+            planes,
+            components: components as u64,
+            progressive,
+        },
+        width,
+        height,
+    })
 }
 
 fn webp_header(bytes: &[u8]) -> Option<PictureHeader> {
@@ -354,7 +447,7 @@ fn picture_header(bytes: &[u8]) -> Option<PictureHeader> {
 /// blocking is what makes a FIFO swapped in under the name an ordinary refusal
 /// instead of a thread parked for ever; checking the handle, not the name, is
 /// what makes that check about the file that gets read.
-fn read_picture(path: &Path, cancel: &AtomicBool) -> Result<Vec<u8>, PictureError> {
+fn read_picture(path: &Path, cancel: &PictureCancel) -> Result<Vec<u8>, PictureError> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(O_NONBLOCK)
@@ -376,7 +469,7 @@ fn read_picture(path: &Path, cancel: &AtomicBool) -> Result<Vec<u8>, PictureErro
     let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or(0));
     let mut chunk = vec![0; READ_CHUNK];
     loop {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.is_cancelled() {
             return Err(PictureError::Cancelled);
         }
         match reader.read(&mut chunk) {
@@ -393,24 +486,50 @@ fn read_picture(path: &Path, cancel: &AtomicBool) -> Result<Vec<u8>, PictureErro
     Ok(bytes)
 }
 
+/// Polls `ready` until it answers, the flag goes up or `deadline` passes.
+fn watch<T>(
+    started: Instant,
+    deadline: Duration,
+    cancel: &PictureCancel,
+    mut ready: impl FnMut() -> Option<T>,
+) -> Result<T, PictureError> {
+    loop {
+        // First: a kill from `cancel` also ends the output `ready` watches.
+        if cancel.is_cancelled() {
+            return Err(PictureError::Cancelled);
+        }
+        if let Some(answer) = ready() {
+            return Ok(answer);
+        }
+        if started.elapsed() >= deadline {
+            return Err(PictureError::Undecodable);
+        }
+        std::thread::sleep(FFMPEG_POLL);
+    }
+}
+
 /// `bytes` through FFmpeg, fed by its stdin so that nothing opens the path a
 /// second time. FFmpeg gets its own group, which `process_group` forbids only
 /// for the Python helpers, because a kill has to reach whatever it started. Its
 /// output is cut at the exact size the header promised, `-max_pixels` stops it
 /// allocating for a bitstream that lied, and past `deadline` or the flag it is
-/// killed and reaped here.
+/// killed and reaped here. FFmpeg inflates a PNG a row at a time into a buffer
+/// the size of a row, so no IDAT can grow its memory.
 fn ffmpeg_rgba(
     program: &OsStr,
+    demuxer: &str,
     bytes: &[u8],
     size: [usize; 2],
     deadline: Duration,
-    cancel: &AtomicBool,
+    cancel: &PictureCancel,
 ) -> Result<Vec<u8>, PictureError> {
     let expected = size[0] * size[1] * 4;
+    // Its limit is on the aligned buffer: 1 x 1 asks for 64 x 1.
+    let aligned = (size[0] + FFMPEG_ALIGNMENT) * (size[1] + FFMPEG_ALIGNMENT);
     let mut child = Command::new(program)
         .args(["-nostdin", "-v", "error", "-max_pixels"])
-        .arg((size[0] * size[1]).to_string())
-        .args(["-f", "webp_pipe", "-i", "pipe:0", "-frames:v", "1"])
+        .arg(aligned.to_string())
+        .args(["-f", demuxer, "-i", "pipe:0", "-frames:v", "1"])
         .args(["-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"])
         .process_group(0)
         .stdin(Stdio::piped())
@@ -418,8 +537,9 @@ fn ffmpeg_rgba(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| PictureError::Undecodable)?;
+    cancel.publish(Some(child.id()));
     let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-        let _ = kill_group_and_reap(&mut child);
+        give_up(&mut child, cancel);
         return Err(PictureError::Undecodable);
     };
     // Two threads, so a full pipe either way cannot wedge the watch below.
@@ -435,35 +555,52 @@ fn ffmpeg_rgba(
             out
         });
         let started = Instant::now();
-        let stopped = loop {
-            if reader.is_finished() {
-                break None;
-            }
-            if cancel.load(Ordering::Relaxed) {
-                break Some(PictureError::Cancelled);
-            }
-            if started.elapsed() >= deadline {
-                break Some(PictureError::Undecodable);
-            }
-            std::thread::sleep(FFMPEG_POLL);
-        };
-        if let Some(error) = stopped {
-            let _ = kill_group_and_reap(&mut child);
+        let read = watch(started, deadline, cancel, || {
+            reader.is_finished().then_some(())
+        });
+        if let Err(error) = read {
+            give_up(&mut child, cancel);
             let _ = reader.join();
             return Err(error);
         }
         let out = reader.join().map_err(|_| PictureError::Undecodable)?;
         // Past the cap it has more to say and nothing will read it.
-        let finished = out.len() == expected
-            && wait_bounded(&mut child, &ShutdownPolicy::cancel()).is_ok_and(
-                |waited| matches!(waited, WaitOutcome::Reaped(status) if status.success()),
-            );
-        if !finished {
-            let _ = kill_group_and_reap(&mut child);
+        if out.len() != expected {
+            give_up(&mut child, cancel);
             return Err(PictureError::Undecodable);
         }
-        Ok(out)
+        // A child can close stdout and stay. Under the group's lock, so the
+        // id leaves `cancel` in the same breath as it stops being ours.
+        let exit = watch(started, deadline, cancel, || {
+            let mut group = cancel.lock_group();
+            let exit = child.try_wait().transpose();
+            if exit.is_some() {
+                *group = None;
+            }
+            exit
+        });
+        match exit {
+            Ok(Ok(status)) if status.success() => Ok(out),
+            // Reaped, so there is nothing left to kill.
+            Ok(Ok(_)) => Err(PictureError::Undecodable),
+            Ok(Err(_)) => {
+                give_up(&mut child, cancel);
+                Err(PictureError::Undecodable)
+            }
+            Err(error) => {
+                give_up(&mut child, cancel);
+                Err(error)
+            }
+        }
     })
+}
+
+/// Takes the group back from `cancel` before reaping, or its id could be
+/// signalled after it is free. Only for a child not yet reaped: this signals
+/// its pid. A kill `cancel` already sent still leaves it to reap.
+fn give_up(child: &mut Child, cancel: &PictureCancel) {
+    cancel.publish(None);
+    let _ = kill_group_and_reap(child);
 }
 
 /// Decodes a picture an agent named and hands its RGBA8 to `visit`, by what the
@@ -472,14 +609,17 @@ fn ffmpeg_rgba(
 /// after that works from the bytes read, so nothing can be swapped in between.
 /// A visitor, so the pixels are never copied out of raylib's allocation.
 ///
-/// Safe off the main thread: `LoadImageFromMemory` is CPU-side and keeps no
-/// state between calls. `stb_image` reads PNG and JPEG from the same entry
-/// point, which raylib reaches for `.png`. It has no WebP, so that goes through
-/// FFmpeg. Once `stb_image` has started, `cancel` waits for it to finish, which
-/// the budget bounds.
+/// **PNG goes to FFmpeg, not `stb_image`**, which inflates into a buffer that
+/// grows with the data (`stb_image.h:4273`, `:5207`), so a 1 x 1 header can front
+/// gigabytes of compressed zeros. No inflater is in this workspace to count
+/// them first. WebP goes the same way, as `stb_image` has none. JPEG stays:
+/// its memory follows from its frame header, and its entropy data cannot
+/// outrun the file. Safe off the main thread: `LoadImageFromMemory` is CPU-side
+/// and keeps no state between calls. Once `stb_image` has started, `cancel`
+/// waits for it to finish, which the budget bounds.
 pub fn with_picture<T>(
     path: &Path,
-    cancel: &AtomicBool,
+    cancel: &PictureCancel,
     visit: impl FnOnce(&[u8], [usize; 2]) -> T,
 ) -> Result<T, PictureError> {
     let bytes = read_picture(path, cancel)?;
@@ -488,14 +628,20 @@ pub fn with_picture<T>(
         return Err(PictureError::TooLarge);
     }
     let size = [header.width as usize, header.height as usize];
-    if header.format == PictureFormat::WebP {
-        let pixels = ffmpeg_rgba(OsStr::new("ffmpeg"), &bytes, size, FFMPEG_DEADLINE, cancel)?;
+    let demuxer = match header.format {
+        PictureFormat::Png { .. } => Some("png_pipe"),
+        PictureFormat::WebP => Some("webp_pipe"),
+        PictureFormat::Jpeg { .. } => None,
+    };
+    if let Some(demuxer) = demuxer {
+        let program = OsStr::new("ffmpeg");
+        let pixels = ffmpeg_rgba(program, demuxer, &bytes, size, FFMPEG_DEADLINE, cancel)?;
         return Ok(visit(&pixels, size));
     }
     // `load_image_from_mem` unwraps this conversion.
     i32::try_from(bytes.len()).map_err(|_| PictureError::Undecodable)?;
     let mut image =
-        Image::load_image_from_mem(".png", &bytes).map_err(|_| PictureError::Undecodable)?;
+        Image::load_image_from_mem(".jpg", &bytes).map_err(|_| PictureError::Undecodable)?;
     let decoded = [
         image.width().max(0) as usize,
         image.height().max(0) as usize,
@@ -553,6 +699,7 @@ pub fn image_pixels_rgba8(image: &mut Image) -> Result<&[u8], ImageError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process::process_group::{wait_bounded, ShutdownPolicy, WaitOutcome};
 
     /// A scratch file that takes itself with it.
     struct Scratch(std::path::PathBuf);
@@ -617,15 +764,24 @@ mod tests {
         bytes
     }
 
-    fn jpeg_bytes(width: u16, height: u16) -> Vec<u8> {
+    /// Sampling as `0xHV`, one byte per component.
+    fn jpeg_frame_bytes(marker: u8, width: u16, height: u16, sampling: &[u8]) -> Vec<u8> {
         // An APP1 first, holding what looks like another frame header, the way
         // an EXIF thumbnail does.
         let mut bytes = vec![0xff, 0xd8, 0xff, 0xe1, 0, 11];
         bytes.extend_from_slice(&[0xff, 0xc0, 0, 8, 8, 0, 1, 0, 1]);
-        bytes.extend_from_slice(&[0xff, 0xc0, 0, 17, 8]);
+        bytes.extend_from_slice(&[0xff, marker, 0, 17, 8]);
         bytes.extend_from_slice(&height.to_be_bytes());
         bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.push(sampling.len() as u8);
+        for (id, factor) in sampling.iter().enumerate() {
+            bytes.extend_from_slice(&[id as u8 + 1, *factor, 0]);
+        }
         bytes
+    }
+
+    fn jpeg_bytes(width: u16, height: u16) -> Vec<u8> {
+        jpeg_frame_bytes(0xc0, width, height, &[0x11, 0x11, 0x11])
     }
 
     fn webp_chunk(tag: &[u8; 4], body: &[u8]) -> Vec<u8> {
@@ -681,6 +837,12 @@ mod tests {
             assert_eq!(picture_header(bytes), None, "{bytes:?}");
         }
         assert_eq!(picture_header(&png_bytes(0, 10, 8, 2)), None);
+        assert_eq!(picture_header(&jpeg_frame_bytes(0xc3, 8, 8, &[0x11])), None);
+        assert_eq!(
+            picture_header(&jpeg_frame_bytes(0xc0, 8, 8, &[0x11, 0x11])),
+            None
+        );
+        assert_eq!(picture_header(&jpeg_frame_bytes(0xc0, 8, 8, &[0x51])), None);
         assert_eq!(
             picture_header(&png_bytes(10, 10, 8, 5)),
             None,
@@ -710,10 +872,51 @@ mod tests {
     }
 
     #[test]
+    fn a_jpeg_is_budgeted_for_what_stb_image_allocates() {
+        let jpeg = |marker, w, h, sampling: &[u8]| {
+            picture_header(&jpeg_frame_bytes(marker, w, h, sampling)).unwrap()
+        };
+        let four = [0x11; 4];
+        // The review's file: four byte planes, four 16-bit coefficient planes,
+        // three bytes a pixel out, a line buffer each.
+        let progressive = jpeg(0xc2, 9000, 9000, &four);
+        let planes = 4 * 81_000_000;
+        assert_eq!(
+            progressive.format,
+            PictureFormat::Jpeg {
+                planes,
+                components: 4,
+                progressive: true
+            }
+        );
+        assert_eq!(
+            progressive.working_bytes(),
+            Some(planes + 2 * planes + 243_000_000 + 4 * 9003)
+        );
+        assert_eq!(progressive.working_bytes(), Some(1_215_036_012));
+        assert!(!progressive.within_budget());
+        // The same picture without coefficients.
+        let sequential = jpeg(0xc0, 9000, 9000, &four);
+        assert_eq!(sequential.working_bytes(), Some(567_036_012));
+        assert!(sequential.within_budget());
+        // Padding: 9001 pixels take 563 MCUs of 16, and 4:2:0's planes follow.
+        let padded = jpeg(0xc0, 9001, 9001, &[0x22, 0x11, 0x11]);
+        let PictureFormat::Jpeg { planes, .. } = padded.format else {
+            panic!("a JPEG");
+        };
+        assert_eq!(planes, 9008 * 9008 + 2 * 4504 * 4504);
+        // Grey comes out at a byte a pixel, and the conversion is then the peak.
+        let grey = jpeg(0xc1, 1000, 1000, &[0x11]);
+        assert_eq!(grey.working_bytes(), Some(1_000_000 + 4_000_000));
+        // As much as the header can say, in a u64.
+        assert!(!jpeg(0xc2, 65_535, 65_535, &[0x44, 0x44, 0x44, 0x44]).within_budget());
+    }
+
+    #[test]
     fn an_oversized_header_is_refused_before_a_decoder_sees_it() {
         let scratch = Scratch::new("bomb.png");
         std::fs::write(&scratch.0, png_bytes(16384, 16384, 8, 6)).unwrap();
-        let flag = AtomicBool::new(false);
+        let flag = PictureCancel::default();
         assert_eq!(
             with_picture(&scratch.0, &flag, |_, size| size),
             Err(PictureError::TooLarge)
@@ -730,7 +933,7 @@ mod tests {
         let path = scratch.0.clone();
         let (done, answer) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let flag = AtomicBool::new(false);
+            let flag = PictureCancel::default();
             let _ = done.send(with_picture(&path, &flag, |_, size| size));
         });
         assert_eq!(
@@ -741,7 +944,7 @@ mod tests {
 
     #[test]
     fn a_missing_file_says_missing() {
-        let flag = AtomicBool::new(false);
+        let flag = PictureCancel::default();
         let path = std::env::temp_dir().join("musializer-decode-absent-too.png");
         assert_eq!(
             with_picture(&path, &flag, |_, size| size),
@@ -754,7 +957,7 @@ mod tests {
         let scratch = Scratch::new("long.png");
         let file = std::fs::File::create(&scratch.0).unwrap();
         file.set_len(PICTURE_LARGEST_FILE + 1).unwrap();
-        let flag = AtomicBool::new(false);
+        let flag = PictureCancel::default();
         assert_eq!(
             with_picture(&scratch.0, &flag, |_, size| size),
             Err(PictureError::TooLarge)
@@ -765,7 +968,8 @@ mod tests {
     fn a_raised_flag_stops_a_read() {
         let scratch = Scratch::new("cancelled.png");
         std::fs::write(&scratch.0, png_bytes(4, 4, 8, 6)).unwrap();
-        let flag = AtomicBool::new(true);
+        let flag = PictureCancel::default();
+        flag.cancel();
         assert_eq!(
             with_picture(&scratch.0, &flag, |_, size| size),
             Err(PictureError::Cancelled)
@@ -798,8 +1002,26 @@ mod tests {
             Self { script, pids }
         }
 
-        fn run(&self, deadline: Duration, flag: &AtomicBool) -> Result<Vec<u8>, PictureError> {
-            ffmpeg_rgba(self.script.0.as_os_str(), &[1; 16], [2, 2], deadline, flag)
+        fn run(&self, deadline: Duration, flag: &PictureCancel) -> Result<Vec<u8>, PictureError> {
+            ffmpeg_rgba(
+                self.script.0.as_os_str(),
+                "webp_pipe",
+                &[1; 16],
+                [2, 2],
+                deadline,
+                flag,
+            )
+        }
+
+        /// The script itself, which is this process's child. A zombie still
+        /// has a `/proc` entry, so this tells reaped from merely dead.
+        fn unreaped(&self) -> bool {
+            let pids = std::fs::read_to_string(&self.pids.0).unwrap_or_default();
+            let child = pids
+                .split_whitespace()
+                .next()
+                .expect("the script wrote its pid");
+            Path::new(&format!("/proc/{child}")).exists()
         }
 
         fn still_alive(&self) -> Vec<String> {
@@ -816,11 +1038,13 @@ mod tests {
     }
 
     const HANGS: &str = "sleep 60 &\necho $$ $! > PIDS\nwait";
+    /// Says all it promised, closes stdout, and stays.
+    const LINGERS: &str = "echo $$ > PIDS\nhead -c 16 /dev/zero\nexec 1>&-\nexec sleep 60";
 
     #[test]
     fn a_hung_ffmpeg_is_killed_at_its_deadline() {
         let fake = FakeFfmpeg::new("hung", HANGS);
-        let flag = AtomicBool::new(false);
+        let flag = PictureCancel::default();
         let started = Instant::now();
         assert_eq!(
             fake.run(Duration::from_millis(300), &flag),
@@ -837,16 +1061,87 @@ mod tests {
             Vec::<String>::new(),
             "the whole group went"
         );
+        assert!(!fake.unreaped(), "killed is not reaped");
+    }
+
+    #[test]
+    fn a_child_that_closes_stdout_and_stays_meets_the_same_deadline() {
+        let fake = FakeFfmpeg::new("lingers", LINGERS);
+        let flag = PictureCancel::default();
+        let started = Instant::now();
+        assert_eq!(
+            fake.run(Duration::from_millis(300), &flag),
+            Err(PictureError::Undecodable)
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(!fake.unreaped());
+    }
+
+    #[test]
+    fn a_child_that_closes_stdout_and_stays_can_be_cancelled() {
+        let fake = FakeFfmpeg::new("lingers-cancelled", LINGERS);
+        let flag = PictureCancel::default();
+        let started = Instant::now();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(300));
+                flag.cancel();
+            });
+            assert_eq!(
+                fake.run(Duration::from_secs(60), &flag),
+                Err(PictureError::Cancelled)
+            );
+        });
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(!fake.unreaped());
+    }
+
+    #[test]
+    fn cancel_kills_the_group_with_nobody_watching() {
+        let mut child = Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let flag = PictureCancel::default();
+        flag.publish(Some(child.id()));
+        flag.cancel();
+        let policy = ShutdownPolicy::with_grace(Duration::from_secs(2), Duration::from_millis(5));
+        let waited = wait_bounded(&mut child, &policy);
+        let reaped = matches!(waited, Ok(WaitOutcome::Reaped(_)));
+        if !reaped {
+            let _ = kill_group_and_reap(&mut child);
+        }
+        assert!(reaped, "dead by the signal alone");
+    }
+
+    #[test]
+    fn a_failed_ffmpeg_is_reaped_and_refused() {
+        let fake = FakeFfmpeg::new("failed", "echo $$ > PIDS\nhead -c 16 /dev/zero\nexit 3");
+        let flag = PictureCancel::default();
+        assert_eq!(
+            fake.run(Duration::from_secs(5), &flag),
+            Err(PictureError::Undecodable)
+        );
+        assert!(!fake.unreaped());
     }
 
     #[test]
     fn cancelling_kills_a_running_ffmpeg() {
         let fake = FakeFfmpeg::new("cancelled", HANGS);
-        let flag = AtomicBool::new(false);
+        let flag = PictureCancel::default();
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 std::thread::sleep(Duration::from_millis(200));
-                flag.store(true, Ordering::Relaxed);
+                flag.cancel();
             });
             assert_eq!(
                 fake.run(Duration::from_secs(60), &flag),
@@ -855,12 +1150,13 @@ mod tests {
         });
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(fake.still_alive(), Vec::<String>::new());
+        assert!(!fake.unreaped(), "killed is not reaped");
     }
 
     #[test]
     fn ffmpeg_output_is_cut_at_what_the_header_promised() {
         let fake = FakeFfmpeg::new("flood", "echo $$ > PIDS\nexec yes");
-        let flag = AtomicBool::new(false);
+        let flag = PictureCancel::default();
         let started = Instant::now();
         assert_eq!(
             fake.run(Duration::from_secs(30), &flag),
@@ -878,14 +1174,14 @@ mod tests {
     #[test]
     fn ffmpeg_is_fed_by_stdin_and_its_exact_output_is_kept() {
         let fake = FakeFfmpeg::new("echo", "cat");
-        let flag = AtomicBool::new(false);
+        let flag = PictureCancel::default();
         assert_eq!(fake.run(Duration::from_secs(5), &flag), Ok(vec![1; 16]));
     }
 
     #[test]
     fn a_short_answer_from_ffmpeg_is_refused() {
         let fake = FakeFfmpeg::new("short", "head -c 4");
-        let flag = AtomicBool::new(false);
+        let flag = PictureCancel::default();
         assert_eq!(
             fake.run(Duration::from_secs(5), &flag),
             Err(PictureError::Undecodable)

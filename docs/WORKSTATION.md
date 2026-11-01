@@ -682,19 +682,38 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
   once, without blocking, the handle is checked, and at most 64 MiB is read;
   everything after works from those bytes. The size comes from the header,
   before any decoder allocates: at most 100 MP, and at most 1 GiB of working
-  memory by a checked estimate. A format with no header reader goes to no
-  decoder, so a `.png` that is really a GIF or BMP is refused. WebP goes to
-  FFmpeg by stdin, with `-max_pixels`, its output cut at the size the header
-  promised, its own process group, and 15 s. These budgets are per decode, one
-  per chat, so several busy chats add up.
+  memory by a checked estimate, which for a JPEG is what `stb_image` allocates
+  from its frame header: planes by component and MCU padding, coefficients if
+  progressive. A format with no header reader goes to no decoder, so a `.png`
+  that is really a GIF or BMP is refused. These budgets are per decode, one per
+  chat, so several busy chats add up.
+- **PNG and WebP go to FFmpeg, JPEG to `stb_image`.** A 1 x 1 PNG can front
+  gigabytes of compressed zeros, and `stb_image` inflates into a growing buffer.
+  Nothing in `Cargo.lock` inflates, so nothing here could count them first.
+  FFmpeg inflates a row at a time into a row-sized buffer: a 1.5 GiB bomb peaked
+  at 62 MB, and took 20 s, so the 15 s deadline ends it and the chat's other
+  pictures wait that long. Each PNG costs a process. Without FFmpeg on `PATH`,
+  PNG and WebP read as "could not be read as a picture". FFmpeg is fed by stdin,
+  with `-max_pixels`, its output cut at the size the header promised, in its own
+  process group. The deadline and the cancel flag also cover a child that has
+  closed stdout and stays.
 - **Queues.** At most 16 jobs wait, newest first, and a picture that finds the
   queue full asks again next frame. At most 4 finished pictures or 64 MiB wait
   for the UI thread, and the worker starts nothing until there is room. Every
   job has a generation, and only the newest for a picture is accepted. One that
   has been off screen for 30 frames gives up its place; a chat that is not on
   screen drops its pixels and stops its work, since uploading needs a frame.
-  Closing a chat stops its worker and waits up to 300 ms, so a running FFmpeg
-  dies before the application does. A worker inside a dead mount is left there.
+  Closing a chat never waits. A running FFmpeg's group is published where
+  `PictureCancel::cancel` can reach it, so closing signals it directly and it
+  dies before the application does, and the worker reaps it. A worker inside a
+  dead mount is left there.
+- **Known limits.** A picture whose lookup has not answered when its chat
+  closes is not looked up again on reopen, so it stays unshown until it is named
+  again. It takes a close within the lookup's few milliseconds, and the file is
+  still on disk, so the cost is one mention. And each reopen of a chat whose
+  picture sits on a dead mount can leave one wedged lookup thread until the mount
+  answers or the application exits: the seed has to stat that file, and a thread
+  in a dead mount cannot be interrupted.
 - **The egui texture path needed no change.** Texture bytes go up unconverted, the
   blend is premultiplied, and `shrink` premultiplies. The gate pins mid grey
   and half alpha in the capture on both renderers.
@@ -713,7 +732,7 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
 - **Live check, by hand, once:** a real Claude turn on Haiku at low effort,
   through the dock. It read a 1600 x 675 PNG, and the picture stood under the
   `Read` chip, over its reply.
-- Gate: `tools/agent_images_check.sh`, 121 checks on GPU and CPU. Twenty-one
+- Gate: `tools/agent_images_check.sh`, 124 checks on GPU and CPU. Twenty-one
   source mutants, each failing on both, built as copied binaries from a tree
   proved clean after each: unsettled text read, no dedupe, mtime ignored, no
   listing cap, red and blue swapped, straight alpha uploaded, a washed-out
@@ -725,7 +744,7 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
   failure card, off-screen decoding), and the shell mutant showed a timeline
   check with no teeth. Those three checks were rewritten and those three
   mutants rerun; the other eighteen ran against the gate before that rewrite.
-  None of the twenty-one has been rerun since the review's fixes below.
+  Fourteen of them were rerun after the review's fixes below, as named there.
 - **Review fixes (2026-11-01).** A GPT-6.1-Sol review found eight defects, all
   confirmed in the code and fixed; the bullets above are the result. Seven more
   gate mutants, each failing on GPU and CPU: a blocking open of a FIFO, no
@@ -739,6 +758,27 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
   handle's `is_file` check, survives as an equivalent: a FIFO opened without
   blocking reads as empty or `EAGAIN`, so it is refused either way, and the
   check stays because it says why.
+- **Second review (2026-11-01).** Gate mutants, each failing on GPU and CPU:
+  PNG through `stb_image` (1540 MiB over a quiet run, against 3 MiB), an
+  exact `-max_pixels` that refuses a real 1 x 1 PNG, a close that cancels
+  nothing, and neither cancel path. Nine unit mutants all failed: the exit wait
+  ignoring deadline and flag, the watch ignoring the flag, `cancel` not
+  signalling, a skipped reap, JPEG coefficients, padding and frame types, a
+  `drop` that waits, the per-tool bound. `unreaped` in the `decode` tests tells
+  a reaped child from a zombie: it looks for `/proc/<pid>` itself. The gate
+  cannot, because its stand-in's parent has exited and init reaps it.
+  Rerun from the first round, both renderers, because the refactor touched
+  their code: unsettled text, every mention shows, mtime, listing cap, working
+  directory, no JPEG, no WebP, placeholder height, off-screen decoding, backdrop,
+  keyboard, stale cover, focus, Codex's `imageView`; also long paths from the
+  second round. All fail. Off-screen decoding survived on CPU until
+  `stack-released` ran 240 frames, because at 75 a decoder that took every
+  picture had not finished, now that a PNG costs a process.
+  `cancel` sending only the flag survives the gate on both renderers, and that
+  is the gate's limit, not an equivalent. The watcher polls every 5 ms and the
+  application takes longer than that to exit, so it kills FFmpeg anyway; with
+  neither path the gate fails. The signal only matters inside that window.
+  `cancel_kills_the_group_with_nobody_watching` pins it, and fails without it.
 
 
 ## Integrated follow-up evidence (2026-10-30)

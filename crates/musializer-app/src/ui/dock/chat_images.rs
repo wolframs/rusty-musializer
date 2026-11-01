@@ -27,15 +27,14 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use egui::emath::GuiRounding;
 use egui::{Color32, ColorImage, RichText, Stroke, StrokeKind, TextureHandle, TextureOptions};
 use musializer_core::agent::{image_paths, Entry, Transcript};
-use musializer_runtime::decode::{with_picture, PictureError, PICTURE_LARGEST_FILE};
+use musializer_runtime::decode::{with_picture, PictureCancel, PictureError, PICTURE_LARGEST_FILE};
 
 use super::{Body, Dock};
 use crate::ui::theme::color32;
@@ -58,9 +57,7 @@ const MOST_RESULTS: usize = 4;
 const MOST_RESULT_BYTES: usize = 64 * 1024 * 1024;
 /// A queued picture nothing has drawn for this many frames has scrolled away.
 const STALE_FRAMES: u64 = 30;
-/// What closing a chat waits for its worker, which has a running FFmpeg to
-/// kill. A worker stuck in a dead mount is left behind, not waited for.
-const WORKER_EXIT: Duration = Duration::from_millis(300);
+
 /// A portrait still at the column's width would be taller than the column.
 const TALLEST_THUMB: f32 = 360.0;
 /// What a picture of unknown shape holds: most stills are 16:9.
@@ -103,7 +100,7 @@ struct Job {
     /// Which request this is; only the newest for a picture counts.
     generation: u64,
     /// Up when nobody wants the answer any more.
-    cancel: Arc<AtomicBool>,
+    cancel: Arc<PictureCancel>,
     /// The most pixels it will be drawn at.
     bounds: [usize; 2],
 }
@@ -150,10 +147,8 @@ struct Queue {
     results: VecDeque<Done>,
     result_bytes: usize,
     /// What the worker is on, so closing can stop it.
-    running: Option<Arc<AtomicBool>>,
+    running: Option<Arc<PictureCancel>>,
     closed: bool,
-    /// The worker has returned.
-    finished: bool,
 }
 
 #[derive(Default)]
@@ -174,8 +169,6 @@ fn decode_jobs(shared: &Shared) {
             let mut queue = shared.lock();
             loop {
                 if queue.closed {
-                    queue.finished = true;
-                    shared.changed.notify_all();
                     return;
                 }
                 let room =
@@ -195,7 +188,7 @@ fn decode_jobs(shared: &Shared) {
         let result = decode(&job);
         let mut queue = shared.lock();
         queue.running = None;
-        if let Some(result) = result.filter(|_| !job.cancel.load(Ordering::Relaxed)) {
+        if let Some(result) = result.filter(|_| !job.cancel.is_cancelled()) {
             let done = Done {
                 path: job.path,
                 large: job.large,
@@ -247,10 +240,10 @@ impl Decoder {
     fn stop_all(&self) {
         let mut queue = self.shared.lock();
         for job in queue.jobs.drain(..) {
-            job.cancel.store(true, Ordering::Relaxed);
+            job.cancel.cancel();
         }
         if let Some(running) = &queue.running {
-            running.store(true, Ordering::Relaxed);
+            running.cancel();
         }
     }
 
@@ -265,18 +258,13 @@ impl Decoder {
 }
 
 impl Drop for Decoder {
-    /// Waits, a little, so a running FFmpeg is dead before the application is.
+    /// Never waits: this is the UI thread. `stop_all` signals a running FFmpeg
+    /// directly, so it is dead before the application is whatever the worker
+    /// is doing, and the worker reaps it. A worker wedged in a read is left.
     fn drop(&mut self) {
         self.stop_all();
-        let mut queue = self.shared.lock();
-        queue.closed = true;
+        self.shared.lock().closed = true;
         self.shared.changed.notify_all();
-        let (queue, _) = self
-            .shared
-            .changed
-            .wait_timeout_while(queue, WORKER_EXIT, |queue| !queue.finished)
-            .unwrap_or_else(PoisonError::into_inner);
-        drop(queue);
     }
 }
 
@@ -450,7 +438,7 @@ fn file_name(path: &Path) -> String {
 enum Thumb {
     Decoding {
         generation: u64,
-        cancel: Arc<AtomicBool>,
+        cancel: Arc<PictureCancel>,
         /// The last frame it was on screen.
         wanted: u64,
     },
@@ -470,7 +458,7 @@ struct Large {
     thumbnail: TextureHandle,
     full: Option<TextureHandle>,
     generation: u64,
-    cancel: Arc<AtomicBool>,
+    cancel: Arc<PictureCancel>,
     bounds: [usize; 2],
     /// The full-size decode failed; the thumbnail stays and says so.
     failed: Option<Failure>,
@@ -658,7 +646,7 @@ impl ChatImages {
             generation, cancel, ..
         }) = self.thumbs.get(path)
         {
-            cancel.store(true, Ordering::Relaxed);
+            cancel.cancel();
             if let Some(decoder) = &self.decoder {
                 decoder.withdraw(*generation);
             }
@@ -690,9 +678,9 @@ impl ChatImages {
         }
     }
 
-    fn generation(&mut self) -> (u64, Arc<AtomicBool>) {
+    fn generation(&mut self) -> (u64, Arc<PictureCancel>) {
         self.next_generation += 1;
-        (self.next_generation, Arc::new(AtomicBool::new(false)))
+        (self.next_generation, Arc::default())
     }
 
     /// `None` when there is no worker to give it to.
@@ -753,7 +741,7 @@ impl ChatImages {
 
     fn stop_large_decode(&self) {
         if let Some(open) = &self.large {
-            open.cancel.store(true, Ordering::Relaxed);
+            open.cancel.cancel();
             if let Some(decoder) = &self.decoder {
                 decoder.withdraw(open.generation);
             }
@@ -797,7 +785,7 @@ impl ChatImages {
             if *wanted + STALE_FRAMES >= frame {
                 return true;
             }
-            cancel.store(true, Ordering::Relaxed);
+            cancel.cancel();
             if let Some(decoder) = decoder {
                 decoder.withdraw(*generation);
             }
@@ -1037,7 +1025,7 @@ impl ChatImages {
             thumbnail,
             full: None,
             generation: 0,
-            cancel: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::default(),
             bounds,
             failed: None,
             opening: true,
@@ -1439,7 +1427,7 @@ mod tests {
             path.to_path_buf(),
             Thumb::Decoding {
                 generation: 2,
-                cancel: Arc::new(AtomicBool::new(false)),
+                cancel: Arc::default(),
                 wanted: 0,
             },
         );
@@ -1477,7 +1465,7 @@ mod tests {
             ),
             full: None,
             generation: 2,
-            cancel: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::default(),
             bounds: [1, 1],
             failed: None,
             opening: false,
@@ -1498,7 +1486,7 @@ mod tests {
             path: path.to_path_buf(),
             large: false,
             generation,
-            cancel: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::default(),
             bounds: [8, 8],
         }
     }
@@ -1579,7 +1567,21 @@ mod tests {
         let decoder = Decoder::start().unwrap();
         let shared = decoder.shared.clone();
         drop(decoder);
-        assert!(shared.lock().finished);
+        wait_until(|| Arc::strong_count(&shared) == 1);
+    }
+
+    #[test]
+    fn dropping_a_chat_never_waits_for_its_worker() {
+        // A worker that will never come back, as one in a dead mount.
+        let decoder = Decoder {
+            shared: Arc::new(Shared::default()),
+        };
+        decoder.shared.lock().running = Some(Arc::default());
+        let running = decoder.shared.lock().running.clone().unwrap();
+        let started = std::time::Instant::now();
+        drop(decoder);
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert!(running.is_cancelled());
     }
 
     #[test]

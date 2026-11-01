@@ -34,6 +34,9 @@ def check(ok, name, detail=''):
     print(('ok: ' if ok else 'FAIL: ') + name + ('' if ok else f'\n    {detail[:900]}'), flush=True)
     if not ok:
         failures.append(name)
+        # For negative controls: a mutant has made its point at its first failure.
+        if os.environ.get('MZ_FIRST_FAIL'):
+            sys.exit(1)
 
 
 fake = out / 'fake-agent'
@@ -102,20 +105,39 @@ def chunk(tag, body):
     return struct.pack('>I', len(body)) + tag + body + struct.pack('>I', zlib.crc32(tag + body))
 
 
-def write_bomb():
-    """A real PNG: 268 MP of nothing, a few hundred KB on disk, past the file check."""
-    if (out / 'bomb.png').exists():
-        return
-    side = 16384
-    packer = zlib.compressobj(9)
-    row = bytes(side + 1)
-    body = b''.join(packer.compress(row) for _ in range(side)) + packer.flush()
-    (out / 'bomb.png').write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', side, side, 8, 0, 0, 0, 0))
-                                   + chunk(b'IDAT', body) + chunk(b'IEND', b''))
+def png_file(path, side, deflated):
+    path.write_bytes(b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', side, side, 8, 0, 0, 0, 0))
+                     + chunk(b'IDAT', deflated) + chunk(b'IEND', b''))
+
+
+def write_bombs():
+    """Real PNGs a few MB on disk, past the file check. One claims 268 MP. The
+    other is honest about being 1 x 1, and then inflates to 1.5 GiB."""
+    if not (out / 'bomb.png').exists():
+        side = 16384
+        packer = zlib.compressobj(9)
+        row = bytes(side + 1)
+        png_file(out / 'bomb.png', side, b''.join(packer.compress(row) for _ in range(side)) + packer.flush())
+    if not (out / 'inflate-bomb.png').exists():
+        packer = zlib.compressobj(1)
+        mib = bytes(1 << 20)
+        png_file(out / 'inflate-bomb.png', 1, b''.join(packer.compress(mib) for _ in range(1536)) + packer.flush())
 
 
 write_pictures()
-write_bomb()
+write_bombs()
+
+
+PEAK = '''
+import resource, subprocess, sys
+code = subprocess.run(sys.argv[2:]).returncode
+open(sys.argv[1], 'w').write(str(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss))
+sys.exit(code)
+'''
+
+
+def peak_mib(name):
+    return int((out / f'{name}.peak').read_text()) / 1024
 
 
 def run(name, agent='claude', presses=(), say=None, frames=None, size='1920x1080', extra=(), theme=None,
@@ -135,6 +157,10 @@ def run(name, agent='claude', presses=(), say=None, frames=None, size='1920x1080
     if theme:
         command += ['--ui-theme', theme]
     command += ['--ui-probe', ','.join(spec), '--probe-frames', str(frames), '--probe-shot', str(png)]
+    # The peak of the application and of anything it started, by wrapping the
+    # launch in a process whose only children are those.
+    peak = out / f'{name}.peak'
+    command = [sys.executable, '-c', PEAK, str(peak)] + command
     launch = dict(env, MZ_STATE_DIR=str(out / state)) if state else dict(env)
     if path:
         launch['PATH'] = f'{path}:{launch["PATH"]}'
@@ -253,10 +279,22 @@ check(danger_words('broken', rects(dock, 'image')[0]) > 40, 'its failure is on t
 dock, _ = run('fifo', extra=['agent-image=pipe.png'], frames=70)
 check(images(dock) == ['pipe.png:undecodable'], 'a FIFO under the name is refused, and nothing waits on it', dock)
 check(danger_words('fifo', rects(dock, 'image')[0]) > 40, 'that refusal is on the frame', dock)
-dock, _ = run('bomb', extra=['agent-image=bomb.png'], frames=70)
+dock, _ = run('bomb-run', extra=['agent-image=bomb.png'], frames=70)
 check((out / 'bomb.png').stat().st_size < 4 * 1024 * 1024 and images(dock) == ['bomb.png:too-large'],
       'a small file claiming 268 MP is refused from its header', dock)
-check(danger_words('bomb', rects(dock, 'image')[0]) > 40, 'and says so', dock)
+check(danger_words('bomb-run', rects(dock, 'image')[0]) > 40, 'and says so', dock)
+
+# Long enough for a decoder that holds what it inflates to have grown.
+run('quiet', extra=['agent-image=sheet.png'], frames=420)
+dock, _ = run('inflate-run', extra=['agent-image=inflate-bomb.png'], frames=420)
+check((out / 'inflate-bomb.png').stat().st_size < 16 * 1024 * 1024
+      and bool(re.fullmatch(r'inflate-bomb\.png:(decoding|undecodable|shown:1x1:1x1)', ''.join(images(dock)))),
+      'a 1 x 1 PNG that inflates to 1.5 GiB is no picture yet, and nothing has broken', dock)
+extra_mib = peak_mib('inflate-run') - peak_mib('quiet')
+check(extra_mib < 256, 'and nothing here held what it inflated', f'{extra_mib:.0f} MiB over a quiet run')
+Image.new('RGB', (1, 1), RED).save(out / 'dot.png')
+dock, _ = run('dot', extra=['agent-image=dot.png'], frames=70)
+check(images(dock) == ['dot.png:shown:1x1:1x1'], 'a real 1 x 1 PNG gets past FFmpeg\'s pixel limit', dock)
 
 # --- FFmpeg that never answers, in a run that ends while it hangs ---
 hung = out / 'hung-bin'
@@ -278,6 +316,8 @@ def alive(pid):
 
 pid = pid_file.read_text().strip() if pid_file.exists() else ''
 check(pid.isdigit(), 'the stand-in FFmpeg did start', str(pid_file))
+# Its parent is gone by now, so init reaps it: a zombie counts as dead here.
+# That a killed child is reaped, not just dead, is `decode`'s `unreaped` tests.
 if pid.isdigit():
     for _ in range(100):
         if not alive(pid):
@@ -319,7 +359,8 @@ held = rects(dock, 'image')
 composer = rects(dock, 'composer')[0]
 check(held[-1][1] + held[-1][3] <= composer[1] and held[-1][1] > composer[1] - 400,
       'the newest placeholder sits at the bottom of the chat', dock)
-dock, _ = run('stack-released', extra=[f'agent-image={many}', 'agent-image-hold=45'], frames=75)
+# Long past the hold: a decoder that took every picture has had time to finish.
+dock, _ = run('stack-released', extra=[f'agent-image={many}', 'agent-image-hold=45'], frames=240)
 done = rects(dock, 'image')
 check(done[-1][1] + done[-1][3] <= composer[1] and done[-1][1] + done[-1][3] >= held[-1][1] + held[-1][3] - 2,
       'pictures of another shape growing from it do not move the bottom', f'{held[-1]} {done[-1]}')
