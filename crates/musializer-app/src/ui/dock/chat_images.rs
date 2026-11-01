@@ -1466,8 +1466,7 @@ mod tests {
     fn only_the_newest_decode_of_the_large_view_counts() {
         let ctx = egui::Context::default();
         let path = Path::new("/s/a.png");
-        let mut images = ChatImages::default();
-        images.large = Some(Large {
+        let large = Large {
             path: path.to_path_buf(),
             name: "a.png".into(),
             natural: [1, 1],
@@ -1483,7 +1482,11 @@ mod tests {
             failed: None,
             opening: false,
             return_focus: false,
-        });
+        };
+        let mut images = ChatImages {
+            large: Some(large),
+            ..ChatImages::default()
+        };
         images.finish(&ctx, done(path, true, 1));
         assert!(images.large.as_ref().unwrap().full.is_none());
         images.finish(&ctx, done(path, true, 2));
