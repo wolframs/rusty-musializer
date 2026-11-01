@@ -359,7 +359,8 @@ held = rects(dock, 'image')
 composer = rects(dock, 'composer')[0]
 check(held[-1][1] + held[-1][3] <= composer[1] and held[-1][1] > composer[1] - 400,
       'the newest placeholder sits at the bottom of the chat', dock)
-dock, _ = run('stack-released', extra=[f'agent-image={many}', 'agent-image-hold=45'], frames=75)
+# Long past the hold: a decoder that took every picture has had time to finish.
+dock, _ = run('stack-released', extra=[f'agent-image={many}', 'agent-image-hold=45'], frames=240)
 done = rects(dock, 'image')
 check(done[-1][1] + done[-1][3] <= composer[1] and done[-1][1] + done[-1][3] >= held[-1][1] + held[-1][3] - 2,
       'pictures of another shape growing from it do not move the bottom', f'{held[-1]} {done[-1]}')

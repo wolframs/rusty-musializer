@@ -732,7 +732,7 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
 - **Live check, by hand, once:** a real Claude turn on Haiku at low effort,
   through the dock. It read a 1600 x 675 PNG, and the picture stood under the
   `Read` chip, over its reply.
-- Gate: `tools/agent_images_check.sh`, 121 checks on GPU and CPU. Twenty-one
+- Gate: `tools/agent_images_check.sh`, 124 checks on GPU and CPU. Twenty-one
   source mutants, each failing on both, built as copied binaries from a tree
   proved clean after each: unsettled text read, no dedupe, mtime ignored, no
   listing cap, red and blue swapped, straight alpha uploaded, a washed-out
@@ -744,7 +744,7 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
   failure card, off-screen decoding), and the shell mutant showed a timeline
   check with no teeth. Those three checks were rewritten and those three
   mutants rerun; the other eighteen ran against the gate before that rewrite.
-  None of the twenty-one has been rerun since the review's fixes below.
+  Fourteen of them were rerun after the review's fixes below, as named there.
 - **Review fixes (2026-11-01).** A GPT-6.1-Sol review found eight defects, all
   confirmed in the code and fixed; the bullets above are the result. Seven more
   gate mutants, each failing on GPU and CPU: a blocking open of a FIFO, no
@@ -758,6 +758,27 @@ paths out of text, with no disk; `ui/dock/chat_images.rs` does the rest.
   handle's `is_file` check, survives as an equivalent: a FIFO opened without
   blocking reads as empty or `EAGAIN`, so it is refused either way, and the
   check stays because it says why.
+- **Second review (2026-11-01).** Gate mutants, each failing on GPU and CPU:
+  PNG through `stb_image` (1540 MiB over a quiet run, against 3 MiB), an
+  exact `-max_pixels` that refuses a real 1 x 1 PNG, a close that cancels
+  nothing, and neither cancel path. Nine unit mutants all failed: the exit wait
+  ignoring deadline and flag, the watch ignoring the flag, `cancel` not
+  signalling, a skipped reap, JPEG coefficients, padding and frame types, a
+  `drop` that waits, the per-tool bound. `unreaped` in the `decode` tests tells
+  a reaped child from a zombie: it looks for `/proc/<pid>` itself. The gate
+  cannot, because its stand-in's parent has exited and init reaps it.
+  Rerun from the first round, both renderers, because the refactor touched
+  their code: unsettled text, every mention shows, mtime, listing cap, working
+  directory, no JPEG, no WebP, placeholder height, off-screen decoding, backdrop,
+  keyboard, stale cover, focus, Codex's `imageView`; also long paths from the
+  second round. All fail. Off-screen decoding survived on CPU until
+  `stack-released` ran 240 frames, because at 75 a decoder that took every
+  picture had not finished, now that a PNG costs a process.
+  `cancel` sending only the flag survives the gate on both renderers, and that
+  is the gate's limit, not an equivalent. The watcher polls every 5 ms and the
+  application takes longer than that to exit, so it kills FFmpeg anyway; with
+  neither path the gate fails. The signal only matters inside that window.
+  `cancel_kills_the_group_with_nobody_watching` pins it, and fails without it.
 
 
 ## Integrated follow-up evidence (2026-10-30)
