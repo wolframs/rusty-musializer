@@ -481,6 +481,19 @@ one real video with it found these, each from a contact sheet:
   the operator approved the mockup's direction and asked for one session per
   step from here. The briefs are under "Next sessions" in that file.
 
+- **Disk decisions left over from the 2026-11-10 cleanup — the operator's to
+  make, in a session here.** Both live in the gitignored `build/`; measure
+  their sizes again before deciding.
+  - The "Door, No Room" renders and intermediates in `build/door/`: the
+    `door_no_room_*` and `base_v*` MP4s. Which ones does the operator keep (or
+    move off `/`), and which can go? The `.musi`, treatment and analysis files
+    next to them are small.
+  - `build/lyrics-research-v2/.venv`: the uv venv that `tools/lyrics_research/`
+    and `tools/mimo_bench/` run in. Most of its files are hardlinks shared with
+    the uv cache, so deleting it frees little unless the research is finished.
+  - The audio-model apps DiffRhythm and stable-audio-3 in `~/apps/` belong to
+    AI Pantheon; that question is queued in its `docs/local-models.md`.
+
 One measurement for **LT2**, from the same session and not yet acted on: on a
 3:59 track with an embedded 27-line sheet, the normal local route
 (`external_analysis.py assist --mode lyrics --lyrics-file`) placed 15 lines and
