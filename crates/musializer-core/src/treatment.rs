@@ -918,6 +918,7 @@ impl Treatment {
                 grade: segment.grade,
                 glide: segment.glide,
                 pixel: segment.pixel,
+                caption_style: None,
             });
         }
         let mut scene_switches = SceneSwitchTimeline::new();

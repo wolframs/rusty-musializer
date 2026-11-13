@@ -334,7 +334,14 @@ pub struct LyricsDocument {
     /// longer exists is simply never read or written.
     voices: Vec<Voice>,
     cue_voices: std::collections::BTreeMap<u64, u8>,
+    /// Which named caption style a cue picks (post-legacy, MV2), by cue id,
+    /// for the reason the voices are kept here. The table itself is the
+    /// project's (`CaptionStyle::styles`); a name it does not hold is refused
+    /// by every loader and drawn as the base by the renderer.
+    cue_styles: std::collections::BTreeMap<u64, StyleName>,
 }
+
+use crate::project::caption_styles::StyleName;
 
 fn voices_are_valid(voices: &[Voice]) -> bool {
     voices.len() <= VOICE_CAPACITY
@@ -383,7 +390,42 @@ impl LyricsDocument {
             cues: Vec::new(),
             voices: Vec::new(),
             cue_voices: std::collections::BTreeMap::new(),
+            cue_styles: std::collections::BTreeMap::new(),
         })
+    }
+
+    /// The named caption style cue `id` picks, if it picks one (MV2).
+    #[must_use]
+    pub fn style_of(&self, id: u64) -> Option<StyleName> {
+        self.cue_styles.get(&id).copied()
+    }
+
+    /// Every cue's own style, by cue id, for the checks that resolve the
+    /// names against the project's table.
+    pub fn cue_styles(&self) -> impl Iterator<Item = (u64, StyleName)> + '_ {
+        self.cue_styles.iter().map(|(id, name)| (*id, *name))
+    }
+
+    /// Sets or clears cue `id`'s own style. Refuses an id no cue has; the name
+    /// is checked against the table by the caller, which owns the table.
+    pub fn set_cue_style(&mut self, id: u64, style: Option<StyleName>) -> bool {
+        if !self.cues.iter().any(|cue| cue.id == id) {
+            return false;
+        }
+        match style {
+            Some(name) => {
+                self.cue_styles.insert(id, name);
+            }
+            None => {
+                self.cue_styles.remove(&id);
+            }
+        }
+        self.bump_revision();
+        true
+    }
+
+    pub(crate) fn set_cue_style_unvalidated(&mut self, id: u64, style: StyleName) {
+        self.cue_styles.insert(id, style);
     }
 
     /// The named voices, in their declared order.
@@ -891,6 +933,7 @@ impl LyricsDocument {
         // behind is the first path to drop what a treatment said.
         self.voices.clone_from(&source.voices);
         self.cue_voices.clone_from(&source.cue_voices);
+        self.cue_styles.clone_from(&source.cue_styles);
         self.revision = revision;
         Ok(())
     }
@@ -932,6 +975,7 @@ impl LyricsDocument {
         // behind is the first path to drop what a treatment said.
         self.voices.clone_from(&source.voices);
         self.cue_voices.clone_from(&source.cue_voices);
+        self.cue_styles.clone_from(&source.cue_styles);
         self.duration_seconds = duration_seconds;
         for cue in &mut self.cues {
             if cue.end_seconds > duration_seconds {

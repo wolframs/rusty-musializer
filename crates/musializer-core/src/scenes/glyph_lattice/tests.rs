@@ -235,6 +235,7 @@ fn the_line_lights_word_by_word_and_dissolves() {
         end_seconds: 4.0,
         text: "Light the lattice".into(),
         voice: None,
+        style: None,
     };
     let mut state = GlyphLatticeState::new(1);
     let mut field = Field::new();
@@ -284,6 +285,7 @@ fn the_whole_line_stands_in_place_before_a_word_lights() {
         end_seconds: 6.0,
         text: "for this small interval".into(),
         voice: None,
+        style: None,
     };
     let run = |words: bool| {
         let mut settings = settings();
@@ -328,6 +330,7 @@ fn words_off_never_sets_the_line() {
         end_seconds: 5.0,
         text: "nothing".into(),
         voice: None,
+        style: None,
     };
     let mut state = GlyphLatticeState::new(1);
     let mut f = SceneFrame::idle(&settings);

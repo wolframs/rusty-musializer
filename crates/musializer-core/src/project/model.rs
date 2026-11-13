@@ -569,6 +569,10 @@ pub struct CaptionStyle {
     /// Glow, soft shadow and plate shape. Defaults render the legacy
     /// composition exactly; see [`CaptionEffects`].
     pub effects: CaptionEffects,
+    /// Named styles a lyric line, a plan section or a title card may pick
+    /// (post-legacy, MV2), each stating only what differs from this one.
+    /// Empty, the default, is never written.
+    pub styles: Vec<super::caption_styles::NamedCaptionStyle>,
 }
 
 impl Default for CaptionStyle {
@@ -590,6 +594,7 @@ impl Default for CaptionStyle {
             box_rgba: caption::BOX_RGBA_DEFAULT,
             font: None,
             effects: CaptionEffects::default(),
+            styles: Vec::new(),
         }
     }
 }
@@ -622,7 +627,7 @@ impl CaptionStyle {
         if (self.face == CaptionFace::Imported) != self.font.is_some() {
             return false;
         }
-        if !self.effects.validate() {
+        if !self.effects.validate() || !super::caption_styles::table_is_valid(&self.styles) {
             return false;
         }
         self.font.as_ref().map_or(true, FontAsset::is_valid)
@@ -834,6 +839,9 @@ pub struct SceneSwitchSuggestion {
     /// This section's pixel look over the finish's (2026-10-24). `None` is
     /// never written; `Some(Pixel::OFF)` is written as `"off"`.
     pub pixel: Option<super::pixel::Pixel>,
+    /// The named caption style lines beginning in this section wear
+    /// (post-legacy, MV2). `None` is never written.
+    pub caption_style: Option<super::caption_styles::StyleName>,
 }
 
 /// The imported switch plan (`Musi_Scene_Switch_Suggestions`, `project.h:273-277`).
@@ -847,6 +855,8 @@ pub struct SceneSwitchSuggestions {
     /// The finish over every frame (post-legacy, MV9-a). No finish is never
     /// written.
     pub finish: super::look::Finish,
+    /// The title lane (post-legacy, MV2). Empty is never written.
+    pub titles: Vec<super::caption_styles::TitleCard>,
 }
 
 /// A saved tuning preset (`Musi_Scene_Preset`, `project.h:279-285`).
@@ -1053,6 +1063,13 @@ impl Project {
             || self.lyrics.validate().is_err()
         {
             return Err(fail(ProjectError::Lyrics, 0, 0));
+        }
+        // A line's own caption style is a name in the project's table (MV2).
+        if let Some((id, _)) = self.lyrics.cue_styles().find(|(_, name)| {
+            super::caption_styles::find(&self.caption_style.styles, *name).is_none()
+        }) {
+            let index = self.lyrics.index_of(id).unwrap_or(0);
+            return Err(fail(ProjectError::Lyrics, index, 1));
         }
         self.validate_scene_switches()?;
         self.validate_scene_presets()?;
@@ -1282,6 +1299,12 @@ impl Project {
             if let Some(at) = cue.settings.iter().position(|value| !value.is_finite()) {
                 return Err(fail(ProjectError::SceneSwitch, index, at));
             }
+            // A section's caption style is a name in the project's table (MV2).
+            if cue.caption_style.is_some_and(|name| {
+                super::caption_styles::find(&self.caption_style.styles, name).is_none()
+            }) {
+                return Err(fail(ProjectError::SceneSwitch, index, 0));
+            }
             if let Some(previous) = switches.cues[..index]
                 .iter()
                 .position(|other| other.id == cue.id)
@@ -1292,6 +1315,13 @@ impl Project {
         }
         if !switches.cues.is_empty() && (cursor - self.audio.duration_seconds).abs() > 0.001 {
             return Err(fail(ProjectError::SceneSwitch, switches.cues.len() - 1, 0));
+        }
+        if !super::caption_styles::titles_are_valid(
+            &switches.titles,
+            self.audio.duration_seconds,
+            &self.caption_style.styles,
+        ) {
+            return Err(fail(ProjectError::SceneSwitch, 0, 1));
         }
         Ok(())
     }
@@ -2042,6 +2072,7 @@ mod tests {
             grade: None,
             glide: 0.0,
             pixel: None,
+            caption_style: None,
         };
         project.scene_switches.cues = vec![switch(1, 0.0, 30.0), switch(2, 30.0, 60.0)];
         assert_eq!(project.validate(), Ok(()));
@@ -2066,6 +2097,7 @@ mod tests {
             cues: Vec::new(),
             outro: crate::project::transition::Transition::CUT,
             finish: crate::project::look::Finish::NONE,
+            titles: Vec::new(),
         };
         assert_eq!(
             project.validate().unwrap_err().error,

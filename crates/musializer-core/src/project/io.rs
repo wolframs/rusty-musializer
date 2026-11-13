@@ -40,6 +40,11 @@ use super::look::{Finish, Grade, MAX_STOPS, MIN_STOPS};
 use super::pixel::{self, Matching, Pixel};
 use super::transition::{Transition, TransitionKind};
 use crate::project::assets;
+use crate::project::caption_styles::{
+    CaptionOverride, EffectsOverride, NamedCaptionStyle, StyleName, TitleCard,
+    CAPTION_STYLE_CAPACITY, HANDLE_MAX_BYTES, STYLE_NAME_MAX_BYTES, TITLE_CAPACITY,
+    TITLE_TEXT_MAX_BYTES,
+};
 use crate::project::lyrics::{LyricCue, LyricsDocument, CUE_CAPACITY as LYRIC_CUE_CAPACITY};
 use crate::project::model::{
     capacity, AnalysisLaneKind, AnalysisLaneReference, AsciiImageAsset, AssetMode, AudioAsset,
@@ -402,6 +407,18 @@ fn write_project(out: &mut String, project: &Project) {
         }
         out.push('}');
     }
+    // Post-legacy (MV2): the named styles, written only when there are any,
+    // so every project without one is byte-identical to what came before.
+    if !caption.styles.is_empty() {
+        out.push_str(",\"styles\":[");
+        for (index, entry) in caption.styles.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            write_named_style(out, entry);
+        }
+        out.push(']');
+    }
     out.push('}');
 
     let output = &project.output;
@@ -538,6 +555,12 @@ fn write_project(out: &mut String, project: &Project) {
             out.push_str(",\"voice\":");
             write_string(out, &voice.name);
         }
+        // Post-legacy (MV2), on the same rule: a line that picks no named
+        // caption style writes nothing.
+        if let Some(style) = project.lyrics.style_of(cue.id) {
+            out.push_str(",\"style\":");
+            write_string(out, style.as_str());
+        }
         out.push('}');
     }
     out.push(']');
@@ -612,6 +635,12 @@ fn write_project(out: &mut String, project: &Project) {
                 out.push_str("\"off\"");
             }
         }
+        // Post-legacy (MV2): the named caption style this section's lines
+        // wear. The base is spelled by leaving it out.
+        if let Some(style) = cue.caption_style {
+            out.push_str(",\"caption_style\":");
+            write_string(out, style.as_str());
+        }
         out.push('}');
     }
     out.push(']');
@@ -622,6 +651,18 @@ fn write_project(out: &mut String, project: &Project) {
     if project.scene_switches.finish.is_active() {
         out.push_str(",\"finish\":");
         write_finish(out, &project.scene_switches.finish);
+    }
+    // Post-legacy (MV2): the title lane. Nothing adds a card by itself, so a
+    // project nobody asked a card for writes nothing here.
+    if !project.scene_switches.titles.is_empty() {
+        out.push_str(",\"titles\":[");
+        for (index, card) in project.scene_switches.titles.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            write_title(out, card);
+        }
+        out.push(']');
     }
 
     out.push_str("},\"scene_presets\":[");
@@ -1359,21 +1400,25 @@ fn parse_lane(parser: &mut Parser<'_>) -> Parsed<AnalysisLaneReference> {
     Ok(lane)
 }
 
-fn parse_lyric_cue(parser: &mut Parser<'_>) -> Parsed<(LyricCue, Option<String>)> {
+fn parse_lyric_cue(
+    parser: &mut Parser<'_>,
+) -> Parsed<(LyricCue, Option<String>, Option<StyleName>)> {
     // `origin` is an **optional** name here (LX1): absent means
     // [`CueOrigin::UserApplied`], which is what makes every pre-LX1 file open
     // unchanged. So is `voice` (MV9-h), a name resolved against the lyrics
     // block's `voices` once the whole block is read. `has_all` below still
     // demands the original four, so optional does not mean forgiving.
-    const NAMES: [&str; 6] = [
+    const NAMES: [&str; 7] = [
         "id",
         "start_seconds",
         "end_seconds",
         "text",
         "origin",
         "voice",
+        "style",
     ];
     let mut voice = None;
+    let mut style = None;
     /// Longest [`CueOrigin::token`]. Bounding the read before the lookup keeps
     /// the "strings are bounded at parse time" rule the module comment states.
     const ORIGIN_MAX_BYTES: usize = 16;
@@ -1388,6 +1433,9 @@ fn parse_lyric_cue(parser: &mut Parser<'_>) -> Parsed<(LyricCue, Option<String>)
             2 => cue.end_seconds = parser.f64()?,
             3 => cue.text = parser.string(crate::project::lyrics::TEXT_MAX_BYTES)?,
             5 => voice = Some(parser.string(crate::project::lyrics::VOICE_NAME_MAX_BYTES)?),
+            // Post-legacy (MV2): resolved against the caption style table by
+            // `Project::validate`, which refuses a name the table lacks.
+            6 => style = Some(parse_style_name(parser)?),
             // An unrecognised token is a hard error rather than a fallback to
             // the default. Silently reading a future "verified" origin as
             // "user applied" would be this codec lying about provenance, and
@@ -1403,7 +1451,7 @@ fn parse_lyric_cue(parser: &mut Parser<'_>) -> Parsed<(LyricCue, Option<String>)
     if !seen.has_all(0xf) {
         return Err(ProjectIoError::MissingField);
     }
-    Ok((cue, voice))
+    Ok((cue, voice, style))
 }
 
 fn parse_voice(parser: &mut Parser<'_>) -> Parsed<crate::project::lyrics::Voice> {
@@ -1446,9 +1494,12 @@ fn parse_lyrics(parser: &mut Parser<'_>, document: &mut LyricsDocument) -> Parse
         match field {
             0 => document.set_next_id(parser.u64()?),
             1 => parser.array(LYRIC_CUE_CAPACITY, |parser, _| {
-                let (cue, voice) = parse_lyric_cue(parser)?;
+                let (cue, voice, style) = parse_lyric_cue(parser)?;
                 if let Some(voice) = voice {
                     assigned.push((cue.id, voice));
+                }
+                if let Some(style) = style {
+                    document.set_cue_style_unvalidated(cue.id, style);
                 }
                 document.push_unvalidated(cue);
                 Ok(())
@@ -1488,7 +1539,7 @@ fn parse_f32_array(parser: &mut Parser<'_>, capacity: usize) -> Parsed<Vec<f32>>
 /// `parse_switch` (`project_io.c:224-225`): `settings` is optional and defaults to
 /// empty, which is how early v1 projects are spelled.
 fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
-    const NAMES: [&str; 10] = [
+    const NAMES: [&str; 11] = [
         "id",
         "start_seconds",
         "end_seconds",
@@ -1499,6 +1550,7 @@ fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
         "grade",
         "glide",
         "pixel",
+        "caption_style",
     ];
     let mut cue = SceneSwitchSuggestion::default();
     let mut seen = Seen::default();
@@ -1515,6 +1567,7 @@ fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
             6 => cue.transition = parse_transition(parser)?,
             7 => cue.grade = Some(parse_grade(parser)?),
             9 => cue.pixel = Some(parse_section_pixel(parser)?),
+            10 => cue.caption_style = Some(parse_style_name(parser)?),
             _ => {
                 cue.glide = parser.f32()?;
                 // Zero is spelled by leaving the member out, like a cut.
@@ -1797,7 +1850,7 @@ fn parse_finish(parser: &mut Parser<'_>) -> Parsed<Finish> {
 }
 
 fn parse_switches(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestions> {
-    const NAMES: [&str; 4] = ["enabled", "cues", "outro", "finish"];
+    const NAMES: [&str; 5] = ["enabled", "cues", "outro", "finish", "titles"];
     let mut switches = SceneSwitchSuggestions::default();
     let mut seen = Seen::default();
     parser.object(|parser, key| {
@@ -1809,6 +1862,16 @@ fn parse_switches(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestions> {
             switches.outro = parse_transition(parser)?;
         } else if field == 3 {
             switches.finish = parse_finish(parser)?;
+        } else if field == 4 {
+            let titles = &mut switches.titles;
+            parser.array(TITLE_CAPACITY, |parser, _| {
+                titles.push(parse_title(parser)?);
+                Ok(())
+            })?;
+            // Empty is spelled by leaving the member out.
+            if titles.is_empty() {
+                return Err(ProjectIoError::MissingField);
+            }
         } else {
             let cues = &mut switches.cues;
             parser.array(SCENE_SWITCH_CAPACITY, |parser, _| {
@@ -1937,7 +2000,7 @@ fn parse_font_asset(parser: &mut Parser<'_>) -> Parsed<Option<FontAsset>> {
 /// post-dates the frozen C (2026-08-03) and its absence *is* the default, the
 /// same contract the whole block has at the project level.
 fn parse_caption_style(parser: &mut Parser<'_>) -> Parsed<CaptionStyle> {
-    const NAMES: [&str; 10] = [
+    const NAMES: [&str; 11] = [
         "face",
         "box",
         "anchor",
@@ -1948,6 +2011,7 @@ fn parse_caption_style(parser: &mut Parser<'_>) -> Parsed<CaptionStyle> {
         "box_rgba",
         "font",
         "effects",
+        "styles",
     ];
     let mut style = CaptionStyle::default();
     let mut seen = Seen::default();
@@ -1964,7 +2028,18 @@ fn parse_caption_style(parser: &mut Parser<'_>) -> Parsed<CaptionStyle> {
             6 => style.text_rgba = parser.rgba()?,
             7 => style.box_rgba = parser.rgba()?,
             8 => style.font = parse_font_asset(parser)?,
-            _ => style.effects = parse_caption_effects(parser)?,
+            9 => style.effects = parse_caption_effects(parser)?,
+            _ => {
+                let styles = &mut style.styles;
+                parser.array(CAPTION_STYLE_CAPACITY, |parser, _| {
+                    styles.push(parse_named_style(parser)?);
+                    Ok(())
+                })?;
+                // Empty is spelled by leaving the member out.
+                if styles.is_empty() {
+                    return Err(ProjectIoError::MissingField);
+                }
+            }
         }
         Ok(())
     })?;
@@ -2070,6 +2145,222 @@ fn parse_drive_tuning(parser: &mut Parser<'_>) -> Parsed<DriveTuning> {
         return Err(ProjectIoError::MissingField);
     }
     Ok(tuning)
+}
+
+// -- MV2: named caption styles and the title lane (post-legacy) -------------
+//
+// Every member of a named style is optional and written only when stated: a
+// style *is* the list of what it changes, so here — unlike the base style's
+// all-or-nothing block — absent means "the base's", which is the meaning the
+// author gave it. Floats are post-legacy and so shortest round-trip.
+
+fn parse_style_name(parser: &mut Parser<'_>) -> Parsed<StyleName> {
+    let text = parser.string(STYLE_NAME_MAX_BYTES)?;
+    StyleName::new(&text).ok_or(ProjectIoError::String)
+}
+
+fn write_named_style(out: &mut String, entry: &NamedCaptionStyle) {
+    let style = &entry.style;
+    out.push_str("{\"name\":");
+    write_string(out, entry.name.as_str());
+    if let Some(face) = style.face {
+        out.push_str(",\"face\":");
+        write_string(out, face.canonical_name());
+    }
+    if let Some(value) = style.box_style {
+        out.push_str(",\"box\":");
+        write_string(out, value.canonical_name());
+    }
+    if let Some(value) = style.anchor {
+        out.push_str(",\"anchor\":");
+        write_string(out, value.canonical_name());
+    }
+    let real = |out: &mut String, key: &str, value: Option<f64>| {
+        if let Some(value) = value {
+            out.push_str(&format!(",\"{key}\":"));
+            write_f64(out, value);
+        }
+    };
+    real(out, "size_scale", style.size_scale);
+    real(out, "margin_scale", style.margin_scale);
+    real(out, "width_scale", style.width_scale);
+    if let Some(value) = style.text_rgba {
+        out.push_str(",\"text_rgba\":");
+        write_rgba(out, value);
+    }
+    if let Some(value) = style.box_rgba {
+        out.push_str(",\"box_rgba\":");
+        write_rgba(out, value);
+    }
+    let fx = &style.effects;
+    if *fx != EffectsOverride::default() {
+        // The first member written opens the object without a comma.
+        let mut body = String::new();
+        real(&mut body, "glow_strength", fx.glow_strength);
+        real(&mut body, "glow_radius", fx.glow_radius);
+        if let Some(value) = fx.glow_rgba {
+            body.push_str(",\"glow_rgba\":");
+            write_rgba(&mut body, value);
+        }
+        if let Some(value) = fx.glow_pulse {
+            body.push_str(",\"glow_pulse\":");
+            write_string(&mut body, value.canonical_name());
+        }
+        real(&mut body, "glow_pulse_depth", fx.glow_pulse_depth);
+        if let Some(value) = fx.glow_hue_drive {
+            body.push_str(",\"glow_hue_drive\":");
+            write_string(&mut body, value.canonical_name());
+        }
+        real(&mut body, "glow_hue_range", fx.glow_hue_range);
+        real(&mut body, "shadow_blur", fx.shadow_blur);
+        real(&mut body, "shadow_opacity", fx.shadow_opacity);
+        real(&mut body, "plate_roundness", fx.plate_roundness);
+        real(&mut body, "entrance_seconds", fx.entrance_seconds);
+        real(&mut body, "exit_seconds", fx.exit_seconds);
+        out.push_str(",\"effects\":{");
+        out.push_str(body.strip_prefix(',').unwrap_or(&body));
+        out.push('}');
+    }
+    out.push('}');
+}
+
+fn parse_named_style(parser: &mut Parser<'_>) -> Parsed<NamedCaptionStyle> {
+    const NAMES: [&str; 10] = [
+        "name",
+        "face",
+        "box",
+        "anchor",
+        "size_scale",
+        "margin_scale",
+        "width_scale",
+        "text_rgba",
+        "box_rgba",
+        "effects",
+    ];
+    let mut name = None;
+    let mut style = CaptionOverride::default();
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        match field {
+            0 => name = Some(parse_style_name(parser)?),
+            1 => style.face = Some(parser.enum_value(CaptionFace::from_canonical_name)?),
+            2 => style.box_style = Some(parser.enum_value(CaptionBox::from_canonical_name)?),
+            3 => style.anchor = Some(parser.enum_value(CaptionAnchor::from_canonical_name)?),
+            4 => style.size_scale = Some(parser.f64()?),
+            5 => style.margin_scale = Some(parser.f64()?),
+            6 => style.width_scale = Some(parser.f64()?),
+            7 => style.text_rgba = Some(parser.rgba()?),
+            8 => style.box_rgba = Some(parser.rgba()?),
+            _ => style.effects = parse_effects_override(parser)?,
+        }
+        Ok(())
+    })?;
+    let name = name.ok_or(ProjectIoError::MissingField)?;
+    Ok(NamedCaptionStyle { name, style })
+}
+
+fn parse_effects_override(parser: &mut Parser<'_>) -> Parsed<EffectsOverride> {
+    const NAMES: [&str; 12] = [
+        "glow_strength",
+        "glow_radius",
+        "glow_rgba",
+        "glow_pulse",
+        "glow_pulse_depth",
+        "glow_hue_drive",
+        "glow_hue_range",
+        "shadow_blur",
+        "shadow_opacity",
+        "plate_roundness",
+        "entrance_seconds",
+        "exit_seconds",
+    ];
+    let mut fx = EffectsOverride::default();
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        match field {
+            0 => fx.glow_strength = Some(parser.f64()?),
+            1 => fx.glow_radius = Some(parser.f64()?),
+            2 => fx.glow_rgba = Some(parser.rgba()?),
+            3 => fx.glow_pulse = Some(parser.enum_value(EffectDrive::from_canonical_name)?),
+            4 => fx.glow_pulse_depth = Some(parser.f64()?),
+            5 => fx.glow_hue_drive = Some(parser.enum_value(EffectDrive::from_canonical_name)?),
+            6 => fx.glow_hue_range = Some(parser.f64()?),
+            7 => fx.shadow_blur = Some(parser.f64()?),
+            8 => fx.shadow_opacity = Some(parser.f64()?),
+            9 => fx.plate_roundness = Some(parser.f64()?),
+            10 => fx.entrance_seconds = Some(parser.f64()?),
+            _ => fx.exit_seconds = Some(parser.f64()?),
+        }
+        Ok(())
+    })?;
+    // An empty block is spelled by leaving it out.
+    if fx == EffectsOverride::default() {
+        return Err(ProjectIoError::MissingField);
+    }
+    Ok(fx)
+}
+
+fn write_title(out: &mut String, card: &TitleCard) {
+    out.push_str("{\"start_seconds\":");
+    write_f64(out, card.start_seconds);
+    out.push_str(",\"end_seconds\":");
+    write_f64(out, card.end_seconds);
+    out.push_str(",\"title\":");
+    write_string(out, &card.title);
+    if let Some(artist) = &card.artist {
+        out.push_str(",\"artist\":");
+        write_string(out, artist);
+    }
+    if let Some(handle) = &card.handle {
+        out.push_str(",\"handle\":");
+        write_string(out, handle);
+    }
+    if let Some(style) = card.style {
+        out.push_str(",\"style\":");
+        write_string(out, style.as_str());
+    }
+    out.push('}');
+}
+
+fn parse_title(parser: &mut Parser<'_>) -> Parsed<TitleCard> {
+    const NAMES: [&str; 6] = [
+        "start_seconds",
+        "end_seconds",
+        "title",
+        "artist",
+        "handle",
+        "style",
+    ];
+    let mut card = TitleCard {
+        start_seconds: 0.0,
+        end_seconds: 0.0,
+        title: String::new(),
+        artist: None,
+        handle: None,
+        style: None,
+    };
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        match field {
+            0 => card.start_seconds = parser.f64()?,
+            1 => card.end_seconds = parser.f64()?,
+            2 => card.title = parser.string(TITLE_TEXT_MAX_BYTES)?,
+            3 => card.artist = Some(parser.string(TITLE_TEXT_MAX_BYTES)?),
+            4 => card.handle = Some(parser.string(HANDLE_MAX_BYTES)?),
+            _ => card.style = Some(parse_style_name(parser)?),
+        }
+        Ok(())
+    })?;
+    if !seen.has_all(0x7) {
+        return Err(ProjectIoError::MissingField);
+    }
+    Ok(card)
 }
 
 /// `parse_project` (`project_io.c:304-306`).
@@ -3507,12 +3798,14 @@ mod tests {
             grade: None,
             glide: 0.0,
             pixel: None,
+            caption_style: None,
         };
         project.scene_switches = SceneSwitchSuggestions {
             enabled: true,
             cues: vec![switch(1, 0.0, 60.0, Transition::CUT)],
             outro: Transition::CUT,
             finish: crate::project::look::Finish::NONE,
+            titles: Vec::new(),
         };
         let plain = serialize(&project).unwrap();
         assert!(!plain.contains("transition") && !plain.contains("outro"));
@@ -3555,12 +3848,14 @@ mod tests {
             grade,
             glide,
             pixel: None,
+            caption_style: None,
         };
         project.scene_switches = SceneSwitchSuggestions {
             enabled: true,
             cues: vec![switch(1, 0.0, 60.0, None, 0.0)],
             outro: Transition::CUT,
             finish: Finish::NONE,
+            titles: Vec::new(),
         };
         let plain = serialize(&project).unwrap();
         assert!(
@@ -3623,12 +3918,14 @@ mod tests {
             grade: None,
             glide: 0.0,
             pixel,
+            caption_style: None,
         };
         project.scene_switches = SceneSwitchSuggestions {
             enabled: true,
             cues: vec![switch(1, 0.0, 60.0, None)],
             outro: Transition::CUT,
             finish: Finish::FILM,
+            titles: Vec::new(),
         };
         let plain = serialize(&project).unwrap();
         assert!(
@@ -3762,6 +4059,150 @@ mod tests {
         }
     }
 
+    /// MV2: the named styles, a line's own style, a section's and the title
+    /// lane round-trip by name, and a project using none of them writes none.
+    #[test]
+    fn caption_styles_and_titles_round_trip_and_an_unknown_name_is_refused() {
+        use crate::project::caption_styles::{
+            CaptionOverride, EffectsOverride, NamedCaptionStyle, StyleName, TitleCard,
+        };
+        use crate::project::lyrics::CueOrigin;
+        let name = |text: &str| StyleName::new(text).unwrap();
+        let mut project = valid_project();
+        let plain = serialize(&project).unwrap();
+        for member in [
+            "\"styles\"",
+            "\"style\"",
+            "\"titles\"",
+            "\"caption_style\":\"",
+        ] {
+            assert!(
+                !plain.contains(member),
+                "{member} written by a project without it"
+            );
+        }
+        let id = project
+            .lyrics
+            .insert(LyricCue {
+                id: 0,
+                start_seconds: 1.0,
+                end_seconds: 2.0,
+                text: "a shouted line".into(),
+                origin: CueOrigin::UserApplied,
+            })
+            .unwrap();
+        project.caption_style.styles = vec![
+            NamedCaptionStyle {
+                name: name("top"),
+                style: CaptionOverride {
+                    anchor: Some(CaptionAnchor::TopCenter),
+                    ..CaptionOverride::default()
+                },
+            },
+            NamedCaptionStyle {
+                name: name("shout"),
+                style: CaptionOverride {
+                    face: Some(CaptionFace::SpaceGrotesk),
+                    size_scale: Some(0.07),
+                    text_rgba: Some(0xFFD3_6BFF),
+                    effects: EffectsOverride {
+                        glow_strength: Some(0.8),
+                        entrance_seconds: Some(0.25),
+                        ..EffectsOverride::default()
+                    },
+                    ..CaptionOverride::default()
+                },
+            },
+            NamedCaptionStyle {
+                name: name("empty"),
+                style: CaptionOverride::default(),
+            },
+        ];
+        assert!(project.lyrics.set_cue_style(id, Some(name("shout"))));
+        project.scene_switches = SceneSwitchSuggestions {
+            enabled: true,
+            cues: vec![SceneSwitchSuggestion {
+                id: 1,
+                start_seconds: 0.0,
+                end_seconds: project.audio.duration_seconds,
+                scene_name: "clawd".into(),
+                strength: 1.0,
+                caption_style: Some(name("top")),
+                ..SceneSwitchSuggestion::default()
+            }],
+            titles: vec![TitleCard {
+                start_seconds: 0.0,
+                end_seconds: 4.5,
+                title: "Door, No Room".into(),
+                artist: Some("Chaos Cat Familiar".into()),
+                handle: Some("@chaoscatfamiliar".into()),
+                style: Some(name("top")),
+            }],
+            ..SceneSwitchSuggestions::default()
+        };
+        let text = serialize(&project).unwrap();
+        assert!(
+            text.contains(
+                "\"styles\":[{\"name\":\"top\",\"anchor\":\"top_center\"},{\"name\":\"shout\",\
+                 \"face\":\"space_grotesk\",\"size_scale\":0.07,\"text_rgba\":\"ffd36bff\",\
+                 \"effects\":{\"glow_strength\":0.8,\"entrance_seconds\":0.25}},{\"name\":\"empty\"}]"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("\"text\":\"a shouted line\",\"style\":\"shout\"}"));
+        assert!(text.contains("\"caption_style\":\"top\"}"));
+        assert!(text.contains(
+            "\"titles\":[{\"start_seconds\":0,\"end_seconds\":4.5,\"title\":\"Door, No Room\",\
+             \"artist\":\"Chaos Cat Familiar\",\"handle\":\"@chaoscatfamiliar\",\"style\":\"top\"}]"
+        ));
+        let reopened = deserialize(text.as_bytes()).unwrap();
+        assert_eq!(reopened.caption_style, project.caption_style);
+        assert_eq!(reopened.lyrics.style_of(id), Some(name("shout")));
+        assert_eq!(reopened.scene_switches, project.scene_switches);
+        assert_eq!(
+            serialize(&reopened).unwrap(),
+            text,
+            "byte-identical re-write"
+        );
+        for broken in [
+            // A name the table does not hold, wherever it is used.
+            text.replace("\"style\":\"shout\"", "\"style\":\"whisper\""),
+            text.replace("\"caption_style\":\"top\"", "\"caption_style\":\"bottom\""),
+            text.replace(
+                "\"handle\":\"@chaoscatfamiliar\",\"style\":\"top\"",
+                "\"style\":\"nope\"",
+            ),
+            // A repeated name, an out-of-bounds member, the imported face.
+            text.replace("{\"name\":\"empty\"}", "{\"name\":\"top\"}"),
+            text.replace("\"size_scale\":0.07", "\"size_scale\":0.9"),
+            text.replace("\"face\":\"space_grotesk\"", "\"face\":\"imported\""),
+            // Empty is spelled by leaving a member out, never by writing it.
+            text.replace(
+                ",\"effects\":{\"glow_strength\":0.8,\"entrance_seconds\":0.25}",
+                ",\"effects\":{}",
+            ),
+            // A handle without its @, and a card past the end of the track.
+            text.replace("@chaoscatfamiliar", "chaoscatfamiliar"),
+            text.replace("\"end_seconds\":4.5", "\"end_seconds\":4500"),
+            // An unknown member.
+            text.replace("\"title\":\"Door", "\"subtitle\":\"x\",\"title\":\"Door"),
+        ] {
+            assert_ne!(broken, text, "the perturbation must change the file");
+            assert!(deserialize(broken.as_bytes()).is_err(), "{broken}");
+        }
+        let mut no_titles = text.replace(
+            ",\"titles\":[{\"start_seconds\":0,\"end_seconds\":4.5,\"title\":\"Door, No Room\",\
+             \"artist\":\"Chaos Cat Familiar\",\"handle\":\"@chaoscatfamiliar\",\"style\":\"top\"}]",
+            ",\"titles\":[]",
+        );
+        assert!(
+            deserialize(no_titles.as_bytes()).is_err(),
+            "an empty lane is never written"
+        );
+        no_titles = no_titles.replace(",\"titles\":[]", "");
+        assert!(deserialize(no_titles.as_bytes()).is_ok());
+    }
+
     #[test]
     fn opening_a_project_never_rewrites_it() {
         // The invariant, as a test: parse, do nothing, re-serialize, compare. Any
@@ -3780,9 +4221,11 @@ mod tests {
                 grade: None,
                 glide: 0.0,
                 pixel: None,
+                caption_style: None,
             }],
             outro: Transition::CUT,
             finish: crate::project::look::Finish::NONE,
+            titles: Vec::new(),
         };
         project.scene_presets = vec![ScenePreset {
             id: 1,

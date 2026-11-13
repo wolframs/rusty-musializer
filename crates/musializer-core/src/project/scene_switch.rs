@@ -105,6 +105,10 @@ pub struct SceneSwitchCue {
     /// This section's pixel look, over the finish's (2026-10-24): `None`
     /// wears the video's, `Some(Pixel::OFF)` switches it off here.
     pub pixel: Option<Pixel>,
+    /// The named caption style the lines that **begin** in this section wear
+    /// unless they name their own (post-legacy, MV2). `None`, the default and
+    /// never written, is the base style.
+    pub caption_style: Option<StyleName>,
 }
 
 impl Default for SceneSwitchCue {
@@ -120,6 +124,7 @@ impl Default for SceneSwitchCue {
             grade: None,
             glide: 0.0,
             pixel: None,
+            caption_style: None,
         }
     }
 }
@@ -137,9 +142,16 @@ pub struct SceneSwitchTimeline {
     /// outro it is the track's own, so it applies whether or not the plan is
     /// switched on.
     pub finish: Finish,
+    /// The title lane (post-legacy, MV2): timed cards, in order, never
+    /// overlapping. Like the finish it is the track's own, so a card shows
+    /// whether or not the plan is switched on. Empty — the default, and what
+    /// nothing ever adds by itself — is never written.
+    pub titles: Vec<TitleCard>,
     active_index: Option<usize>,
     cues: Vec<SceneSwitchCue>,
 }
+
+use crate::project::caption_styles::{StyleName, TitleCard};
 
 impl SceneSwitchTimeline {
     /// `scene_switch_init` (`scene_switch.c:11-16`).
@@ -232,6 +244,22 @@ impl SceneSwitchTimeline {
                     time_seconds >= cue.start_seconds && time_seconds <= cue.end_seconds
                 })
             })
+    }
+
+    /// The named caption style of the section a line starting at
+    /// `start_seconds` begins in (MV2), while the plan is on. Keyed by the
+    /// line's start rather than the frame's time, so a line that runs across a
+    /// cut keeps one style for its whole span.
+    #[must_use]
+    pub fn caption_style_at(&self, start_seconds: f64) -> Option<StyleName> {
+        self.cue_covering(start_seconds)
+            .and_then(|cue| cue.caption_style)
+    }
+
+    /// The title card on screen at `time_seconds` (MV2), plan on or off.
+    #[must_use]
+    pub fn title_at(&self, time_seconds: f64) -> Option<&TitleCard> {
+        crate::project::caption_styles::title_at(&self.titles, time_seconds)
     }
 
     /// The palette lock in force at `time_seconds` (MV9-b): the covering
@@ -580,6 +608,7 @@ impl SceneSwitchTimeline {
                 grade: None,
                 glide: 0.0,
                 pixel: None,
+                caption_style: None,
             });
         } else {
             let selected = staged
@@ -774,6 +803,7 @@ mod tests {
             grade: None,
             glide: 0.0,
             pixel: None,
+            caption_style: None,
         }
     }
 

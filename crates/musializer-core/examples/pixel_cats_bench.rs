@@ -22,6 +22,7 @@ fn main() {
         end_seconds: 19.0,
         text: "I found a terminal behind the drums".into(),
         voice: None,
+        style: None,
     };
     for (width, height) in [(320, 180), (400, 225)] {
         println!("canvas {width}x{height}");

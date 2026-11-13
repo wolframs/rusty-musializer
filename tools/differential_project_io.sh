@@ -225,6 +225,50 @@ if ! cmp -s "$OUT_DIR/rust_playhead.musi" "$OUT_DIR/rust_playhead_again.musi"; t
     exit 1
 fi
 
+# MV2 (2026-11-13): named caption styles, a line's and a section's style, and
+# the title lane. All post-legacy and all written only when used, so steps 1-8
+# above (which carry none of them) are the proof that every older file stays
+# byte-identical. This fixture carries every one of them, and is pinned the way
+# the v2 file is: the frozen C must refuse it -- by an unknown field, since the
+# file stays v1 -- and Rust must read its own file back to the same values and
+# re-write the same bytes.
+echo "=== step 15: Rust writes the fixture with caption styles and titles ==="
+step "Rust could not build or write its caption-styles fixture" \
+    "$RUST" build-captions "$OUT_DIR/rust_mv2.musi" >"$OUT_DIR/rust_mv2_wrote.txt"
+for member in '"styles":[' '"style":"everything"' '"caption_style":"top"' '"titles":['; do
+    if ! grep -qF "$member" "$OUT_DIR/rust_mv2.musi"; then
+        echo "FAIL: the caption-styles fixture does not carry $member" >&2
+        exit 1
+    fi
+done
+for member in '"styles"' '"style"' '"caption_style":"' '"titles"'; do
+    if grep -qF "$member" "$OUT_DIR/rust.musi"; then
+        echo "FAIL: the plain fixture carries $member; it must write nothing it does not use" >&2
+        exit 1
+    fi
+done
+
+echo "=== step 16: the C refuses it, by a field it does not know ==="
+if "$ORACLE" read "$OUT_DIR/rust_mv2.musi" >/dev/null 2>"$OUT_DIR/c_read_mv2.err"; then
+    echo "FAIL: the frozen C read a project with caption styles; it cannot know them" >&2
+    exit 1
+fi
+if ! grep -q "failed: unknown field" "$OUT_DIR/c_read_mv2.err"; then
+    echo "FAIL: the C refused the caption-styles file for another reason:" >&2
+    cat "$OUT_DIR/c_read_mv2.err" >&2
+    exit 1
+fi
+echo "    expected refusal: $(cat "$OUT_DIR/c_read_mv2.err")"
+
+echo "=== step 17: Rust re-writes its own caption-styles file ==="
+step "Rust refused its own caption-styles project" \
+    "$RUST" rewrite "$OUT_DIR/rust_mv2.musi" "$OUT_DIR/rust_mv2_again.musi" \
+    >"$OUT_DIR/rust_read_mv2.txt"
+if ! cmp -s "$OUT_DIR/rust_mv2.musi" "$OUT_DIR/rust_mv2_again.musi"; then
+    echo "FAIL: Rust re-wrote its caption-styles project into different bytes" >&2
+    exit 1
+fi
+
 echo "=== comparing ==="
 python3 - "$OUT_DIR" "$TOLERANCE" <<'PY'
 import os
@@ -406,6 +450,9 @@ comparisons = [
     # Post-legacy, no oracle (PXF-7): the resume position against its build dump.
     Comparison("6. Rust writes a playhead -> Rust reads (the C refuses it, step 13)",
                "rust_playhead_wrote.txt", "rust_read_playhead.txt"),
+    # Post-legacy, no oracle (MV2): caption styles and titles, the same way.
+    Comparison("7. Rust writes caption styles -> Rust reads (the C refuses it, step 16)",
+               "rust_mv2_wrote.txt", "rust_read_mv2.txt"),
 ]
 
 ok = True

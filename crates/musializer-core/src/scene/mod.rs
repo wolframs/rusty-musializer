@@ -459,6 +459,10 @@ pub struct LyricCue {
     /// (post-legacy, MV9-h). Cadence and Stage take its hue in place of their
     /// own `hue` setting; the caption overlay takes its ink and glow.
     pub voice: Option<VoiceStyle>,
+    /// The named caption style the line picks itself (post-legacy, MV2). The
+    /// caption overlay resolves it, or the line's section's, against the
+    /// project's table; scenes that draw the line themselves ignore it.
+    pub style: Option<crate::project::caption_styles::StyleName>,
 }
 
 /// How one voice's lines look (post-legacy, MV9-h). Every member optional: a

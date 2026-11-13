@@ -1852,6 +1852,7 @@ impl Shell {
             end_seconds: cue.end_seconds,
             text: cue.text.clone(),
             voice: track.lyrics.voice_of(cue.id).map(|voice| voice.style),
+            style: track.lyrics.style_of(cue.id),
         })
     }
 

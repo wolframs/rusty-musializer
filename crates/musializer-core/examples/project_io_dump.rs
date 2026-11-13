@@ -45,10 +45,12 @@
 use std::fmt::Write as _;
 use std::process::ExitCode;
 
+use musializer_core::project::caption_styles::NamedCaptionStyle;
 use musializer_core::project::event_timeline::EventTimeline;
 use musializer_core::project::frame_lanes::{ProjectFrameLanes, SceneFrameTiming};
 use musializer_core::project::io;
 use musializer_core::project::lyrics::{LyricCue, LyricsDocument};
+use musializer_core::project::model::EffectDrive;
 use musializer_core::project::model::{
     AnalysisLaneKind, AnalysisLaneReference, AsciiImageAsset, AssetMode, AudioAsset, BlendMode,
     CaptionAnchor, CaptionBox, CaptionFace, CaptionStyle, FontAsset, Metadata, OutputFormat,
@@ -267,6 +269,123 @@ fn dump_frame_lanes(project: &Project) {
     }
 }
 
+/// One named caption style (MV2): every member, `-` for one it does not state,
+/// so a member dropped on a round trip is a changed value and not a missing
+/// line.
+fn dump_named_style(prefix: &str, entry: &NamedCaptionStyle) {
+    let style = &entry.style;
+    let text = |value: Option<&str>| value.unwrap_or("-").to_owned();
+    let real = |value: Option<f64>| value.map_or_else(|| "-".to_owned(), |v| format!("{v:.16e}"));
+    let rgba = |value: Option<u32>| value.map_or_else(|| "-".to_owned(), |v| format!("{v}"));
+    dump_string(&format!("{prefix}.name"), entry.name.as_str());
+    let fx = &style.effects;
+    #[rustfmt::skip]
+    let rows: [(&str, String); 20] = [
+        ("face", text(style.face.map(|v| v.canonical_name()))),
+        ("box", text(style.box_style.map(|v| v.canonical_name()))),
+        ("anchor", text(style.anchor.map(|v| v.canonical_name()))),
+        ("size_scale", real(style.size_scale)),
+        ("margin_scale", real(style.margin_scale)),
+        ("width_scale", real(style.width_scale)),
+        ("text_rgba", rgba(style.text_rgba)),
+        ("box_rgba", rgba(style.box_rgba)),
+        ("effects.glow_strength", real(fx.glow_strength)),
+        ("effects.glow_radius", real(fx.glow_radius)),
+        ("effects.glow_rgba", rgba(fx.glow_rgba)),
+        ("effects.glow_pulse", text(fx.glow_pulse.map(|v| v.canonical_name()))),
+        ("effects.glow_pulse_depth", real(fx.glow_pulse_depth)),
+        ("effects.glow_hue_drive", text(fx.glow_hue_drive.map(|v| v.canonical_name()))),
+        ("effects.glow_hue_range", real(fx.glow_hue_range)),
+        ("effects.shadow_blur", real(fx.shadow_blur)),
+        ("effects.shadow_opacity", real(fx.shadow_opacity)),
+        ("effects.plate_roundness", real(fx.plate_roundness)),
+        ("effects.entrance_seconds", real(fx.entrance_seconds)),
+        ("effects.exit_seconds", real(fx.exit_seconds)),
+    ];
+    for (key, value) in rows {
+        // Bracketed like every string so the comparator never reads a `-` or
+        // an enum as a number.
+        dump_string(&format!("{prefix}.{key}"), &value);
+    }
+}
+
+/// The fixture with every MV2 member (post-legacy): a full named style, a
+/// partial one and an empty one, a line and a section naming styles, and two
+/// title cards — one with its own artist and style, one with neither.
+fn add_caption_styles(project: &mut Project) {
+    use musializer_core::project::caption_styles::{
+        CaptionOverride, EffectsOverride, StyleName, TitleCard,
+    };
+    let name = |text: &str| StyleName::new(text).expect("a valid style name");
+    project.caption_style.styles = vec![
+        NamedCaptionStyle {
+            name: name("everything"),
+            style: CaptionOverride {
+                face: Some(CaptionFace::SpaceGrotesk),
+                box_style: Some(CaptionBox::Plate),
+                anchor: Some(CaptionAnchor::MiddleLeft),
+                size_scale: Some(0.0765),
+                margin_scale: Some(1.0 / 3.0),
+                width_scale: Some(0.5),
+                text_rgba: Some(0x0102_0304),
+                box_rgba: Some(0xF0E0_D0C0),
+                effects: EffectsOverride {
+                    glow_strength: Some(0.1),
+                    glow_radius: Some(0.6),
+                    glow_rgba: Some(0xFFFF_FF00),
+                    glow_pulse: Some(EffectDrive::Beat),
+                    glow_pulse_depth: Some(1.0),
+                    glow_hue_drive: Some(EffectDrive::Flux),
+                    glow_hue_range: Some(359.5),
+                    shadow_blur: Some(0.5),
+                    shadow_opacity: Some(0.0),
+                    plate_roundness: Some(0.25),
+                    entrance_seconds: Some(3.0),
+                    exit_seconds: Some(0.05),
+                },
+            },
+        },
+        NamedCaptionStyle {
+            name: name("top"),
+            style: CaptionOverride {
+                anchor: Some(CaptionAnchor::TopCenter),
+                ..CaptionOverride::default()
+            },
+        },
+        NamedCaptionStyle {
+            name: name("as-base_0"),
+            style: CaptionOverride::default(),
+        },
+    ];
+    let first = project.lyrics.cues()[0].id;
+    assert!(project
+        .lyrics
+        .set_cue_style(first, Some(name("everything"))));
+    project.scene_switches.cues[0].caption_style = Some(name("top"));
+    // No project artist: the fixture stays v1, so the frozen C refuses it by
+    // the members it does not know rather than by its version, and the second
+    // card — no artist of its own either — is pinned as a legal file (the
+    // renderer says so out loud instead of refusing it).
+    project.scene_switches.titles = vec![
+        TitleCard {
+            start_seconds: 0.0,
+            end_seconds: 4.5,
+            title: "Nächtliche Röhren — 夜 \"Ø\"".to_owned(),
+            artist: Some("Someone Else ✦".to_owned()),
+            handle: Some("@someone_else".to_owned()),
+            style: Some(name("top")),
+        },
+        TitleCard {
+            start_seconds: 4.5,
+            end_seconds: FIXTURE_DURATION,
+            title: "Part Two".to_owned(),
+            artist: None,
+            handle: None,
+            style: None,
+        },
+    ];
+}
+
 fn dump_project(project: &Project) {
     dump_uint("schema_version", u64::from(project.schema_version()));
 
@@ -330,6 +449,15 @@ fn dump_project(project: &Project) {
     dump_string("caption.font.licence_path", &font.licence_path);
     dump_string("caption.font.licence_sha256", &font.licence_sha256);
     dump_string("caption.font.licence_name", &font.licence_name);
+    // MV2 (post-legacy, no oracle): printed only when present, because the C's
+    // dump has no such lines and a project without them must agree with it
+    // line for line. `build-captions` is the fixture that has them.
+    if !caption.styles.is_empty() {
+        dump_uint("caption.styles.count", caption.styles.len() as u64);
+        for (index, entry) in caption.styles.iter().enumerate() {
+            dump_named_style(&format!("caption.styles.{index}"), entry);
+        }
+    }
 
     let output = &project.output;
     dump_uint("output.width", u64::from(output.width));
@@ -421,6 +549,9 @@ fn dump_project(project: &Project) {
         dump_real(&format!("lyrics.{index}.start_seconds"), cue.start_seconds);
         dump_real(&format!("lyrics.{index}.end_seconds"), cue.end_seconds);
         dump_string(&format!("lyrics.{index}.text"), &cue.text);
+        if let Some(style) = project.lyrics.style_of(cue.id) {
+            dump_string(&format!("lyrics.{index}.style"), style.as_str());
+        }
     }
 
     let switches = &project.scene_switches;
@@ -446,6 +577,33 @@ fn dump_project(project: &Project) {
             dump_real(
                 &format!("switches.{index}.setting.{position}"),
                 f64::from(*value),
+            );
+        }
+    }
+
+    for (index, cue) in switches.cues.iter().enumerate() {
+        if let Some(style) = cue.caption_style {
+            dump_string(&format!("switches.{index}.caption_style"), style.as_str());
+        }
+    }
+    if !switches.titles.is_empty() {
+        dump_uint("switches.titles.count", switches.titles.len() as u64);
+        for (index, card) in switches.titles.iter().enumerate() {
+            let prefix = format!("switches.titles.{index}");
+            dump_real(&format!("{prefix}.start_seconds"), card.start_seconds);
+            dump_real(&format!("{prefix}.end_seconds"), card.end_seconds);
+            dump_string(&format!("{prefix}.title"), &card.title);
+            dump_string(
+                &format!("{prefix}.artist"),
+                card.artist.as_deref().unwrap_or("-"),
+            );
+            dump_string(
+                &format!("{prefix}.handle"),
+                card.handle.as_deref().unwrap_or("-"),
+            );
+            dump_string(
+                &format!("{prefix}.style"),
+                card.style.as_ref().map_or("-", |style| style.as_str()),
             );
         }
     }
@@ -616,6 +774,7 @@ fn build_fixture() -> Project {
         // so the C parser never sees it. Effects round-tripping is covered by
         // the Rust-only tests in `project::io`.
         effects: Default::default(),
+        styles: Vec::new(),
     };
 
     // -- output. A non-integer frame rate, a partial range, and the last format
@@ -879,6 +1038,7 @@ fn build_fixture() -> Project {
                 grade: None,
                 glide: 0.0,
                 pixel: None,
+                caption_style: None,
             },
             SceneSwitchSuggestion {
                 id: 22,
@@ -903,6 +1063,7 @@ fn build_fixture() -> Project {
                 grade: None,
                 glide: 0.0,
                 pixel: None,
+                caption_style: None,
             },
             SceneSwitchSuggestion {
                 id: 33,
@@ -915,10 +1076,12 @@ fn build_fixture() -> Project {
                 grade: None,
                 glide: 0.0,
                 pixel: None,
+                caption_style: None,
             },
         ],
         outro: musializer_core::project::transition::Transition::CUT,
         finish: musializer_core::project::look::Finish::NONE,
+        titles: Vec::new(),
     };
 
     // -- scene presets. The first fills all twelve controls.
@@ -1046,6 +1209,7 @@ fn main() -> ExitCode {
             "usage: project_io_dump build <out.musi>\n\
              \x20      project_io_dump build-artist <out.musi>\n\
              \x20      project_io_dump build-playhead <out.musi>\n\
+             \x20      project_io_dump build-captions <out.musi>\n\
              \x20      project_io_dump read <in.musi>\n\
              \x20      project_io_dump rewrite <in.musi> <out.musi>"
         );
@@ -1062,6 +1226,15 @@ fn main() -> ExitCode {
         }
         // The same fixture naming an artist (WX-5c), which makes it a v2
         // file: the one direction the frozen C must refuse, by its version.
+        // MV2: named caption styles, a line's and a section's style, and the
+        // title lane. Post-legacy members the frozen C must refuse; Rust reads
+        // its own file back to the same values and re-writes the same bytes.
+        "build-captions" => {
+            let mut fixture = build_fixture();
+            add_caption_styles(&mut fixture);
+            serialize_to(&fixture, &arguments[2]);
+            dump_project(&fixture);
+        }
         "build-artist" => {
             let mut fixture = build_fixture();
             fixture.metadata.artist = "Chaos Cat Familiar — 混沌猫 \"Ø\"".to_owned();

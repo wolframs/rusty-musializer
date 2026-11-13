@@ -71,6 +71,7 @@ fn cue(text: &str, start: f64, end: f64) -> LyricCue {
         end_seconds: end,
         text: text.to_string(),
         voice: None,
+        style: None,
     }
 }
 

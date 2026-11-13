@@ -260,10 +260,12 @@ pub fn build_project(
                 grade: cue.grade,
                 glide: cue.glide,
                 pixel: cue.pixel,
+                caption_style: cue.caption_style,
             })
             .collect(),
         outro: track.scene_switches.outro,
         finish: track.scene_switches.finish,
+        titles: track.scene_switches.titles.clone(),
     };
 
     project.scene_presets = Vec::new();
@@ -737,6 +739,7 @@ fn hydrate_scene_switches(
     if suggestions.cues.is_empty() {
         timeline.outro = suggestions.outro;
         timeline.finish = suggestions.finish;
+        timeline.titles.clone_from(&suggestions.titles);
         timeline.enabled = suggestions.enabled;
         return Ok(timeline);
     }
@@ -766,6 +769,7 @@ fn hydrate_scene_switches(
             grade: suggestion.grade,
             glide: suggestion.glide,
             pixel: suggestion.pixel,
+            caption_style: suggestion.caption_style,
         });
     }
     timeline
@@ -774,6 +778,7 @@ fn hydrate_scene_switches(
     timeline.enabled = suggestions.enabled;
     timeline.outro = suggestions.outro;
     timeline.finish = suggestions.finish;
+    timeline.titles.clone_from(&suggestions.titles);
     Ok(timeline)
 }
 
