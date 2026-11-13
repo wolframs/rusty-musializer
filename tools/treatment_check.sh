@@ -409,4 +409,7 @@ run "$OUT/copy.wav" --treatment "$OUT/full.treatment.json" \
 echo "$status" > "$OUT/same-audio.status"
 
 python3 tools/treatment_check.py "$OUT"
+# MV2 (2026-11-13): named caption styles and the title lane have their own
+# gate, run here so every caller of this one runs it too.
+tools/caption_styles_check.sh "$OUT/caption-styles"
 echo "PASS: vocabulary, treatment apply/save/reopen, contact sheets, stills and refusals ($OUT)"
