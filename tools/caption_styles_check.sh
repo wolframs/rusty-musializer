@@ -137,6 +137,24 @@ status=0
 run --treatment "$OUT/unknown-style.treatment.json" --save-project "$OUT/unknown.musi" \
     --still 1 "$OUT/unknown.png" > "$OUT/unknown.log" 2>&1 || status=$?
 echo "$status" > "$OUT/unknown.status"
+# The window: the Lyrics view's cue card names the bound line's style and a
+# press on it steps to the next; a press beside it changes nothing. The playhead
+# is on the shouted line, so the card binds it.
+probe() { # probe NAME CLICK
+    run --treatment "$OUT/styled.treatment.json" --ui-scale 100 --ui-theme dark --hud=0 \
+        --ui-probe "size=1280x720,play=0,column=lyrics,time=7.2${2:+,click=$2}" \
+        --probe-frames 40 --probe-shot "$OUT/$1.png" > "$OUT/$1.log" 2>&1 || true
+}
+probe column ""
+chip="$(python3 - "$OUT/column.log" <<'EOF2'
+import re, sys
+line = next((l for l in open(sys.argv[1]) if l.startswith("lyrics column:")), "")
+m = re.search(r"cue_style=\S+?@(\d+),(\d+),(\d+),(\d+)", line)
+print(f"{int(m[1]) + int(m[3]) // 2}x{int(m[2]) + int(m[4]) // 2} {int(m[1]) - 30}x{int(m[2]) + int(m[4]) // 2}" if m else "")
+EOF2
+)"
+probe column-press "${chip%% *}"
+probe column-gap "${chip##* }"
 env -u DISPLAY WAYLAND_DISPLAY=musializer-caption-styles-check-no-compositor \
     "$MZ_BIN" --vocabulary > "$OUT/vocabulary.json"
 

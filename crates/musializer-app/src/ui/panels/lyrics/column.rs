@@ -2909,7 +2909,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(action::ALL.len(), 6);
+        assert_eq!(action::ALL.len(), 8);
         assert_eq!(column_id::ALL.len(), 13);
         assert_eq!(widgets::SLIDER_ROW_IDS, 4);
         // Every registered namespace participates, including future ones.

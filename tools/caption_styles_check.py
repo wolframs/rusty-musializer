@@ -237,12 +237,32 @@ def check_pictures(out: Path) -> None:
         check(drawn > 10, f"the card over Cadence differs from the control by only {drawn:.1f}")
 
 
+def check_column(out: Path) -> None:
+    def field(name: str, key: str) -> str:
+        line = report_line(read(out / f"{name}.log"), "lyrics column")
+        for token in line.split():
+            if token.startswith(f"{key}="):
+                return token[len(key) + 1 :]
+        return ""
+
+    before = field("column", "cue_style")
+    check(before.startswith("shout:pickable@"), f"the cue card shows {before!r}, not the line's own style")
+    titles = field("column", "titles")
+    check(titles.startswith("2@"), f"the Lyrics view lists {titles!r} title cards, not 2")
+    # The table in name order is card, shout, top: a press steps to the next.
+    pressed = field("column-press", "cue_style")
+    check(pressed.startswith("top:pickable@"), f"a press on the style chip left {pressed!r}")
+    gap = field("column-gap", "cue_style")
+    check(gap.startswith("shout:pickable@"), f"a press beside the chip changed it to {gap!r}")
+
+
 def main() -> int:
     out = Path(sys.argv[1])
     check_vocabulary(out)
     check_saved(out)
     check_reports(out)
     check_pictures(out)
+    check_column(out)
     if FAILURES:
         print(f"{len(FAILURES)} check(s) failed", file=sys.stderr)
         return 1
