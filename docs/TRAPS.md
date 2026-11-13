@@ -331,3 +331,14 @@ which is why PNG goes to FFmpeg. A JPEG's memory depends on more than its size:
 four components, progressive, 9000 x 9000 holds 1.2 GB. And `-max_pixels` is
 checked against FFmpeg's aligned buffer, so a limit of exactly width x height
 refuses a real 1 x 1 picture as "64x1".
+
+## A search that finds nothing may not have looked
+
+`grep` on this machine is ugrep, and ugrep skips a file it takes for binary
+**silently**: no `Binary file matches`, and `-c` prints nothing at all. One
+literal NUL byte in a doc comment made `project/io.rs` — the `.musi` codec —
+binary, so `grep voice io.rs` answered as if the codec never wrote voices, and
+a session nearly built on that. The byte is gone (MV2, 2026-11-13; the comment
+now spells `\u0000`). Search with `grep -a` (or `rg`) when an empty answer
+would decide something, and keep NUL bytes out of text files.
+

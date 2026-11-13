@@ -767,7 +767,7 @@ impl<'a> Parser<'a> {
     /// The bound is enforced *while decoding*, exactly as C's fixed output buffer
     /// does, so an over-long value is [`ProjectIoError::String`] and never reaches
     /// model validation. `U+0000` is rejected however it is spelled — literally,
-    /// as ` `, or as a surrogate pair — because no field may contain one.
+    /// as `\u0000`, or as a surrogate pair — because no field may contain one.
     fn string(&mut self, max_bytes: usize) -> Parsed<String> {
         self.skip_whitespace();
         if self.input.get(self.at) != Some(&b'"') {
