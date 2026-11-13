@@ -12,7 +12,7 @@
 //! drawing and the open/close rules.
 
 use musializer_core::scene::SceneId;
-use musializer_core::ui::scene_browser::{PickerLayout, SceneFamily};
+use musializer_core::ui::scene_browser::{number_row_key, PickerLayout, SceneFamily};
 use musializer_core::ui::workspace_layout::{RailIcon, UiRect};
 use raylib::prelude::{
     BlendMode, Color, RaylibBlendModeExt, RaylibDraw, RaylibDrawHandle, Vector2,
@@ -48,6 +48,11 @@ const TILE_FONT_SIZES: [f32; 3] = [
 const TILE_STRIP_X: f32 = 7.0;
 const TILE_STRIP_WIDTH: f32 = 3.0;
 const TILE_TEXT_X: f32 = 17.0;
+/// The keycap a tile with a number-row key wears at the right of its name
+/// row (D7), and the air between it and the name. In the name row rather
+/// than on the poster, so the frame is the scene's own pixels to the edge.
+const TILE_KEYCAP: f32 = 16.0;
+const TILE_KEYCAP_GAP: f32 = 4.0;
 
 impl Shell {
     /// Decides, before anything is drawn, whether the open flyout survives
@@ -355,6 +360,7 @@ impl Shell {
         let mut visible = Vec::new();
         let mut tiles = Vec::new();
         let mut posters = Vec::new();
+        let mut keys = Vec::new();
         let mut smallest = TILE_FONT_SIZES[0];
         let old_clip = self.widgets.set_input_clip(Some(layout.viewport));
         {
@@ -484,7 +490,40 @@ impl Shell {
                     ),
                     scene_color(id, 255),
                 );
-                let width = rect.width - TILE_TEXT_X - 6.0;
+                // D7: the key that picks this scene, as a keycap at the right
+                // of the name row; the name gives up the keycap's width.
+                let key = number_row_key(id);
+                let mut width = rect.width - TILE_TEXT_X - 6.0;
+                if let Some(key) = key {
+                    let name_row = image.y + image.height;
+                    let cap = UiRect::new(
+                        rect.x + rect.width - 6.0 - TILE_KEYCAP,
+                        name_row + (rect.y + rect.height - name_row - TILE_KEYCAP) * 0.5,
+                        TILE_KEYCAP,
+                        TILE_KEYCAP,
+                    );
+                    widgets::control_box(
+                        &mut clip,
+                        cap,
+                        color::ui_surface(),
+                        color::ui_control_edge(),
+                        1.0,
+                    );
+                    let glyph = key.to_string();
+                    let glyph_size = metric::UI_FONT_MICRO;
+                    let glyph_width = widgets::measure(font, &glyph, glyph_size);
+                    widgets::draw_text(
+                        &mut clip,
+                        font,
+                        &glyph,
+                        cap.x + (cap.width - glyph_width) * 0.5,
+                        cap.y + (cap.height - glyph_size) * 0.5,
+                        glyph_size,
+                        color::ui_muted(),
+                    );
+                    width -= TILE_KEYCAP + TILE_KEYCAP_GAP;
+                    keys.push(format!("{}:{key}@{}", id.stable_name(), rect_token(cap)));
+                }
                 let (lines, size) =
                     tile_lines(id, width, |text, size| widgets::measure(font, text, size));
                 smallest = smallest.min(size);
@@ -505,13 +544,16 @@ impl Shell {
                     );
                     y += leading;
                 }
-                self.widgets.hint(
-                    &clip,
-                    state,
-                    widget,
-                    hit,
-                    &format!("{} — {note}", crate::scene_host::scene_picker_hint(id)),
-                );
+                let look = crate::scene_host::scene_picker_hint(id);
+                let hint = match key {
+                    Some(key) => format!(
+                        "Press {key} for {}, from anywhere. Keys 1\u{2013}0 pick the ten \
+                         scenes with a keycap. {look} — {note}",
+                        id.display_name()
+                    ),
+                    None => format!("{look} — {note}"),
+                };
+                self.widgets.hint(&clip, state, widget, hit, &hint);
                 if state.clicked && (id != input.scene || plan_is_driving) {
                     commands.push(ShellCommand::SelectScene(id));
                 }
@@ -527,7 +569,7 @@ impl Shell {
         let (import, clear) = self.ascii_image_footer(d, input, footer, commands);
         self.scene_picker_report = format!(
             "family={} active={} visible=[{}] offset={:.1}/{:.1} viewport={:.0}x{:.0}@{:.0},{:.0} \
-             font={:.1} tabs={} tiles={} footer=import@{};clear@{} posters={}",
+             font={:.1} tabs={} tiles={} footer=import@{};clear@{} posters={} keys={}",
             self.scene_picker.family.stable_name(),
             input.scene.stable_name(),
             visible.join(","),
@@ -547,6 +589,11 @@ impl Shell {
             rect_token(import),
             rect_token(clear),
             posters.join(";"),
+            if keys.is_empty() {
+                "none".to_owned()
+            } else {
+                keys.join(";")
+            },
         );
     }
 

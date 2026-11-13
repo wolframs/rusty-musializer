@@ -1023,6 +1023,15 @@ fn run(
             if probe.key_escape {
                 escape_in = Some(3);
             }
+            // On frame 45, after `dock-focus=` (frame 20) has given the
+            // terminal the keyboard, or after the last `agent-press=`, so a
+            // key can be typed into the composer that press focused (D7).
+            let digit_frames = if probe.agent_press.is_empty() {
+                45
+            } else {
+                probe.agent_press_at.unwrap_or(40) as u32 + 12 * probe.agent_press.len() as u32 + 6
+            };
+            app.shell.probe_digit = probe.key_digit.map(|digit| (digit, digit_frames));
             // `notices=`: sample cards in the words real ones use, posted
             // through `notify` so each gets its severity's dwell and the
             // tray draws them exactly as it draws a real notice.
@@ -6846,6 +6855,15 @@ impl Report {
         println!("lane head:       {}", self.lane_head);
         println!("transport:       {}", self.transport);
         println!("resume:          {}", self.resume);
+        // D7: the last frame's tooltip, in words, so a gate can read what a
+        // hovered control says rather than only photograph it.
+        println!(
+            "tooltip:         {}",
+            app.shell
+                .widgets
+                .tooltip()
+                .map_or_else(|| "none".to_owned(), |tip| format!("{:?}", tip.text))
+        );
         // WX-5d: one line per column view, each from its builder's describe
         // function. Those return "" until the view is built, and an empty
         // line is not printed, so no report changes until there is something

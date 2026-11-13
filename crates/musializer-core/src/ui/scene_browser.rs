@@ -264,9 +264,74 @@ impl PickerState {
     }
 }
 
+/// The scenes the number row picks (D7): `1`–`9`, then `0`, are the first ten
+/// scene ids — the ten the C bound to the same keys (`update_scene_shortcuts`,
+/// `plug.c:1382-1396`) and the first ten stops of Tab.
+///
+/// **Ids, not the flyout's order, on purpose.** Ids only ever append, so a key
+/// means the same scene in every build and every project; numbering the tiles
+/// of the family on show would remap the keys at every plan cut, since the
+/// browsed family follows the playing scene. The tiles that have a key wear it
+/// as a keycap and say it in their tooltip, so the ten are visible where the
+/// scenes are chosen. Recorded in `docs/DIVERGENCES.md`.
+pub const NUMBER_ROW: [SceneId; 10] = [
+    SceneId::Spectrum,
+    SceneId::PulseField,
+    SceneId::OrbitalLattice,
+    SceneId::AsciiField,
+    SceneId::SongAtlas,
+    SceneId::SpectralTerrarium,
+    SceneId::Constellation,
+    SceneId::Cadence,
+    SceneId::Loom,
+    SceneId::Pentagram,
+];
+
+/// The scene a number-row key picks: `digit` 1–9, or 10 for the `0` key.
+#[must_use]
+pub fn number_row_scene(digit: u8) -> Option<SceneId> {
+    NUMBER_ROW.get(usize::from(digit).checked_sub(1)?).copied()
+}
+
+/// The key that picks `scene`, as it is printed on the keyboard, if any.
+#[must_use]
+pub fn number_row_key(scene: SceneId) -> Option<char> {
+    let index = NUMBER_ROW.iter().position(|&keyed| keyed == scene)?;
+    char::from_digit(((index + 1) % 10) as u32, 10)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D7: the ten keyed scenes are the C's ten in its order, which are the
+    /// first ten ids, and the key and the scene agree in both directions.
+    #[test]
+    fn the_number_row_picks_the_first_ten_ids_one_to_zero() {
+        // Written out from `plug.c:1384-1393`, not derived from NUMBER_ROW.
+        let c = [
+            ('1', SceneId::Spectrum),
+            ('2', SceneId::PulseField),
+            ('3', SceneId::OrbitalLattice),
+            ('4', SceneId::AsciiField),
+            ('5', SceneId::SongAtlas),
+            ('6', SceneId::SpectralTerrarium),
+            ('7', SceneId::Constellation),
+            ('8', SceneId::Cadence),
+            ('9', SceneId::Loom),
+            ('0', SceneId::Pentagram),
+        ];
+        for (index, (key, scene)) in c.into_iter().enumerate() {
+            assert_eq!(scene.index(), index, "the keyed ten are ids 0-9");
+            assert_eq!(number_row_key(scene), Some(key));
+            let digit = if key == '0' { 10 } else { key as u8 - b'0' };
+            assert_eq!(number_row_scene(digit), Some(scene));
+        }
+        assert_eq!(number_row_scene(0), None);
+        assert_eq!(number_row_scene(11), None);
+        assert_eq!(number_row_key(SceneId::GlyphLattice), None);
+        assert_eq!(number_row_key(SceneId::PhosphorDream), None);
+    }
     #[test]
     fn every_scene_has_exactly_one_family_without_reordering_saved_ids() {
         let listed: Vec<_> = SceneFamily::ALL

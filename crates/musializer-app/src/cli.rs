@@ -405,6 +405,11 @@ pub struct UiProbe {
     /// because it is the one whose effect (closing a flyout) no click can
     /// stand in for; another key is added by name, never by keycode.
     pub key_escape: bool,
+    /// `key=0`..`key=9` (D7): one number-row press, as 1-10 (`0` is 10),
+    /// through the shell's keyboard path on frame 45 (after `dock-focus=`),
+    /// or 6 frames after the last `agent-press=`, so the text-entry guard and
+    /// the protocol's claim on the digits are the real ones.
+    pub key_digit: Option<u8>,
     /// Artist draft input at frame 12; requires click= to focus the real slot.
     pub artist_text: Option<String>,
     pub artist_action: Option<crate::ui::top_bar::ArtistAction>,
@@ -1512,6 +1517,10 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         }
         "key" => match value {
             "escape" => probe.key_escape = true,
+            digit if digit.len() == 1 && digit.as_bytes()[0].is_ascii_digit() => {
+                let n = digit.as_bytes()[0] - b'0';
+                probe.key_digit = Some(if n == 0 { 10 } else { n });
+            }
             _ => return None,
         },
         "dock-focus" => {
@@ -1710,7 +1719,8 @@ Diagnostics:
                           progress-shot=N photographs export frame N,
                           artist-text=TEXT,artist-action=draft|commit|cancel|clear
                           types into the artist slot at frame 12 (requires click=),
-                          key=escape presses Escape once,
+                          key=escape presses Escape once, key=0..9 one
+                          number-row key (D7),
                           notices=all|info+done+warning+error posts one
                           sample notice of each severity,
                           fullscreen=0|1, time=SECONDS, size=WIDTHxHEIGHT,
@@ -1899,6 +1909,11 @@ mod tests {
         assert_eq!(parse_ui_probe("time=1").unwrap().flyout, None);
         assert!(parse_ui_probe("flyout=sidebar").is_none());
         assert!(parse_ui_probe("key=escape").unwrap().key_escape);
+        assert_eq!(parse_ui_probe("key=3").unwrap().key_digit, Some(3));
+        assert_eq!(parse_ui_probe("key=0").unwrap().key_digit, Some(10));
+        assert_eq!(parse_ui_probe("key=escape").unwrap().key_digit, None);
+        assert!(parse_ui_probe("key=12").is_none());
+        assert!(parse_ui_probe("key=x").is_none());
         assert!(!parse_ui_probe("flyout=scenes").unwrap().key_escape);
         {
             use musializer_core::ui::notice::Severity;

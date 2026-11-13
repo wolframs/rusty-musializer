@@ -51,6 +51,12 @@
 #      as a notice, and an unrewritten one is not. The welcome screen, which
 #      has no column, draws no dock (the control is every run above with a
 #      track, whose `dock: rect=` is the column's).
+#   9. The number row (D7): `4` and `0` pick ASCII Field and Pentagram; with
+#      the terminal focused or the chat composer focused (pressed through
+#      egui) `4` changes nothing, and the same runs without the focus do
+#      change the scene (controls, and the dock must report keyboard=true);
+#      the Sound and Geometry tiles report their keys, a keyed tile's tooltip
+#      names its key, and Knot's (no key) does not.
 #
 # COLUMN_BIN names a different binary, for a negative control without
 # replacing the build. MZ_GL_LAUNCH="" runs it on the CPU.
@@ -79,6 +85,10 @@
 #     drawn in the accent, so selection reads as *now* (census assist and
 #     assist-open, both appearances: 1208 px on the outline, the dot at
 #     936,701); the dock left drawing on the welcome screen (check 8).
+#   E (3 failures, check 9, 2026-11-13, GPU): the number row moved above the
+#     text-entry guard (keys-terminal and keys-composer switch to ASCII
+#     Field) and the keycap sentence dropped from the tooltip; the free
+#     controls, the reported keys and Knot's tooltip stayed green.
 # The frame-0 control first failed on llvmpipe alone: a readback there
 # returned the newest frame, not the one before (docs/TRAPS.md), so the
 # probe now holds the encoder and photographs a still screen.
@@ -609,6 +619,63 @@ case "$(direct_of "$OUT/direct-applied.log")" in
 esac
 case "$(direct_of "$OUT/direct-unapplied.log")" in
     *"notice@"*) fail "a chat noted an apply that never happened" ;;
+esac
+
+# --- 9. The number row (D7) ----------------------------------------------------
+# `key=DIGIT` presses one number-row key through the shell's keyboard path on
+# frame 45, or after the last agent-press=; `scene:` names the bound scene.
+# At 3 s the plan's section is Loom.
+keys_run() { # keys_run NAME PROBE [frames]
+    env MUSIALIZER_AGENT_CLAUDE="$FAKE" MZ_STATE_DIR="$OUT/state-$1" tools/headless_run.sh \
+        --treatment "$SHOW" --ui-scale 100 \
+        --ui-probe "size=1600x900,time=3,play=0,column=direct,$2" --probe-frames "${3:-60}" \
+        --probe-shot "$OUT/$1.png" >"$OUT/$1.log" 2>&1 || true
+}
+scene_of() { line_of scene "$1" | cut -d' ' -f1; }
+keys_run keys-4 "key=4"
+keys_run keys-0 "key=0,flyout=scenes"
+keys_run keys-terminal "dock-run=echo keys,dock-focus=1,key=4"
+keys_run keys-terminal-free "dock-run=echo keys,key=4"
+keys_run keys-composer "agent=claude,agent-press=composer,key=4" 120
+keys_run keys-composer-free "agent=claude,agent-press=chip-model+chip-model,key=4" 120
+for case_ in keys-4:ascii keys-0:pentagram keys-terminal:loom keys-terminal-free:ascii \
+    keys-composer:loom keys-composer-free:ascii; do
+    name="${case_%%:*}"
+    want="${case_##*:}"
+    got="$(scene_of "$OUT/$name.log")"
+    [ "$got" = "$want" ] || fail "$name: the scene is $got, wanted $want"
+done
+# The suppression controls only count if the focus they rely on was real.
+for name in keys-terminal keys-composer; do
+    case "$(line_of dock "$OUT/$name.log")" in
+        *"keyboard=true"*) ;;
+        *) fail "$name: the dock never held the keyboard, so the suppression proves nothing" ;;
+    esac
+done
+# The tiles: each keyed tile in the flyout wears its key and says it; a tile
+# without one (Geometry's Knot) says nothing about keys. (After key=0 the
+# flyout shows Geometry, Pentagram's family, so Sound gets its own run.)
+keys_run keys-flyout "flyout=scenes" 40
+picker="$(line_of 'scene picker' "$OUT/keys-flyout.log")"
+case "$picker" in
+    *"keys=spectrum:1@"*";pulse:2@"*";atlas:5@"*";loom:9@"*) ;;
+    *) fail "the Sound tiles do not report their keys: ${picker##* keys=}" ;;
+esac
+keys_run keys-hover-pulse "flyout=scenes,hover=$(centre pulse "$picker")" 40
+case "$(line_of tooltip "$OUT/keys-hover-pulse.log")" in
+    '"Press 2 for Pulse Field, from anywhere. Keys 1–0 pick the ten scenes with a keycap. '*) ;;
+    *) fail "the Pulse Field tile's tooltip does not name its key: $(line_of tooltip "$OUT/keys-hover-pulse.log" | cut -c1-120)" ;;
+esac
+keys_run keys-geometry "flyout=scenes,scene-family=geometry" 40
+geometry_picker="$(line_of 'scene picker' "$OUT/keys-geometry.log")"
+case "$geometry_picker" in
+    *"keys=orbital:3@"*";pentagram:0@"*) ;;
+    *) fail "Geometry's keyed tiles are not Orbital Lattice (3) and Pentagram (0): ${geometry_picker##* keys=}" ;;
+esac
+keys_run keys-hover-knot "flyout=scenes,scene-family=geometry,hover=$(centre knot "$geometry_picker")" 40
+case "$(line_of tooltip "$OUT/keys-hover-knot.log")" in
+    '"Press'*) fail "a tile without a key claims one" ;;
+    'none'|'') fail "hovering Knot drew no tooltip, so the control proves nothing" ;;
 esac
 
 if [ "$failures" -gt 0 ]; then

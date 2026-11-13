@@ -499,6 +499,9 @@ pub struct Shell {
     /// `--ui-probe key=escape`: one Escape for the next keyboard read, set by
     /// `main.rs` on the frame the probe presses and taken by that read.
     pub probe_escape: bool,
+    /// `--ui-probe key=DIGIT` (D7): the digit (1-10) and the frames left
+    /// before [`Shell::keyboard`] presses it.
+    pub probe_digit: Option<(u8, u32)>,
     pub widgets: Widgets,
     /// The right-hand tuning inspector.
     pub inspector_open: bool,
@@ -1203,6 +1206,10 @@ pub(crate) struct KeyboardFrame {
     /// `1`-`4`, the protocol answer row (HX-2). Consulted only while a
     /// protocol session is live, so the digits stay free everywhere else.
     pub answer_digit: Option<u8>,
+    /// The number row (D7): `1`-`9` as 1-9 and `0` as 10, picking one of
+    /// `scene_browser::NUMBER_ROW`. Unchorded only — Ctrl+0 is the scale
+    /// ladder's Auto — and never while a protocol session owns the digits.
+    pub scene_digit: Option<u8>,
     /// `R`, `B`, `N` — replay, other look, next item. Same rule as the digits.
     pub protocol_replay: bool,
     pub protocol_flip: bool,
@@ -1241,6 +1248,21 @@ impl KeyboardFrame {
             .into_iter()
             .find(|(key, pad, _)| d.is_key_pressed(*key) || d.is_key_pressed(*pad))
             .map(|(_, _, digit)| digit),
+            scene_digit: [
+                Key::KEY_ONE,
+                Key::KEY_TWO,
+                Key::KEY_THREE,
+                Key::KEY_FOUR,
+                Key::KEY_FIVE,
+                Key::KEY_SIX,
+                Key::KEY_SEVEN,
+                Key::KEY_EIGHT,
+                Key::KEY_NINE,
+                Key::KEY_ZERO,
+            ]
+            .into_iter()
+            .position(|key| d.is_key_pressed(key))
+            .map(|index| index as u8 + 1),
             protocol_replay: d.is_key_pressed(Key::KEY_R),
             protocol_flip: d.is_key_pressed(Key::KEY_B),
             protocol_next: d.is_key_pressed(Key::KEY_N),
@@ -1301,6 +1323,7 @@ impl Shell {
             poster_requests: Vec::new(),
             probe_run_open: None,
             probe_escape: false,
+            probe_digit: None,
             widgets: Widgets::new(),
             notices: NoticeQueue::default(),
             inspector_open: false,
@@ -2550,6 +2573,16 @@ impl Shell {
     ) {
         let mut keys = KeyboardFrame::read(d);
         keys.escape |= std::mem::take(&mut self.probe_escape);
+        // `--ui-probe key=DIGIT` (D7): one number-row press, a few frames in,
+        // through this same path, so every guard below is the real one.
+        if let Some((digit, frames)) = self.probe_digit {
+            if frames == 0 {
+                self.probe_digit = None;
+                keys.scene_digit = Some(digit);
+            } else {
+                self.probe_digit = Some((digit, frames - 1));
+            }
+        }
         if self.artist_editing() && keys.escape {
             self.top_bar_state.artist_probe = Some((None, super::top_bar::ArtistAction::Cancel));
         }
@@ -2683,6 +2716,17 @@ impl Shell {
                     step,
                     context.duration_seconds,
                 )));
+            }
+        }
+        // D7: the number row picks one of ten scenes directly, the way a tile
+        // press does (a driving plan retargets one section). Unchorded, and
+        // not while a protocol session owns the digits (above).
+        if self.protocol.is_none() && !keys.control {
+            if let Some(id) = keys
+                .scene_digit
+                .and_then(musializer_core::ui::scene_browser::number_row_scene)
+            {
+                commands.push(ShellCommand::SelectScene(id));
             }
         }
         if keys.cycle_scene {
@@ -6211,8 +6255,42 @@ mod tests {
             nudge_back: true,
             cycle_scene: true,
             toggle_inspector: true,
+            scene_digit: Some(4),
             ..KeyboardFrame::default()
         }
+    }
+
+    /// D7: each number-row key picks its scene; Ctrl+0 stays the scale
+    /// ladder's Auto and picks nothing; a protocol session owns the digits.
+    #[test]
+    fn the_number_row_picks_its_ten_scenes_and_nothing_else() {
+        use musializer_core::ui::scene_browser::NUMBER_ROW;
+        for (index, scene) in NUMBER_ROW.into_iter().enumerate() {
+            let mut shell = Shell::new();
+            let mut commands = Vec::new();
+            let keys = KeyboardFrame {
+                scene_digit: Some(index as u8 + 1),
+                ..KeyboardFrame::default()
+            };
+            shell.keyboard_actions(keys, context(), &mut commands);
+            assert_eq!(commands, vec![ShellCommand::SelectScene(scene)]);
+        }
+
+        let mut shell = Shell::new();
+        let mut commands = Vec::new();
+        let ctrl_zero = KeyboardFrame {
+            control: true,
+            scale_auto: true,
+            scene_digit: Some(10),
+            ..KeyboardFrame::default()
+        };
+        shell.keyboard_actions(ctrl_zero, context(), &mut commands);
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, ShellCommand::SelectScene(_))),
+            "Ctrl+0 picked a scene: {commands:?}"
+        );
     }
 
     /// Escape closes an open flyout before it does anything else (WX-5c §1),
@@ -6304,6 +6382,8 @@ mod tests {
         assert!(commands
             .iter()
             .any(|command| matches!(command, ShellCommand::SelectScene(_))));
+        // The number row's `4` as well as Tab (D7).
+        assert!(commands.contains(&ShellCommand::SelectScene(SceneId::AsciiField)));
         assert!(shell.hud_visible);
         assert!(shell.inspector_open);
     }
@@ -6366,6 +6446,19 @@ mod tests {
         ] {
             assert!(commands.contains(&expected), "{expected:?} did not fire");
         }
+        // The session owns the whole number row (D7): a digit answers and
+        // never also switches the scene under a blind comparison.
+        let mut commands = Vec::new();
+        let digits = KeyboardFrame {
+            answer_digit: Some(2),
+            scene_digit: Some(2),
+            ..KeyboardFrame::default()
+        };
+        shell.keyboard_actions(digits, context(), &mut commands);
+        assert_eq!(
+            commands,
+            vec![ShellCommand::Protocol(ProtocolAction::Answer(2))]
+        );
 
         // Ctrl chords the digits to the scale ladder, never to an answer.
         keys.control = true;
