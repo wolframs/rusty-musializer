@@ -763,6 +763,11 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 64
+        },
+        "playhead_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Where the playhead stood at the last write (PXF-7, post-legacy, either version). Omitted at the start of the track, never written as 0; an interactive open resumes there, paused, and nothing that draws a frame reads it."
         }
       }
     },

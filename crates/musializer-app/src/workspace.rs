@@ -220,6 +220,12 @@ pub struct Track {
     // ---- project identity ------------------------------------------------
     pub project_path: Option<PathBuf>,
     pub project_metadata: Option<Metadata>,
+    /// Where this track's playhead was last seen (PXF-7): the current track's
+    /// is refreshed every frame, a background track keeps the one it had when
+    /// it stopped being current, and an opened project starts from its saved
+    /// one. The next save writes it as `metadata.playhead_seconds`. Moving it
+    /// is not an edit, so it never dirties the project.
+    pub playhead_seconds: f64,
     pub project_dirty: bool,
     pub project_autosave_failed: bool,
     pub project_dirty_since: f64,
@@ -459,6 +465,7 @@ impl Track {
             lyrics_reference_path: None,
             project_path: None,
             project_metadata: None,
+            playhead_seconds: 0.0,
             project_dirty: false,
             project_autosave_failed: false,
             project_dirty_since: 0.0,

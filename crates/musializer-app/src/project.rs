@@ -148,6 +148,14 @@ pub fn build_project(
         },
     };
     metadata.application_version = APPLICATION_VERSION.to_string();
+    // PXF-7: the playhead at this save is where a reopen resumes. Clamped onto
+    // the track, and a non-number is the start, which is never written.
+    let playhead = track.playhead_seconds;
+    metadata.playhead_seconds = if playhead.is_finite() && playhead > 0.0 {
+        playhead.min(duration)
+    } else {
+        0.0
+    };
     let mut project = Project {
         metadata,
         ..Project::default()
@@ -710,6 +718,8 @@ fn hydrate_track(
     track.audio_sample_rate = project.audio.sample_rate;
     track.audio_channels = project.audio.channels;
     track.project_path = project_path;
+    // PXF-7: until it is current and playing, the track is where it was saved.
+    track.playhead_seconds = project.metadata.playhead_seconds;
     track.project_metadata = Some(project.metadata);
     track.mark_saved();
 
@@ -930,5 +940,28 @@ mod tests {
             "the refusal must name the reason, got {error}"
         );
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// PXF-7: a save records the track's playhead, clamped onto the track, and
+    /// a playhead that is not a position records the start (never written).
+    #[test]
+    fn a_save_records_the_playhead_clamped_onto_the_track() {
+        let mut track = saveable("/tmp/a.wav", 0.0);
+        track.audio_sha256 = "a".repeat(64);
+        let written = |track: &Track| {
+            build_project(track, "a.assets/audio/x.wav", None, None, None, 48_000, 2)
+                .expect("the track builds")
+                .metadata
+                .playhead_seconds
+        };
+        assert_eq!(written(&track), 0.0);
+        track.playhead_seconds = 73.5;
+        assert_eq!(written(&track), 73.5);
+        track.playhead_seconds = 500.0;
+        assert_eq!(written(&track), 120.0);
+        for nonsense in [f64::NAN, f64::INFINITY, -3.0] {
+            track.playhead_seconds = nonsense;
+            assert_eq!(written(&track), 0.0, "{nonsense}");
+        }
     }
 }

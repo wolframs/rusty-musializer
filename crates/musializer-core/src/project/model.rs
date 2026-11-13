@@ -630,7 +630,7 @@ impl CaptionStyle {
 }
 
 /// `Musi_Project_Metadata` (`project.h:173-180`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Metadata {
     /// A `stable_name`.
     pub project_id: String,
@@ -644,7 +644,50 @@ pub struct Metadata {
     pub created_utc: String,
     pub modified_utc: String,
     pub application_version: String,
+    /// Where the playhead stood when the project was last written (PXF-7,
+    /// post-legacy): a reopened project resumes there, paused. `0.0` is the
+    /// start of the track and means "none": it is never written, so a project
+    /// saved at the start is byte-identical to one from before this field.
+    ///
+    /// Session state that happens to be durable, not part of the video: no
+    /// render, still, contact sheet or treatment run reads it, so it cannot
+    /// change a frame (export determinism).
+    pub playhead_seconds: f64,
 }
+
+impl Metadata {
+    /// Where a reopened project should put the playhead, given the length of
+    /// the track it opened with: `None` for "at the start", the way every
+    /// project without a saved position opens.
+    ///
+    /// A position at or past the end — the decoder now reports a slightly
+    /// shorter track than the one it was saved against — lands
+    /// [`RESUME_TAIL_SECONDS`] before the end, so the reopened project is
+    /// paused on something that still plays: a stream seeked to its very end
+    /// wraps to 0:00. One at or before the start, or a track with no length,
+    /// is no position at all.
+    #[must_use]
+    pub fn resume_seconds(&self, duration_seconds: f64) -> Option<f64> {
+        let saved = self.playhead_seconds;
+        if !(saved.is_finite()
+            && saved > 0.0
+            && duration_seconds.is_finite()
+            && duration_seconds > 0.0)
+        {
+            return None;
+        }
+        let seconds = if saved >= duration_seconds {
+            (duration_seconds - RESUME_TAIL_SECONDS).max(0.0)
+        } else {
+            saved
+        };
+        (seconds > 0.0).then_some(seconds)
+    }
+}
+
+/// How far before the end a saved playhead at or past the end of the track
+/// resumes (PXF-7): one second, enough to hear that it is the end.
+pub const RESUME_TAIL_SECONDS: f64 = 1.0;
 
 /// `Musi_Audio_Asset` (`project.h:182-189`).
 #[derive(Clone, Debug, PartialEq)]
@@ -1024,7 +1067,9 @@ impl Project {
             && is_bounded(&metadata.author, capacity::NAME, true)
             && is_bounded(&metadata.created_utc, capacity::TIMESTAMP, true)
             && is_bounded(&metadata.modified_utc, capacity::TIMESTAMP, true)
-            && is_bounded(&metadata.application_version, capacity::VERSION, false);
+            && is_bounded(&metadata.application_version, capacity::VERSION, false)
+            && metadata.playhead_seconds.is_finite()
+            && metadata.playhead_seconds >= 0.0;
         ok.then_some(())
             .ok_or_else(|| fail(ProjectError::Metadata, 0, 0))
     }

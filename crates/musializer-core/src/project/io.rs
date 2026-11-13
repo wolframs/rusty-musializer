@@ -281,6 +281,12 @@ fn write_project(out: &mut String, project: &Project) {
     write_string(out, &metadata.modified_utc);
     out.push_str(",\"application_version\":");
     write_string(out, &metadata.application_version);
+    // Post-legacy (PXF-7): the resume position, last, and only when it is
+    // not the start, so a project saved at 0:00 is the file it always was.
+    if metadata.playhead_seconds > 0.0 {
+        out.push_str(",\"playhead_seconds\":");
+        write_f64(out, metadata.playhead_seconds);
+    }
 
     let audio = &project.audio;
     out.push_str("},\"audio\":{\"mode\":");
@@ -1151,8 +1157,12 @@ fn parse_cue(parser: &mut Parser<'_>) -> Parsed<ParameterCue> {
 /// this codec did not write; whether the file's version allows it at all is
 /// [`parse_project`]'s question, because `schema_version` may follow
 /// `metadata` in a file somebody else wrote.
+///
+/// `playhead_seconds` (PXF-7) is the eighth: the resume position, a
+/// post-legacy extension in either version like the caption effects and the
+/// transitions, so it does not move the version. Written only past the start.
 fn parse_metadata(parser: &mut Parser<'_>) -> Parsed<Metadata> {
-    const NAMES: [&str; 7] = [
+    const NAMES: [&str; 8] = [
         "project_id",
         "title",
         "author",
@@ -1160,6 +1170,7 @@ fn parse_metadata(parser: &mut Parser<'_>) -> Parsed<Metadata> {
         "modified_utc",
         "application_version",
         "artist",
+        "playhead_seconds",
     ];
     let mut metadata = Metadata::default();
     let mut seen = Seen::default();
@@ -1173,6 +1184,14 @@ fn parse_metadata(parser: &mut Parser<'_>) -> Parsed<Metadata> {
             3 => metadata.created_utc = parser.string(capacity::TIMESTAMP)?,
             4 => metadata.modified_utc = parser.string(capacity::TIMESTAMP)?,
             5 => metadata.application_version = parser.string(capacity::VERSION)?,
+            // PXF-7. Never written at or before the start, so a zero or a
+            // negative here is a number this codec did not write.
+            7 => {
+                metadata.playhead_seconds = parser.f64()?;
+                if metadata.playhead_seconds <= 0.0 {
+                    return Err(ProjectIoError::Number);
+                }
+            }
             _ => {
                 metadata.artist = parser.string(capacity::NAME)?;
                 if metadata.artist.is_empty() {
@@ -2546,6 +2565,82 @@ mod tests {
         assert_eq!(reparsed.caption_style, project.caption_style);
         assert_eq!(reparsed.scenes, project.scenes);
         assert_eq!(reparsed.lyrics, project.lyrics);
+    }
+
+    /// The resume position (PXF-7): never written at the start, so every
+    /// project from before it is byte-identical; written last in `metadata`
+    /// otherwise, read back exactly, and refused where this codec would never
+    /// have written it. It does not move the version.
+    #[test]
+    fn a_playhead_is_written_only_past_the_start_and_round_trips() {
+        let mut project = valid_project();
+        let plain = serialize(&project).unwrap();
+        assert!(!plain.contains("playhead"), "never written at 0: {plain}");
+
+        project.metadata.playhead_seconds = 83.25;
+        let placed = serialize(&project).unwrap();
+        assert!(placed.starts_with("{\"schema_version\":\"musializer.project/v1\""));
+        let version = format!(
+            "\"application_version\":\"{}\",\"playhead_seconds\":83.25}}",
+            project.metadata.application_version
+        );
+        assert!(placed.contains(&version), "{placed}");
+        let reparsed = deserialize(placed.as_bytes()).unwrap();
+        assert_eq!(
+            reparsed.metadata.playhead_seconds.to_bits(),
+            83.25f64.to_bits()
+        );
+        assert_eq!(serialize(&reparsed).unwrap(), placed);
+
+        // Back at the start, the file is the one it was before.
+        let mut rewound = reparsed;
+        rewound.metadata.playhead_seconds = 0.0;
+        assert_eq!(serialize(&rewound).unwrap(), plain);
+
+        // The awkward doubles survive: shortest round trip is lossless.
+        let third = 1.0 / 3.0 * 100.0;
+        project.metadata.playhead_seconds = third;
+        let text = serialize(&project).unwrap();
+        let back = deserialize(text.as_bytes()).unwrap();
+        assert_eq!(back.metadata.playhead_seconds.to_bits(), third.to_bits());
+
+        // Spellings this codec never writes.
+        for bad in ["0", "0.0", "-0.0", "-1.5"] {
+            let forged = placed.replacen("83.25", bad, 1);
+            assert_eq!(
+                deserialize(forged.as_bytes()).unwrap_err(),
+                ProjectIoError::Number,
+                "{bad}"
+            );
+        }
+        let twice = placed.replacen(
+            ",\"playhead_seconds\":83.25",
+            ",\"playhead_seconds\":83.25,\"playhead_seconds\":83.25",
+            1,
+        );
+        assert_eq!(
+            deserialize(twice.as_bytes()).unwrap_err(),
+            ProjectIoError::DuplicateField
+        );
+    }
+
+    /// Where a reopened project resumes: the saved position, clamped to the
+    /// track it opened with, or nowhere for a project saved at the start.
+    #[test]
+    fn a_resume_position_is_clamped_to_the_track() {
+        let mut metadata = Metadata::default();
+        assert_eq!(metadata.resume_seconds(120.0), None);
+        metadata.playhead_seconds = 42.5;
+        assert_eq!(metadata.resume_seconds(120.0), Some(42.5));
+        // At or past the end: one second before it, since a stream seeked to
+        // its very end wraps to 0:00; a track shorter than that, the start.
+        assert_eq!(metadata.resume_seconds(40.0), Some(39.0));
+        assert_eq!(metadata.resume_seconds(42.5), Some(41.5));
+        assert_eq!(metadata.resume_seconds(0.75), None);
+        assert_eq!(metadata.resume_seconds(0.0), None);
+        assert_eq!(metadata.resume_seconds(f64::NAN), None);
+        metadata.playhead_seconds = f64::INFINITY;
+        assert_eq!(metadata.resume_seconds(120.0), None);
     }
 
     /// The artist field (WX-5c): absent leaves the file v1 and byte-identical,

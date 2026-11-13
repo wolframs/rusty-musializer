@@ -1172,6 +1172,17 @@ and an empty `artist` (never written). `tools/differential_project_io.sh`
 pins the C's refusal of the v2 file as an expected pair and checks Rust's own
 v2 round trip.
 
+**Post-legacy, either version (PXF-7, 2026-11-13): `playhead_seconds`**
+(number, finite, `> 0`, written last in `metadata`). Where the playhead stood
+at the last write of the project (Save, Save As, autosave); an interactive
+open resumes there, paused, and a batch open ignores it. Never written at
+0:00, so a project saved at the start is byte-identical to what earlier builds
+wrote; a zero or negative value is refused (`Number`), never having been
+written. It does not move the version, like the transitions and the caption
+effects: the frozen C and earlier builds refuse it as an unknown field, which
+`tools/differential_project_io.sh` pins as an expected pair (step 13) beside
+Rust's own byte-identical round trip. Nothing that draws a frame reads it.
+
 **`audio_asset`** (`:174-215`) — all six required: `mode` (`imported` |
 `referenced`), `path` (1..1024), `sha256`, `duration_seconds`
 (`exclusiveMinimum 0`), `sample_rate` (integer 1..768000), `channels`

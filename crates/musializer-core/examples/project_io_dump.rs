@@ -286,6 +286,11 @@ fn dump_project(project: &Project) {
         "metadata.application_version",
         &metadata.application_version,
     );
+    // Post-legacy (PXF-7), printed only past the start for the same reason as
+    // the artist: the C's dump has no such line.
+    if metadata.playhead_seconds > 0.0 {
+        dump_real("metadata.playhead_seconds", metadata.playhead_seconds);
+    }
 
     let audio = &project.audio;
     dump_enum("audio.mode", audio.mode.canonical_name());
@@ -564,6 +569,9 @@ fn build_fixture() -> Project {
         created_utc: "2026-07-29T12:34:56.789Z".to_owned(),
         modified_utc: "2026-07-29T13:00:00Z".to_owned(),
         application_version: "rusty-musializer 0.1.0-δ+round·trip".to_owned(),
+        // C-era rows: the C has no resume position, so the shared fixture
+        // starts at the start; `build-playhead` sets one.
+        playhead_seconds: 0.0,
     };
 
     // -- audio. `Referenced` rather than the `Imported` default.
@@ -1037,6 +1045,7 @@ fn main() -> ExitCode {
         eprintln!(
             "usage: project_io_dump build <out.musi>\n\
              \x20      project_io_dump build-artist <out.musi>\n\
+             \x20      project_io_dump build-playhead <out.musi>\n\
              \x20      project_io_dump read <in.musi>\n\
              \x20      project_io_dump rewrite <in.musi> <out.musi>"
         );
@@ -1056,6 +1065,16 @@ fn main() -> ExitCode {
         "build-artist" => {
             let mut fixture = build_fixture();
             fixture.metadata.artist = "Chaos Cat Familiar — 混沌猫 \"Ø\"".to_owned();
+            serialize_to(&fixture, &arguments[2]);
+            dump_project(&fixture);
+        }
+        // The v1 fixture with a resume position (PXF-7): a post-legacy member
+        // that does not move the version, so the C refuses it as an unknown
+        // field. The value is a computed double, not a typed decimal, so a
+        // lossy spelling would show.
+        "build-playhead" => {
+            let mut fixture = build_fixture();
+            fixture.metadata.playhead_seconds = f64::from_bits(0x4059_5555_5555_5555);
             serialize_to(&fixture, &arguments[2]);
             dump_project(&fixture);
         }

@@ -188,6 +188,43 @@ if ! cmp -s "$OUT_DIR/rust_v2.musi" "$OUT_DIR/rust_v2_again.musi"; then
     exit 1
 fi
 
+# PXF-7: the resume position, a post-legacy member of v1 (it does not move the
+# version, like the transitions). The frozen C must refuse it as the unknown
+# field it is to that codec, and nothing else; Rust must read its own file back
+# to the same values and re-write the same bytes.
+echo "=== step 12: Rust writes the fixture with a resume position ==="
+step "Rust could not build or write its playhead fixture" \
+    "$RUST" build-playhead "$OUT_DIR/rust_playhead.musi" >"$OUT_DIR/rust_playhead_wrote.txt"
+case "$(head -c 41 "$OUT_DIR/rust_playhead.musi")" in
+    '{"schema_version":"musializer.project/v1"'*) ;;
+    *) echo "FAIL: the playhead moved the version" >&2; exit 1 ;;
+esac
+if ! grep -q '"playhead_seconds":' "$OUT_DIR/rust_playhead.musi"; then
+    echo "FAIL: the playhead fixture carries no playhead" >&2
+    exit 1
+fi
+
+echo "=== step 13: the C refuses it, as an unknown field ==="
+if "$ORACLE" read "$OUT_DIR/rust_playhead.musi" >/dev/null 2>"$OUT_DIR/c_read_playhead.err"; then
+    echo "FAIL: the frozen C read a playhead it has no field for" >&2
+    exit 1
+fi
+if ! grep -q "failed: unknown field" "$OUT_DIR/c_read_playhead.err"; then
+    echo "FAIL: the C refused the playhead file for another reason:" >&2
+    cat "$OUT_DIR/c_read_playhead.err" >&2
+    exit 1
+fi
+echo "    expected refusal: $(cat "$OUT_DIR/c_read_playhead.err")"
+
+echo "=== step 14: Rust re-writes its own playhead file ==="
+step "Rust refused its own playhead project" \
+    "$RUST" rewrite "$OUT_DIR/rust_playhead.musi" "$OUT_DIR/rust_playhead_again.musi" \
+    >"$OUT_DIR/rust_read_playhead.txt"
+if ! cmp -s "$OUT_DIR/rust_playhead.musi" "$OUT_DIR/rust_playhead_again.musi"; then
+    echo "FAIL: Rust re-wrote its playhead project into different bytes" >&2
+    exit 1
+fi
+
 echo "=== comparing ==="
 python3 - "$OUT_DIR" "$TOLERANCE" <<'PY'
 import os
@@ -366,6 +403,9 @@ comparisons = [
     # Post-legacy, no oracle (WX-5c): the v2 file against its own build dump.
     Comparison("5. Rust writes v2 -> Rust reads (the C refuses it, step 10)",
                "rust_v2_wrote.txt", "rust_read_v2.txt"),
+    # Post-legacy, no oracle (PXF-7): the resume position against its build dump.
+    Comparison("6. Rust writes a playhead -> Rust reads (the C refuses it, step 13)",
+               "rust_playhead_wrote.txt", "rust_read_playhead.txt"),
 ]
 
 ok = True

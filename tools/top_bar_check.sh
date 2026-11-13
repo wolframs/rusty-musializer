@@ -25,6 +25,12 @@
 #   4. the save word carries ink where the line says it is; an empty stretch
 #      of the same bar carries none, and in fullscreen the bar is not drawn;
 #   5. a treatment's artist saves a v2 .musi; without one the file is v1.
+#   6. the resume position (PXF-7): autosave records the playhead it was held
+#      at; a dropped project resumes there paused, with its notice; a project
+#      saved at the start opens there and plays, and a batch open from the
+#      command line does not resume (controls); a position past the end
+#      resumes a second before it; a still is byte-identical with and without
+#      a saved playhead.
 #
 # TOP_BAR_BIN names a different binary, for a negative control without
 # replacing the build.
@@ -35,6 +41,16 @@
 #     left at none), with the gap press still green;
 #   - the save word drawn in the bar's own surface colour: the ink check
 #     reads 0 against 81 and fails, the empty-stretch control still 0.
+# NEGATIVE CONTROLS for check 6, run 2026-11-13 on the GPU path, each a
+# binary from a perturbed tree restored byte for byte afterwards:
+#   - the drop's open passing resume=false: 2 failures (the drop at 0.63 s and
+#     playing on, the past-the-end file the same), with autosave, both
+#     controls and the still still green;
+#   - the per-frame playhead update removed: autosave writes no playhead
+#     (the metadata ends at application_version), and the `resume:` line,
+#     which reads the same field, reports 0 in every run.
+# Check 6c first failed for real: a stream seeked to exactly its end reports
+# 0:00, so the clamp lands one second before the end.
 # The same run on the CPU path (MZ_GL_LAUNCH="") reads the same 81 ink pixels
 # and 0.89/0.00 fill shares, so the classifier is not calibrated to one
 # rasterizer.
@@ -255,6 +271,80 @@ case "$(head -c 200 "$OUT/saved/plain.musi" 2>/dev/null)" in
     '{"schema_version":"musializer.project/v1"'*) ;;
     *) fail "a project with no artist was not written as v1" ;;
 esac
+
+# 6. The resume position (PXF-7). The save state's other half: a project
+#    remembers where its playhead was when it was written, and an interactive
+#    open puts it back there, paused. Each half on its own copy of the plain
+#    project, because a run that edits writes the file it opened.
+resume_copy() { # resume_copy NAME -> a fresh copy of plain.musi and its bundle
+    mkdir -p "$OUT/resume/$1"
+    cp "$OUT/saved/plain.musi" "$OUT/resume/$1/plain.musi"
+    cp -r "$OUT/saved/plain.assets" "$OUT/resume/$1/plain.assets"
+    printf '%s' "$OUT/resume/$1/plain.musi"
+}
+resume_run() { # resume_run NAME FRAMES PROBE [extra args]
+    local name="$1" frames="$2" probe="$3"
+    shift 3
+    MZ_STATE_DIR="$OUT/state-$name" tools/headless_run.sh --ui-scale 100 \
+        --ui-probe "size=1280x720,$probe" --probe-frames "$frames" \
+        --probe-shot "$OUT/$name.png" "$@" >"$OUT/$name.log" 2>&1 || true
+}
+#    a. Autosave writes the playhead it was at: a held playhead at 4.25 s and a
+#       durable edit (a scene pick), left for the 1.5 s settle.
+saved_at="$(resume_copy autosave)"
+resume_run resume-autosave 150 "time=4.25,play=0,scene-pick=loom" --project "$saved_at"
+case "$(grep -o '"application_version":"[^"]*"[^}]*}' "$saved_at")" in
+    *',"playhead_seconds":4.25}') ;;
+    *) fail "autosave did not record the playhead at 4.25 s: $(grep -o '"metadata":{[^}]*}' "$saved_at")" ;;
+esac
+#    b. A drop (the welcome screen's interactive open) resumes there, paused,
+#       and posts its notice (whose words, "Paused at 00:04.250, where it was
+#       last saved", are only in the capture).
+resume_run resume-drop 40 "drop=$saved_at"
+case "$(line_of resume "$OUT/resume-drop.log")" in
+    *'playhead=4.250 saved=4.250 playing=false') ;;
+    *) fail "a dropped project did not resume paused at 4.25 s: $(line_of resume "$OUT/resume-drop.log")" ;;
+esac
+grep -aq '^notices:.*cards=\[id=[0-9]* info' "$OUT/resume-drop.log" ||
+    fail "the resumed open posted no notice"
+#    Controls: a project saved at the start opens at the start and plays, as
+#    every project did before; an open from the command line in a batch run
+#    (a probe, a render, a still) does not resume, so it renders what it did.
+resume_run resume-drop-plain 40 "drop=$(resume_copy plain)"
+case "$(line_of resume "$OUT/resume-drop-plain.log")" in
+    *'saved=0.000'*) ;;
+    *) fail "a project without a playhead claims one: $(line_of resume "$OUT/resume-drop-plain.log")" ;;
+esac
+python3 - "$(line_of resume "$OUT/resume-drop-plain.log")" <<'PY' || fail "a project saved at the start did not open there and play"
+import re, sys
+playhead = float(re.search(r"playhead=([0-9.]+)", sys.argv[1]).group(1))
+assert 0.0 < playhead < 2.0, playhead
+PY
+resume_run resume-argv 40 "time=1,play=0" --project "$saved_at"
+case "$(line_of resume "$OUT/resume-argv.log")" in
+    *'playhead=1.000 saved=4.250'*) ;;
+    *) fail "a batch open resumed: $(line_of resume "$OUT/resume-argv.log")" ;;
+esac
+#    c. A position past the end of the track lands a second before it (a
+#       stream seeked to its very end wraps to 0:00, found by this check).
+past="$(resume_copy past)"
+sed -i 's/"application_version":"\([^"]*\)"}/"application_version":"\1","playhead_seconds":999.5}/' "$past"
+resume_run resume-past 40 "drop=$past"
+case "$(line_of resume "$OUT/resume-past.log")" in
+    *'playhead=5.000 saved=999.500 playing=false') ;;
+    *) fail "a playhead past the end did not resume a second before it: $(line_of resume "$OUT/resume-past.log")" ;;
+esac
+#    d. Export determinism: a still of the project with a saved playhead is
+#       the still of the project without one, byte for byte.
+forged="$(resume_copy forged)"
+sed -i 's/"application_version":"\([^"]*\)"}/"application_version":"\1","playhead_seconds":4.25}/' "$forged"
+MZ_STATE_DIR="$OUT/state-still" tools/headless_run.sh --project "$(resume_copy unforged)" \
+    --still 3 "$OUT/resume/still-plain.png" >"$OUT/resume-still-plain.log" 2>&1 || true
+MZ_STATE_DIR="$OUT/state-still" tools/headless_run.sh --project "$forged" \
+    --still 3 "$OUT/resume/still-playhead.png" >"$OUT/resume-still-playhead.log" 2>&1 || true
+if [ ! -s "$OUT/resume/still-plain.png" ] || ! cmp -s "$OUT/resume/still-plain.png" "$OUT/resume/still-playhead.png"; then
+    fail "a saved playhead changed the still at 3 s"
+fi
 
 if [ "$failures" -gt 0 ]; then
     printf '%d top bar check(s) failed; logs in %s\n' "$failures" "$OUT"

@@ -617,6 +617,7 @@ fn run(
                     &mut music,
                     &mut app,
                     &mut scratch,
+                    is_session_run(&options),
                 ) {
                     eprintln!("warning: could not open {}: {error}", path.display());
                     options.error = true;
@@ -1698,6 +1699,11 @@ fn run(
         let time_seconds = music
             .as_ref()
             .map_or(0.0, |m| f64::from(m.get_time_played()));
+        // PXF-7: where the user is, for the next save or autosave to record.
+        // Not an edit, so it never dirties the project.
+        if let (Some(track), Some(_)) = (app.workspace.current_mut(), music.as_ref()) {
+            track.playhead_seconds = time_seconds;
+        }
         let audition_gain = app
             .shell
             .protocol
@@ -2457,6 +2463,7 @@ fn run(
                         &mut music,
                         &mut app,
                         &mut scratch,
+                        true,
                     ) {
                         Ok(()) => remember_recent_project(&mut app, &path),
                         Err(error) => {
@@ -2652,6 +2659,7 @@ fn run(
                                 &mut music,
                                 &mut app,
                                 &mut scratch,
+                                true,
                             ) {
                                 Ok(()) => remember_recent_project(&mut app, &path),
                                 Err(error) => app.shell.notify(
@@ -2950,6 +2958,22 @@ fn run(
     report.rail = app.shell.describe_rail();
     report.lane_head = app.shell.scene_lane.describe_head().to_owned();
     report.transport = app.shell.describe_transport().to_owned();
+    // PXF-7: where the current track's playhead is, what its project last
+    // saved, and whether it is playing — the three a resume has to get right.
+    report.resume = app.workspace.current().map_or_else(
+        || "no track".to_owned(),
+        |track| {
+            format!(
+                "playhead={:.3} saved={:.3} playing={}",
+                track.playhead_seconds,
+                track
+                    .project_metadata
+                    .as_ref()
+                    .map_or(0.0, |metadata| metadata.playhead_seconds),
+                music.as_ref().is_some_and(|m| m.is_stream_playing()),
+            )
+        },
+    );
     report.posters = posters.describe();
     report.follow = follow.as_ref().map(TreatmentFollow::describe);
     dock.shutdown();
@@ -5045,6 +5069,11 @@ fn confirm_close(app: &mut App, exporting: bool, already_warned: &mut bool) -> b
 /// anything in the session is replaced. A project that fails to open leaves the
 /// workspace exactly as it was, which is why this cannot be written as "clear,
 /// then load".
+///
+/// With `resume`, a project saved away from the start reopens there, paused
+/// (PXF-7). Every interactive open resumes; an open from the command line
+/// does only in a session, so a render, still, contact sheet, probe or
+/// `--save-project` run starts where it always did.
 fn open_project<'audio>(
     audio: &'audio RaylibAudio,
     path: &Path,
@@ -5052,6 +5081,7 @@ fn open_project<'audio>(
     music: &mut Option<Music<'audio>>,
     app: &mut App,
     scratch: &mut [f32],
+    resume: bool,
 ) -> Result<(), String> {
     let opened = with_preview_paused(music.as_ref(), || {
         let mut opened = project::open_path(path, |audio_path| {
@@ -5098,12 +5128,54 @@ fn open_project<'audio>(
     // is current now, so any draft still bound to the previous slot has to go
     // (review 1.3); the click that got here was guarded, so it is not lost work.
     app.shell.lyrics.enter_track(app.workspace.current_index());
-    app.shell.notify(
-        Severity::Info,
-        "Project opened",
-        "Lyrics, embedded semantic cues, authored lanes, scene plan, and output settings were restored.",
-    );
+    let resumed = if resume {
+        resume_saved_playhead(music.as_ref(), analysis, app)
+    } else {
+        None
+    };
+    let detail = "Lyrics, embedded semantic cues, authored lanes, scene plan, and output settings were restored.";
+    match resumed {
+        Some(seconds) => app.shell.notify(
+            Severity::Info,
+            "Project opened",
+            &format!(
+                "{detail} Paused at {}, where it was last saved.",
+                ui::widgets::format_timestamp(seconds)
+            ),
+        ),
+        None => app.shell.notify(Severity::Info, "Project opened", detail),
+    }
     Ok(())
+}
+
+/// Puts the just-opened current track's playhead where its project was last
+/// saved, and pauses there (PXF-7). Returns the position, or `None` when the
+/// project was saved at the start (it then plays from 0:00 as before).
+///
+/// The scene clock is a local: a seek is a discontinuity either way, and the
+/// frame loop's clock already reads a jump of more than half a second as one.
+fn resume_saved_playhead(
+    music: Option<&Music<'_>>,
+    analysis: &mut Analysis,
+    app: &mut App,
+) -> Option<f64> {
+    let music = music?;
+    let seconds = app.workspace.current().and_then(|track| {
+        track
+            .project_metadata
+            .as_ref()?
+            .resume_seconds(track.duration_seconds)
+    })?;
+    if !app.workspace.current()?.transport_seekable {
+        return None;
+    }
+    let mut clock = None;
+    seek_preview(music, analysis, app, seconds, &mut clock);
+    music.pause_stream();
+    if let Some(track) = app.workspace.current_mut() {
+        track.playhead_seconds = seconds;
+    }
+    Some(seconds)
 }
 
 /// Restores the app-owned recovery generation into the empty welcome session.
@@ -6065,6 +6137,8 @@ struct Report {
     rail: String,
     lane_head: String,
     transport: String,
+    /// The resume position (PXF-7): playhead, saved position, playing.
+    resume: String,
     /// The followed treatment's counts (WX-3), `None` when nothing is followed.
     follow: Option<String>,
     /// The last drawn frame's shared timeline span, kept for the same reason
@@ -6148,6 +6222,7 @@ impl Default for Report {
             rail: String::new(),
             lane_head: String::new(),
             transport: String::new(),
+            resume: String::new(),
             follow: None,
             timeline: String::new(),
             framebuffer: musializer_runtime::draw::FramebufferAudit::default(),
@@ -6770,6 +6845,7 @@ impl Report {
         println!("rail:            {}", self.rail);
         println!("lane head:       {}", self.lane_head);
         println!("transport:       {}", self.transport);
+        println!("resume:          {}", self.resume);
         // WX-5d: one line per column view, each from its builder's describe
         // function. Those return "" until the view is built, and an empty
         // line is not printed, so no report changes until there is something
