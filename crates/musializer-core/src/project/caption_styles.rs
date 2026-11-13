@@ -547,24 +547,26 @@ mod tests {
 
     #[test]
     fn the_lines_own_style_is_written_over_its_sections_over_the_base() {
-        let mut base = CaptionStyle::default();
-        base.styles = vec![
-            NamedCaptionStyle {
-                name: name("top"),
-                style: CaptionOverride {
-                    anchor: Some(CaptionAnchor::TopCenter),
-                    size_scale: Some(0.05),
-                    ..CaptionOverride::default()
+        let base = CaptionStyle {
+            styles: vec![
+                NamedCaptionStyle {
+                    name: name("top"),
+                    style: CaptionOverride {
+                        anchor: Some(CaptionAnchor::TopCenter),
+                        size_scale: Some(0.05),
+                        ..CaptionOverride::default()
+                    },
                 },
-            },
-            NamedCaptionStyle {
-                name: name("big"),
-                style: CaptionOverride {
-                    size_scale: Some(0.09),
-                    ..CaptionOverride::default()
+                NamedCaptionStyle {
+                    name: name("big"),
+                    style: CaptionOverride {
+                        size_scale: Some(0.09),
+                        ..CaptionOverride::default()
+                    },
                 },
-            },
-        ];
+            ],
+            ..CaptionStyle::default()
+        };
         let (drawn, used) = resolve_line(&base, Some(name("big")), Some(name("top")));
         assert_eq!(used.as_deref(), Some("top+big"));
         assert_eq!(drawn.size_scale, 0.09, "the line's member wins");

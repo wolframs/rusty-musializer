@@ -4233,14 +4233,16 @@ mod tests {
     #[test]
     fn absent_titles_and_styles_keep_the_projects_and_an_empty_list_removes_them() {
         let name = StyleName::new("top").unwrap();
-        let mut current = CaptionStyle::default();
-        current.styles = vec![NamedCaptionStyle {
-            name,
-            style: CaptionOverride {
-                anchor: Some(CaptionAnchor::TopCenter),
-                ..CaptionOverride::default()
-            },
-        }];
+        let current = CaptionStyle {
+            styles: vec![NamedCaptionStyle {
+                name,
+                style: CaptionOverride {
+                    anchor: Some(CaptionAnchor::TopCenter),
+                    ..CaptionOverride::default()
+                },
+            }],
+            ..CaptionStyle::default()
+        };
         let kept_card = TitleCard {
             start_seconds: 0.0,
             end_seconds: 4.0,

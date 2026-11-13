@@ -401,9 +401,13 @@ impl LyricsDocument {
     }
 
     /// Every cue's own style, by cue id, for the checks that resolve the
-    /// names against the project's table.
+    /// names against the project's table. Only cues that exist: an entry left
+    /// behind by a deleted cue is never read or written, as with the voices.
     pub fn cue_styles(&self) -> impl Iterator<Item = (u64, StyleName)> + '_ {
-        self.cue_styles.iter().map(|(id, name)| (*id, *name))
+        self.cue_styles
+            .iter()
+            .filter(|(id, _)| self.cues.iter().any(|cue| cue.id == **id))
+            .map(|(id, name)| (*id, *name))
     }
 
     /// Sets or clears cue `id`'s own style. Refuses an id no cue has; the name
@@ -1560,6 +1564,43 @@ impl LyricHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deleted_cues_style_is_never_read_and_a_copy_keeps_the_rest() {
+        let mut document = LyricsDocument::new(10.0).unwrap();
+        let first = document
+            .insert(LyricCue {
+                id: 0,
+                start_seconds: 1.0,
+                end_seconds: 2.0,
+                text: "one".into(),
+                origin: CueOrigin::UserApplied,
+            })
+            .unwrap();
+        let second = document
+            .insert(LyricCue {
+                id: 0,
+                start_seconds: 3.0,
+                end_seconds: 4.0,
+                text: "two".into(),
+                origin: CueOrigin::UserApplied,
+            })
+            .unwrap();
+        let top = StyleName::new("top").unwrap();
+        assert!(document.set_cue_style(first, Some(top)));
+        assert!(document.set_cue_style(second, Some(top)));
+        assert!(!document.set_cue_style(99, Some(top)), "no such cue");
+        document.delete(first).unwrap();
+        assert_eq!(
+            document.cue_styles().collect::<Vec<_>>(),
+            vec![(second, top)]
+        );
+        let mut copy = LyricsDocument::new(10.0).unwrap();
+        copy.replace(&document).unwrap();
+        assert_eq!(copy.style_of(second), Some(top), "a copy keeps the styles");
+        assert!(copy.set_cue_style(second, None));
+        assert_eq!(copy.style_of(second), None);
+    }
 
     #[test]
     fn voices_travel_with_a_copied_document_and_survive_an_edit() {
