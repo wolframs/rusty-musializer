@@ -3127,6 +3127,7 @@ fn draw_offline_frame(
                 ascii_grid: track.ascii_grid(),
                 caption_style: Some(&track.caption_style),
                 scene_plan: Some(&track.scene_switches),
+                artist: track.project_artist(),
             }
         });
     renderer.draw(

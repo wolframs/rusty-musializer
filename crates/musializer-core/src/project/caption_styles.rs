@@ -8,8 +8,10 @@
 //! - A **named style** states only what differs from the project's base
 //!   [`CaptionStyle`] and inherits the rest. A lyric line picks one, a section
 //!   of the plan may name one as the default for the lines that *begin* inside
-//!   it, and the line's own choice wins over the section's, the section's over
-//!   the base. A voice still colours a line on top of whatever style it has.
+//!   it. They stack: the section's members are written over the base and the
+//!   line's over those, so the line's choice wins over the section's and the
+//!   section's over the base, member by member. A voice still colours a line
+//!   on top of whatever style it has.
 //! - A **title card** is a timed entry of its own lane: a title line and, under
 //!   it, an artist line (a display name and an optional `@handle`). The shared
 //!   caption path draws it after every scene, Cadence and Stage included, so a
@@ -326,24 +328,43 @@ pub fn find(table: &[NamedCaptionStyle], name: StyleName) -> Option<&CaptionOver
         .map(|entry| &entry.style)
 }
 
-/// The style a lyric line is drawn in: its own named style, else the one its
-/// section names, else the base. A name the table does not hold — reachable
-/// only through an in-memory edit, since every loader refuses one — draws the
-/// base rather than nothing. Borrowed when no named style applies, so the
-/// common case clones nothing.
+/// The style a lyric line is drawn in: the base, then the named style its
+/// section names written over it, then the line's own written over that. So
+/// the line's members win over the section's and the section's over the
+/// base, and a member neither states is the base's: a shouted line in a
+/// section that moved its captions to the top stays at the top. (Found on the
+/// first contact sheet: with the line's style *replacing* the section's, the
+/// shout dropped back to the bottom among Clawd's cats, and every such line
+/// would have needed a second style that repeated the section's anchor.)
+///
+/// A name the table does not hold — reachable only through an in-memory
+/// edit, since every loader refuses one — is skipped rather than drawing
+/// nothing. Borrowed when no named style applies, so the common case clones
+/// nothing. The second value names what applied, section first: `top+shout`.
 #[must_use]
 pub fn resolve_line<'a>(
     base: &'a CaptionStyle,
     own: Option<StyleName>,
     section: Option<StyleName>,
-) -> (std::borrow::Cow<'a, CaptionStyle>, Option<StyleName>) {
-    match own
-        .or(section)
-        .and_then(|name| find(&base.styles, name).map(|style| (name, style)))
-    {
-        Some((name, style)) => (std::borrow::Cow::Owned(style.apply(base)), Some(name)),
-        None => (std::borrow::Cow::Borrowed(base), None),
+) -> (std::borrow::Cow<'a, CaptionStyle>, Option<String>) {
+    let found = |name: Option<StyleName>| {
+        name.and_then(|name| find(&base.styles, name).map(|style| (name, style)))
+    };
+    let applied: Vec<(StyleName, &CaptionOverride)> =
+        [found(section), found(own)].into_iter().flatten().collect();
+    if applied.is_empty() {
+        return (std::borrow::Cow::Borrowed(base), None);
     }
+    let mut style = base.clone();
+    let label = applied
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>()
+        .join("+");
+    for (_, over) in applied {
+        style = over.apply(&style);
+    }
+    (std::borrow::Cow::Owned(style), Some(label))
 }
 
 /// One title card: a title line, and under it who made the music.
@@ -523,13 +544,14 @@ mod tests {
     }
 
     #[test]
-    fn the_lines_own_style_beats_its_sections_which_beats_the_base() {
+    fn the_lines_own_style_is_written_over_its_sections_over_the_base() {
         let mut base = CaptionStyle::default();
         base.styles = vec![
             NamedCaptionStyle {
                 name: name("top"),
                 style: CaptionOverride {
                     anchor: Some(CaptionAnchor::TopCenter),
+                    size_scale: Some(0.05),
                     ..CaptionOverride::default()
                 },
             },
@@ -542,22 +564,34 @@ mod tests {
             },
         ];
         let (drawn, used) = resolve_line(&base, Some(name("big")), Some(name("top")));
-        assert_eq!(used, Some(name("big")));
-        assert_eq!(drawn.size_scale, 0.09);
+        assert_eq!(used.as_deref(), Some("top+big"));
+        assert_eq!(drawn.size_scale, 0.09, "the line's member wins");
         assert_eq!(
             drawn.anchor,
-            CaptionAnchor::BottomCenter,
-            "styles do not stack: the line's replaces the section's"
+            CaptionAnchor::TopCenter,
+            "a member the line does not state is its section's"
+        );
+        assert_eq!(
+            drawn.box_style, base.box_style,
+            "and one neither states the base's"
         );
         let (drawn, used) = resolve_line(&base, None, Some(name("top")));
-        assert_eq!(used, Some(name("top")));
+        assert_eq!(used.as_deref(), Some("top"));
         assert_eq!(drawn.anchor, CaptionAnchor::TopCenter);
+        let (drawn, used) = resolve_line(&base, Some(name("big")), None);
+        assert_eq!(used.as_deref(), Some("big"));
+        assert_eq!(drawn.anchor, CaptionAnchor::BottomCenter);
         let (drawn, used) = resolve_line(&base, None, None);
         assert_eq!(used, None);
         assert!(matches!(drawn, std::borrow::Cow::Borrowed(_)));
-        // An unknown name draws the base, never nothing.
-        let (_, used) = resolve_line(&base, Some(name("gone")), None);
-        assert_eq!(used, None);
+        // An unknown name is skipped, never drawn as nothing.
+        let (drawn, used) = resolve_line(&base, Some(name("gone")), Some(name("top")));
+        assert_eq!(used.as_deref(), Some("top"));
+        assert_eq!(drawn.anchor, CaptionAnchor::TopCenter);
+        assert!(
+            drawn.styles.is_empty(),
+            "a style to draw with carries no table"
+        );
     }
 
     #[test]

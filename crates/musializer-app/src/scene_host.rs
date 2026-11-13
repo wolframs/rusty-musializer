@@ -219,6 +219,9 @@ pub struct TrackAssets<'a> {
     /// The track's scene plan, for the transition in force this frame (MV3).
     /// `None` only when there is no track.
     pub scene_plan: Option<&'a musializer_core::project::scene_switch::SceneSwitchTimeline>,
+    /// The project's artist (WX-5c), for a title card that names none of its
+    /// own (MV2). `None` when the project has none.
+    pub artist: Option<&'a str>,
 }
 
 pub struct SceneRenderer {
@@ -269,6 +272,16 @@ pub struct SceneRenderer {
     /// `unavailable` — because a frame with no halo and a frame whose halo
     /// silently failed to build are the same picture.
     caption_halo_last: &'static str,
+    /// Which lines the caption overlay drew in which named style (MV2), by
+    /// cue id under the style's name (`base` for none), over the whole run.
+    caption_style_lines: std::collections::BTreeMap<String, std::collections::BTreeSet<u64>>,
+    /// The title card the last frame drew (MV2), and over the whole run: how
+    /// many frames drew one, the titles drawn, and the frames whose card had
+    /// no artist anywhere — a card the operator's rule says must not be bare.
+    title_last: Option<scenes::caption::title_card::TitleDrawn>,
+    title_frames: u64,
+    titles_drawn: std::collections::BTreeSet<String>,
+    title_bare_frames: u64,
     /// The sample caption (WX-5d §3.2): a cue the preview draws, marked
     /// `SAMPLE`, while the Lyrics view's Style or Effects pane is open and no
     /// line is live. **Preview only**: `main.rs` sets it just before the
@@ -373,6 +386,11 @@ impl SceneRenderer {
             cadence_text: "none",
             caption_halo: HaloBlur::load(rl, thread),
             caption_halo_last: "none",
+            caption_style_lines: std::collections::BTreeMap::new(),
+            title_last: None,
+            title_frames: 0,
+            titles_drawn: std::collections::BTreeSet::new(),
+            title_bare_frames: 0,
             sample_caption: None,
             phosphor: scenes::phosphor_dream::PhosphorResources::load(rl, thread),
             clawd: scenes::clawd::ClawdResources::new(),
@@ -643,6 +661,64 @@ impl SceneRenderer {
         }
     }
 
+    /// Which named caption styles the overlay drew lines in (MV2): `base 3
+    /// lines, top 2 lines`, counted by cue over the whole run, or `none drawn`.
+    #[must_use]
+    pub fn describe_caption_styles(&self) -> String {
+        if self.caption_style_lines.is_empty() {
+            return "none drawn".to_owned();
+        }
+        self.caption_style_lines
+            .iter()
+            .map(|(name, lines)| {
+                format!(
+                    "{name} {} line{}",
+                    lines.len(),
+                    if lines.len() == 1 { "" } else { "s" }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// What the title lane drew (MV2): how many cards over how many frames,
+    /// and the last card **as laid out** — its title lines and its artist
+    /// line — so a card drawn from the wrong entry, or with its artist line
+    /// lost, does not read like the card it was given. A card with no artist
+    /// anywhere is named in capitals rather than drawn silently.
+    #[must_use]
+    pub fn describe_titles(&self) -> String {
+        let Some(last) = &self.title_last else {
+            return format!("none ({} frames)", self.title_frames);
+        };
+        let artist = last
+            .artist
+            .as_deref()
+            .map_or_else(|| "-".to_owned(), |line| format!("{line:?}"));
+        let bare = if self.title_bare_frames > 0 {
+            format!(
+                ", NO ARTIST in {} frames (the card names none and the project has none)",
+                self.title_bare_frames
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "drew {} card{} over {} frames; last {:?} / {artist} style={} at {:.0},{:.0} {:.0}x{:.0} presence={:.2} glow={}{bare}",
+            self.titles_drawn.len(),
+            if self.titles_drawn.len() == 1 { "" } else { "s" },
+            self.title_frames,
+            last.title,
+            last.style.map_or_else(|| "title".to_owned(), |name| name.to_string()),
+            last.rect.x,
+            last.rect.y,
+            last.rect.width,
+            last.rect.height,
+            last.presence,
+            last.glow,
+        )
+    }
+
     /// Draws the bound scene into `boundary`.
     ///
     /// `pixel_scale` is physical target pixels per logical output pixel, so
@@ -706,6 +782,7 @@ impl SceneRenderer {
                 let quiet = TrackAssets {
                     caption_style: None,
                     scene_plan: None,
+                    artist: None,
                     ..assets
                 };
                 // The doorway's scene wears the look its own nearest section
@@ -1060,29 +1137,75 @@ impl SceneRenderer {
         // Taken whether or not this scene draws a caption, so a sample set
         // for one preview frame can never reach a later draw.
         let sample = self.sample_caption.take();
+        // The effect drives read the same frame the scene just drew from,
+        // which is what makes an export's glow pulse identical to the
+        // preview's.
+        let inputs = EffectInputs::from_audio(
+            frame.time_seconds,
+            frame.audio.rms,
+            frame.audio.trails,
+            frame.audio.beat_phase,
+            frame.audio.spectral_flux,
+        );
         if !draws_its_line {
-            if let Some(style) = assets.caption_style {
-                // The effect drives read the same frame the scene just drew
-                // from, which is what makes an export's glow pulse identical to
-                // the preview's.
-                let inputs = EffectInputs::from_audio(
-                    frame.time_seconds,
-                    frame.audio.rms,
-                    frame.audio.trails,
-                    frame.audio.beat_phase,
-                    frame.audio.spectral_flux,
-                );
-                self.caption_halo_last = scenes::caption::draw_scene_lyric_overlay(
+            if let Some(base) = assets.caption_style {
+                // The line's own named style, else the one its section names,
+                // else the base (MV2). The section is the one the line
+                // *begins* in, so a line across a cut keeps one style.
+                let shown = frame.lyric.or(sample.as_ref());
+                let (style, used) = match shown {
+                    Some(cue) => musializer_core::project::caption_styles::resolve_line(
+                        base,
+                        cue.style,
+                        plan.and_then(|plan| plan.caption_style_at(cue.start_seconds)),
+                    ),
+                    None => (std::borrow::Cow::Borrowed(base), None),
+                };
+                let (drew, glow) = scenes::caption::draw_scene_lyric_overlay(
                     d,
                     frame.lyric,
                     sample.as_ref(),
                     fonts,
                     boundary,
                     pixel_scale,
-                    style,
+                    &style,
                     &inputs,
                     &mut self.caption_halo,
                 );
+                self.caption_halo_last = glow;
+                if let (Some(cue), true) = (shown, drew) {
+                    self.caption_style_lines
+                        .entry(used.unwrap_or_else(|| "base".to_owned()))
+                        .or_default()
+                        .insert(cue.id);
+                }
+            }
+        }
+        // The title lane (MV2): after every scene — Cadence, Stage and the
+        // stagings too, because a card is not a lyric line — and under the
+        // black of an intro, an outro or a dip, which belongs to the video.
+        // Only an authored card is ever drawn; nothing here invents one.
+        if let (Some(base), Some(card)) = (
+            assets.caption_style,
+            plan.and_then(|plan| plan.title_at(frame.time_seconds)),
+        ) {
+            if let Some(drawn) = scenes::caption::title_card::draw_title_card(
+                d,
+                card,
+                assets.artist,
+                fonts,
+                boundary,
+                pixel_scale,
+                base,
+                &inputs,
+                &mut self.caption_halo,
+            ) {
+                self.title_frames = self.title_frames.saturating_add(1);
+                self.titles_drawn.insert(card.title.clone());
+                if !drawn.has_artist {
+                    self.title_bare_frames = self.title_bare_frames.saturating_add(1);
+                }
+                self.title_last = Some(drawn);
             }
         }
         if let Some(active) = active.filter(|active| active.source == Source::Black) {

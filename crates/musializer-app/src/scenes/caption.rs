@@ -17,17 +17,24 @@ use raylib::prelude::{
     Vector2,
 };
 
+pub mod title_card;
+
+/// A laid-out block of lines and where it sits: shared by the caption and the
+/// title card (MV2), whose glow, shadow and ink passes must all agree on it.
 #[derive(Clone, Debug)]
-struct Composition {
-    layout: CaptionLayout,
-    box_rect: Rectangle,
-    font_size: f32,
-    spacing: f32,
-    vertical_padding: f32,
-    line_advance: f32,
+pub(crate) struct Composition {
+    pub(crate) layout: CaptionLayout,
+    pub(crate) box_rect: Rectangle,
+    pub(crate) font_size: f32,
+    pub(crate) spacing: f32,
+    pub(crate) vertical_padding: f32,
+    pub(crate) line_advance: f32,
+    /// How each line sits across the box: -1 left, 0 centred (every caption),
+    /// 1 right. A title card anchored at an edge aligns its lines to it.
+    pub(crate) align: i8,
 }
 
-fn axis_offset(alignment: i8, available: f32, content: f32, margin: f32) -> f32 {
+pub(crate) fn axis_offset(alignment: i8, available: f32, content: f32, margin: f32) -> f32 {
     match alignment {
         value if value < 0 => margin,
         value if value > 0 => available - content - margin,
@@ -35,7 +42,7 @@ fn axis_offset(alignment: i8, available: f32, content: f32, margin: f32) -> f32 
     }
 }
 
-fn anchor_axes(anchor: CaptionAnchor) -> (i8, i8) {
+pub(crate) fn anchor_axes(anchor: CaptionAnchor) -> (i8, i8) {
     match anchor {
         CaptionAnchor::BottomLeft => (-1, 1),
         CaptionAnchor::BottomCenter => (0, 1),
@@ -88,7 +95,7 @@ fn caption_font_size(
 /// The short edge is the reading that makes a caption the same physical size in
 /// every shape, which is what "the same style" has to mean once a project can be
 /// exported at more than one.
-fn short_edge(boundary: Rectangle) -> f32 {
+pub(crate) fn short_edge(boundary: Rectangle) -> f32 {
     boundary.width.min(boundary.height)
 }
 
@@ -186,6 +193,7 @@ fn compose(
         spacing,
         vertical_padding,
         line_advance,
+        align: 0,
     })
 }
 
@@ -197,8 +205,8 @@ fn compose(
 /// supersampling, and the shared 64 px atlas magnified that far is a blur. See
 /// [`Faces::caption_at`], which quantizes the size, caches two atlases and falls
 /// back — visibly, in the report line — when it cannot build one.
-/// The extra return: what the glow did this frame, for the renderer's report
-/// line. `"off"` is no glow resolved, `"blurred"` a drawn halo, and
+/// The returns: whether a line was drawn at all, and what the glow did this
+/// frame, for the renderer's report line. `"off"` is no glow resolved, `"blurred"` a drawn halo, and
 /// `"unavailable"` a resolved glow the blur pipeline could not draw — the state
 /// a capture cannot distinguish from `"off"` on its own, which is why it is a
 /// word and not a pixel.
@@ -216,17 +224,17 @@ pub fn draw_scene_lyric_overlay(
     style: &CaptionStyle,
     inputs: &EffectInputs,
     blur: &mut HaloBlur,
-) -> &'static str {
+) -> (bool, &'static str) {
     // The live line always wins; the sample (WX-5d §3.2, preview only) stands
     // in only when nothing is live, so the user styling a caption always has
     // one to look at.
     let (lyric, is_sample) = match (lyric, sample) {
         (Some(lyric), _) => (lyric, false),
         (None, Some(sample)) => (sample, true),
-        (None, None) => return "off",
+        (None, None) => return (false, "off"),
     };
     let Some(font_size) = caption_font_size(boundary, &lyric.text, pixel_scale, style) else {
-        return "off";
+        return (false, "off");
     };
     // One resolution, held across both the measurement and the draw. Two calls
     // could hand back two different atlases if a resize landed between them, and
@@ -240,7 +248,7 @@ pub fn draw_scene_lyric_overlay(
         font_size,
         &mut |text, size, spacing| font.measure_text(text, size, spacing).x,
     ) else {
-        return "off";
+        return (false, "off");
     };
     // Deterministic per frame: the drives read the same figures the scenes do,
     // so an export reproduces the preview's pulse exactly.
@@ -262,7 +270,7 @@ pub fn draw_scene_lyric_overlay(
         )
     };
     if presence <= 0.0 {
-        return "off";
+        return (false, "off");
     }
     let scale_alpha = |color: Color, by: f32| {
         Color::new(
@@ -402,7 +410,7 @@ pub fn draw_scene_lyric_overlay(
     if is_sample {
         draw_sample_pill(d, fonts, composition.box_rect, boundary);
     }
-    glow_status
+    (true, glow_status)
 }
 
 /// The `SAMPLE` micro pill at the caption's top-left corner (WX-5d §3.2), so
@@ -463,7 +471,7 @@ fn draw_sample_pill(
 /// already carry `pixel_scale` — so export supersampling scales the halo with
 /// everything else, and the same project and frame always produce the same
 /// pixels.
-fn draw_glow_halo(
+pub(crate) fn draw_glow_halo(
     d: &mut RaylibDrawHandle<'_>,
     blur: &mut HaloBlur,
     composition: &Composition,
@@ -524,7 +532,7 @@ fn draw_glow_halo(
 /// already carry `pixel_scale` — so export supersampling scales the halo with
 /// everything else, and the same project and frame always produce the same
 /// pixels. Must run with no scissor active (see [`HaloBlur::render`]).
-fn build_glyph_halo(
+pub(crate) fn build_glyph_halo(
     d: &mut RaylibDrawHandle<'_>,
     blur: &mut HaloBlur,
     composition: &Composition,
@@ -563,14 +571,14 @@ fn build_glyph_halo(
     built.then(|| Rectangle::new(left, top, width as f32 * down, height as f32 * down))
 }
 
-struct PlacedLine<'a> {
-    text: &'a str,
-    position: Vector2,
+pub(crate) struct PlacedLine<'a> {
+    pub(crate) text: &'a str,
+    pub(crate) position: Vector2,
 }
 
 /// Each laid-out line and where it is drawn — the arithmetic the glow, shadow
 /// and ink passes must agree on, so it exists once.
-fn line_positions(composition: &Composition) -> impl Iterator<Item = PlacedLine<'_>> {
+pub(crate) fn line_positions(composition: &Composition) -> impl Iterator<Item = PlacedLine<'_>> {
     composition
         .layout
         .lines
@@ -579,7 +587,12 @@ fn line_positions(composition: &Composition) -> impl Iterator<Item = PlacedLine<
         .map(move |(index, line)| PlacedLine {
             text: &line.text,
             position: Vector2::new(
-                composition.box_rect.x + (composition.box_rect.width - line.width) * 0.5,
+                composition.box_rect.x
+                    + match composition.align {
+                        value if value < 0 => 0.0,
+                        value if value > 0 => composition.box_rect.width - line.width,
+                        _ => (composition.box_rect.width - line.width) * 0.5,
+                    },
                 composition.box_rect.y
                     + composition.vertical_padding
                     + index as f32 * composition.line_advance,

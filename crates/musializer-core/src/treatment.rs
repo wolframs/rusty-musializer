@@ -1323,9 +1323,10 @@ impl CompiledTreatment {
             .count();
         let table = match &self.caption_styles {
             Some(_) => format!(
-                "caption styles {} ({styled_lines} lines, {} sections)",
+                "caption styles {} ({}, {})",
                 styles.len(),
-                self.summary.styled_sections
+                counted(styled_lines, "line"),
+                counted(self.summary.styled_sections, "section")
             ),
             None if styles.is_empty() => "no caption styles".to_owned(),
             None => format!("caption styles kept ({})", styles.len()),
@@ -1333,8 +1334,7 @@ impl CompiledTreatment {
         let lane = match (&self.titles, titles.len()) {
             (None, 0) => "no titles".to_owned(),
             (None, count) => format!("titles kept ({count})"),
-            (Some(_), 1) => "1 title".to_owned(),
-            (Some(_), count) => format!("{count} titles"),
+            (Some(_), count) => counted(count, "title"),
         };
         let warning = if titles_without_artist > 0 {
             format!(
@@ -1351,6 +1351,11 @@ impl CompiledTreatment {
             titles_without_artist,
         })
     }
+}
+
+/// `1 line`, `2 lines`.
+fn counted(count: usize, noun: &str) -> String {
+    format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
 // -- field parsers ---------------------------------------------------------------
@@ -2920,8 +2925,9 @@ pub fn vocabulary() -> Value {
                       optional): {\"top\": {\"anchor\": \"top_center\"}}. A lyric line's \
                       \"style\" picks one; a section's \"caption_style\" is the one the lines \
                       that begin inside it wear unless they pick their own; a title card's \
-                      \"style\" is written over the card's own look. Styles do not stack: the \
-                      line's replaces the section's. A voice still colours a line on top. \
+                      \"style\" is written over the card's own look. Styles stack: the base, \
+                      then the section's, then the line's, each written over the last. A \
+                      voice still colours a line on top. \
                       Absent leaves the project's table; a name used anywhere must be declared \
                       here.",
             "maximum": caption_styles::CAPTION_STYLE_CAPACITY,
@@ -4118,7 +4124,7 @@ mod tests {
         assert!(
             settled
                 .report
-                .contains("caption styles 3 (1 lines, 1 sections), 2 titles (1 with no artist"),
+                .contains("caption styles 3 (1 line, 1 section), 2 titles (1 with no artist"),
             "{}",
             settled.report
         );

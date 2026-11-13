@@ -204,6 +204,7 @@ impl Job {
             ascii_grid: track.ascii_grid(),
             caption_style: Some(&track.caption_style),
             scene_plan: Some(&track.scene_switches),
+            artist: track.project_artist(),
         };
         let scene = &mut self.scene;
         let drew = canvas.draw_into(

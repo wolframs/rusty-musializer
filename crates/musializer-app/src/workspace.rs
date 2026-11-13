@@ -408,6 +408,16 @@ impl UnfiledRisk {
 }
 
 impl Track {
+    /// The project's artist (WX-5c), or `None` when it names none: what a
+    /// title card without an artist of its own draws (MV2).
+    #[must_use]
+    pub fn project_artist(&self) -> Option<&str> {
+        self.project_metadata
+            .as_ref()
+            .map(|metadata| metadata.artist.trim())
+            .filter(|artist| !artist.is_empty())
+    }
+
     /// Builds a track the way `plug_load_track` does (`plug.c:766-830`), given
     /// the facts only the runtime can supply.
     ///

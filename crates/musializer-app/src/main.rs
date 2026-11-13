@@ -1930,6 +1930,7 @@ fn run(
                         ascii_grid: track.ascii_grid(),
                         caption_style: Some(&track.caption_style),
                         scene_plan: Some(&track.scene_switches),
+                        artist: track.project_artist(),
                     }
                 });
 
@@ -6483,6 +6484,11 @@ impl Report {
         // as a plan that asked for a cut.
         println!("transition:      {}", renderer.describe_transition());
         println!("look:            {}", renderer.describe_look());
+        // MV2: which named caption styles the lines drew in, and what the
+        // title lane drew — the card's text as laid out, so a card from the
+        // wrong entry or with its artist line lost reads differently.
+        println!("caption styles:  {}", renderer.describe_caption_styles());
+        println!("title cards:     {}", renderer.describe_titles());
         // Phosphor Dream's own line, for the same reason the two above have one.
         // This scene can draw a good-looking frame in several wrong states — the
         // wrong field, a collapsed grid, a bloom that never built — and none of
