@@ -210,6 +210,11 @@ number disagrees, grep it there before debugging from scratch.
 - **A probe run's column view persists** in `MZ_STATE_DIR`; a run that leaves Direct gets its own, or the next chat draws nothing.
 - **A check on a name says nothing about the file you then open**: open once without blocking, ask the handle, read through a cap, and feed FFmpeg by stdin. See `docs/TRAPS.md`.
 - **A small file can claim a huge picture**: budget from the header bytes before any decoder allocates, and refuse a format with no header reader.
+- **A notice longer than the queue holds is shortened, not refused**: put what must survive first, and go through `Shell::notify`, not `notices.push`. See `docs/TRAPS.md`.
+- **A stream seeked to exactly its end reads 0:00**: anything that parks the playhead "at the end" stops short of it.
+- **`grep` here is ugrep and skips a file with a NUL byte silently** (`-c` prints nothing); use `grep -a` or `rg` when an empty answer decides something. See `docs/TRAPS.md`.
+- **Reaping the encoder does not close its pipe**: a process the child started still holds the read end. Stop the writer before the kill, join it only after the reap, and bound the join.
+- **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe
 
