@@ -2,7 +2,8 @@
   "schema": "musializer.treatment/v1",
   "title": "Example treatment",
   "notes": [
-    "Every block a treatment can carry, on a one-minute track.",
+    "Every block a treatment can carry, on a one-minute track, except `titles`:",
+    "a title card goes in only when one was asked for (docs/MUSIC_VIDEO_CLI.md).",
     "A core test parses this file, so it cannot drift from the parser."
   ],
   "audio": { "path": "song.wav" },
@@ -16,6 +17,11 @@
     "text_rgba": "#fff3dc",
     "effects": { "shadow_blur": 0.25, "glow_strength": 0.4, "glow_rgba": "#ffb45a", "glow_pulse": "beat",
                  "entrance_seconds": 0.6, "exit_seconds": 0.4 }
+  },
+  "caption_styles": {
+    "low":   { "anchor": "bottom_center", "box": "plate" },
+    "shout": { "face": "space_grotesk", "size_scale": 0.09, "text_rgba": "#ffd36b",
+               "effects": { "glow_strength": 0.8, "entrance_seconds": 0.15 } }
   },
   "finish": { "base": "film", "grain": 0.25 },
   "scenes": {
@@ -35,7 +41,8 @@
     { "at": "0:24.5",  "scene": "orbital", "note": "drop", "settings": { "reactivity": 1.6 },
       "transition": { "kind": "flash", "seconds": 0.4 } },
     { "at": 34,        "scene": "orbital", "note": "the lattice opens out", "settings": { "radius": 1.4 }, "glide": 4 },
-    { "at": 40,        "scene": "pulse",   "note": "second half of the drop", "settings": { "petals": 5 }, "grade": "ember" },
+    { "at": 40,        "scene": "pulse",   "note": "second half of the drop", "settings": { "petals": 5 }, "grade": "ember",
+      "caption_style": "low" },
     { "at": "0:52",    "scene": "atlas",   "note": "outro", "transition": "burn" }
   ],
   "outro": { "kind": "fade", "seconds": 2 },
@@ -43,7 +50,7 @@
     { "at": "0:08.2", "until": "0:13", "text": "Example Treatment" },
     { "at": "0:16",   "text": "a line with no `until` runs to the next line" },
     { "at": "0:20",   "until": "0:24", "text": "or to six seconds, or to the end of the track" },
-    { "at": "0:53",   "text": "last words" }
+    { "at": "0:53",   "text": "last words", "style": "shout" }
   ],
   "events": [
     { "at": "0:24.5" },

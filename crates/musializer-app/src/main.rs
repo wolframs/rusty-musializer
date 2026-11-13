@@ -4244,6 +4244,22 @@ fn apply_treatment<'audio>(
             .replace(lane)
             .map_err(|error| format!("events: {error}"))?;
     }
+    // Named caption styles and the title lane (MV2), checked against the
+    // lines and cards the project keeps.
+    let artist = treatment.artist.clone().or_else(|| {
+        track
+            .project_metadata
+            .as_ref()
+            .map(|metadata| metadata.artist.clone())
+    });
+    let captions = compiled
+        .settle_captions(
+            &track.caption_style,
+            &track.scene_switches.titles,
+            &lyrics,
+            artist.as_deref(),
+        )
+        .map_err(|error| error.to_string())?;
 
     // Nothing below this line can fail.
     if let Some(seed) = treatment.seed {
@@ -4253,6 +4269,7 @@ fn apply_treatment<'audio>(
     track.playback_scene_settings = compiled.scene_settings;
     track.scene_routes = compiled.scene_routes;
     track.scene_switches = compiled.scene_switches;
+    track.scene_switches.titles = captions.titles;
     // The first section's scene, so the plan switched off in the interface
     // still shows something the treatment chose.
     track.base_scene = compiled.base_scene;
@@ -4272,6 +4289,7 @@ fn apply_treatment<'audio>(
         track.caption_font_path = None;
         track.caption_licence_path = None;
     }
+    track.caption_style.styles = captions.styles;
     track.render_config = render_config;
     if treatment.title.is_some() || treatment.artist.is_some() {
         // The id and title `build_project` would have derived, so a treatment
@@ -4326,7 +4344,7 @@ fn apply_treatment<'audio>(
     };
     let line = format!(
         "{} sections over {} ({} scenes), {} transitions, {} routes, {}{}, {}, caption style \
-         {caption}, output {output}, seed {seed} — {}",
+         {caption}, {}, output {output}, seed {seed} — {}",
         summary.segments,
         format_time(duration),
         summary.distinct_scenes,
@@ -4339,6 +4357,7 @@ fn apply_treatment<'audio>(
             String::new()
         },
         lane(summary.events, "events"),
+        captions.report,
         path.display()
     );
     app.shell.notify(

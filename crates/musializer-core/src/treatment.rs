@@ -48,6 +48,9 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::project::caption_styles::{
+    self, CaptionOverride, EffectsOverride, NamedCaptionStyle, StyleName, TitleCard,
+};
 use crate::project::event_timeline::EventTimeline;
 use crate::project::look::{self, Finish, Grade, Palette};
 use crate::project::lyrics::{self, CueOrigin, LyricCue, LyricsDocument};
@@ -149,6 +152,14 @@ struct TreatmentWire {
     seed: Option<u64>,
     #[serde(default)]
     caption_style: Option<CaptionStyleWire>,
+    /// Named caption styles (MV2): each states only what differs from the
+    /// base style. Absent leaves the project's own table.
+    #[serde(default)]
+    caption_styles: Option<BTreeMap<String, CaptionStyleWire>>,
+    /// The title lane (MV2). Absent leaves the project's cards; `[]` removes
+    /// them.
+    #[serde(default)]
+    titles: Option<Vec<TitleWire>>,
     #[serde(default)]
     scenes: BTreeMap<String, SceneWire>,
     segments: Vec<SegmentWire>,
@@ -198,6 +209,8 @@ struct AlignedLineWire {
     score: Option<f64>,
     #[serde(default)]
     voice: Option<String>,
+    #[serde(default)]
+    style: Option<String>,
 }
 
 /// The schema `tools/align_lyrics.py` writes.
@@ -260,6 +273,10 @@ struct SegmentWire {
     /// video's (2026-10-24).
     #[serde(default)]
     pixel: Option<Value>,
+    /// The named caption style the lines that begin in this section wear
+    /// unless they name their own (MV2).
+    #[serde(default)]
+    caption_style: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
     note: Option<Value>,
@@ -275,6 +292,25 @@ struct LyricWire {
     /// One of the treatment's `voices` (MV9-h).
     #[serde(default)]
     voice: Option<String>,
+    /// One of the treatment's `caption_styles` (MV2).
+    #[serde(default)]
+    style: Option<String>,
+}
+
+/// One title card (MV2): a title line, and under it who made the music.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TitleWire {
+    at: Value,
+    #[serde(default)]
+    until: Option<Value>,
+    title: String,
+    #[serde(default)]
+    artist: Option<String>,
+    #[serde(default)]
+    handle: Option<String>,
+    #[serde(default)]
+    style: Option<String>,
 }
 
 /// One entry of the treatment's `voices` table (MV9-h): how a voice's lines
@@ -290,8 +326,8 @@ struct VoiceWire {
     glow: Option<String>,
 }
 
-/// A timed line as either source spells it: at, until, text, voice.
-type TimedWire = (Value, Option<Value>, String, Option<String>);
+/// A timed line as either source spells it: at, until, text, voice, style.
+type TimedWire = (Value, Option<Value>, String, Option<String>, Option<String>);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -431,6 +467,7 @@ struct Segment {
     glide: f32,
     /// `None` wears the finish's.
     pixel: Option<Pixel>,
+    caption_style: Option<StyleName>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -439,6 +476,17 @@ struct LyricLine {
     until: Option<f64>,
     text: String,
     voice: Option<String>,
+    style: Option<StyleName>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TitleEntry {
+    at: f64,
+    until: Option<f64>,
+    title: String,
+    artist: Option<String>,
+    handle: Option<String>,
+    style: Option<StyleName>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -475,6 +523,11 @@ pub struct Treatment {
     lyrics_file: Option<String>,
     /// The `voices` table, in name order (MV9-h).
     voices: Vec<lyrics::Voice>,
+    /// The `caption_styles` table, in name order (MV2). `None` leaves the
+    /// project's own.
+    caption_styles: Option<Vec<NamedCaptionStyle>>,
+    /// The title lane (MV2). `None` leaves the project's cards.
+    titles: Option<Vec<TitleEntry>>,
     events: Option<Vec<EventMark>>,
 }
 
@@ -503,7 +556,29 @@ pub struct CompiledTreatment {
     /// The authored event lane (`events`), ids allocated from 1. `None` leaves
     /// the track's lane alone, on the same rule as [`Self::lyrics`].
     pub manual_events: Option<EventTimeline>,
+    /// The named caption styles (MV2). `None` leaves the project's table, on
+    /// the same rule. See [`CompiledTreatment::settle_captions`].
+    pub caption_styles: Option<Vec<NamedCaptionStyle>>,
+    /// The title lane (MV2), closed against the duration. `None` leaves the
+    /// project's cards; `Some` of nothing removes them.
+    pub titles: Option<Vec<TitleCard>>,
     pub summary: Summary,
+}
+
+/// What [`CompiledTreatment::settle_captions`] hands back: the caption state
+/// the track ends up with, and the words a report line states about it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SettledCaptions {
+    /// The named styles the project holds afterwards.
+    pub styles: Vec<NamedCaptionStyle>,
+    /// The title lane afterwards.
+    pub titles: Vec<TitleCard>,
+    /// `caption styles 3 (2 lines, 1 section), 1 title` and the like.
+    pub report: String,
+    /// Cards with no artist anywhere: neither their own nor the project's.
+    /// The operator's rule is that a requested card carries the artist, so
+    /// this is said, never silently drawn.
+    pub titles_without_artist: usize,
 }
 
 /// The counts a report line states. A treatment that applied and a treatment
@@ -523,6 +598,8 @@ pub struct Summary {
     pub lyrics_fully_shadowed: usize,
     /// `None` when the treatment does not speak for the event lane.
     pub events: Option<usize>,
+    /// Sections naming a caption style (MV2).
+    pub styled_sections: usize,
 }
 
 impl Treatment {
@@ -563,6 +640,39 @@ impl Treatment {
         let audio = wire.audio.map(parse_audio).transpose()?;
         let output = wire.output.map(parse_output).transpose()?;
         let caption_style = wire.caption_style.map(parse_caption_style).transpose()?;
+        // The named styles before anything that refers to one (MV2).
+        let caption_styles = match wire.caption_styles {
+            None => None,
+            Some(table) => {
+                if table.len() > caption_styles::CAPTION_STYLE_CAPACITY {
+                    return Err(invalid(
+                        "caption_styles",
+                        format!(
+                            "at most {} named styles",
+                            caption_styles::CAPTION_STYLE_CAPACITY
+                        ),
+                    ));
+                }
+                let mut entries = Vec::with_capacity(table.len());
+                for (name, block) in table {
+                    let place = format!("caption_styles.{name}");
+                    let Some(style_name) = StyleName::new(&name) else {
+                        return Err(invalid(
+                            &place,
+                            format!(
+                                "a style's name is 1..={} letters, digits, '-' or '_'",
+                                caption_styles::STYLE_NAME_MAX_BYTES
+                            ),
+                        ));
+                    };
+                    entries.push(NamedCaptionStyle {
+                        name: style_name,
+                        style: parse_caption_override(&place, block)?,
+                    });
+                }
+                Some(entries)
+            }
+        };
 
         // The finish first: a scene's or a section's pixel look is written
         // over the video's.
@@ -679,6 +789,17 @@ impl Treatment {
                 None => scene_pixel,
             }
             .filter(|look| *look != finish.pixel);
+            let caption_style = segment
+                .caption_style
+                .as_deref()
+                .map(|name| {
+                    style_ref(
+                        &format!("{place}.caption_style"),
+                        name,
+                        caption_styles.as_deref(),
+                    )
+                })
+                .transpose()?;
             segments.push(Segment {
                 at,
                 scene,
@@ -687,6 +808,7 @@ impl Treatment {
                 grade,
                 glide,
                 pixel,
+                caption_style,
             });
         }
         let outro = match &wire.outro {
@@ -709,9 +831,16 @@ impl Treatment {
                     .map_err(|error| TreatmentError::Json(format!("lyrics: {error}")))?;
                 let timed: Vec<TimedWire> = wire_lyrics
                     .into_iter()
-                    .map(|line| (line.at, line.until, line.text, line.voice))
+                    .map(|line| (line.at, line.until, line.text, line.voice, line.style))
                     .collect();
-                (Some(parse_lyric_lines("lyrics", &timed)?), None)
+                (
+                    Some(parse_lyric_lines(
+                        "lyrics",
+                        &timed,
+                        caption_styles.as_deref(),
+                    )?),
+                    None,
+                )
             }
             Some(_) => {
                 return Err(invalid(
@@ -759,6 +888,11 @@ impl Treatment {
                 },
             });
         }
+
+        let titles = wire
+            .titles
+            .map(|titles| parse_titles(titles, caption_styles.as_deref()))
+            .transpose()?;
 
         let wire_events = wire.events.as_deref().unwrap_or(&[]);
         if wire_events.len() > crate::scene::events::TIMELINE_CAPACITY {
@@ -814,6 +948,8 @@ impl Treatment {
             lyrics: lines,
             lyrics_file,
             voices,
+            caption_styles,
+            titles,
             events: wire.events.is_some().then_some(events),
         })
     }
@@ -849,9 +985,13 @@ impl Treatment {
         let timed: Vec<TimedWire> = wire
             .lines
             .into_iter()
-            .map(|line| (line.at, line.until, line.text, line.voice))
+            .map(|line| (line.at, line.until, line.text, line.voice, line.style))
             .collect();
-        self.lyrics = Some(parse_lyric_lines(&place, &timed)?);
+        self.lyrics = Some(parse_lyric_lines(
+            &place,
+            &timed,
+            self.caption_styles.as_deref(),
+        )?);
         self.lyrics_file = None;
         Ok(wire.audio_sha256)
     }
@@ -918,7 +1058,7 @@ impl Treatment {
                 grade: segment.grade,
                 glide: segment.glide,
                 pixel: segment.pixel,
-                caption_style: None,
+                caption_style: segment.caption_style,
             });
         }
         let mut scene_switches = SceneSwitchTimeline::new();
@@ -996,6 +1136,9 @@ impl Treatment {
                     })?;
                 document.set_cue_voice(id, Some(index));
             }
+            if let Some(style) = line.style {
+                document.set_cue_style(id, Some(style));
+            }
         }
         let lyrics_fully_shadowed = document
             .shadowed_cues()
@@ -1025,6 +1168,48 @@ impl Treatment {
                 .map_err(|error| invalid(&place, error.to_string()))?;
         }
 
+        // The title lane, closed against the track: a card without an `until`
+        // holds for the default, or to the next card, or to the end.
+        let titles = match &self.titles {
+            None => None,
+            Some(entries) => {
+                let mut cards = Vec::with_capacity(entries.len());
+                for (index, entry) in entries.iter().enumerate() {
+                    let place = format!("titles[{index}] ({})", format_time(entry.at));
+                    if entry.at > duration_seconds - caption_styles::MIN_TITLE_SECONDS {
+                        return Err(invalid(
+                            &place,
+                            format!("starts too close to the end of the track ({end})"),
+                        ));
+                    }
+                    let until = match entry.until {
+                        Some(until) if until > duration_seconds + 1.0e-6 => {
+                            return Err(invalid(
+                                &place,
+                                format!(
+                                    "`until` ({}) is past the end of the track ({end})",
+                                    format_time(until)
+                                ),
+                            ));
+                        }
+                        Some(until) => until.min(duration_seconds),
+                        None => (entry.at + caption_styles::DEFAULT_TITLE_SECONDS)
+                            .min(entries.get(index + 1).map_or(f64::INFINITY, |next| next.at))
+                            .min(duration_seconds),
+                    };
+                    cards.push(TitleCard {
+                        start_seconds: entry.at,
+                        end_seconds: until,
+                        title: entry.title.clone(),
+                        artist: entry.artist.clone(),
+                        handle: entry.handle.clone(),
+                        style: entry.style,
+                    });
+                }
+                Some(cards)
+            }
+        };
+
         let mut seen = [false; SCENE_COUNT];
         for segment in &self.segments {
             seen[segment.scene.index()] = true;
@@ -1047,9 +1232,123 @@ impl Treatment {
                 lyrics: self.lyrics.is_some().then_some(document.len()),
                 lyrics_fully_shadowed,
                 events: self.events.is_some().then_some(manual_events.len()),
+                styled_sections: self
+                    .segments
+                    .iter()
+                    .filter(|segment| segment.caption_style.is_some())
+                    .count(),
             },
             lyrics: self.lyrics.is_some().then_some(document),
             manual_events: self.events.is_some().then_some(manual_events),
+            caption_styles: self.caption_styles.clone(),
+            titles,
+        })
+    }
+}
+
+impl CompiledTreatment {
+    /// The caption state a track ends up with once this treatment applies
+    /// (MV2), checked as a whole before anything changes.
+    ///
+    /// The table is the treatment's when it has `caption_styles`, else the
+    /// project's (`current`); the title lane likewise. Every name in use
+    /// afterwards must be in the table afterwards — including the lines a
+    /// treatment keeps (no `lyrics` key) and the cards it keeps (no `titles`)
+    /// — because a project that names a style it does not hold is one no
+    /// loader will open again.
+    ///
+    /// `artist` is the project's artist as it will be (the treatment's own,
+    /// else the project's), for the cards that do not state one.
+    ///
+    /// # Errors
+    ///
+    /// A kept line or card naming a style the new table drops, by place.
+    pub fn settle_captions(
+        &self,
+        current: &CaptionStyle,
+        current_titles: &[TitleCard],
+        lyrics: &LyricsDocument,
+        artist: Option<&str>,
+    ) -> Result<SettledCaptions, TreatmentError> {
+        let styles = self
+            .caption_styles
+            .clone()
+            .unwrap_or_else(|| current.styles.clone());
+        let titles = self
+            .titles
+            .clone()
+            .unwrap_or_else(|| current_titles.to_vec());
+        let known = |name: StyleName| caption_styles::find(&styles, name).is_some();
+        let drops = |name: StyleName| {
+            format!(
+                "uses style {:?}, which `caption_styles` does not name ({})",
+                name.as_str(),
+                styles
+                    .iter()
+                    .map(|entry| entry.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        let mut styled_lines = 0usize;
+        for (id, name) in lyrics.cue_styles() {
+            let Some(cue) = lyrics.find(id) else {
+                continue;
+            };
+            if !known(name) {
+                return Err(invalid(
+                    format!(
+                        "lyrics (the line at {}, kept)",
+                        format_time(cue.start_seconds)
+                    ),
+                    drops(name),
+                ));
+            }
+            styled_lines += 1;
+        }
+        for card in &titles {
+            if let Some(name) = card.style.filter(|name| !known(*name)) {
+                return Err(invalid(
+                    format!(
+                        "titles (the card at {}, kept)",
+                        format_time(card.start_seconds)
+                    ),
+                    drops(name),
+                ));
+            }
+        }
+        let titles_without_artist = titles
+            .iter()
+            .filter(|card| card.artist.is_none() && artist.is_none_or(str::is_empty))
+            .count();
+        let table = match &self.caption_styles {
+            Some(_) => format!(
+                "caption styles {} ({styled_lines} lines, {} sections)",
+                styles.len(),
+                self.summary.styled_sections
+            ),
+            None if styles.is_empty() => "no caption styles".to_owned(),
+            None => format!("caption styles kept ({})", styles.len()),
+        };
+        let lane = match (&self.titles, titles.len()) {
+            (None, 0) => "no titles".to_owned(),
+            (None, count) => format!("titles kept ({count})"),
+            (Some(_), 1) => "1 title".to_owned(),
+            (Some(_), count) => format!("{count} titles"),
+        };
+        let warning = if titles_without_artist > 0 {
+            format!(
+                " ({titles_without_artist} with no artist: give the card an `artist` or the \
+                 treatment a top-level `artist`)"
+            )
+        } else {
+            String::new()
+        };
+        Ok(SettledCaptions {
+            styles,
+            titles,
+            report: format!("{table}, {lane}{warning}"),
+            titles_without_artist,
         })
     }
 }
@@ -1060,6 +1359,7 @@ impl Treatment {
 fn parse_lyric_lines(
     root: &str,
     wire_lyrics: &[TimedWire],
+    styles: Option<&[NamedCaptionStyle]>,
 ) -> Result<Vec<LyricLine>, TreatmentError> {
     if wire_lyrics.len() > lyrics::CUE_CAPACITY {
         return Err(invalid(
@@ -1072,7 +1372,7 @@ fn parse_lyric_lines(
         ));
     }
     let mut lines: Vec<LyricLine> = Vec::with_capacity(wire_lyrics.len());
-    for (index, (at_value, until_value, text, voice)) in wire_lyrics.iter().enumerate() {
+    for (index, (at_value, until_value, text, voice, style)) in wire_lyrics.iter().enumerate() {
         let at = parse_time(&format!("{root}[{index}].at"), at_value)?;
         let place = format!("{root}[{index}] ({})", format_time(at));
         let until = until_value
@@ -1114,14 +1414,111 @@ fn parse_lyric_lines(
                 ),
             )
         })?;
+        let style = style
+            .as_deref()
+            .map(|name| style_ref(&format!("{place}.style"), name, styles))
+            .transpose()?;
         lines.push(LyricLine {
             at,
             until,
             text: text.clone(),
             voice: voice.clone(),
+            style,
         });
     }
     Ok(lines)
+}
+
+/// The title lane (MV2): cards in playing order, each with its text checked
+/// and its style resolved. An `until` that is absent is closed at compile.
+fn parse_titles(
+    wire: Vec<TitleWire>,
+    styles: Option<&[NamedCaptionStyle]>,
+) -> Result<Vec<TitleEntry>, TreatmentError> {
+    if wire.len() > caption_styles::TITLE_CAPACITY {
+        return Err(invalid(
+            "titles",
+            format!("at most {} title cards", caption_styles::TITLE_CAPACITY),
+        ));
+    }
+    let mut titles: Vec<TitleEntry> = Vec::with_capacity(wire.len());
+    for (index, card) in wire.into_iter().enumerate() {
+        let at = parse_time(&format!("titles[{index}].at"), &card.at)?;
+        let place = format!("titles[{index}] ({})", format_time(at));
+        let until = card
+            .until
+            .as_ref()
+            .map(|value| parse_time(&format!("{place}.until"), value))
+            .transpose()?;
+        if let Some(until) = until {
+            if until < at + caption_styles::MIN_TITLE_SECONDS {
+                return Err(invalid(
+                    &place,
+                    format!(
+                        "`until` ({}) must be at least {} s after `at`: a card needs time \
+                         to arrive",
+                        format_time(until),
+                        caption_styles::MIN_TITLE_SECONDS
+                    ),
+                ));
+            }
+        }
+        if let Some(previous) = titles.last() {
+            let previous_end = previous.until.unwrap_or(f64::NEG_INFINITY);
+            if at < previous.at + caption_styles::MIN_TITLE_SECONDS || at < previous_end {
+                return Err(invalid(
+                    &place,
+                    format!(
+                        "starts before the card ahead of it ({}) has ended; cards are \
+                         listed in playing order and one is shown at a time",
+                        format_time(previous.at)
+                    ),
+                ));
+            }
+        }
+        let text = |member: &str, value: &str| {
+            if caption_styles::title_text_is_valid(value) {
+                Ok(())
+            } else {
+                Err(invalid(
+                    format!("{place}.{member}"),
+                    format!(
+                        "must be 1..={} bytes with no control characters",
+                        caption_styles::TITLE_TEXT_MAX_BYTES
+                    ),
+                ))
+            }
+        };
+        text("title", &card.title)?;
+        if let Some(artist) = &card.artist {
+            text("artist", artist)?;
+        }
+        if let Some(handle) = &card.handle {
+            if !caption_styles::handle_is_valid(handle) {
+                return Err(invalid(
+                    format!("{place}.handle"),
+                    format!(
+                        "{handle:?} is not a handle; write \"@name\", up to {} bytes, no spaces",
+                        caption_styles::HANDLE_MAX_BYTES
+                    ),
+                ));
+            }
+        }
+        let style = card
+            .style
+            .as_deref()
+            .map(|name| style_ref(&format!("{place}.style"), name, styles))
+            .transpose()?;
+        titles.push(TitleEntry {
+            at,
+            until,
+            title: card.title,
+            artist: card.artist,
+            handle: card.handle,
+            style,
+        });
+    }
+    Ok(titles)
 }
 
 /// A palette lock (MV9-b): a palette's name alone (`"night-door"`, at the
@@ -1927,15 +2324,26 @@ fn names<T: Copy>(all: &[T], name: fn(T) -> &'static str) -> String {
 }
 
 fn parse_caption_style(wire: CaptionStyleWire) -> Result<CaptionStyle, TreatmentError> {
-    let mut style = CaptionStyle::default();
+    Ok(parse_caption_override("caption_style", wire)?.apply(&CaptionStyle::default()))
+}
+
+/// The members a caption style block states, each checked against the base
+/// style's own bounds and named under `root` when refused. The base block is
+/// this written over the shipped style; a named style (MV2) is kept as what it
+/// states, written over the project's base when drawn.
+fn parse_caption_override(
+    root: &str,
+    wire: CaptionStyleWire,
+) -> Result<CaptionOverride, TreatmentError> {
+    let mut style = CaptionOverride::default();
     if let Some(name) = wire.face.as_deref() {
-        style.face = match CaptionFace::from_canonical_name(name) {
+        style.face = Some(match CaptionFace::from_canonical_name(name) {
             // An imported face is a bundled asset with a digest and a licence
             // record, and a treatment has nowhere to carry either. Said here
             // rather than accepted and rendered in the wrong face.
             Some(CaptionFace::Imported) => {
                 return Err(invalid(
-                    "caption_style.face",
+                    format!("{root}.face"),
                     "a treatment cannot name an imported face yet; use alegreya or \
                      space_grotesk, or import the face in the Lyrics panel after \
                      --save-project",
@@ -1944,149 +2352,164 @@ fn parse_caption_style(wire: CaptionStyleWire) -> Result<CaptionStyle, Treatment
             Some(face) => face,
             None => {
                 return Err(invalid(
-                    "caption_style.face",
+                    format!("{root}.face"),
                     format!("unknown face {name:?}; the faces are alegreya, space_grotesk"),
                 ));
             }
-        };
+        });
     }
     if let Some(name) = wire.r#box.as_deref() {
-        style.box_style = CaptionBox::from_canonical_name(name).ok_or_else(|| {
+        style.box_style = Some(CaptionBox::from_canonical_name(name).ok_or_else(|| {
             invalid(
-                "caption_style.box",
+                format!("{root}.box"),
                 format!(
                     "unknown backing {name:?}; the backings are {}",
                     names(CaptionBox::ALL, CaptionBox::canonical_name)
                 ),
             )
-        })?;
+        })?);
     }
     if let Some(name) = wire.anchor.as_deref() {
-        style.anchor = CaptionAnchor::from_canonical_name(name).ok_or_else(|| {
+        style.anchor = Some(CaptionAnchor::from_canonical_name(name).ok_or_else(|| {
             invalid(
-                "caption_style.anchor",
+                format!("{root}.anchor"),
                 format!(
                     "unknown anchor {name:?}; the anchors are {}",
                     names(CaptionAnchor::ALL, CaptionAnchor::canonical_name)
                 ),
             )
-        })?;
+        })?);
     }
-    if let Some(value) = wire.size_scale {
-        style.size_scale = bounded(
-            "caption_style.size_scale",
-            value,
-            caption::SIZE_MINIMUM,
-            caption::SIZE_MAXIMUM,
-        )?;
-    }
-    if let Some(value) = wire.margin_scale {
-        style.margin_scale = bounded(
-            "caption_style.margin_scale",
-            value,
-            caption::MARGIN_MINIMUM,
-            caption::MARGIN_MAXIMUM,
-        )?;
-    }
-    if let Some(value) = wire.width_scale {
-        style.width_scale = bounded(
-            "caption_style.width_scale",
-            value,
-            caption::WIDTH_MINIMUM,
-            caption::WIDTH_MAXIMUM,
-        )?;
-    }
-    if let Some(text) = wire.text_rgba.as_deref() {
-        style.text_rgba = parse_rgba("caption_style.text_rgba", text)?;
-    }
-    if let Some(text) = wire.box_rgba.as_deref() {
-        style.box_rgba = parse_rgba("caption_style.box_rgba", text)?;
-    }
+    let real = |member: &str, value: Option<f64>, minimum: f64, maximum: f64| {
+        value
+            .map(|value| bounded(&format!("{root}.{member}"), value, minimum, maximum))
+            .transpose()
+    };
+    let colour = |member: &str, value: Option<&str>| {
+        value
+            .map(|text| parse_rgba(&format!("{root}.{member}"), text))
+            .transpose()
+    };
+    style.size_scale = real(
+        "size_scale",
+        wire.size_scale,
+        caption::SIZE_MINIMUM,
+        caption::SIZE_MAXIMUM,
+    )?;
+    style.margin_scale = real(
+        "margin_scale",
+        wire.margin_scale,
+        caption::MARGIN_MINIMUM,
+        caption::MARGIN_MAXIMUM,
+    )?;
+    style.width_scale = real(
+        "width_scale",
+        wire.width_scale,
+        caption::WIDTH_MINIMUM,
+        caption::WIDTH_MAXIMUM,
+    )?;
+    style.text_rgba = colour("text_rgba", wire.text_rgba.as_deref())?;
+    style.box_rgba = colour("box_rgba", wire.box_rgba.as_deref())?;
     if let Some(effects) = wire.effects {
-        let fx = &mut style.effects;
-        if let Some(value) = effects.glow_strength {
-            fx.glow_strength = bounded(
-                "caption_style.effects.glow_strength",
-                value,
+        let drive = |member: &str, value: Option<&str>| {
+            value
+                .map(|name| parse_drive(&format!("{root}.effects.{member}"), name))
+                .transpose()
+        };
+        let fx = |member: &str, value: Option<f64>, minimum: f64, maximum: f64| {
+            real(&format!("effects.{member}"), value, minimum, maximum)
+        };
+        style.effects = EffectsOverride {
+            glow_strength: fx(
+                "glow_strength",
+                effects.glow_strength,
                 caption_fx::GLOW_STRENGTH_MINIMUM,
                 caption_fx::GLOW_STRENGTH_MAXIMUM,
-            )?;
-        }
-        if let Some(value) = effects.glow_radius {
-            fx.glow_radius = bounded(
-                "caption_style.effects.glow_radius",
-                value,
+            )?,
+            glow_radius: fx(
+                "glow_radius",
+                effects.glow_radius,
                 caption_fx::GLOW_RADIUS_MINIMUM,
                 caption_fx::GLOW_RADIUS_MAXIMUM,
-            )?;
-        }
-        if let Some(text) = effects.glow_rgba.as_deref() {
-            fx.glow_rgba = parse_rgba("caption_style.effects.glow_rgba", text)?;
-        }
-        if let Some(name) = effects.glow_pulse.as_deref() {
-            fx.glow_pulse = parse_drive("caption_style.effects.glow_pulse", name)?;
-        }
-        if let Some(value) = effects.glow_pulse_depth {
-            fx.glow_pulse_depth = bounded(
-                "caption_style.effects.glow_pulse_depth",
-                value,
+            )?,
+            glow_rgba: colour("effects.glow_rgba", effects.glow_rgba.as_deref())?,
+            glow_pulse: drive("glow_pulse", effects.glow_pulse.as_deref())?,
+            glow_pulse_depth: fx(
+                "glow_pulse_depth",
+                effects.glow_pulse_depth,
                 caption_fx::PULSE_DEPTH_MINIMUM,
                 caption_fx::PULSE_DEPTH_MAXIMUM,
-            )?;
-        }
-        if let Some(name) = effects.glow_hue_drive.as_deref() {
-            fx.glow_hue_drive = parse_drive("caption_style.effects.glow_hue_drive", name)?;
-        }
-        if let Some(value) = effects.glow_hue_range {
-            fx.glow_hue_range = bounded(
-                "caption_style.effects.glow_hue_range",
-                value,
+            )?,
+            glow_hue_drive: drive("glow_hue_drive", effects.glow_hue_drive.as_deref())?,
+            glow_hue_range: fx(
+                "glow_hue_range",
+                effects.glow_hue_range,
                 caption_fx::HUE_RANGE_MINIMUM,
                 caption_fx::HUE_RANGE_MAXIMUM,
-            )?;
-        }
-        if let Some(value) = effects.shadow_blur {
-            fx.shadow_blur = bounded(
-                "caption_style.effects.shadow_blur",
-                value,
+            )?,
+            shadow_blur: fx(
+                "shadow_blur",
+                effects.shadow_blur,
                 caption_fx::SHADOW_BLUR_MINIMUM,
                 caption_fx::SHADOW_BLUR_MAXIMUM,
-            )?;
-        }
-        if let Some(value) = effects.shadow_opacity {
-            fx.shadow_opacity = bounded(
-                "caption_style.effects.shadow_opacity",
-                value,
+            )?,
+            shadow_opacity: fx(
+                "shadow_opacity",
+                effects.shadow_opacity,
                 caption_fx::SHADOW_OPACITY_MINIMUM,
                 caption_fx::SHADOW_OPACITY_MAXIMUM,
-            )?;
-        }
-        if let Some(value) = effects.plate_roundness {
-            fx.plate_roundness = bounded(
-                "caption_style.effects.plate_roundness",
-                value,
+            )?,
+            plate_roundness: fx(
+                "plate_roundness",
+                effects.plate_roundness,
                 caption_fx::PLATE_ROUNDNESS_MINIMUM,
                 caption_fx::PLATE_ROUNDNESS_MAXIMUM,
-            )?;
-        }
-        if let Some(value) = effects.entrance_seconds {
-            fx.entrance_seconds = bounded(
-                "caption_style.effects.entrance_seconds",
-                value,
+            )?,
+            entrance_seconds: fx(
+                "entrance_seconds",
+                effects.entrance_seconds,
                 caption_fx::ENTRANCE_MINIMUM,
                 caption_fx::ENTRANCE_MAXIMUM,
-            )?;
-        }
-        if let Some(value) = effects.exit_seconds {
-            fx.exit_seconds = bounded(
-                "caption_style.effects.exit_seconds",
-                value,
+            )?,
+            exit_seconds: fx(
+                "exit_seconds",
+                effects.exit_seconds,
                 caption_fx::ENTRANCE_MINIMUM,
                 caption_fx::ENTRANCE_MAXIMUM,
-            )?;
-        }
+            )?,
+        };
     }
     Ok(style)
+}
+
+/// A named caption style a line, a section or a card refers to (MV2): it must
+/// be declared in the treatment's own `caption_styles`, so a typo is refused
+/// at load with the names that exist rather than drawn as the base.
+fn style_ref(
+    place: &str,
+    name: &str,
+    table: Option<&[NamedCaptionStyle]>,
+) -> Result<StyleName, TreatmentError> {
+    let known = table.unwrap_or(&[]);
+    StyleName::new(name)
+        .filter(|name| caption_styles::find(known, *name).is_some())
+        .ok_or_else(|| match table {
+            None => invalid(
+                place,
+                format!("style {name:?} is named, but the treatment declares no `caption_styles`"),
+            ),
+            Some(table) => invalid(
+                place,
+                format!(
+                    "style {name:?} is not in `caption_styles` ({})",
+                    table
+                        .iter()
+                        .map(|entry| entry.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ),
+        })
 }
 
 // -- vocabulary ------------------------------------------------------------------
@@ -2341,6 +2764,7 @@ fn pixel_vocabulary() -> Value {
 /// the code cannot.
 #[must_use]
 pub fn vocabulary() -> Value {
+    let title_look = caption_styles::title_look(&CaptionStyle::default(), None);
     let scenes: Vec<Value> = SceneId::ALL
         .iter()
         .map(|&scene| {
@@ -2490,6 +2914,43 @@ pub fn vocabulary() -> Value {
                 "exit_seconds": range(caption_fx::ENTRANCE_MINIMUM, caption_fx::ENTRANCE_MAXIMUM, caption_fx::ENTRANCE_DEFAULT),
             },
         },
+        "caption_styles": {
+            "where": "the top-level \"caption_styles\" names styles, each stating only what \
+                      differs from the base \"caption_style\" (the same members, each \
+                      optional): {\"top\": {\"anchor\": \"top_center\"}}. A lyric line's \
+                      \"style\" picks one; a section's \"caption_style\" is the one the lines \
+                      that begin inside it wear unless they pick their own; a title card's \
+                      \"style\" is written over the card's own look. Styles do not stack: the \
+                      line's replaces the section's. A voice still colours a line on top. \
+                      Absent leaves the project's table; a name used anywhere must be declared \
+                      here.",
+            "maximum": caption_styles::CAPTION_STYLE_CAPACITY,
+            "name": "1..=32 letters, digits, '-' or '_'",
+            "members": "as caption_style, every one optional; \"face\": \"imported\" is refused",
+        },
+        "titles": {
+            "where": "the top-level \"titles\" is the title lane: [{\"at\": 0, \"until\": 6, \
+                      \"title\": \"Door, No Room\", \"artist\": \"Chaos Cat Familiar\", \
+                      \"handle\": \"@chaoscatfamiliar\", \"style\": \"card\"}]. Each card is a \
+                      title line with the artist line under it, centred and arriving out of a \
+                      soft blur, drawn over every scene (Cadence and Stage too) and under a \
+                      fade to black. Without \"artist\" a card takes the project's artist; with \
+                      neither the report line says so. Absent leaves the project's cards; [] \
+                      removes them. Nothing adds a card by itself.",
+            "maximum": caption_styles::TITLE_CAPACITY,
+            "default_seconds": caption_styles::DEFAULT_TITLE_SECONDS,
+            "minimum_seconds": caption_styles::MIN_TITLE_SECONDS,
+            "text_bytes": caption_styles::TITLE_TEXT_MAX_BYTES,
+            "handle": "\"@name\", up to 64 bytes, no spaces",
+            "look": {
+                "anchor": title_look.anchor.canonical_name(),
+                "size_scale": tidy(title_look.size_scale as f32),
+                "artist_line": caption_styles::TITLE_ARTIST_RATIO,
+                "box": "shadow (a soft band behind the card); \"plate\" frames it, \"none\" is bare type",
+                "entrance_seconds": tidy(title_look.effects.entrance_seconds as f32),
+                "exit_seconds": tidy(title_look.effects.exit_seconds as f32),
+            },
+        },
         "output": {
             "resolution": "\"WIDTHxHEIGHT\", even numbers, e.g. \"1920x1080\" or \"1080x1920\"",
             "fps": "a positive whole number",
@@ -2554,6 +3015,7 @@ mod tests {
                 lyrics: None,
                 lyrics_fully_shadowed: 0,
                 events: None,
+                styled_sections: 0,
             }
         );
         // Silent about lyrics and events, so it does not speak for them.
@@ -3579,6 +4041,270 @@ mod tests {
             .contains("outside 0..360"));
     }
 
+    /// MV2: one table of named styles, picked by a line, a section and a card.
+    #[test]
+    fn named_caption_styles_reach_lines_sections_and_title_cards() {
+        let treatment = parse(
+            r##"{"schema":"musializer.treatment/v1",
+                "caption_styles":{"top":{"anchor":"top_center"},
+                                  "shout":{"size_scale":0.07,"text_rgba":"#ffd36b","effects":{"glow_strength":0.8}},
+                                  "card":{"face":"space_grotesk"}},
+                "segments":[{"at":0,"scene":"spectrum"},{"at":10,"scene":"clawd","caption_style":"top"}],
+                "lyrics":[{"at":2,"until":4,"text":"bottom line"},
+                          {"at":11,"until":13,"text":"top line"},
+                          {"at":14,"until":16,"text":"shouted","style":"shout"}],
+                "titles":[{"at":0,"title":"Door, No Room","handle":"@chaoscatfamiliar","style":"card"},
+                          {"at":20,"until":24,"title":"Part Two","artist":"Guest"}]}"##,
+        )
+        .unwrap();
+        let compiled = treatment.compile(30.0).unwrap();
+        let cues = compiled.scene_switches.cues();
+        assert_eq!(cues[0].caption_style, None);
+        assert_eq!(
+            cues[1].caption_style.map(|name| name.to_string()),
+            Some("top".into())
+        );
+        assert_eq!(compiled.summary.styled_sections, 1);
+        let document = compiled.lyrics.as_ref().unwrap();
+        let style = |index: usize| {
+            document
+                .style_of(document.cues()[index].id)
+                .map(|name| name.to_string())
+        };
+        assert_eq!(style(0), None);
+        assert_eq!(
+            style(1),
+            None,
+            "a section's default is resolved when drawn, not copied onto the line"
+        );
+        assert_eq!(style(2), Some("shout".into()));
+        // The section's default applies to a line that *begins* inside it.
+        assert_eq!(
+            compiled
+                .scene_switches
+                .caption_style_at(11.0)
+                .map(|name| name.to_string()),
+            Some("top".into())
+        );
+        assert_eq!(compiled.scene_switches.caption_style_at(2.0), None);
+        let table = compiled.caption_styles.as_ref().unwrap();
+        assert_eq!(table.len(), 3);
+        let shout = caption_styles::find(table, StyleName::new("shout").unwrap()).unwrap();
+        assert_eq!(shout.size_scale, Some(0.07));
+        assert_eq!(shout.text_rgba, Some(0xFFD3_6BFF));
+        assert_eq!(shout.effects.glow_strength, Some(0.8));
+        assert_eq!(
+            shout.anchor, None,
+            "a named style states only what it changes"
+        );
+        // Titles: the first holds for the default, the second for its own span.
+        let titles = compiled.titles.as_ref().unwrap();
+        assert_eq!(titles.len(), 2);
+        assert_eq!(titles[0].end_seconds, caption_styles::DEFAULT_TITLE_SECONDS);
+        assert_eq!(
+            (titles[1].start_seconds, titles[1].end_seconds),
+            (20.0, 24.0)
+        );
+        assert_eq!(titles[0].artist, None);
+        assert_eq!(titles[0].handle.as_deref(), Some("@chaoscatfamiliar"));
+
+        // Settled against a project: the table and cards are the treatment's,
+        // and a card with no artist anywhere is counted out loud.
+        let settled = compiled
+            .settle_captions(&CaptionStyle::default(), &[], document, None)
+            .unwrap();
+        assert_eq!(settled.styles.len(), 3);
+        assert_eq!(settled.titles_without_artist, 1);
+        assert!(
+            settled
+                .report
+                .contains("caption styles 3 (1 lines, 1 sections), 2 titles (1 with no artist"),
+            "{}",
+            settled.report
+        );
+        let with_artist = compiled
+            .settle_captions(
+                &CaptionStyle::default(),
+                &[],
+                document,
+                Some("Chaos Cat Familiar"),
+            )
+            .unwrap();
+        assert_eq!(with_artist.titles_without_artist, 0);
+        assert!(
+            !with_artist.report.contains("no artist"),
+            "{}",
+            with_artist.report
+        );
+    }
+
+    #[test]
+    fn a_style_name_nobody_declared_is_refused_where_it_is_used() {
+        let table = r#""caption_styles":{"top":{"anchor":"top_center"}},"#;
+        for (body, place) in [
+            (
+                r#""segments":[{"at":0,"scene":"clawd","caption_style":"bottom"}]"#,
+                "segments[0] (0:00.000).caption_style",
+            ),
+            (
+                r#""segments":[{"at":0,"scene":"clawd"}],"lyrics":[{"at":1,"text":"x","style":"tpo"}]"#,
+                "lyrics[0] (0:01.000).style",
+            ),
+            (
+                r#""segments":[{"at":0,"scene":"clawd"}],"titles":[{"at":0,"title":"T","style":"card"}]"#,
+                "titles[0] (0:00.000).style",
+            ),
+        ] {
+            let message = refusal(&format!(
+                r#"{{"schema":"musializer.treatment/v1",{table}{body}}}"#
+            ));
+            assert!(
+                message.starts_with(place) && message.contains("top"),
+                "{message}"
+            );
+            // With no table at all the refusal says so.
+            let message = refusal(&format!(r#"{{"schema":"musializer.treatment/v1",{body}}}"#));
+            assert!(
+                message.contains("declares no `caption_styles`"),
+                "{message}"
+            );
+        }
+        for (body, says) in [
+            (r#""caption_styles":{"a b":{}}"#, "letters, digits"),
+            (
+                r#""caption_styles":{"x":{"face":"imported"}}"#,
+                "imported face",
+            ),
+            (
+                r#""caption_styles":{"x":{"size_scale":0.9}}"#,
+                "caption_styles.x.size_scale",
+            ),
+            (
+                r#""caption_styles":{"x":{"effects":{"glow_pulse":"kick"}}}"#,
+                "caption_styles.x.effects.glow_pulse",
+            ),
+            (
+                r##""caption_styles":{"x":{"colour":"#fff"}}"##,
+                "unknown field",
+            ),
+            (
+                r#""titles":[{"at":0,"title":"T","handle":"chaos"}]"#,
+                "is not a handle",
+            ),
+            (
+                r#""titles":[{"at":0,"title":""}]"#,
+                "titles[0] (0:00.000).title",
+            ),
+            (
+                r#""titles":[{"at":0,"until":6,"title":"A"},{"at":4,"title":"B"}]"#,
+                "one is shown at a time",
+            ),
+            (
+                r#""titles":[{"at":0,"until":0.2,"title":"A"}]"#,
+                "time to arrive",
+            ),
+            (
+                r#""titles":[{"at":0,"title":"A","subtitle":"B"}]"#,
+                "unknown field",
+            ),
+        ] {
+            let message = refusal(&format!(
+                r#"{{"schema":"musializer.treatment/v1",{body},"segments":[{{"at":0,"scene":"atlas"}}]}}"#
+            ));
+            assert!(message.contains(says), "{says}: {message}");
+        }
+        let late = parse(
+            r#"{"schema":"musializer.treatment/v1","segments":[{"at":0,"scene":"atlas"}],
+                "titles":[{"at":29.8,"title":"Too late"}]}"#,
+        )
+        .unwrap()
+        .compile(30.0)
+        .unwrap_err()
+        .to_string();
+        assert!(late.contains("too close to the end"), "{late}");
+    }
+
+    #[test]
+    fn absent_titles_and_styles_keep_the_projects_and_an_empty_list_removes_them() {
+        let name = StyleName::new("top").unwrap();
+        let mut current = CaptionStyle::default();
+        current.styles = vec![NamedCaptionStyle {
+            name,
+            style: CaptionOverride {
+                anchor: Some(CaptionAnchor::TopCenter),
+                ..CaptionOverride::default()
+            },
+        }];
+        let kept_card = TitleCard {
+            start_seconds: 0.0,
+            end_seconds: 4.0,
+            title: "Kept".into(),
+            artist: None,
+            handle: None,
+            style: Some(name),
+        };
+        let mut lyrics = LyricsDocument::new(30.0).unwrap();
+        let id = lyrics
+            .insert(LyricCue {
+                id: 0,
+                start_seconds: 5.0,
+                end_seconds: 6.0,
+                text: "kept line".into(),
+                origin: CueOrigin::UserApplied,
+            })
+            .unwrap();
+        assert!(lyrics.set_cue_style(id, Some(name)));
+        let silent =
+            parse(r#"{"schema":"musializer.treatment/v1","segments":[{"at":0,"scene":"atlas"}]}"#)
+                .unwrap()
+                .compile(30.0)
+                .unwrap();
+        let settled = silent
+            .settle_captions(
+                &current,
+                std::slice::from_ref(&kept_card),
+                &lyrics,
+                Some("Artist"),
+            )
+            .unwrap();
+        assert_eq!(settled.styles, current.styles);
+        assert_eq!(settled.titles, vec![kept_card.clone()]);
+        assert!(
+            settled.report.contains("caption styles kept (1)")
+                && settled.report.contains("titles kept (1)")
+        );
+        let cleared = parse(
+            r#"{"schema":"musializer.treatment/v1","segments":[{"at":0,"scene":"atlas"}],
+                "titles":[],"caption_styles":{"top":{}}}"#,
+        )
+        .unwrap()
+        .compile(30.0)
+        .unwrap()
+        .settle_captions(&current, std::slice::from_ref(&kept_card), &lyrics, None)
+        .unwrap();
+        assert!(cleared.titles.is_empty());
+        assert_eq!(cleared.styles.len(), 1);
+        assert!(
+            cleared.styles[0].style.is_empty(),
+            "the treatment's table replaces the project's"
+        );
+        // A table that drops a name a kept line uses is refused, by place.
+        let dropped = parse(
+            r#"{"schema":"musializer.treatment/v1","segments":[{"at":0,"scene":"atlas"}],
+                "caption_styles":{"other":{}}}"#,
+        )
+        .unwrap()
+        .compile(30.0)
+        .unwrap()
+        .settle_captions(&current, &[], &lyrics, None)
+        .unwrap_err()
+        .to_string();
+        assert!(
+            dropped.contains("the line at 0:05.000, kept") && dropped.contains("\"top\""),
+            "{dropped}"
+        );
+    }
+
     #[test]
     fn the_vocabulary_lists_every_palette_the_parser_takes() {
         let document = vocabulary();
@@ -3701,6 +4427,22 @@ mod tests {
         assert_eq!(
             spans,
             vec![(8.2, 13.0), (16.0, 20.0), (20.0, 24.0), (53.0, 59.0)]
+        );
+        // MV2: the named styles, a section's and a line's.
+        assert_eq!(compiled.caption_styles.as_ref().map(Vec::len), Some(2));
+        assert_eq!(
+            cues[4].caption_style.map(|name| name.to_string()),
+            Some("low".into())
+        );
+        assert_eq!(
+            document
+                .style_of(document.cues()[3].id)
+                .map(|name| name.to_string()),
+            Some("shout".into())
+        );
+        assert!(
+            compiled.titles.is_none(),
+            "the example asks for no title card"
         );
     }
 
