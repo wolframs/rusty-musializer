@@ -63,6 +63,37 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
+**In flight — the 2026-11-13 wave (claimed; lead: the main session).** The
+operator, 2026-11-13, on the next-candidates list: "Let's get these off our
+list!" This block is the wave's plan. Tick a step when it is merged on master
+and verified; delete the block when the wave is done, moving the evidence to
+the archive as usual. Each agent works in its own worktree and branch from the
+commit that adds this block; the lead cherry-picks.
+
+- [ ] **A — export.** EX3 gradient banding in exported frames; EX4 the progress
+  screen that stops repainting and polling Cancel while the encoder is backed
+  up; PXF-5 the still that blocks the frame loop.
+- [ ] **B — captions.** MV2: named caption styles a lyric line or a section can
+  pick, and a title lane (title, artist, handle) separate from lyrics. Never a
+  card by default.
+- [ ] **C — friction.** PXF-7 reopen at the last playhead position; the
+  treatment file picker for native agent sessions (`docs/WORKSTATION.md`, open
+  work); D7 number-row scene selection and tile tooltips.
+- [ ] **Integrate A–C**: cherry-pick, one review by GPT-6.1-Sol on the merged
+  diff, one full `tools/verify.sh`, `cargo build --release`.
+- [ ] **D — the segment inspector** (MV9-l, MV3-a), after B and C are merged:
+  edit a section's transition, grade, glide, the finish, voices and B's caption
+  style in the right column. Designer and critic as in WX-5.
+- [ ] **E — MiMo v2.5 benchmark** (row 2). Offline dry run first; the live run
+  waits for the operator's go-ahead on the spend and on sending audio out.
+- [ ] **F — generated video as material** (VG), after D: design, then build
+  against a fake provider; any paid generation waits for the operator's
+  go-ahead.
+- [ ] **Close**: review, full verify, release build, queue and archive updated,
+  worktrees and their branches removed.
+
+Not in this wave: LT2 lyrics timing and WX-6 appearance coverage.
+
 **WX-6 appearance coverage — still open (2026-10-30).** The EX4-c CPU
 failure is diagnosed and fixed: it predates WX-5d (5/5
 quiet failures on both `3ec989e` and `be507e1`), and saturation occurs before
