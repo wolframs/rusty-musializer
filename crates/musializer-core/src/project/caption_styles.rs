@@ -444,7 +444,7 @@ pub fn title_at(titles: &[TitleCard], time_seconds: f64) -> Option<&TitleCard> {
 }
 
 /// How much smaller the artist line is than the title line.
-pub const TITLE_ARTIST_RATIO: f32 = 0.30;
+pub const TITLE_ARTIST_RATIO: f32 = 0.27;
 
 /// The built-in look of a title card, before any named style.
 ///
@@ -462,15 +462,15 @@ pub fn title_look(base: &CaptionStyle, style: Option<&CaptionOverride>) -> Capti
         anchor: CaptionAnchor::MiddleCenter,
         box_style: CaptionBox::Shadow,
         box_rgba: 0x0000_00D0,
-        size_scale: 0.104,
+        size_scale: 0.125,
         margin_scale: 0.09,
         width_scale: 0.80,
         ..base.clone()
     };
     let fx = &mut look.effects;
     *fx = super::model::CaptionEffects {
-        glow_strength: 0.32,
-        glow_radius: 0.42,
+        glow_strength: 0.26,
+        glow_radius: 0.5,
         glow_rgba: 0xFFE7_C2FF,
         shadow_blur: 0.32,
         shadow_opacity: 0.9,

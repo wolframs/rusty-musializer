@@ -64,6 +64,17 @@ fn with_alpha(color: Color, by: f32) -> Color {
     )
 }
 
+/// Straight alpha to premultiplied, for `BLEND_ALPHA_PREMULTIPLY`.
+fn premultiply(color: Color) -> Color {
+    let by = f32::from(color.a) / 255.0;
+    Color::new(
+        (f32::from(color.r) * by).round() as u8,
+        (f32::from(color.g) * by).round() as u8,
+        (f32::from(color.b) * by).round() as u8,
+        color.a,
+    )
+}
+
 fn smooth(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
@@ -189,10 +200,13 @@ pub fn draw_title_card(
     // The block: title lines, a gap, the rule, a gap, the artist line.
     let title_advance = title_size * 1.06;
     let title_height = title_size + layout.lines.len().saturating_sub(1) as f32 * title_advance;
+    // The font box carries the descender, so the gap above the rule is the
+    // smaller one; optically the rule then sits midway.
     let gap = title_size * 0.30;
+    let gap_above = title_size * 0.16;
     let rule_height = (1.4 * pixel_scale).max(title_size * 0.014);
     let artist_block = if artist_text.is_some() {
-        gap + rule_height + gap * 0.85 + artist_size
+        gap_above + rule_height + gap + artist_size
     } else {
         0.0
     };
@@ -228,15 +242,7 @@ pub fn draw_title_card(
             let pad = title_size * 1.15;
             let peak = f32::from(backing.a) / 255.0 * 0.62 * presence;
             let alpha = (peak * 255.0).round() as u8;
-            let premultiplied = |by: f32| {
-                Color::new(
-                    (f32::from(backing.r) * by).round() as u8,
-                    (f32::from(backing.g) * by).round() as u8,
-                    (f32::from(backing.b) * by).round() as u8,
-                    (by * 255.0).round() as u8,
-                )
-            };
-            let dark = premultiplied(f32::from(alpha) / 255.0);
+            let dark = premultiply(Color::new(backing.r, backing.g, backing.b, alpha));
             let top = (y - pad).max(boundary.y);
             let middle = y + block_height * 0.5;
             let bottom = (y + block_height + pad).min(boundary.y + boundary.height);
@@ -268,14 +274,14 @@ pub fn draw_title_card(
                 block_height + title_size * 0.9,
             );
             let roundness = fx_style.plate_roundness as f32;
-            d.draw_rectangle_rounded(plate, roundness, 8, with_alpha(backing, presence));
-            d.draw_rectangle_rounded_lines_ex(
-                plate,
-                roundness,
-                8,
-                pixel_scale,
-                with_alpha(ink, 0.28 * presence),
-            );
+            // Premultiplied for the same reason as the band: a translucent
+            // plate under `BLEND_ALPHA` leaves the still's pixels translucent.
+            let fill = premultiply(with_alpha(backing, presence));
+            let edge = premultiply(with_alpha(ink, 0.28 * presence));
+            d.draw_blend_mode(BlendMode::BLEND_ALPHA_PREMULTIPLY, |mut blend| {
+                blend.draw_rectangle_rounded(plate, roundness, 8, fill);
+                blend.draw_rectangle_rounded_lines_ex(plate, roundness, 8, pixel_scale, edge);
+            });
         }
         CaptionBox::None => {}
     }
@@ -347,7 +353,7 @@ pub fn draw_title_card(
     let mut drawn_artist = None;
     if let Some(text) = &artist_text {
         // The rule, drawing itself out from the card's axis.
-        let rule_y = y + title_height + gap;
+        let rule_y = y + title_height + gap_above;
         let full = (artist_widths.1 * 0.42)
             .max(title_size * 1.4)
             .min(block_width);
@@ -358,13 +364,13 @@ pub fn draw_title_card(
                 value if value > 0 => x + block_width - width,
                 _ => x + (block_width - width) * 0.5,
             };
-            d.draw_rectangle_rec(
-                Rectangle::new(rule_x, rule_y, width, rule_height),
-                with_alpha(ink, 0.55 * rule_presence),
-            );
+            let rule = premultiply(with_alpha(ink, 0.55 * rule_presence));
+            d.draw_blend_mode(BlendMode::BLEND_ALPHA_PREMULTIPLY, |mut blend| {
+                blend.draw_rectangle_rec(Rectangle::new(rule_x, rule_y, width, rule_height), rule);
+            });
         }
         let artist_rise = (1.0 - artist_presence) * artist_size * 0.7;
-        let line_y = rule_y + rule_height + gap * 0.85 + artist_rise;
+        let line_y = rule_y + rule_height + gap + artist_rise;
         let line_x = align_x(artist_widths.1);
         let spacing = tracking(artist_size);
         let font = fonts.caption_at(look.face, artist_size, text);
