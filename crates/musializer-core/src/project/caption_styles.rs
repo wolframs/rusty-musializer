@@ -350,6 +350,8 @@ pub fn resolve_line<'a>(
     let found = |name: Option<StyleName>| {
         name.and_then(|name| find(&base.styles, name).map(|style| (name, style)))
     };
+    // A line that picks its section's own style is that style once.
+    let section = section.filter(|name| Some(*name) != own);
     let applied: Vec<(StyleName, &CaptionOverride)> =
         [found(section), found(own)].into_iter().flatten().collect();
     if applied.is_empty() {
@@ -584,6 +586,8 @@ mod tests {
         let (drawn, used) = resolve_line(&base, None, None);
         assert_eq!(used, None);
         assert!(matches!(drawn, std::borrow::Cow::Borrowed(_)));
+        let (_, used) = resolve_line(&base, Some(name("top")), Some(name("top")));
+        assert_eq!(used.as_deref(), Some("top"), "the same style once");
         // An unknown name is skipped, never drawn as nothing.
         let (drawn, used) = resolve_line(&base, Some(name("gone")), Some(name("top")));
         assert_eq!(used.as_deref(), Some("top"));

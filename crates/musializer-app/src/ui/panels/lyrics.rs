@@ -459,6 +459,12 @@ pub enum LyricsEdit {
     /// Boxed because `CaptionStyle` is far larger than every other variant, and
     /// an enum sized by its rarest member would be carried by every lane drag.
     SetCaptionStyle(Box<CaptionStyle>),
+    /// The cue card's style chip (MV2): the named caption style a cue picks
+    /// itself, or none. A cue edit, so it goes on the undo stack.
+    SetCueStyle {
+        id: u64,
+        style: Option<musializer_core::project::caption_styles::StyleName>,
+    },
 }
 
 impl LyricsEdit {
@@ -532,6 +538,25 @@ impl LyricsEdit {
                 track.caption_style = *style;
                 Ok(None)
             }
+            LyricsEdit::SetCueStyle { id, style } => {
+                // A name the project's table does not hold would make a
+                // project no loader opens again; refused here, not saved.
+                let known = style.is_none_or(|name| {
+                    musializer_core::project::caption_styles::find(
+                        &track.caption_style.styles,
+                        name,
+                    )
+                    .is_some()
+                });
+                if !known {
+                    return Err(LyricsError::InvalidCue);
+                }
+                if track.lyrics.set_cue_style(id, style) {
+                    Ok(None)
+                } else {
+                    Err(LyricsError::NotFound)
+                }
+            }
         }
     }
 
@@ -564,6 +589,7 @@ impl LyricsEdit {
             LyricsEdit::Split { .. } => "Split cue".to_owned(),
             LyricsEdit::Merge { .. } => "Merge cues".to_owned(),
             LyricsEdit::SetCaptionStyle(_) => "Caption style".to_owned(),
+            LyricsEdit::SetCueStyle { .. } => "Cue caption style".to_owned(),
         }
     }
 }

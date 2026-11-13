@@ -116,6 +116,8 @@ mod action {
         NEXT = 26 / 1;
         FOLLOW = 27 / 1;
         PLAYHEAD_WORD = 28 / 2;
+        CUE_STYLE = 30 / 1;
+        TITLE_ROWS = 31 / 2;
     }
 }
 mod column_id {
@@ -426,6 +428,7 @@ impl Shell {
         );
         let selected_index = document.index_of(editor.selected_id);
         let bound = editor.draft_new || selected_index.is_some();
+        let mut cue_style_report = "none".to_owned();
         let micro_y = |rect: UiRect| (rect.y + (rect.height - metric::UI_FONT_MICRO) * 0.5).round();
         let title_x = card.title.x;
         if editor.draft_new {
@@ -454,7 +457,19 @@ impl Shell {
                 ],
             );
             let origin = document.cues()[index].origin;
-            let rest = card.title.x + card.title.width - (title_x + width + 10.0);
+            // The cue's caption style (MV2), right-aligned in the title row;
+            // the origin label gets what is left.
+            let chip = self.cue_style_chip(
+                d,
+                input,
+                editor,
+                track,
+                document.cues()[index].id,
+                card.title,
+                title_x + width + 10.0,
+            );
+            cue_style_report = chip.0;
+            let rest = chip.1 - (title_x + width + 10.0);
             widgets::status_dot_label(
                 d,
                 font,
@@ -776,8 +791,13 @@ impl Shell {
             }
         }
 
+        // --- The title lane (MV2) -------------------------------------------
+        // A project's title cards, as rows above the cues, only when it has
+        // any: the layout of a project without one is untouched.
+        let mut list = cues.list;
+        let titles_report = self.title_rows(d, input, track, &mut list, commands);
+
         // --- The list ------------------------------------------------------
-        let list = cues.list;
         widgets::draw_micro(
             d,
             font,
@@ -1068,7 +1088,8 @@ impl Shell {
         format!(
             "card={} cue={} prev@{} next@{} text@{} start@{} end@{} apply@{}:{} \
              list@{} rows={}..{}/{} row@={} current={} selected={} follow={} follow@{} \
-             footer@{} footer=add@{},import@{},export@{}",
+             footer@{} footer=add@{},import@{},export@{} cue_style={cue_style_report} \
+             titles={titles_report}",
             rect_token(card.card),
             if editor.draft_new {
                 "new".to_owned()
@@ -1105,6 +1126,232 @@ impl Shell {
             rect_token(footer.import),
             rect_token(footer.export),
         )
+    }
+
+    /// The cue card's style chip (MV2): which named caption style the cue is
+    /// drawn in — its own, else its section's (marked so), else the base —
+    /// and a press steps the cue's own through the project's table and back
+    /// to none. With no table it is drawn disabled and says where styles are
+    /// written. Returns the report token and the chip's left edge.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the card's crossing: target, input, editor, track, cue, row and where the title ends"
+    )]
+    fn cue_style_chip(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        editor: &mut LyricEditor,
+        track: &Track,
+        id: u64,
+        row: UiRect,
+        title_end: f32,
+    ) -> (String, f32) {
+        use musializer_core::project::caption_styles;
+        let font = input.fonts.ui();
+        let table = &track.caption_style.styles;
+        let own = track.lyrics.style_of(id);
+        let start = track.lyrics.find(id).map_or(0.0, |cue| cue.start_seconds);
+        let section = track.scene_switches.caption_style_at(start);
+        let (name, inherited) = match (own, section) {
+            (Some(name), _) => (name.to_string(), false),
+            (None, Some(name)) => (name.to_string(), true),
+            (None, None) => ("base".to_owned(), false),
+        };
+        let mut runs = vec![MicroRun::muted("Style "), MicroRun::ink(&name)];
+        if inherited {
+            runs.push(MicroRun::muted(" · section"));
+        }
+        let pad = 8.0;
+        let width = widgets::micro_width(font, &runs) + pad * 2.0;
+        let height = (row.height - 6.0).max(16.0);
+        let rect = UiRect::new(
+            (row.x + row.width - width).round(),
+            (row.y + (row.height - height) * 0.5).round(),
+            width.round(),
+            height.round(),
+        );
+        // No room beside the cue number: say nothing rather than overlap it.
+        if rect.x < title_end + 40.0 {
+            return ("hidden".to_owned(), row.x + row.width);
+        }
+        let chip_id = widgets::widget_id(ns::ACTIONS, action::CUE_STYLE);
+        let enabled = !table.is_empty() && !editor.draft_new;
+        let state = self.widgets.button(d, chip_id, rect);
+        let (fill, edge) = if enabled && state.hovered {
+            (color::ui_hover(), color::ui_control_edge())
+        } else {
+            (color::ui_surface(), color::ui_control_edge())
+        };
+        widgets::rounded_box(d, rect, rect.height * 0.5, fill, edge, 1.0);
+        if !enabled {
+            runs[1] = MicroRun::muted(&name);
+        }
+        widgets::draw_micro(
+            d,
+            font,
+            rect.x + pad,
+            (rect.y + (rect.height - metric::UI_FONT_MICRO) * 0.5).round(),
+            &runs,
+        );
+        let what = match own.or(section) {
+            Some(applied) => caption_styles::find(table, applied).map_or_else(
+                || "not in this project".to_owned(),
+                |style| style.describe(),
+            ),
+            None => "the project's caption style".to_owned(),
+        };
+        let hint = if table.is_empty() {
+            "Caption style: the project's own. Named styles are written in a treatment's \
+             caption_styles; this project has none."
+                .to_owned()
+        } else {
+            format!(
+                "Caption style: {name}{} — {what}. Click for the next named style ({}). \
+                 Styles are written in a treatment's caption_styles.",
+                if inherited { ", from its section" } else { "" },
+                table
+                    .iter()
+                    .map(|entry| entry.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        self.widgets.hint(d, state, chip_id, rect, &hint);
+        if enabled && state.clicked {
+            let next = match own.and_then(|name| table.iter().position(|e| e.name == name)) {
+                None => table.first().map(|entry| entry.name),
+                Some(at) => table.get(at + 1).map(|entry| entry.name),
+            };
+            editor.push(LyricsEdit::SetCueStyle { id, style: next });
+        }
+        (
+            format!(
+                "{name}{}:{}@{}",
+                if inherited { "/section" } else { "" },
+                if enabled { "pickable" } else { "fixed" },
+                rect_token(rect)
+            ),
+            rect.x - 8.0,
+        )
+    }
+
+    /// The title cards (MV2) as rows at the top of the list, carved out of it
+    /// only when the project has cards. Each says when, what and who; a press
+    /// seeks to the card. Cards are written in a treatment, which the hint
+    /// says. Returns the report token.
+    fn title_rows(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        track: &Track,
+        list: &mut layout::ListLayout,
+        commands: &mut Vec<ShellCommand>,
+    ) -> String {
+        use musializer_core::project::caption_styles;
+        let titles = &track.scene_switches.titles;
+        if titles.is_empty() {
+            return "0".to_owned();
+        }
+        // Two rows at most, and never more than leaves the cues two of their
+        // own; past two cards the second row counts the rest.
+        let rows = titles.len().min(2);
+        if list.visible < rows + 2 {
+            return format!("{}:no-room", titles.len());
+        }
+        let font = input.fonts.ui();
+        let carved = rows as f32 * layout::ROW_STRIDE;
+        let area = UiRect::new(list.rows.x, list.rows.y, list.rows.width, carved);
+        list.rows.y += carved;
+        list.rows.height -= carved;
+        list.visible -= rows;
+        let mut report = Vec::new();
+        for slot in 0..rows {
+            let row = layout::row_rect(area, slot);
+            let parts = layout::row_parts(row);
+            let more = slot == 1 && titles.len() > 2;
+            let card = &titles[slot];
+            let id = widgets::widget_id(ns::ACTIONS, action::TITLE_ROWS + slot as u32);
+            let state = self.widgets.button(d, id, row);
+            widgets::rounded_box(
+                d,
+                row,
+                4.0,
+                if state.hovered {
+                    color::ui_hover()
+                } else {
+                    color::ui_lane_trough()
+                },
+                color::ui_rule(),
+                1.0,
+            );
+            // A small square in the accent where a cue has its origin dot:
+            // a card is not a sung line.
+            widgets::fill(
+                d,
+                UiRect::new(parts.dot.x, parts.dot.y, parts.dot.width, parts.dot.height),
+                color::accent(),
+            );
+            widgets::draw_text_tabular(
+                d,
+                font,
+                &widgets::format_timestamp(card.start_seconds),
+                parts.time.x,
+                (parts.time.y + (parts.time.height - metric::UI_FONT_CAPTION) * 0.5).round(),
+                metric::UI_FONT_CAPTION,
+                color::ui_muted(),
+            );
+            let artist = caption_styles::artist_line(card, track.project_artist());
+            let text = if more {
+                format!("+{} more title cards", titles.len() - 1)
+            } else {
+                match &artist {
+                    Some(line) => format!("Title: {} — {line}", card.title),
+                    None => format!("Title: {} — no artist", card.title),
+                }
+            };
+            let (fitted, _) = musializer_core::ui::row_typography::truncate_label(
+                &text,
+                parts.text.width,
+                Some(|text: &str| widgets::measure(font, text, metric::UI_FONT_CAPTION)),
+                musializer_core::ui::row_typography::UI_ROW_LABEL_CAPACITY,
+            );
+            widgets::draw_text(
+                d,
+                font,
+                &fitted,
+                parts.text.x,
+                (parts.text.y + (parts.text.height - metric::UI_FONT_CAPTION) * 0.5).round(),
+                metric::UI_FONT_CAPTION,
+                if artist.is_none() && !more {
+                    color::ui_warning()
+                } else {
+                    color::ui_ink()
+                },
+            );
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                row,
+                &format!(
+                    "Title card {}–{}{}. Click to go to it. Title cards are written in a \
+                     treatment's titles.",
+                    widgets::format_timestamp(card.start_seconds),
+                    widgets::format_timestamp(card.end_seconds),
+                    if artist.is_none() {
+                        "; it names no artist and the project has none"
+                    } else {
+                        ""
+                    }
+                ),
+            );
+            if state.clicked {
+                commands.push(ShellCommand::Seek(card.start_seconds));
+            }
+            report.push(rect_token(row));
+        }
+        format!("{}@{}", titles.len(), report.join(";"))
     }
 
     /// One START or END row on the card: label, the click-to-type time, − +,
