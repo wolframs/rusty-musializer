@@ -1247,6 +1247,78 @@ else
     fi
 fi
 
+# EX4: the progress screen keeps painting, and Cancel lands, while the encoder
+# is backed up. `encoder-stall=MS` paces the frame writer the way a slow
+# FFmpeg does (4K, `-preset slow`); the frames and their bytes are unchanged.
+# Before the writer thread the blocking write sat inside the screen's drawing
+# pair, so every paint waited for the pipe: longest-gap was the stall itself
+# and a cancel waited for it too.
+#
+# NEGATIVE CONTROLS (2026-11-13), each reverted byte-for-byte:
+#   - the tick's readiness check made a no-op (`Ok(false) => {}`), the old
+#     "draw, then write whatever happens": longest-gap 406 ms and 6 waiting
+#     paints instead of ~25 ms and ~135, on the GPU and on llvmpipe alike;
+#   - a cancel no longer telling the writer to stop: cancel-to-done 967 ms
+#     instead of ~37 ms, the writer serving out its stall before the join.
+echo "=== the export progress screen behind a backed-up encoder ==="
+encoder_stall_run() {
+    # encoder_stall_run NAME PROBE WINDOW_LENGTH
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 \
+            --render "$OUT_DIR/$1.mp4" --render-window 1 "$3" $MZ_ENC \
+            --resolution 640x360 --fps 30 --quality balanced \
+            --ui-probe "$2" \
+        >"$OUT_DIR/$1.txt" 2>&1 || true
+}
+rm -f "$OUT_DIR/stall-publish.mp4" "$OUT_DIR/stall-cancel.mp4"
+encoder_stall_run stall-publish "encoder-stall=400" 0.3
+encoder_stall_run stall-cancel "encoder-stall=1000,key=escape" 2
+STALL_TICKS="$(sed -n 's/^export ticks: *//p' "$OUT_DIR/stall-publish.txt")"
+CANCEL_TICKS="$(sed -n 's/^export ticks: *//p' "$OUT_DIR/stall-cancel.txt")"
+CANCEL_PROGRESS="$(sed -n 's/^export progress: *//p' "$OUT_DIR/stall-cancel.txt")"
+echo "stalled export: ${STALL_TICKS:-<absent>}"
+echo "stalled cancel: ${CANCEL_TICKS:-<absent>} / ${CANCEL_PROGRESS:-<absent>}"
+if ! python3 - "$STALL_TICKS" "$CANCEL_TICKS" "$CANCEL_PROGRESS" <<'PY'
+import sys
+def fields(line):
+    return dict(part.split("=", 1) for part in line.split() if "=" in part)
+publish, cancel, progress = (fields(line) for line in sys.argv[1:])
+problems = []
+if publish.get("outcome") != "published":
+    problems.append(f"the stalled export did not publish: {publish}")
+# Nine frames at 400 ms each is ~3.6 s: a screen that paints at 60 Hz while
+# it waits shows well over a hundred waiting paints, and none takes a stall.
+if int(publish.get("waiting-on-encoder", "0")) < 60:
+    problems.append(f"too few paints while waiting on the encoder: {publish}")
+if float(publish.get("longest-gap", "9999ms").rstrip("ms")) >= 250:
+    problems.append(f"a paint waited on the encoder: {publish}")
+if cancel.get("outcome") != "cancelled":
+    problems.append(f"Escape did not cancel the stalled export: {cancel}")
+if float(cancel.get("cancel-to-done", "9999ms").rstrip("ms")) >= 250:
+    problems.append(f"the cancel waited on the encoder: {cancel}")
+# The cancel must have been pressed *while* backed up, or it proves nothing.
+if progress.get("encoder") != "waiting":
+    problems.append(f"the cancel was not pressed behind a full encoder: {progress}")
+for problem in problems:
+    print(f"FAIL: {problem}", file=sys.stderr)
+sys.exit(1 if problems else 0)
+PY
+then
+    SWEEP_FAILED=1
+fi
+STALL_FRAMES="$(ffprobe -v error -count_frames -select_streams v:0 \
+    -show_entries stream=nb_read_frames -of csv=p=0 "$OUT_DIR/stall-publish.mp4" 2>/dev/null || true)"
+echo "stalled export frames: ${STALL_FRAMES:-<none>}"
+if [ "$STALL_FRAMES" != "9" ]; then
+    echo "FAIL: the stalled export has ${STALL_FRAMES:-no} frames, expected 9" >&2
+    SWEEP_FAILED=1
+fi
+if [ -e "$OUT_DIR/stall-cancel.mp4" ]; then
+    echo "FAIL: the cancelled export published a file" >&2
+    SWEEP_FAILED=1
+fi
+
 # The still frame (UX0-C10).
 echo "=== the still frame is the video frame ==="
 STILL_A="$OUT_DIR/still-a.png"

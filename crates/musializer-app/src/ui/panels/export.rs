@@ -963,6 +963,12 @@ impl Shell {
     ///
     /// `frame` is the offline target, which still holds the last frame drawn
     /// into it: drawing it scaled is one textured quad, never a readback.
+    /// `waiting` says the encoder is backed up (EX4), so the screen can say
+    /// why the bar is standing still while the clock runs.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the screen's inputs are the job and what the tick knows about it; a struct would exist only to be destructured on the next line"
+    )]
     pub(crate) fn export_progress_themed(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -971,6 +977,7 @@ impl Shell {
         job: &RenderJob,
         frame: Option<&RenderTexture2D>,
         title: &str,
+        waiting: bool,
     ) -> bool {
         use widgets::MicroRun;
         let (w, h) =
@@ -1090,11 +1097,19 @@ impl Shell {
                 grouped(job.plan().frames.start)
             ),
             _ => format!(
-                "{} / {} frames \u{00b7} {} elapsed \u{00b7} {} left",
+                "{} / {} frames \u{00b7} {} elapsed \u{00b7} {} left{}",
                 grouped(encoded),
                 grouped(total),
                 clock(elapsed),
-                clock(remaining)
+                clock(remaining),
+                // EX4: the bar standing still while the clock runs is the
+                // encoder catching up, and saying so is what separates that
+                // from a hang.
+                if waiting {
+                    " \u{00b7} encoder catching up"
+                } else {
+                    ""
+                }
             ),
         };
         let line_y = bar.y + 18.0;
@@ -1128,7 +1143,11 @@ impl Shell {
         );
 
         // Cancel render, danger text, with Esc beside it.
-        let mut cancelled = d.is_key_pressed(raylib::consts::KeyboardKey::KEY_ESCAPE);
+        // `--ui-probe key=escape` reaches this screen too: an export started
+        // from the command line owns the window from the first frame, and a
+        // probe has no other way to press Escape on it.
+        let mut cancelled = d.is_key_pressed(raylib::consts::KeyboardKey::KEY_ESCAPE)
+            || std::mem::take(&mut self.probe_escape);
         let cancel_label = "Cancel render";
         let cancel_width = widgets::measure(font, cancel_label, metric::UI_FONT_LABEL) + 24.0;
         let cancel = UiRect::new(
@@ -1165,7 +1184,7 @@ impl Shell {
         }
 
         let report = format!(
-            "state={state} frame={encoded}/{total} bar={} fill={filled:.0} thumb={} cancel={}",
+            "state={state} frame={encoded}/{total} bar={} fill={filled:.0} thumb={} cancel={} encoder={}",
             at(bar),
             if thumb_drawn { "drawn" } else { "none" },
             if job.is_finishing() {
@@ -1173,6 +1192,7 @@ impl Shell {
             } else {
                 at(cancel)
             },
+            if waiting { "waiting" } else { "ready" },
         );
         self.render_view.progress = report;
         cancelled
@@ -2365,9 +2385,6 @@ pub(crate) struct ExportSession {
     /// inventing one would mean a second code path that can reach the encoder.
     job: Option<RenderJob>,
     target: RenderTexture2D,
-    /// Reused between frames: a 1080p frame is 8 MiB and reallocating it per
-    /// frame would dominate the export.
-    pixels: Vec<u8>,
     /// The supersample resolve's sRGB tables, built once for the whole export
     /// rather than per frame (EX3).
     resolver: LinearResolver,
@@ -2392,6 +2409,47 @@ pub(crate) struct ExportSession {
     /// so a readback shows the frame the report describes whichever of the
     /// two a renderer hands back.
     hold: u8,
+    /// How the progress screen kept up, for the `export ticks:` line (EX4).
+    ticks: TickLog,
+}
+
+/// What the progress screen did while the export ran (EX4): how often it
+/// painted, how many of those paints were waiting on a backed-up encoder, the
+/// longest gap between two paints, and how long a cancel took to land.
+///
+/// A frozen window and a working one produce the same MP4, so the file can
+/// never show this defect; only these numbers can.
+#[derive(Debug, Default)]
+struct TickLog {
+    painted: u64,
+    waiting: u64,
+    last: Option<std::time::Instant>,
+    longest_gap: std::time::Duration,
+    cancel_pressed: Option<std::time::Instant>,
+}
+
+impl TickLog {
+    fn paint(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last {
+            self.longest_gap = self.longest_gap.max(now - last);
+        }
+        self.last = Some(now);
+        self.painted += 1;
+    }
+
+    fn report(&self, outcome: &str) -> String {
+        let cancel = self.cancel_pressed.map_or_else(
+            || "none".to_owned(),
+            |pressed| format!("{:.0}ms", pressed.elapsed().as_secs_f64() * 1000.0),
+        );
+        format!(
+            "painted={} waiting-on-encoder={} longest-gap={:.0}ms cancel-to-done={cancel} outcome={outcome}",
+            self.painted,
+            self.waiting,
+            self.longest_gap.as_secs_f64() * 1000.0,
+        )
+    }
 }
 
 /// Builds any whole-track data the export's frames will need, before the first one
@@ -2617,11 +2675,9 @@ impl ExportSession {
         prepare_track_assets(audio, app);
         app.shell.panel = UiPanel::None;
 
-        let pixels = vec![0u8; config.width as usize * config.height as usize * 4];
         Some(ExportSession {
             job: Some(job),
             target,
-            pixels,
             resolver: LinearResolver::new(),
             samples_scratch: Vec::new(),
             restore_position,
@@ -2629,7 +2685,16 @@ impl ExportSession {
             reported_frame_lanes: false,
             share_frame,
             hold: 0,
+            ticks: TickLog::default(),
         })
+    }
+
+    /// `--ui-probe encoder-stall=MS` (EX4): pace the frame writer, as an
+    /// encoder that reads slowly would.
+    pub(crate) fn stall_encoder(&self, per_frame_ms: u64) {
+        if let Some(job) = &self.job {
+            job.set_probe_stall(std::time::Duration::from_millis(per_frame_ms));
+        }
     }
 
     /// Frames encoded so far, for `--ui-probe progress-shot=` (WX-5d).
@@ -2688,11 +2753,45 @@ impl ExportSession {
         if self.job().cancel_requested() {
             return self.conclude(true, music, app, analysis);
         }
-        if self.job().is_complete() && self.job_mut().begin_finishing() {
-            return self.conclude(false, music, app, analysis);
+        // The encoder's own state first, every tick, so a transport that broke
+        // while the window was only painting is found now rather than at the
+        // next frame — which, behind a dead encoder, might never come.
+        let mut failure: Option<(&'static str, String)> = None;
+        let ready = match self.job_mut().ready_for_frame() {
+            Ok(ready) => ready,
+            Err(error) => {
+                failure = Some((
+                    "Export failed while writing a frame",
+                    format!("{error}. The previous destination was preserved."),
+                ));
+                false
+            }
+        };
+        if failure.is_none() && self.job().is_complete() {
+            // "Finishing" as soon as the last frame is handed over, but the
+            // encoder is finalized only once the writer has drained: the
+            // frames still queued are written while this screen keeps
+            // painting, not inside `finish` (EX4).
+            let second_tick = self.job_mut().begin_finishing();
+            let drained = self
+                .job_mut()
+                .frames_in_flight()
+                .map_or(true, |left| left == 0);
+            if second_tick && drained {
+                return self.conclude(false, music, app, analysis);
+            }
         }
 
-        let mut failure: Option<(&'static str, String)> = None;
+        // A frame is drawn only when the encoder can take it. Drawing first
+        // and finding the pipe full afterwards would leave a frame with
+        // nowhere to go but a blocking write inside this drawing pair, which
+        // is the freeze EX4 was. Waiting instead costs one painted tick of
+        // progress screen and nothing else: the scene does not advance.
+        let waiting = failure.is_none() && !ready && !self.job().is_finishing();
+        if waiting {
+            self.ticks.waiting += 1;
+        }
+        self.ticks.paint();
         {
             let mut d = rl.begin_drawing(thread);
             let ui_scale =
@@ -2713,17 +2812,39 @@ impl ExportSession {
                     self.job.as_ref().expect("checked at the top of the tick"),
                     Some(&self.target),
                     &title,
+                    waiting,
                 )
             };
             if cancelled {
                 self.job_mut().request_cancel();
+                self.ticks
+                    .cancel_pressed
+                    .get_or_insert_with(std::time::Instant::now);
             }
-            let active =
-                !self.job().is_finishing() && !self.job().cancel_requested() && self.hold == 0;
+            let active = failure.is_none()
+                && !self.job().is_finishing()
+                && !self.job().cancel_requested()
+                && self.hold == 0;
             self.hold = self.hold.saturating_sub(1);
             if active {
                 let mut steps = self.job().batch_size();
                 while steps > 0 && !self.job().is_complete() {
+                    // Asked again before each drawn frame, not once per tick:
+                    // a fast-forward batch ends on a drawn frame, and the
+                    // encoder may have filled since the top of the tick.
+                    if self.job().draws_this_frame() {
+                        match self.job_mut().ready_for_frame() {
+                            Ok(true) => {}
+                            Ok(false) => break,
+                            Err(error) => {
+                                failure = Some((
+                                    "Export failed while writing a frame",
+                                    format!("{error}. The previous destination was preserved."),
+                                ));
+                                break;
+                            }
+                        }
+                    }
                     steps -= 1;
                     match self.step(&mut d, thread, app, analysis, renderer, fonts) {
                         Ok(drew) => {
@@ -2929,6 +3050,10 @@ impl ExportSession {
                     format!("{error}. The previous destination was preserved."),
                 )
             })?;
+        // Resolved straight into a buffer the encoder's writer thread hands
+        // back once a frame is in the pipe, so a queued frame is never copied
+        // and a frame never allocates after the first few (EX4).
+        let mut frame = self.job_mut().take_frame_buffer(0);
         self.resolver
             .resolve(
                 source,
@@ -2936,7 +3061,7 @@ impl ExportSession {
                 source_height,
                 config.width as usize,
                 config.height as usize,
-                &mut self.pixels,
+                &mut frame,
             )
             .map_err(|error| {
                 (
@@ -2948,35 +3073,26 @@ impl ExportSession {
                     ),
                 )
             })?;
-        // The pixel buffer and the job are separate fields, so this needs the
-        // two borrows split rather than `self.job_mut()` while `self.pixels` is
-        // read.
         let ExportSession {
-            job,
-            pixels,
-            share_frame,
-            ..
+            job, share_frame, ..
         } = self;
         let job = job
             .as_mut()
             .expect("a session is dropped on the tick its job is concluded");
         let uses_share_frame = job.encoded_frames() == 0 && share_frame.is_some();
-        let encoded_pixels = if uses_share_frame {
-            &share_frame.as_ref().expect("checked above").pixels
-        } else {
-            pixels
-        };
-        job.send_frame(
-            encoded_pixels,
-            config.width as usize,
-            config.height as usize,
-        )
-        .map_err(|error| {
-            (
-                "Export failed while writing a frame",
-                format!("{error}. The previous destination was preserved."),
-            )
-        })?;
+        if uses_share_frame {
+            // The ordinary frame was still drawn and resolved, so every lane
+            // advanced exactly as it would have; only its pixels are swapped.
+            frame.clear();
+            frame.extend_from_slice(&share_frame.as_ref().expect("checked above").pixels);
+        }
+        job.submit_frame(frame, config.width as usize, config.height as usize)
+            .map_err(|error| {
+                (
+                    "Export failed while writing a frame",
+                    format!("{error}. The previous destination was preserved."),
+                )
+            })?;
         if uses_share_frame {
             // Release an 8 MiB buffer at 1080p as soon as the only frame that
             // can use it is safely in the encoder pipe.
@@ -3002,6 +3118,14 @@ impl ExportSession {
             return true;
         };
         let completion = job.finish(cancel);
+        println!(
+            "export ticks:    {}",
+            self.ticks.report(match &completion.result {
+                Ok(Finished::Published) => "published",
+                Ok(Finished::Cancelled) => "cancelled",
+                Err(_) => "failed",
+            })
+        );
         match completion.result {
             Ok(Finished::Published) => app.shell.notify(
                 Severity::Success,

@@ -799,6 +799,11 @@ fn run(
         .as_ref()
         .and_then(|probe| probe.progress_shot);
     let mut progress_shot_wait: Option<u8> = None;
+    // `--ui-probe encoder-stall=MS` (EX4), applied to the first export.
+    let mut encoder_stall: Option<u64> = options
+        .ui_probe
+        .as_ref()
+        .and_then(|probe| probe.encoder_stall_ms);
     let mut left_drag: Option<(f32, f32)> = None;
     let mut left_drag_phase: u32 = 0;
     let mut middle_drag_phase: u32 = 0;
@@ -1590,6 +1595,12 @@ fn run(
         // the analyzer and the scene for the duration, and draws its own progress
         // screen (`musializer.c:641-651`).
         if export.is_some() {
+            if let Some(milliseconds) = encoder_stall.take() {
+                export
+                    .as_ref()
+                    .expect("just checked")
+                    .stall_encoder(milliseconds);
+            }
             // `--ui-probe progress-shot=N` (WX-5d): once N frames are
             // encoded, hold the encoder for three ticks and photograph the
             // screen after the second identical one. Held rather than timed,

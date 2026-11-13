@@ -492,6 +492,10 @@ pub struct UiProbe {
     /// This is a bounded negative-control hook for the output-underrun counter;
     /// the audio device thread remains live and must observe the starvation.
     pub audio_stall_ms: Option<u64>,
+    /// `encoder-stall=MS` (EX4): the export's frame writer waits this long
+    /// before each frame, an encoder that reads slowly on demand. The frames
+    /// and their bytes are unchanged; only their pace into the pipe is.
+    pub encoder_stall_ms: Option<u64>,
     /// `protocol-answer=ID:CHOICE[+ID:CHOICE...]`: answer protocol items by id
     /// (HX-5).
     ///
@@ -1594,6 +1598,13 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             }
             probe.audio_stall_ms = Some(milliseconds);
         }
+        "encoder-stall" => {
+            let milliseconds: u64 = value.parse().ok()?;
+            if !(1..=5_000).contains(&milliseconds) {
+                return None;
+            }
+            probe.encoder_stall_ms = Some(milliseconds);
+        }
         _ => return None,
     }
     Some(())
@@ -1772,7 +1783,8 @@ Diagnostics:
                           protocol-answer=ID:CHOICE[+ID:CHOICE] answers
                           protocol items by id; protocol-flip=ID plays
                           the item's other look first (need --protocol),
-                          audio-stall=MS stalls the audio callback
+                          audio-stall=MS stalls the audio callback,
+                          encoder-stall=MS paces the export's frame writer
   --size WIDTHxHEIGHT     Preview window geometry
   --probe-frames N        Render N frames, print the report, and exit
   --probe-shot PATH       Write a PNG of the last rendered frame
@@ -2681,6 +2693,14 @@ mod tests {
         );
         assert!(parse_ui_probe("audio-stall=0").is_none());
         assert!(parse_ui_probe("audio-stall=5001").is_none());
+        assert_eq!(
+            parse_ui_probe("encoder-stall=250")
+                .unwrap()
+                .encoder_stall_ms,
+            Some(250)
+        );
+        assert!(parse_ui_probe("encoder-stall=0").is_none());
+        assert!(parse_ui_probe("encoder-stall=5001").is_none());
     }
 
     #[test]

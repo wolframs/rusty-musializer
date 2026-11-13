@@ -16,8 +16,12 @@
 //!   spawn the binary can vanish (`src/ffmpeg.h:12-13`).
 //! - [`Encoder::start`] spawns the child writing to a **temporary sibling** of
 //!   the destination, never to the destination itself.
-//! - [`Encoder::send_frame_flipped`] writes one frame bottom-row-first, because
-//!   an OpenGL framebuffer read is upside down relative to a video frame.
+//! - [`Encoder::submit_frame_flipped`] hands one frame to a **writer thread**,
+//!   which writes it bottom-row-first, because an OpenGL framebuffer read is
+//!   upside down relative to a video frame. The caller asks
+//!   [`Encoder::ready_for_frame`] first and never blocks on the pipe (EX4): a
+//!   backed-up encoder is a frame the caller has not drawn yet, not a window
+//!   that has stopped painting.
 //! - [`Encoder::finish`] is the only way an export becomes visible. It always
 //!   consumes the encoder, reaps the child within a bounded grace period, and
 //!   publishes with `rename` **only** after a clean exit.
@@ -31,6 +35,9 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use super::process_group::{
     describe_exit, kill_group_and_reap, signal_group_or_process, ShutdownPolicy, Signal,
@@ -408,13 +415,258 @@ fn transport_duration_text(total_frames: u64, fps: u32) -> Option<String> {
 #[derive(Debug)]
 pub struct Encoder {
     child: Option<Child>,
-    pipe: Option<ChildStdin>,
+    /// The frame pipe, owned by its own thread. `None` once finished.
+    writer: Option<FrameWriter>,
     destination: PathBuf,
     temporary: PathBuf,
     /// False once a frame write has failed. The C tracks the same idea as
     /// `transport_ok` (`src/ffmpeg_posix.c:231`) and refuses to publish when it
     /// is false, so a truncated encode cannot replace a good file.
     transport_ok: bool,
+}
+
+/// Frames that may be handed to the encoder and not yet written into its pipe,
+/// counting the one the writer is in the middle of.
+///
+/// Three, so the next frame can be drawn while the previous one is still being
+/// written and one more is queued behind it: the render and the encode overlap
+/// instead of taking turns. Each is a whole frame (8 MiB at 1080p, 32 MiB at
+/// 4K), which is what bounds this rather than a pipe's 64 KiB.
+pub const FRAMES_IN_FLIGHT: usize = 3;
+
+/// One frame on its way to the pipe, still bottom row first.
+struct QueuedFrame {
+    pixels: Vec<u8>,
+    row_size: usize,
+    height: usize,
+}
+
+/// What the writer thread reports back.
+enum WriterEvent {
+    /// A frame went into the pipe whole; its buffer comes back for reuse.
+    Written(Vec<u8>),
+    /// A write failed. The thread has exited and dropped the pipe.
+    Failed(std::io::Error),
+}
+
+/// The thread that owns the encoder's stdin (EX4).
+///
+/// `write_all` into a full pipe blocks until FFmpeg reads, and FFmpeg reads at
+/// the pace it encodes: at 4K with `-preset slow` that is seconds per frame.
+/// When the application wrote the frame itself, that wait happened inside the
+/// progress screen's drawing pair, so the window stopped repainting and
+/// neither Escape nor Cancel was polled — a running export read as a hung one.
+/// Here the wait happens on this thread, and the frame loop only ever asks
+/// whether there is room ([`Encoder::ready_for_frame`]).
+///
+/// **The bytes on the wire are unchanged**: the same rows, in the same order,
+/// one frame after another, each written whole before the next begins.
+struct FrameWriter {
+    /// Closed (`None`) to tell the thread to finish the queue and drop the
+    /// pipe, which is the encoder's end-of-stream.
+    queue: Option<mpsc::SyncSender<QueuedFrame>>,
+    events: mpsc::Receiver<WriterEvent>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    /// Set by a cancel: whatever is still queued is discarded, not written.
+    stop: Arc<AtomicBool>,
+    /// `--ui-probe encoder-stall=MS`: how long the thread waits before each
+    /// frame, standing in for an encoder that is slow to read.
+    stall_ms: Arc<AtomicU64>,
+    in_flight: usize,
+    /// Buffers the thread has finished with, so a frame does not allocate.
+    spare: Vec<Vec<u8>>,
+    /// The first write failure, reported once by the next call that asks.
+    failure: Option<std::io::Error>,
+    /// True once the thread is gone for any reason.
+    broken: bool,
+}
+
+impl std::fmt::Debug for FrameWriter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Not derived: `spare` holds whole frames, and a debug print of an
+        // encoder must not be thirty megabytes of pixels.
+        formatter
+            .debug_struct("FrameWriter")
+            .field("in_flight", &self.in_flight)
+            .field("spare", &self.spare.len())
+            .field("broken", &self.broken)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FrameWriter {
+    fn spawn(pipe: ChildStdin) -> std::io::Result<Self> {
+        let (queue, frames) = mpsc::sync_channel::<QueuedFrame>(FRAMES_IN_FLIGHT);
+        let (report, events) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stall_ms = Arc::new(AtomicU64::new(0));
+        let thread = std::thread::Builder::new()
+            .name("ffmpeg-frames".to_owned())
+            .spawn({
+                let stop = Arc::clone(&stop);
+                let stall_ms = Arc::clone(&stall_ms);
+                move || write_frames(pipe, &frames, &report, &stop, &stall_ms)
+            })?;
+        Ok(FrameWriter {
+            queue: Some(queue),
+            events,
+            thread: Some(thread),
+            stop,
+            stall_ms,
+            in_flight: 0,
+            spare: Vec::new(),
+            failure: None,
+            broken: false,
+        })
+    }
+
+    fn take(&mut self, event: WriterEvent) {
+        match event {
+            WriterEvent::Written(buffer) => {
+                self.in_flight = self.in_flight.saturating_sub(1);
+                // Never more than one frame's worth of spares per slot.
+                if self.spare.len() < FRAMES_IN_FLIGHT {
+                    self.spare.push(buffer);
+                }
+            }
+            WriterEvent::Failed(error) => {
+                // Whatever was queued behind the failed frame went down with
+                // the thread's receiver; none of it will be written.
+                self.in_flight = 0;
+                self.broken = true;
+                self.failure.get_or_insert(error);
+            }
+        }
+    }
+
+    /// Takes every report the thread has sent, without waiting.
+    fn poll(&mut self) {
+        loop {
+            match self.events.try_recv() {
+                Ok(event) => self.take(event),
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // The thread is gone. With frames still owed, that is a
+                    // transport that cannot finish.
+                    if self.in_flight > 0 {
+                        self.broken = true;
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Waits up to `timeout` for one report. Returns whether one came.
+    fn wait(&mut self, timeout: Option<Duration>) -> bool {
+        let event = match timeout {
+            Some(timeout) => self.events.recv_timeout(timeout).ok(),
+            None => self.events.recv().ok(),
+        };
+        match event {
+            Some(event) => {
+                self.take(event);
+                self.poll();
+                true
+            }
+            None => {
+                self.poll();
+                false
+            }
+        }
+    }
+
+    fn check(&mut self) -> Result<(), FrameError> {
+        if let Some(error) = self.failure.take() {
+            return Err(FrameError::Pipe(error));
+        }
+        if self.broken {
+            return Err(FrameError::Pipe(std::io::ErrorKind::BrokenPipe.into()));
+        }
+        Ok(())
+    }
+
+    /// Ends the stream: the queue is closed, so the thread writes what is left
+    /// (or, after [`stop`](FrameWriter::stop), discards it) and drops the pipe.
+    fn close(&mut self) {
+        self.queue = None;
+    }
+
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Release);
+    }
+
+    /// Joins the thread and collects its last reports. Only after the child is
+    /// reaped: until then a write into a pipe nobody reads could block it.
+    ///
+    /// Bounded even then. The child being reaped closes *its* read end, but a
+    /// process it started inherits that descriptor too — the fake encoders'
+    /// `sleep` does, and kept a cancelled writer blocked for the whole 30 s
+    /// until it was bounded. A writer still running at the deadline is left
+    /// detached (it ends on its own once the last reader goes) and counts as
+    /// a transport that did not deliver.
+    fn join(&mut self) {
+        const GRACE: Duration = Duration::from_secs(1);
+        self.close();
+        if let Some(thread) = self.thread.take() {
+            let deadline = std::time::Instant::now() + GRACE;
+            while !thread.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            if !thread.is_finished() {
+                self.broken = true;
+                self.poll();
+                return;
+            }
+            if thread.join().is_err() {
+                self.broken = true;
+            }
+        }
+        self.poll();
+        if self.in_flight > 0 && !self.stop.load(Ordering::Acquire) {
+            // The queue was closed with frames in it and the thread ended
+            // without writing them.
+            self.broken = true;
+        }
+    }
+}
+
+/// The writer thread's body.
+fn write_frames(
+    mut pipe: ChildStdin,
+    frames: &mpsc::Receiver<QueuedFrame>,
+    report: &mpsc::Sender<WriterEvent>,
+    stop: &AtomicBool,
+    stall_ms: &AtomicU64,
+) {
+    // Ends when the queue is closed and drained; the pipe drops with this
+    // frame, which is FFmpeg's end of input.
+    for frame in frames {
+        let stall = stall_ms.load(Ordering::Relaxed);
+        if stall > 0 {
+            // In short naps so a cancel during a probe stall is still prompt.
+            let until = std::time::Instant::now() + Duration::from_millis(stall);
+            while !stop.load(Ordering::Acquire) && std::time::Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
+        for y in (0..frame.height).rev() {
+            let row = &frame.pixels[y * frame.row_size..(y + 1) * frame.row_size];
+            // `write_all` retries on `Interrupted` and reports a zero-length
+            // write as `WriteZero`, which is the C's EINTR and "made no
+            // progress" handling.
+            if let Err(error) = pipe.write_all(row) {
+                let _ = report.send(WriterEvent::Failed(error));
+                return;
+            }
+        }
+        if report.send(WriterEvent::Written(frame.pixels)).is_err() {
+            return;
+        }
+    }
 }
 
 impl Encoder {
@@ -565,10 +817,20 @@ impl Encoder {
             .stderr(Stdio::inherit());
 
         let mut child = command.spawn().map_err(StartError::Spawn)?;
-        let pipe = child.stdin.take();
+        let writer = match child.stdin.take().map(FrameWriter::spawn) {
+            Some(Ok(writer)) => Some(writer),
+            Some(Err(error)) => {
+                // No thread, no transport: reap the child we just started
+                // rather than leave it waiting on a pipe nobody will write.
+                let _ = kill_group_and_reap(&mut child);
+                let _ = std::fs::remove_file(&temporary);
+                return Err(StartError::Spawn(error));
+            }
+            None => None,
+        };
         Ok(Encoder {
             child: Some(child),
-            pipe,
+            writer,
             destination: destination.to_path_buf(),
             temporary,
             transport_ok: true,
@@ -585,17 +847,79 @@ impl Encoder {
         &self.destination
     }
 
-    /// Writes one `rgba` frame, bottom row first.
+    /// Whether a frame can be handed over now without waiting (EX4).
+    ///
+    /// `false` means the encoder is backed up: [`FRAMES_IN_FLIGHT`] frames are
+    /// already queued or being written. A caller that draws only when this is
+    /// `true` never blocks on FFmpeg, and so never stops painting.
+    ///
+    /// # Errors
+    /// [`FrameError::Pipe`] once a write has failed; the transport is broken
+    /// and the export must finish with `cancel = true`.
+    pub fn ready_for_frame(&mut self) -> Result<bool, FrameError> {
+        let writer = self.writer.as_mut().ok_or(FrameError::Finished)?;
+        writer.poll();
+        let checked = writer.check();
+        if checked.is_err() {
+            self.transport_ok = false;
+        }
+        checked?;
+        Ok(writer.in_flight < FRAMES_IN_FLIGHT)
+    }
+
+    /// Frames handed over and not yet written into the pipe. Zero is what a
+    /// caller waits for before [`finish`](Encoder::finish), so the window
+    /// keeps painting while the last frames drain rather than inside `finish`.
+    ///
+    /// # Errors
+    /// As [`ready_for_frame`](Encoder::ready_for_frame).
+    pub fn frames_in_flight(&mut self) -> Result<usize, FrameError> {
+        self.ready_for_frame()?;
+        Ok(self.writer.as_ref().map_or(0, |writer| writer.in_flight))
+    }
+
+    /// `--ui-probe encoder-stall=MS`: the writer waits this long before each
+    /// frame, which is an encoder that reads slowly without needing a slow
+    /// one. Never set outside a probe.
+    pub fn set_probe_stall(&self, per_frame: Duration) {
+        if let Some(writer) = &self.writer {
+            let milliseconds = u64::try_from(per_frame.as_millis()).unwrap_or(u64::MAX);
+            writer.stall_ms.store(milliseconds, Ordering::Relaxed);
+        }
+    }
+
+    /// A buffer of `len` bytes to draw the next frame into, reused from a frame
+    /// already written when there is one. Its contents are unspecified.
+    pub fn take_frame_buffer(&mut self, len: usize) -> Vec<u8> {
+        let mut buffer = self
+            .writer
+            .as_mut()
+            .and_then(|writer| writer.spare.pop())
+            .unwrap_or_default();
+        buffer.resize(len, 0);
+        buffer
+    }
+
+    /// Hands one `rgba` frame to the writer, which writes it bottom row first.
     ///
     /// `ffmpeg_send_frame_flipped` (`src/ffmpeg_posix.c:338-370`). The flip is
     /// not cosmetic: `LoadImageFromTexture`/`rlReadScreenPixels` hand back an
     /// OpenGL framebuffer whose first row is the bottom of the image, and
     /// `rawvideo` expects the top row first.
     ///
+    /// Returns as soon as the frame is queued. Only a caller that ignored
+    /// [`ready_for_frame`](Encoder::ready_for_frame) can wait here, for the one
+    /// slot it asked for — the old blocking behaviour, kept as the backstop
+    /// rather than as a path anything takes.
+    ///
     /// `height == 0` writes nothing and succeeds, as in the C.
-    pub fn send_frame_flipped(
+    ///
+    /// # Errors
+    /// [`FrameError`] if the geometry is invalid or the buffer short — checked
+    /// before the writer sees anything — or if the transport has failed.
+    pub fn submit_frame_flipped(
         &mut self,
-        data: &[u8],
+        frame: Vec<u8>,
         width: usize,
         height: usize,
     ) -> Result<(), FrameError> {
@@ -604,21 +928,70 @@ impl Encoder {
         }
         let row_size = width * 4;
         let expected = row_size * height;
+        if frame.len() < expected {
+            return Err(FrameError::ShortBuffer { expected });
+        }
+        let writer = self.writer.as_mut().ok_or(FrameError::Finished)?;
+        if height == 0 {
+            writer.spare.push(frame);
+            return Ok(());
+        }
+        writer.poll();
+        while writer.failure.is_none() && !writer.broken && writer.in_flight >= FRAMES_IN_FLIGHT {
+            if !writer.wait(None) {
+                writer.broken = true;
+            }
+        }
+        if let Err(error) = writer.check() {
+            self.transport_ok = false;
+            return Err(error);
+        }
+        let queued = writer.queue.as_ref().map(|queue| {
+            queue.send(QueuedFrame {
+                pixels: frame,
+                row_size,
+                height,
+            })
+        });
+        match queued {
+            Some(Ok(())) => {
+                writer.in_flight += 1;
+                Ok(())
+            }
+            _ => {
+                writer.broken = true;
+                self.transport_ok = false;
+                // The thread may have left its reason behind.
+                writer.poll();
+                Err(writer
+                    .check()
+                    .err()
+                    .unwrap_or(FrameError::Pipe(std::io::ErrorKind::BrokenPipe.into())))
+            }
+        }
+    }
+
+    /// [`submit_frame_flipped`](Encoder::submit_frame_flipped) from a borrowed
+    /// buffer, which is copied once.
+    ///
+    /// # Errors
+    /// As [`submit_frame_flipped`](Encoder::submit_frame_flipped).
+    pub fn send_frame_flipped(
+        &mut self,
+        data: &[u8],
+        width: usize,
+        height: usize,
+    ) -> Result<(), FrameError> {
+        let expected = width.saturating_mul(4).saturating_mul(height);
+        if width == 0 || width > usize::MAX / 4 || (height != 0 && height > usize::MAX / width) {
+            return Err(FrameError::InvalidParameters);
+        }
         if data.len() < expected {
             return Err(FrameError::ShortBuffer { expected });
         }
-        let pipe = self.pipe.as_mut().ok_or(FrameError::Finished)?;
-        for y in (0..height).rev() {
-            let row = &data[y * row_size..(y + 1) * row_size];
-            // `write_all` retries on `Interrupted` and reports a zero-length
-            // write as `WriteZero`, which is the C's EINTR and
-            // "made no progress" handling.
-            if let Err(error) = pipe.write_all(row) {
-                self.transport_ok = false;
-                return Err(FrameError::Pipe(error));
-            }
-        }
-        Ok(())
+        let mut frame = self.take_frame_buffer(expected);
+        frame.copy_from_slice(&data[..expected]);
+        self.submit_frame_flipped(frame, width, height)
     }
 
     /// Finalizes the export. Always consumes the encoder and always reaps the
@@ -645,7 +1018,19 @@ impl Encoder {
         // folded into `transport_ok`, which a failed frame write already
         // clears. The net effect is the same: a broken transport never
         // publishes.
-        self.pipe = None;
+        //
+        // The write end belongs to the writer thread now (EX4): closing its
+        // queue makes it write what is left and drop the pipe. A cancel tells
+        // it to discard instead, and the kill below breaks a write it is
+        // blocked in. It is joined only once the child is reaped, because
+        // until then a write into a pipe nobody reads could hold it forever.
+        let mut writer = self.writer.take();
+        if let Some(writer) = writer.as_mut() {
+            if cancel {
+                writer.stop();
+            }
+            writer.close();
+        }
 
         let mut child = self.child.take().expect("finish consumes the encoder once");
         let mut cancel_sent = false;
@@ -682,6 +1067,8 @@ impl Encoder {
                     }
                     // Unreapable. Delete nothing: the child may still be
                     // writing, and the prior destination is already safe.
+                    // The writer is left detached rather than joined, since
+                    // a child that cannot be reaped may also never read.
                     _ => {
                         return Err(FinishError::Unreaped {
                             temporary: std::mem::take(&mut self.temporary),
@@ -690,6 +1077,15 @@ impl Encoder {
                 }
             }
         };
+        // Reaped, so the pipe's read end is closed and the writer cannot be
+        // blocked in it any longer. A write that failed while the queue
+        // drained is a transport that did not deliver every frame.
+        if let Some(writer) = writer.as_mut() {
+            writer.join();
+            if writer.failure.is_some() || writer.broken {
+                self.transport_ok = false;
+            }
+        }
 
         if cancel {
             // A cancelled export is a success as long as the child is gone and
@@ -750,14 +1146,22 @@ impl Drop for Encoder {
     /// `Drop` here would hide an abandoned child process, which is exactly the
     /// invariant this workstream exists to protect.
     fn drop(&mut self) {
-        self.pipe = None;
+        let mut writer = self.writer.take();
+        if let Some(writer) = writer.as_mut() {
+            writer.stop();
+            writer.close();
+        }
         if let Some(mut child) = self.child.take() {
             eprintln!(
                 "FFMPEG: encoder dropped without finish(); killing and reaping pid {}",
                 child.id()
             );
             match kill_group_and_reap(&mut child) {
-                Ok(WaitOutcome::Reaped(_)) => {}
+                Ok(WaitOutcome::Reaped(_)) => {
+                    if let Some(writer) = writer.as_mut() {
+                        writer.join();
+                    }
+                }
                 Ok(WaitOutcome::TimedOut) => eprintln!(
                     "FFMPEG: abandoned encoder could not be reaped; {} may still be written",
                     self.temporary.display()
@@ -1239,6 +1643,132 @@ mod tests {
         // height == 0 writes nothing and succeeds, as the C loop does.
         encoder.send_frame_flipped(&[], 16, 0).expect("empty frame");
         let _ = encoder.finish(true);
+    }
+
+    /// EX4: an encoder that has stopped reading costs the caller nothing.
+    ///
+    /// The fake never reads its stdin, and each frame is four times a pipe's
+    /// 64 KiB, so the first one cannot finish writing. Before the writer
+    /// thread, the second `send_frame_flipped` blocked inside the progress
+    /// screen's drawing pair until FFmpeg caught up; here the caller is told
+    /// "not now" and gets control back, and a cancel is honoured at once.
+    ///
+    /// The work runs on a second thread with a deadline, so a regression fails
+    /// the test rather than hanging the suite. Negative control (2026-11-13):
+    /// `ready_for_frame` returning `Ok(true)` unconditionally — the old "always
+    /// write" — made the fourth submit block and this failed on the deadline.
+    #[test]
+    fn a_backed_up_encoder_never_blocks_the_caller_and_cancels_promptly() {
+        let scratch = Scratch::new("backed-up");
+        let program = scratch.fake_encoder("enc", "sleep 30");
+        let destination = scratch.join("out.mp4");
+        let audio = scratch.join("in.wav");
+        fs::write(&audio, b"pcm").unwrap();
+        let mut encoder = start_locked(program.as_os_str(), &destination, &small(), &audio, 30, 23)
+            .expect("start");
+        let temporary = encoder.temporary_path().to_path_buf();
+
+        let (done, outcome) = mpsc::channel();
+        std::thread::spawn(move || {
+            let pixels = frame(256, 256);
+            let mut submitted = 0usize;
+            // Far more frames than can be in flight: a caller that blocked
+            // anywhere in here would never report.
+            for _ in 0..50 {
+                if encoder.ready_for_frame().expect("transport") {
+                    encoder
+                        .send_frame_flipped(&pixels, 256, 256)
+                        .expect("frame");
+                    submitted += 1;
+                }
+            }
+            let in_flight = encoder.frames_in_flight().expect("transport");
+            let _ = done.send((encoder, submitted, in_flight));
+        });
+        let (encoder, submitted, in_flight) = outcome
+            .recv_timeout(Duration::from_secs(5))
+            .expect("submitting to a backed-up encoder blocked the caller");
+        assert_eq!(
+            submitted, FRAMES_IN_FLIGHT,
+            "exactly the slots, then refusals"
+        );
+        assert_eq!(in_flight, FRAMES_IN_FLIGHT);
+
+        let started = std::time::Instant::now();
+        assert_eq!(encoder.finish(true).expect("cancel"), Finished::Cancelled);
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "cancel took {:?} against a writer blocked in the pipe",
+            started.elapsed()
+        );
+        assert!(!temporary.exists());
+        assert!(!destination.exists());
+    }
+
+    /// Frames reach the pipe whole, flipped, and in the order they were
+    /// handed over, however the writer is paced — the "exported bytes do not
+    /// change" half of EX4.
+    #[test]
+    fn frames_reach_the_pipe_whole_flipped_and_in_order() {
+        let scratch = Scratch::new("order");
+        let program = scratch.fake_encoder("enc", "cat > \"$out\"");
+        let destination = scratch.join("out.mp4");
+        let audio = scratch.join("in.wav");
+        fs::write(&audio, b"pcm").unwrap();
+        let mut encoder = start_locked(program.as_os_str(), &destination, &small(), &audio, 30, 29)
+            .expect("start");
+        // Slow enough that the queue fills and the backstop wait is taken.
+        encoder.set_probe_stall(Duration::from_millis(20));
+        let (width, height) = (64usize, 48usize);
+        let mut expected = Vec::new();
+        for index in 0..8u8 {
+            let mut pixels = encoder.take_frame_buffer(width * height * 4);
+            for (row, chunk) in pixels.chunks_mut(width * 4).enumerate() {
+                chunk.fill(index.wrapping_mul(31).wrapping_add(row as u8));
+            }
+            for row in pixels.chunks(width * 4).rev() {
+                expected.extend_from_slice(row);
+            }
+            encoder
+                .submit_frame_flipped(pixels, width, height)
+                .expect("frame");
+        }
+        assert_eq!(encoder.finish(false).expect("finish"), Finished::Published);
+        assert_eq!(fs::read(&destination).unwrap(), expected);
+    }
+
+    /// An encoder that dies mid-stream is a broken transport, found by the
+    /// next question rather than by a write, and it never publishes.
+    #[test]
+    fn a_writer_failure_surfaces_and_refuses_to_publish() {
+        let scratch = Scratch::new("epipe");
+        // Exits 0 without reading: every write after it is EPIPE.
+        let program = scratch.fake_encoder("enc", "exit 0");
+        let destination = scratch.join("out.mp4");
+        fs::write(&destination, b"previous render").unwrap();
+        let audio = scratch.join("in.wav");
+        fs::write(&audio, b"pcm").unwrap();
+        let mut encoder = start_locked(program.as_os_str(), &destination, &small(), &audio, 30, 31)
+            .expect("start");
+        let pixels = frame(256, 256);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let failure = loop {
+            match encoder.ready_for_frame() {
+                Err(error) => break error,
+                Ok(true) => drop(encoder.send_frame_flipped(&pixels, 256, 256)),
+                Ok(false) => std::thread::sleep(Duration::from_millis(5)),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a dead encoder was never reported"
+            );
+        };
+        assert!(matches!(failure, FrameError::Pipe(_)), "{failure:?}");
+        assert!(matches!(
+            encoder.finish(false),
+            Err(FinishError::TransportBroken)
+        ));
+        assert_eq!(fs::read(&destination).unwrap(), b"previous render");
     }
 
     #[test]

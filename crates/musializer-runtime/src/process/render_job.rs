@@ -634,6 +634,55 @@ impl RenderJob {
         encoder.send_frame_flipped(rgba, width, height)
     }
 
+    /// [`send_frame`](RenderJob::send_frame) without the copy: `frame` came
+    /// from [`take_frame_buffer`](RenderJob::take_frame_buffer) and goes to the
+    /// encoder's writer thread whole.
+    ///
+    /// # Errors
+    /// As [`send_frame`](RenderJob::send_frame).
+    pub fn submit_frame(
+        &mut self,
+        frame: Vec<u8>,
+        width: usize,
+        height: usize,
+    ) -> Result<(), FrameError> {
+        let encoder = self.encoder.as_mut().ok_or(FrameError::Finished)?;
+        encoder.submit_frame_flipped(frame, width, height)
+    }
+
+    /// A buffer for the next frame, reused from one already written.
+    pub fn take_frame_buffer(&mut self, len: usize) -> Vec<u8> {
+        self.encoder
+            .as_mut()
+            .map_or_else(|| vec![0; len], |encoder| encoder.take_frame_buffer(len))
+    }
+
+    /// Whether the encoder has room for a frame now (EX4). A frame is drawn
+    /// only when it does, so the drawing pair never waits on FFmpeg.
+    ///
+    /// # Errors
+    /// [`FrameError`] once the transport has failed.
+    pub fn ready_for_frame(&mut self) -> Result<bool, FrameError> {
+        let encoder = self.encoder.as_mut().ok_or(FrameError::Finished)?;
+        encoder.ready_for_frame()
+    }
+
+    /// Frames handed over and not yet in the pipe.
+    ///
+    /// # Errors
+    /// [`FrameError`] once the transport has failed.
+    pub fn frames_in_flight(&mut self) -> Result<usize, FrameError> {
+        let encoder = self.encoder.as_mut().ok_or(FrameError::Finished)?;
+        encoder.frames_in_flight()
+    }
+
+    /// `--ui-probe encoder-stall=MS`; see [`Encoder::set_probe_stall`].
+    pub fn set_probe_stall(&self, per_frame: std::time::Duration) {
+        if let Some(encoder) = &self.encoder {
+            encoder.set_probe_stall(per_frame);
+        }
+    }
+
     /// Moves to the next frame (`p->scene_frame_index++`, `plug.c:1173`).
     ///
     /// In the oracle this happens inside `make_scene_frame`, so both the
