@@ -179,6 +179,8 @@ goes missing.
 | `output` | `{ "resolution": "1920x1080", "fps": 30, "quality": "high" }`, each optional. `--resolution`, `--fps` and `--quality` on the command line override it |
 | `seed` | The deterministic seed scenes are built from |
 | `caption_style` | The `.musi` member names, each optional here (see below) |
+| `caption_styles` | Named styles, each stating only what differs from `caption_style` (see *Named caption styles*). Absent leaves the project's own |
+| `titles` | Title cards: a title and the artist under it, drawn over any scene (see *Title cards*). Absent leaves the project's cards; `[]` removes them |
 | `scenes` | Per scene name: `settings` (the base tuning for every section of that scene), `routes`, and a `grade` and a `pixel` look every section of that scene wears |
 | `segments` | The plan. Required |
 | `outro` | How the track ends: a transition, played backwards into black |
@@ -188,7 +190,7 @@ goes missing.
 
 ### `segments`
 
-Each has `at`, `scene`, and optionally `settings`, a `transition`, a `grade`, a `glide`, a `pixel` look and a `note`. Sections are
+Each has `at`, `scene`, and optionally `settings`, a `transition`, a `grade`, a `glide`, a `pixel` look, a `caption_style` (the name of a named style, for the lines that begin in it) and a `note`. Sections are
 listed in playing order, the first starts at 0, and each runs until the next one
 starts; the last runs to the end of the track. There is nothing to keep
 contiguous by hand.
@@ -566,25 +568,96 @@ shares its time between them. Colours
 are `"#rrggbb"` or `"#rrggbbaa"`. Whatever is not stated is the shipped default;
 with no block at all the track's own style is kept.
 
+### Named caption styles
+
+One style for a whole video stops working within minutes: a caption at the
+bottom collides with whatever a scene keeps there — Clawd's cats, Spectrum's
+bars — and one line wants to be shouted. Name the styles once, each stating
+only what differs from the base `caption_style`, and pick one where it is
+needed:
+
+```json
+"caption_style":  { "box": "shadow", "size_scale": 0.06 },
+"caption_styles": { "top":   { "anchor": "top_center" },
+                    "shout": { "face": "space_grotesk", "size_scale": 0.085, "text_rgba": "#ffd36b",
+                               "effects": { "glow_strength": 0.7 } } },
+"segments": [ { "at": 0, "scene": "spectrum" },
+              { "at": 8, "scene": "clawd", "caption_style": "top" } ],
+"lyrics":   [ { "at": 9,  "text": "the cats keep the floor, so the words go up" },
+              { "at": 12, "text": "AND THIS ONE IS SHOUTED", "style": "shout" } ]
+```
+
+- A style's members are the `caption_style` members, every one optional;
+  `"face": "imported"` is refused. Up to sixteen, named like voices.
+- A section's `caption_style` is the style of every line that **begins** in it
+  (a line across a cut keeps one style); a line's `style` is its own.
+- **They stack**: the base, then the section's, then the line's, member by
+  member. The shouted line above is yellow and large *and* at the top, because
+  `shout` says nothing about where. A voice still recolours on top of it all.
+- Every name a section, a line or a card uses must be declared in the same
+  treatment's `caption_styles`; a typo is refused with the names that exist.
+  Absent, the project's own table stays — and a table that drops a name a kept
+  line still uses is refused, because that project could not be opened again.
+
+In the window, the cue card shows the style a line is drawn in — `STYLE
+SHOUT`, or `STYLE TOP · SECTION` when it comes from its section — and a press
+steps the line's own style through the table and back to none. The table and a
+section's style are written here.
+
+### Title cards
+
+A title card is not a lyric line, so it has a lane of its own:
+
+```json
+"artist": "Chaos Cat Familiar",
+"titles": [ { "at": 0.3, "until": 6.5, "title": "Door, No Room", "handle": "@chaoscatfamiliar" } ]
+```
+
+Each card is the title, a hairline, and under it the artist in tracked capitals
+with the handle after it in a lighter ink, centred over a soft dark band; it
+condenses out of a haze as it rises into place, the artist line a beat later,
+and leaves the same way. It is drawn over **every** scene — Cadence, Stage and
+the pixel stagings too — and under the black of an intro, an outro or a dip.
+
+- `artist` and `handle` are optional. A card without an `artist` takes the
+  project's (the top-level `artist`, or the one set in the window), when it is
+  drawn. With neither, the card is drawn and the report says `NO ARTIST` — **no
+  card unless one was asked for, and an asked-for card carries the artist**
+  (operator, 2026-10-12). For a Suno track that is the display name and the
+  `@handle` of the profile it was published under, from the operator, never
+  guessed from a file name.
+- Without `until` a card holds five seconds, or to the next card, or the end.
+  One card at a time; cards do not overlap. Up to sixteen.
+- `style` names a style written over the card's own look:
+  `{ "anchor": "bottom_left", "box": "plate" }` makes a lower third.
+  `"box": "none"` drops the band.
+
+The Lyrics view lists the cards above the cues (a press seeks to one). They are
+written here.
+
 ## What the report says
 
 ```text
-treatment:       23 sections over 3:59.960 (9 scenes), 2 routes, 29 lyric lines, 8 events, caption style set, output 1280x720@30 balanced, seed 2012 — song.treatment.json
+treatment:       23 sections over 3:59.960 (9 scenes), 2 routes, 29 lyric lines, 8 events, caption style set, caption styles 2 (1 line, 1 section), 1 title, output 1280x720@30 balanced, seed 2012 — song.treatment.json
+caption styles:  base 21 lines, top 6 lines, top+shout 1 line
+title cards:     drew 1 card over 186 frames; last "Door, No Room" / "CHAOS CAT FAMILIAR  ·  @chaoscatfamiliar" style=title at 410,277 460x166 presence=1.00 glow=blurred
 contact sheet:   22 tiles from 0:03.680 to 3:57.965 at 1280x720 (1x target), sheet.png
 export still:    t=176.000 frame 5280 of 7199 at 1280x720 (1x target), bridge.png
 ```
 
 A treatment that applied and one that silently applied nothing both exit 0, so
-the counts are the evidence: check them against the file you wrote.
+the counts are the evidence: check them against the file you wrote. `caption
+styles:` counts the lines drawn in each style over the run, the section's name
+first; `title cards:` prints the last card *as laid out*, and `NO ARTIST` when a
+card had none anywhere.
 
 ## What a director learns the hard way
 
 Found while making the first video, each one from a contact sheet:
 
-- **There is one caption style per project.** A caption anchored at the bottom
-  collides with whatever a scene keeps at the bottom — Clawd's cats, Spectrum's
-  bars, the terrarium's base. `top_center` is the anchor that is clear in every
-  scene. A per-section style needs a `.musi` extension and is not built.
+- **A caption at the bottom collides with whatever a scene keeps there** —
+  Clawd's cats, Spectrum's bars, the terrarium's base. Give those sections a
+  named style with `"anchor": "top_center"` (see *Named caption styles*).
 - **Cadence does not draw the caption overlay.** The lyric line *is* its
   picture, which makes it the sing-along chorus, and it means a Cadence section
   with no line on screen is only its backdrop. Give each Cadence section its own
@@ -600,7 +673,8 @@ Found while making the first video, each one from a contact sheet:
   filler (2026-10-12). Open on the music. When a card *is* asked for it carries
   the artist as well as the title — for a Suno track, the display name and the
   `@handle` of the profile it was published under — and both come from the
-  operator, not from a guess at the file name.
+  operator, not from a guess at the file name. It goes in `titles`, never in
+  `lyrics`.
 - **Clawd's petal show needs about three seconds of kicks before it ignites.**
   It is gated on a kick detector with hysteresis, by design. To have it lit *at*
   a cut, start a Clawd section two bars earlier and change its tuning at the cut.
@@ -624,8 +698,9 @@ Found while making the first video, each one from a contact sheet:
 
 Said here so nobody looks for a flag:
 
-- Per-section or per-line caption styles, and a title lane separate from lyrics.
-  A requested title card today is a lyric line shown through Cadence.
+- Editing the named styles, a section's style or the title cards in the window.
+  The cue card picks a line's own style and the Lyrics view lists the cards;
+  everything else about them comes from a treatment.
 - Transitions where both scenes keep moving. The outgoing picture is a held
   frame (see `transition`); a true crossfade of two live scenes is not built.
   The one place two scenes run at once is the threshold's doorway.
@@ -659,6 +734,13 @@ rather than against the report line that claims them. Among them:
 - A still is the frame the export encodes: 39.10 dB against the decoded MP4
   frame, with a neighbouring moment at 21.55 dB as the control.
 - Each refusal exits 1, names the place, and leaves no project and no sheet.
+- Named caption styles and title cards (`tools/caption_styles_check.sh`, run
+  last): the saved styles, line and section styles and cards are the
+  treatment's and survive a reopen; where each caption landed, counted by its
+  colour against the same video with no styles; a card's ink in its rect against
+  the same moment with no card, centred, and untouched frame elsewhere; the
+  card's laid-out words against the treatment's, with the project's artist
+  taken when the card names none; `NO ARTIST` said for a card with none.
 
 Negative controls were run when each part was written, each on a scratch binary
 (`TREATMENT_BIN`), each reverted byte-for-byte:
@@ -671,6 +753,8 @@ Negative controls were run when each part was written, each on a scratch binary
 | The pixel grid worked out on the framebuffer, not the output | the 2x still: 256x144 cells of 5 px, 23 colours, cells straddling pixels | 1 of the 10 `pixel.rs` tests fails |
 | The console skips the palette | the handheld still has 679 colours; the levels still is off its steps | n/a |
 | The screen upscales filtered, not by whole cells | six checks fail, among them 34 % of colour edges inside a cell | n/a |
+| A section's caption style ignored (MV2, `tools/caption_styles_check.sh`) | four checks fail: the top section's line has 0 magenta pixels at the top, the shouted line none of its yellow there, `caption styles:` reads `base 2 lines, shout 1 line` | the stacking test in `caption_styles.rs` |
+| Title cards skipped on scenes that draw their own line | three checks fail: one card drawn instead of two, the card over Cadence is not the one it was given, its rect differs from the control by 0.0 | n/a — it needs a renderer |
 
 The first is the instructive one. The two stills had to be moved inside the one
 scene that keeps light between frames, with the first before the second's

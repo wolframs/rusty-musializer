@@ -1345,6 +1345,35 @@ carry `voice`, the name of one of them. Both are written only when used; a cue
 naming an undeclared voice is refused. The assignment is stored by cue id
 beside the cues, so it survives every edit that keeps the id.
 
+**Named caption styles and the title lane, post-legacy (2026-11-13, MV2).**
+Four members, each written only when used, so a project using none of them is
+byte-identical to what earlier builds wrote; `schema_version` stays 1 (the
+`effects` precedent). The frozen C refuses a file carrying any of them as an
+unknown field, which `tools/differential_project_io.sh` pins as an expected pair
+(step 13) beside Rust's byte-identical re-write of its own file (step 14).
+
+- **`caption_style.styles`**: 1..16 of `{ name, face?, box?, anchor?,
+  size_scale?, margin_scale?, width_scale?, text_rgba?, box_rgba?, effects? }`.
+  `name` 1..32 of `[A-Za-z0-9_-]`, unique. Every other member optional, with the
+  base member's own type and bounds; absent is "the base's". `face` may not be
+  `imported`. `effects` takes the base's scalar members (`glow_strength`,
+  `glow_radius`, `glow_rgba`, `glow_pulse`, `glow_pulse_depth`, `glow_hue_drive`,
+  `glow_hue_range`, `shadow_blur`, `shadow_opacity`, `plate_roundness`,
+  `entrance_seconds`, `exit_seconds`), each optional, at least one; no drive
+  tuning blocks. Floats shortest round-trip. An empty array is refused.
+- **Lyric cue `style`**: the name of one of them. Stored by cue id beside the
+  cues, like `voice`.
+- **Scene-switch cue `caption_style`**: the name of one of them, the default for
+  lines that begin in that section.
+- **`scene_switches.titles`**: 1..16 of `{ start_seconds, end_seconds, title,
+  artist?, handle?, style? }`, in order and never overlapping, inside the
+  track. `title` and `artist` 1..128 bytes with no control characters; `handle`
+  `@` then 1..63 bytes, no whitespace, no second `@`; `style` a name in the
+  table. An empty array is refused.
+
+Every name is resolved against `caption_style.styles` by validation: a line, a
+section or a card naming a style the table lacks is a refused project.
+
 Every measurement is a fraction of the frame, never a pixel count, so a project
 typeset against a preview window exports identically at any resolution
 (`:43`).
