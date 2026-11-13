@@ -495,7 +495,6 @@ pub mod color {
 
     fixed! {
         background = BACKGROUND;
-        white = WHITE;
         preview_surround = PREVIEW_SURROUND;
         preview_frame_edge = PREVIEW_FRAME_EDGE;
         scrim = SCRIM;

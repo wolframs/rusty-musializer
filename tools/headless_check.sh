@@ -1412,6 +1412,52 @@ PYEOF
     fi
 fi
 
+# PXF-5: a still's replay paints its own progress screen and can be backed out
+# of. Clawd at 6.5 s draws a 3 s run-up, so the screen has a frame to show by
+# the time `replay-cancel=150` photographs it and presses Escape.
+#
+# NEGATIVE CONTROL (2026-11-13): the replay ignoring the press (its
+# `return Ok(Replay::Cancelled)` removed) wrote the PNG and ended on
+# `replay progress: done`, failing the file and the report assertions.
+echo "=== a still's replay can be backed out of ==="
+STILL_CANCEL="$OUT_DIR/still-cancel.png"
+rm -f "$STILL_CANCEL" "$OUT_DIR/still-cancel-shot-progress.png"
+env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
+    PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+    $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --size 1280x720 --scene clawd \
+        --probe-frames 30 --probe-shot "$OUT_DIR/still-cancel-shot.png" \
+        --ui-probe "panel=export,time=6.5,click=$RV_STILL,save-to=$STILL_CANCEL,replay-cancel=150" \
+    >"$OUT_DIR/still-cancel.txt" 2>&1 || true
+REPLAY_LINE="$(sed -n 's/^replay progress: *//p' "$OUT_DIR/still-cancel.txt")"
+REPLAY_SCREEN="$(sed -n 's/^export progress: *//p' "$OUT_DIR/still-cancel.txt")"
+echo "still replay: ${REPLAY_LINE:-<absent>} / ${REPLAY_SCREEN:-<absent>}"
+if [ -e "$STILL_CANCEL" ]; then
+    echo "FAIL: a still backed out of at the progress screen was written anyway" >&2
+    SWEEP_FAILED=1
+fi
+case "$REPLAY_LINE" in
+    "cancelled at frame "*" of 196, 0 of 1 moments done") : ;;
+    *)
+        echo "FAIL: the still's replay did not report the cancel: [$REPLAY_LINE]" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+case "$REPLAY_SCREEN" in
+    "state=replay "*"thumb=drawn cancel="[0-9]*) : ;;
+    *)
+        echo "FAIL: the replay's progress screen was not drawn with its frame and Cancel: [$REPLAY_SCREEN]" >&2
+        SWEEP_FAILED=1
+        ;;
+esac
+if [ ! -s "$OUT_DIR/still-cancel-shot-progress.png" ]; then
+    echo "FAIL: replay-cancel= photographed no progress screen" >&2
+    SWEEP_FAILED=1
+fi
+if ! grep -q '^replay progress: done, 121 frames in [0-9]* paints, 1 moments$' "$OUT_DIR/still-still-a.txt"; then
+    echo "FAIL: the uncancelled still did not report its replay" >&2
+    SWEEP_FAILED=1
+fi
+
 # The share frame: a playhead-selected picture replaces encoded frame zero and
 # nothing else. This is deliberately beside the still check because the two use
 # the same deterministic replay; the checks below prove that reuse reaches the

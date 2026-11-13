@@ -99,6 +99,11 @@ pub(crate) struct RenderView {
     pub progress: String,
     /// The progress line of the screen `progress-shot=` photographed.
     pub progress_at_shot: Option<String>,
+    /// `--ui-probe replay-cancel=N` (PXF-5): a still or sheet replay
+    /// photographs its progress screen and backs out at frame N.
+    pub probe_replay_cancel: Option<u64>,
+    /// Where that photograph goes: `--probe-shot`'s `-progress` sibling.
+    pub probe_replay_shot: Option<PathBuf>,
 }
 
 /// The Render view's fixed measures (WX-5d §3.5, the mockup's CSS).
@@ -979,18 +984,9 @@ impl Shell {
         title: &str,
         waiting: bool,
     ) -> bool {
-        use widgets::MicroRun;
-        let (w, h) =
-            ui_scale.logical_size((d.get_screen_width() as f32, d.get_screen_height() as f32));
-        let font = fonts.ui();
-        self.widgets.begin_frame(ui_scale);
-        d.clear_background(color::ui_surface());
-        let at = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
-
         let config = job.config();
         let total = job.plan().encoded_frames();
         let encoded = job.encoded_frames();
-        let progress = job.progress().clamp(0.0, 1.0) as f32;
         let fps = config.fps.max(1);
         let state = if job.is_finishing() {
             "finishing"
@@ -999,12 +995,101 @@ impl Shell {
         } else {
             "encoding"
         };
+        // The track time of the frame on screen, so a clip says where in the
+        // song it is rather than how far into the clip.
+        let at_frame = format!(
+            "frame {} \u{00b7} {}",
+            grouped(encoded),
+            widgets::format_timestamp((job.plan().frames.start + encoded) as f64 / f64::from(fps))
+        );
+        // Frames, elapsed and left, in tabular figures; destination and format.
+        let clock = |seconds: f64| {
+            let seconds = seconds.max(0.0);
+            format!(
+                "{:02}:{:02}",
+                (seconds / 60.0) as u32,
+                (seconds % 60.0) as u32
+            )
+        };
+        let figures = match state {
+            "finishing" => format!("{} frames \u{00b7} finishing the MP4", grouped(total)),
+            "preparing" => format!(
+                "preparing \u{00b7} {} of {} frames before the clip",
+                grouped(job.frame_index()),
+                grouped(job.plan().frames.start)
+            ),
+            _ => format!(
+                "{} / {} frames \u{00b7} {} elapsed \u{00b7} {} left{}",
+                grouped(encoded),
+                grouped(total),
+                clock(job.elapsed_seconds()),
+                clock(job.remaining_seconds()),
+                // EX4: the bar standing still while the clock runs is the
+                // encoder catching up, and saying so is what separates that
+                // from a hang.
+                if waiting {
+                    " \u{00b7} encoder catching up"
+                } else {
+                    ""
+                }
+            ),
+        };
+        let format = format!(
+            "{}\u{00d7}{} \u{00b7} {} fps \u{00b7} {}  \u{2192}  {}",
+            config.width,
+            config.height,
+            config.fps,
+            config.quality.name(),
+            job.destination().display()
+        );
+        let drawn = self.progress_screen(
+            d,
+            fonts,
+            ui_scale,
+            &ProgressScreen {
+                head: "Rendering \u{00b7} ",
+                title,
+                at_frame: &at_frame,
+                frame: frame.filter(|_| encoded > 0),
+                aspect: config.width as f32 / config.height.max(1) as f32,
+                progress: job.progress().clamp(0.0, 1.0) as f32,
+                figures: &figures,
+                format: &format,
+                cancellable: !job.is_finishing(),
+            },
+        );
+        self.render_view.progress = format!(
+            "state={state} frame={encoded}/{total} {} encoder={}",
+            drawn.report(),
+            if waiting { "waiting" } else { "ready" },
+        );
+        drawn.cancelled
+    }
+
+    /// The progress screen's drawing, shared by an export and a still or
+    /// sheet replay (PXF-5), so the two look like one application: the
+    /// surface as ground, a micro head, the frame, an accent bar, figures in
+    /// tabular digits, the format muted, and Cancel render in danger text
+    /// beside `Esc`.
+    fn progress_screen(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        fonts: &Faces,
+        ui_scale: super::super::scale::UiScale,
+        view: &ProgressScreen<'_>,
+    ) -> ProgressDrawn {
+        use widgets::MicroRun;
+        let (w, h) =
+            ui_scale.logical_size((d.get_screen_width() as f32, d.get_screen_height() as f32));
+        let font = fonts.ui();
+        self.widgets.begin_frame(ui_scale);
+        d.clear_background(color::ui_surface());
 
         // The frame: as large as fits a 960 box and the window, 16:9 or
         // whatever the render's shape is.
         let box_width = 960.0f32.min(w - 96.0).max(0.0);
         let box_height = (h - 300.0).max(0.0);
-        let aspect = config.width as f32 / config.height.max(1) as f32;
+        let aspect = view.aspect;
         let mut thumb = UiRect::new(0.0, 0.0, box_width, box_width / aspect);
         if thumb.height > box_height {
             thumb.height = box_height;
@@ -1024,21 +1109,14 @@ impl Shell {
             font,
             left,
             head_y,
-            &[MicroRun::muted("Rendering \u{00b7} "), MicroRun::ink(title)],
+            &[MicroRun::muted(view.head), MicroRun::ink(view.title)],
         );
-        // The track time of the frame on screen, so a clip says where in the
-        // song it is rather than how far into the clip.
-        let at_frame = format!(
-            "frame {} \u{00b7} {}",
-            grouped(encoded),
-            widgets::format_timestamp((job.plan().frames.start + encoded) as f64 / f64::from(fps))
-        );
-        let frame_runs = [MicroRun::muted(&at_frame)];
+        let frame_runs = [MicroRun::muted(view.at_frame)];
         let frame_width = widgets::micro_width(font, &frame_runs);
         widgets::draw_micro(d, font, right - frame_width, head_y, &frame_runs);
 
-        let thumb_drawn = match frame {
-            Some(target) if encoded > 0 && !thumb.is_empty() => {
+        let thumb_drawn = match view.frame {
+            Some(target) if !thumb.is_empty() => {
                 let texture = target.texture;
                 // A render target is stored bottom row first: a negative source
                 // height reads it upright.
@@ -1068,7 +1146,7 @@ impl Shell {
         // The bar: a 6 px track, its filled part the accent.
         let bar = UiRect::new(left, thumb.y + thumb.height + 28.0, thumb.width, 6.0);
         d.draw_rectangle_rounded(widgets::rectangle(bar), 1.0, 4, color::ui_control_edge());
-        let filled = (bar.width * progress).round();
+        let filled = (bar.width * view.progress).round();
         if filled >= 1.0 {
             d.draw_rectangle_rounded(
                 widgets::rectangle(UiRect::new(bar.x, bar.y, filled, bar.height)),
@@ -1078,62 +1156,20 @@ impl Shell {
             );
         }
 
-        // Frames, elapsed and left, in tabular figures; destination and format.
-        let elapsed = job.elapsed_seconds();
-        let remaining = job.remaining_seconds();
-        let clock = |seconds: f64| {
-            let seconds = seconds.max(0.0);
-            format!(
-                "{:02}:{:02}",
-                (seconds / 60.0) as u32,
-                (seconds % 60.0) as u32
-            )
-        };
-        let figures = match state {
-            "finishing" => format!("{} frames \u{00b7} finishing the MP4", grouped(total)),
-            "preparing" => format!(
-                "preparing \u{00b7} {} of {} frames before the clip",
-                grouped(job.frame_index()),
-                grouped(job.plan().frames.start)
-            ),
-            _ => format!(
-                "{} / {} frames \u{00b7} {} elapsed \u{00b7} {} left{}",
-                grouped(encoded),
-                grouped(total),
-                clock(elapsed),
-                clock(remaining),
-                // EX4: the bar standing still while the clock runs is the
-                // encoder catching up, and saying so is what separates that
-                // from a hang.
-                if waiting {
-                    " \u{00b7} encoder catching up"
-                } else {
-                    ""
-                }
-            ),
-        };
         let line_y = bar.y + 18.0;
         widgets::draw_text_tabular(
             d,
             font,
-            &figures,
+            view.figures,
             left,
             line_y,
             metric::UI_FONT_LABEL,
             color::ui_ink(),
         );
-        let format = format!(
-            "{}\u{00d7}{} \u{00b7} {} fps \u{00b7} {}  \u{2192}  {}",
-            config.width,
-            config.height,
-            config.fps,
-            config.quality.name(),
-            job.destination().display()
-        );
         widgets::draw_text_faded(
             d,
             font,
-            &format,
+            view.format,
             left,
             line_y + 22.0,
             thumb.width,
@@ -1156,7 +1192,7 @@ impl Shell {
             cancel_width,
             30.0,
         );
-        if !job.is_finishing() {
+        if view.cancellable {
             let id = widgets::widget_id(EXPORT_WIDGETS, 26);
             let state = self.widgets.button(d, id, cancel);
             if state.hovered {
@@ -1182,20 +1218,54 @@ impl Shell {
                 cancelled = true;
             }
         }
+        ProgressDrawn {
+            cancelled,
+            bar,
+            filled,
+            thumb_drawn,
+            cancel: view.cancellable.then_some(cancel),
+        }
+    }
+}
 
-        let report = format!(
-            "state={state} frame={encoded}/{total} bar={} fill={filled:.0} thumb={} cancel={} encoder={}",
-            at(bar),
-            if thumb_drawn { "drawn" } else { "none" },
-            if job.is_finishing() {
-                "none".to_owned()
-            } else {
-                at(cancel)
-            },
-            if waiting { "waiting" } else { "ready" },
-        );
-        self.render_view.progress = report;
-        cancelled
+/// What a progress screen shows; see [`Shell::progress_screen`].
+struct ProgressScreen<'a> {
+    /// The muted half of the head, e.g. `Rendering · `.
+    head: &'a str,
+    title: &'a str,
+    /// The right-hand head: which frame, at what track time.
+    at_frame: &'a str,
+    /// The offline target, drawn as the thumbnail, when it holds a frame.
+    frame: Option<&'a RenderTexture2D>,
+    aspect: f32,
+    /// `0.0..=1.0`.
+    progress: f32,
+    figures: &'a str,
+    format: &'a str,
+    cancellable: bool,
+}
+
+/// What a progress screen drew, for its caller's report line.
+struct ProgressDrawn {
+    cancelled: bool,
+    bar: UiRect,
+    filled: f32,
+    thumb_drawn: bool,
+    cancel: Option<UiRect>,
+}
+
+impl ProgressDrawn {
+    /// `bar=… fill=… thumb=… cancel=…`, the fields `tools/column_check.sh`
+    /// reads by name.
+    fn report(&self) -> String {
+        let at = |r: UiRect| format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height);
+        format!(
+            "bar={} fill={:.0} thumb={} cancel={}",
+            at(self.bar),
+            self.filled,
+            if self.thumb_drawn { "drawn" } else { "none" },
+            self.cancel.map_or_else(|| "none".to_owned(), at),
+        )
     }
 }
 
@@ -1330,10 +1400,25 @@ pub(crate) fn export_still(
         renderer,
         fonts,
         time_seconds,
-        "Rendering still frame",
+        "Rendering still",
     );
     restore_preview(music, app, analysis, restore_position, restore_playing);
 
+    let prepared = match prepared {
+        Ok(Some(prepared)) => Ok(prepared),
+        Ok(None) => {
+            // Backed out at the progress screen (PXF-5): nothing was written,
+            // and that is the user's answer rather than a failure.
+            println!("export still:    cancelled at t={time_seconds:.3}");
+            app.shell.notify(
+                Severity::Info,
+                "Still cancelled",
+                "No file was written; the preview is back where it was.",
+            );
+            return None;
+        }
+        Err(detail) => Err(detail),
+    };
     match prepared.and_then(|prepared| {
         write_resolved_png(&prepared.pixels, &prepared.config, &destination)?;
         Ok(prepared)
@@ -1405,9 +1490,9 @@ fn prepare_frame_pixels(
     fonts: &Faces,
     time_seconds: f64,
     progress_label: &str,
-) -> Result<PreparedFrame, String> {
+) -> Result<Option<PreparedFrame>, String> {
     let mut prepared = None;
-    prepare_frames(
+    let replay = prepare_frames(
         rl,
         thread,
         audio,
@@ -1430,8 +1515,33 @@ fn prepare_frame_pixels(
             Ok(())
         },
     )?;
-    prepared.ok_or_else(|| "the frame was not produced".to_owned())
+    if replay == Replay::Cancelled {
+        return Ok(None);
+    }
+    prepared
+        .map(Some)
+        .ok_or_else(|| "the frame was not produced".to_owned())
 }
+
+/// How a replay ended when nothing failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Replay {
+    /// Every requested moment was captured.
+    Done,
+    /// The user backed out at the progress screen (PXF-5). Moments before
+    /// the press may already have been handed to `each`.
+    Cancelled,
+}
+
+/// Work done between two paints of a replay's progress screen (PXF-5).
+///
+/// About two frames' worth at 60 Hz: short enough that Escape and Cancel feel
+/// immediate, long enough that the screen costs a few percent of the replay.
+/// It decides only *when* the screen is painted, never what a frame contains —
+/// every frame is drawn into its own target in its own texture mode, so where
+/// the drawing pairs fall cannot reach the pixels, and two stills of one frame
+/// stay byte-identical.
+const REPLAY_SLICE: std::time::Duration = std::time::Duration::from_millis(33);
 
 /// Replays the offline scene path once and hands back a resolved frame at each
 /// of `times`.
@@ -1468,7 +1578,7 @@ fn prepare_frames(
     times: &[f64],
     progress_label: &str,
     each: &mut dyn FnMut(usize, &mut PreparedFrame) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<Replay, String> {
     let track = app
         .workspace
         .current()
@@ -1506,7 +1616,7 @@ fn prepare_frames(
     }
     targets.sort_unstable();
     let Some(&(last_frame, _)) = targets.last() else {
-        return Ok(());
+        return Ok(Replay::Done);
     };
 
     let (mut target, achieved_factor) =
@@ -1533,28 +1643,18 @@ fn prepare_frames(
     }
     prepare_track_assets(audio, app);
 
-    // One frame of "this is happening", before a decode-and-fast-forward that
-    // can take a second on a long track. Without it the window holds whatever
-    // was on screen and the press reads as ignored.
-    {
-        let (screen_width, screen_height) = (rl.get_screen_width(), rl.get_screen_height());
-        let font = fonts.ui();
-        // 34 is the export progress screen's own native size. A free 30 px
-        // request would quantize to 28 and make the font-bank gate report a
-        // bypass, even though this transient screen still belongs to the UI.
-        let width = widgets::measure(font, progress_label, 34.0);
-        let mut d = rl.begin_drawing(thread);
-        d.clear_background(color::background());
-        widgets::draw_text(
-            &mut d,
-            font,
-            progress_label,
-            (screen_width as f32 - width) / 2.0,
-            screen_height as f32 / 2.0 - 20.0,
-            34.0,
-            color::white(),
-        );
-    }
+    let title = app
+        .workspace
+        .current()
+        .map(|track| track.display_name().to_owned())
+        .unwrap_or_default();
+    let head = format!("{progress_label} \u{00b7} ");
+    let ui_scale = super::super::scale::UiScale::new(fonts.ui().scale()).unwrap_or_default();
+    // `--ui-probe replay-cancel=N`: photograph the screen and press Escape
+    // once the replay reaches frame N.
+    let probe_cancel = app.shell.render_view.probe_replay_cancel;
+    let probe_shot = app.shell.render_view.probe_replay_shot.clone();
+    let mut probe_hold = 0u8;
 
     let mut sample_cursor = 0u64;
     let mut prepared = PreparedFrame {
@@ -1566,9 +1666,107 @@ fn prepare_frames(
     };
     let mut resolver = LinearResolver::new();
     let mut next_target = 0usize;
-    {
+    let mut drew_any = false;
+    let mut paints = 0u64;
+    let mut index = 0u64;
+    // The screen writes `export progress:` as it paints; a replay that
+    // finishes puts back what was there, so a completed still does not leave
+    // a report line describing a screen that is gone. A cancelled one keeps
+    // it: that screen is the last thing the user saw.
+    let progress_before = app.shell.render_view.progress.clone();
+    // The replay paints its own progress screen between slices of work
+    // (PXF-5). It used to run every frame inside one drawing pair behind a
+    // static "Rendering still frame", so a still near the end of a long track
+    // held the window for seconds with no way out. Now the window keeps
+    // painting, the bar moves, the frame appears as its run-up draws, and
+    // Escape or Cancel render backs out between two frames.
+    while index <= last_frame {
+        let slice_ends = std::time::Instant::now() + REPLAY_SLICE;
         let mut d = rl.begin_drawing(thread);
-        for index in 0..=last_frame {
+        let done = index as f32 / (last_frame + 1) as f32;
+        let at_frame = format!(
+            "frame {} \u{00b7} {}",
+            grouped(targets[next_target].0),
+            widgets::format_timestamp(render_export::frame_time_seconds(
+                targets[next_target].0,
+                config.fps
+            ))
+        );
+        let figures = if targets.len() > 1 {
+            format!(
+                "{} of {} moments \u{00b7} replaying frame {} of {}",
+                grouped(next_target as u64),
+                grouped(targets.len() as u64),
+                grouped(index),
+                grouped(last_frame + 1)
+            )
+        } else {
+            format!(
+                "replaying frame {} of {} \u{00b7} every frame before it, so the still is the video's",
+                grouped(index),
+                grouped(last_frame + 1)
+            )
+        };
+        let format = format!(
+            "{}\u{00d7}{} \u{00b7} {} \u{00b7} {}x target",
+            config.width,
+            config.height,
+            config.quality.name(),
+            achieved_factor
+        );
+        let drawn = {
+            let mut ui_draw = d.begin_mode2D(ui_scale.camera());
+            app.shell.progress_screen(
+                &mut ui_draw,
+                fonts,
+                ui_scale,
+                &ProgressScreen {
+                    head: &head,
+                    title: &title,
+                    at_frame: &at_frame,
+                    frame: drew_any.then_some(&target),
+                    aspect: config.width as f32 / config.height.max(1) as f32,
+                    progress: done,
+                    figures: &figures,
+                    format: &format,
+                    cancellable: true,
+                },
+            )
+        };
+        app.shell.render_view.progress = format!(
+            "state=replay frame={index}/{} {}",
+            last_frame + 1,
+            drawn.report()
+        );
+        paints += 1;
+        let mut cancelled = drawn.cancelled;
+        if probe_cancel.is_some_and(|at| index >= at) {
+            // Held still for three paints before the picture is taken, because
+            // which of the last two frames a readback returns depends on the
+            // renderer (`docs/TRAPS.md`).
+            probe_hold += 1;
+            if probe_hold <= 3 {
+                drop(d);
+                if probe_hold == 3 {
+                    if let Some(path) = &probe_shot {
+                        let image = rl.load_image_from_screen(thread);
+                        image.export_image(&path.to_string_lossy());
+                    }
+                }
+                continue;
+            }
+            cancelled = true;
+        }
+        if cancelled {
+            println!(
+                "replay progress: cancelled at frame {index} of {}, {} of {} moments done",
+                last_frame + 1,
+                next_target,
+                targets.len()
+            );
+            return Ok(Replay::Cancelled);
+        }
+        loop {
             // The capture this frame is working toward. `index` never passes
             // it: the cursor moves on in the same iteration that reaches it.
             let frame_index = targets[next_target].0;
@@ -1626,33 +1824,46 @@ fn prepare_frames(
                             frame,
                             pixel_scale,
                         );
+                        drew_any = true;
                     } else {
                         app.scene.update(frame);
                     }
                 },
             );
-            if index != frame_index {
-                continue;
+            if index == frame_index {
+                // Read back inside the drawing pair, as `ExportSession::step`
+                // does for every encoded frame: the texture mode has already
+                // ended and flushed, so the target holds this frame and nothing
+                // else.
+                if prepared.pixels.len() != config.width as usize * config.height as usize * 4 {
+                    prepared.pixels = vec![0u8; config.width as usize * config.height as usize * 4];
+                }
+                resolve_offline_frame(&mut target, &mut resolver, &mut prepared.pixels, &config)?;
+                prepared.frame_index = frame_index;
+                while next_target < targets.len() && targets[next_target].0 == frame_index {
+                    each(targets[next_target].1, &mut prepared)?;
+                    next_target += 1;
+                }
+                // Cold again, so the next capture's run-up starts where a
+                // separate still's would. Without this a sheet's later tiles
+                // would carry whatever the earlier ones left in the buffer.
+                renderer.reset_trails();
             }
-            // Read back inside the drawing pair, as `ExportSession::step` does
-            // for every encoded frame: the texture mode has already ended and
-            // flushed, so the target holds this frame and nothing else.
-            if prepared.pixels.len() != config.width as usize * config.height as usize * 4 {
-                prepared.pixels = vec![0u8; config.width as usize * config.height as usize * 4];
+            index += 1;
+            if index > last_frame || std::time::Instant::now() >= slice_ends {
+                break;
             }
-            resolve_offline_frame(&mut target, &mut resolver, &mut prepared.pixels, &config)?;
-            prepared.frame_index = frame_index;
-            while next_target < targets.len() && targets[next_target].0 == frame_index {
-                each(targets[next_target].1, &mut prepared)?;
-                next_target += 1;
-            }
-            // Cold again, so the next capture's run-up starts where a separate
-            // still's would. Without this a sheet's later tiles would carry
-            // whatever the earlier ones left in the buffer.
-            renderer.reset_trails();
         }
     }
-    Ok(())
+    // How many times the window painted is the evidence the replay no longer
+    // holds it; the count varies with the machine, the frames never do.
+    println!(
+        "replay progress: done, {} frames in {paints} paints, {} moments",
+        last_frame + 1,
+        targets.len()
+    );
+    app.shell.render_view.progress = progress_before;
+    Ok(Replay::Done)
 }
 
 /// What a batch output did, for the caller's report line.
@@ -1741,7 +1952,7 @@ pub(crate) fn export_stills(
             renderer,
             fonts,
             &times,
-            "Rendering still frames",
+            "Rendering stills",
             &mut |request, frame| {
                 let (time_seconds, destination) = &stills[request];
                 write_resolved_png(&frame.pixels, &frame.config, destination)?;
@@ -1760,6 +1971,11 @@ pub(crate) fn export_stills(
                 Ok(())
             },
         )
+    })?
+    .eq(&Replay::Done)
+    .then_some(())
+    .ok_or_else(|| {
+        "cancelled at the progress screen; stills before the press were written".to_owned()
     })?;
     let (config, achieved_factor) = summary.ok_or_else(|| "no still was requested".to_owned())?;
     Ok(BatchFrames {
@@ -1841,6 +2057,40 @@ pub(crate) fn export_contact_sheet(
     times: &[f64],
     destination: &Path,
 ) -> Result<BatchFrames, String> {
+    contact_sheet(
+        rl,
+        thread,
+        audio,
+        music,
+        app,
+        analysis,
+        renderer,
+        fonts,
+        times,
+        destination,
+    )?
+    .ok_or_else(|| "cancelled at the progress screen; no sheet was written".to_owned())
+}
+
+/// [`export_contact_sheet`], with a cancel at the progress screen (PXF-5) as
+/// `Ok(None)` rather than an error, for the window's caller to report as the
+/// user's answer.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the same borrowed resources one export frame needs; see `ExportSession::begin`"
+)]
+fn contact_sheet(
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    audio: &RaylibAudio,
+    music: Option<&Music<'_>>,
+    app: &mut crate::App,
+    analysis: &mut crate::Analysis,
+    renderer: &mut scene_host::SceneRenderer,
+    fonts: &Faces,
+    times: &[f64],
+    destination: &Path,
+) -> Result<Option<BatchFrames>, String> {
     use musializer_core::render::contact_sheet::{
         shrink_bottom_up_rgba, truncate_label, SheetLayout,
     };
@@ -1869,7 +2119,7 @@ pub(crate) fn export_contact_sheet(
         Color::new(14, 14, 18, 255),
     );
     let mut achieved_factor = 1;
-    with_preview_stopped(music, app, analysis, |app, analysis| {
+    let replay = with_preview_stopped(music, app, analysis, |app, analysis| {
         prepare_frames(
             rl,
             thread,
@@ -1902,6 +2152,10 @@ pub(crate) fn export_contact_sheet(
             },
         )
     })?;
+    if replay == Replay::Cancelled {
+        println!("contact sheet:   cancelled at the progress screen");
+        return Ok(None);
+    }
 
     // Labels last, over a finished sheet. Fitted by measuring, because the
     // built-in face is proportional and a character budget would either waste
@@ -1943,11 +2197,11 @@ pub(crate) fn export_contact_sheet(
             destination.display()
         ));
     }
-    Ok(BatchFrames {
+    Ok(Some(BatchFrames {
         frames: times.len(),
         config,
         achieved_factor,
-    })
+    }))
 }
 
 /// The moments a sheet shows, for `--contact-sheet` and the top bar's Contact
@@ -2096,7 +2350,7 @@ pub(crate) fn export_contact_sheet_from_window(
         );
         return None;
     }
-    match export_contact_sheet(
+    match contact_sheet(
         rl,
         thread,
         audio,
@@ -2108,7 +2362,15 @@ pub(crate) fn export_contact_sheet_from_window(
         &times,
         &destination,
     ) {
-        Ok(done) => {
+        Ok(None) => {
+            app.shell.notify(
+                Severity::Info,
+                "Contact sheet cancelled",
+                "No file was written; the preview is back where it was.",
+            );
+            None
+        }
+        Ok(Some(done)) => {
             print_sheet_line(&done, &times, &destination);
             app.shell.notify(
                 Severity::Success,
@@ -2555,7 +2817,16 @@ impl ExportSession {
                 seconds,
                 "Preparing share frame",
             ) {
-                Ok(prepared) => {
+                Ok(None) => {
+                    app.shell.notify(
+                        Severity::Info,
+                        "Export cancelled",
+                        "Stopped while preparing the share frame; nothing was written.",
+                    );
+                    restore_preview(music, app, analysis, restore_position, restore_playing);
+                    return None;
+                }
+                Ok(Some(prepared)) => {
                     println!(
                         "export share frame: playhead t={:.3} frame {} -> encoded frame 0; audio and duration unchanged",
                         render_export::frame_time_seconds(prepared.frame_index, prepared.config.fps),

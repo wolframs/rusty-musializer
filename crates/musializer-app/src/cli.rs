@@ -496,6 +496,10 @@ pub struct UiProbe {
     /// before each frame, an encoder that reads slowly on demand. The frames
     /// and their bytes are unchanged; only their pace into the pipe is.
     pub encoder_stall_ms: Option<u64>,
+    /// `replay-cancel=N` (PXF-5): a still or contact-sheet replay photographs
+    /// its progress screen (`--probe-shot`'s `-progress` sibling) and backs
+    /// out once it reaches frame N, as Escape would.
+    pub replay_cancel: Option<u64>,
     /// `protocol-answer=ID:CHOICE[+ID:CHOICE...]`: answer protocol items by id
     /// (HX-5).
     ///
@@ -1605,6 +1609,7 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             }
             probe.encoder_stall_ms = Some(milliseconds);
         }
+        "replay-cancel" => probe.replay_cancel = Some(value.parse().ok()?),
         _ => return None,
     }
     Some(())
@@ -1784,7 +1789,8 @@ Diagnostics:
                           protocol items by id; protocol-flip=ID plays
                           the item's other look first (need --protocol),
                           audio-stall=MS stalls the audio callback,
-                          encoder-stall=MS paces the export's frame writer
+                          encoder-stall=MS paces the export's frame writer,
+                          replay-cancel=N backs a still's replay out at frame N
   --size WIDTHxHEIGHT     Preview window geometry
   --probe-frames N        Render N frames, print the report, and exit
   --probe-shot PATH       Write a PNG of the last rendered frame
@@ -2701,6 +2707,11 @@ mod tests {
         );
         assert!(parse_ui_probe("encoder-stall=0").is_none());
         assert!(parse_ui_probe("encoder-stall=5001").is_none());
+        assert_eq!(
+            parse_ui_probe("replay-cancel=60").unwrap().replay_cancel,
+            Some(60)
+        );
+        assert!(parse_ui_probe("replay-cancel=-1").is_none());
     }
 
     #[test]

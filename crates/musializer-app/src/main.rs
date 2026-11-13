@@ -1039,6 +1039,9 @@ fn run(
                 probe.agent_press_at.unwrap_or(40) as u32 + 12 * probe.agent_press.len() as u32 + 6
             };
             app.shell.probe_digit = probe.key_digit.map(|digit| (digit, digit_frames));
+            app.shell.render_view.probe_replay_cancel = probe.replay_cancel;
+            app.shell.render_view.probe_replay_shot =
+                options.probe_shot.as_deref().map(progress_shot_path);
             // `notices=`: sample cards in the words real ones use, posted
             // through `notify` so each gets its severity's dwell and the
             // tray draws them exactly as it draws a real notice.
