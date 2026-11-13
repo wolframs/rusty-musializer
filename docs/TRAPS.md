@@ -342,3 +342,27 @@ a session nearly built on that. The byte is gone (MV2, 2026-11-13; the comment
 now spells `\u0000`). Search with `grep -a` (or `rg`) when an empty answer
 would decide something, and keep NUL bytes out of text files.
 
+## Reaping the encoder does not close its pipe
+
+A thread blocked writing into a child's stdin is freed when the last process
+holding the pipe's *read* end lets go, and that is not always the child: any
+process the child started inherited the descriptor. The fake encoders in
+`ffmpeg.rs`'s tests are shell scripts whose `sleep` kept a cancelled export's
+writer thread blocked for the whole 30 s after `sh` was killed and reaped. So
+the export's writer is told to stop *before* the kill, joined only *after*
+the reap, and the join is bounded (`FrameWriter::join`): a writer still
+running at the deadline is left detached and the transport counts as broken.
+A real FFmpeg starts no children, which is why nothing but a test showed it.
+Found building EX4's writer thread, 2026-11-13.
+
+## `LoadRenderTexture` succeeds on a framebuffer the driver refused
+
+raylib's `LoadRenderTexture` calls `rlFramebufferComplete` and only *logs* the
+answer (`rtextures.c:4279-4280`); it returns the target either way, and drawing
+into an incomplete framebuffer draws nothing without an error. Anything that
+builds a target from parts — the export's 16-bit one (`runtime::deep_target`)
+— checks completeness itself and treats `false` as a refusal, with a fallback
+named on a report line. The same file's half-float format is not a drop-in
+for a deeper RGBA8 either: a float target does not clamp, so additive light
+past 1.0 survives into the next blend and into any pass that reads the frame.
+Found building EX3's deep target, 2026-11-13.

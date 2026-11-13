@@ -1453,8 +1453,69 @@ if [ ! -s "$OUT_DIR/still-cancel-shot-progress.png" ]; then
     echo "FAIL: replay-cancel= photographed no progress screen" >&2
     SWEEP_FAILED=1
 fi
-if ! grep -q '^replay progress: done, 121 frames in [0-9]* paints, 1 moments$' "$OUT_DIR/still-still-a.txt"; then
+if ! grep -q '^replay progress: done, 121 frames in [0-9]* paints, 1 moments, target ' "$OUT_DIR/still-still-a.txt"; then
     echo "FAIL: the uncancelled still did not report its replay" >&2
+    SWEEP_FAILED=1
+fi
+
+# EX3: a slow dark gradient leaves the export without contour steps.
+# Constellation's vignette over its dark field is one, and on the old RGBA8
+# target it came out as blocks of one code each (the Gouraud grid, rounded
+# at every write). The measure is a 7 px blur minus a 31 px blur of luma over
+# the top-left corner: a staircase leaves its steps in it, a dithered
+# gradient leaves almost nothing once blurred. `MUSIALIZER_EXPORT_DEPTH=8`
+# renders the same frame the old way, as the control that proves the corner
+# still has contours to remove. A classifier rather than pixels, because the
+# two rasterizers place a blend's rounding differently (`docs/HEADLESS_GPU.md`).
+# Measured 2026-11-13: 0.043 against 0.117 codes on the GPU, 0.043 against
+# 0.126 on llvmpipe.
+#
+# NEGATIVE CONTROL (2026-11-13): `Dither::quantize` rounding instead of
+# dithering measured 0.085 against 0.117 and failed the ratio (rounding once
+# at the end beats rounding at every write, but it is still a staircase);
+# reverted byte for byte.
+echo "=== a slow dark gradient leaves the export without contours ==="
+gradient_still() {
+    # gradient_still PATH DEPTH
+    env WAYLAND_DISPLAY="$MZ_NO_WAYLAND" DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        MUSIALIZER_EXPORT_DEPTH="$2" \
+        $MZ_GL ./target/debug/musializer --mute "$FIXTURE" --scene constellation \
+            --quality balanced --still 6.0 "$1" \
+        >"$1.txt" 2>&1 || true
+}
+rm -f "$OUT_DIR/gradient-deep.png" "$OUT_DIR/gradient-eight.png"
+gradient_still "$OUT_DIR/gradient-deep.png" 16
+gradient_still "$OUT_DIR/gradient-eight.png" 8
+echo "gradient targets: $(sed -n 's/^replay progress: done, .* moments, //p' "$OUT_DIR/gradient-deep.png.txt") / $(sed -n 's/^replay progress: done, .* moments, //p' "$OUT_DIR/gradient-eight.png.txt")"
+if ! grep -q '^replay progress: done, .* moments, target RGBA16, dithered' "$OUT_DIR/gradient-deep.png.txt"; then
+    echo "FAIL: the still did not render on the 16-bit target" >&2
+    SWEEP_FAILED=1
+fi
+if ! grep -q '^replay progress: done, .* moments, target RGBA8 (16-bit refused: disabled' "$OUT_DIR/gradient-eight.png.txt"; then
+    echo "FAIL: MUSIALIZER_EXPORT_DEPTH=8 did not fall back to RGBA8 by name" >&2
+    SWEEP_FAILED=1
+fi
+if ! python3 - "$OUT_DIR/gradient-deep.png" "$OUT_DIR/gradient-eight.png" <<'PY'
+import sys
+import numpy as np
+from PIL import Image
+def box(a, k):
+    c = np.cumsum(np.cumsum(np.pad(a, ((k // 2 + 1, k // 2), (k // 2 + 1, k // 2)), mode="edge"), 0), 1)
+    return (c[k:, k:] - c[:-k, k:] - c[k:, :-k] + c[:-k, :-k]) / (k * k)
+def banding(path):
+    rgb = np.asarray(Image.open(path).convert("RGB")).astype(np.float64)[0:260, 0:420]
+    luma = 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
+    residual = (box(luma, 7) - box(luma, 31))[20:240, 20:400]
+    return float(np.sqrt((residual ** 2).mean()))
+deep, eight = (banding(path) for path in sys.argv[1:])
+print(f"corner banding: 16-bit {deep:.3f} codes, RGBA8 control {eight:.3f} codes")
+if eight < 0.09:
+    sys.exit(f"FAIL: the RGBA8 control shows no contours ({eight:.3f}); this check cannot tell")
+if deep > 0.6 * eight:
+    sys.exit(f"FAIL: the 16-bit still kept its contours ({deep:.3f} against {eight:.3f})")
+PY
+then
     SWEEP_FAILED=1
 fi
 

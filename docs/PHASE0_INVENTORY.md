@@ -2093,8 +2093,8 @@ its value is parsed — that last column is where the surprises live.
 ### 9.1 Application overrides
 
 `MUSIALIZER_PRESET_STORE`, `MUSIALIZER_RENDER_SUPERSAMPLE`,
-`MUSIALIZER_FONT_HELPER` and `MUSIALIZER_ASSIST_HELPER` are read by this
-application; the `Site` column cites where each first got its semantics.
+`MUSIALIZER_EXPORT_DEPTH`, `MUSIALIZER_FONT_HELPER` and
+`MUSIALIZER_ASSIST_HELPER` are read by this application; the `Site` column cites where each first got its semantics.
 
 | Variable | Site | Purpose | Default when unset | Parsing |
 | --- | --- | --- | --- | --- |
@@ -2103,6 +2103,7 @@ application; the `Site` column cites where each first got its semantics.
 | `HOME` | `src/preset_store.c:40`, `:48` | macOS `$HOME/Library/Application Support/Musializer/presets.json` (`:39-40`); Linux fallback `$HOME/.local/share/musializer/presets.json` (`:47-48`) | none; false if unset | raw prefix concatenation |
 | `XDG_DATA_HOME` | `src/preset_store.c:43` | Linux data root → `$XDG_DATA_HOME/musializer/presets.json` (`:43-46`) | `$HOME/.local/share` path | non-empty check only |
 | `MUSIALIZER_RENDER_SUPERSAMPLE` | `src/plug.c:456` | Kill switch for offline-render supersampling | `config->supersample_factor` from the export config is honoured | **Exact string compare to `"0"`** (`strcmp(supersampling, "0") == 0`, `:458`) forces factor 1. Every other value — including `"1"`, `"false"`, `"2"` — is **ignored**. Logs "Offline render supersampling disabled by environment" at `:470` |
+| `MUSIALIZER_EXPORT_DEPTH` | post-legacy, EX3 (`runtime::deep_target`, 2026-11-13) | Escape hatch for the 16-bit export target: forces the RGBA8 target and the undithered resolve, for a driver that draws a 16-bit target wrongly and for before-and-after measurements | The 16-bit target, falling back to RGBA8 by name on the `export pipeline:` line if the driver refuses it | **Exact string compare to `"8"`**, the same shape as the supersample switch; every other value is ignored |
 | `MUSIALIZER_FONT_HELPER` | `src/plug.c:1554` | Path override for the `tools/google_fonts.py` helper | Probes `<appdir>/tools/google_fonts.py`, `<appdir>/../tools/google_fonts.py` (`:1560-1564`), then `./tools/google_fonts.py` (`:1568`) | Non-empty **and** must pass `FileExists(path)` (`:1558`); a set-but-missing override fails outright with **no** fallback to probing |
 | `MUSIALIZER_ASSIST_HELPER` | `src/plug.c:2051` | Path override for the `tools/external_analysis.py` Assist helper | Probes `<appdir>/tools/external_analysis.py`, `<appdir>/../tools/…` (`:2057-2061`), then `./tools/external_analysis.py` (`:2065`) | Same shape as above: non-empty + `FileExists` (`:2055`), no fallback |
 | `PATH` | `src/ffmpeg_posix.c:32` | `ffmpeg_available()` walks it manually looking for an `X_OK` `ffmpeg` | NULL or empty → returns `false` (`:33`) | split on `':'` (`:36`); **an empty element is treated as `"."`** (`:39-40`) |

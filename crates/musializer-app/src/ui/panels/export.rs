@@ -1867,9 +1867,10 @@ fn prepare_frames(
     // How many times the window painted is the evidence the replay no longer
     // holds it; the count varies with the machine, the frames never do.
     println!(
-        "replay progress: done, {} frames in {paints} paints, {} moments",
+        "replay progress: done, {} frames in {paints} paints, {} moments, {}",
         last_frame + 1,
-        targets.len()
+        targets.len(),
+        depth.describe()
     );
     app.shell.render_view.progress = progress_before;
     Ok(Replay::Done)
