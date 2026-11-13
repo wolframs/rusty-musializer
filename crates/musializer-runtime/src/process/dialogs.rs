@@ -139,6 +139,12 @@ pub mod filters {
         label: "images",
         patterns: &["*.png", "*.jpg", "*.jpeg", "*.bmp"],
     };
+    /// The treatment files the Direct view's picker offers (WX-3): the same
+    /// double extension the drop path follows (`ui::shell::classify_drop`).
+    pub const TREATMENT: FileFilter = FileFilter {
+        label: "treatments",
+        patterns: &["*.treatment.json"],
+    };
 }
 
 /// A dialog request. Built by the caller, run by whatever backend exists.

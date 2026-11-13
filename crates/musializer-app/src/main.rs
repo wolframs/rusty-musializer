@@ -806,6 +806,8 @@ fn run(
     // `--ui-probe save-to=PATH`, the destination picker's stand-in for a
     // headless run (UX0-C01, UX0-C10).
     let mut probe_save_to: Option<std::path::PathBuf> = None;
+    // `--ui-probe treatment-pick=PATH`, the treatment picker's stand-in.
+    let mut probe_treatment_pick: Option<std::path::PathBuf> = None;
     let mut audio_stall_ms: Option<u64> = None;
     let mut scene_clock_previous: Option<f64> = None;
 
@@ -1062,6 +1064,7 @@ fn run(
             // reach a file, which is the same "a control nothing presses" hole
             // one level further along.
             probe_save_to = probe.save_to.clone();
+            probe_treatment_pick = probe.treatment_pick.clone();
             if probe.share_frame_playhead {
                 app.shell.export_share_frame_seconds = Some(probe.seek_seconds.unwrap_or(0.0));
             }
@@ -1872,6 +1875,9 @@ fn run(
                 if output.stop_following {
                     dock_commands.push(ShellCommand::StopFollowingTreatment);
                 }
+                if output.pick_treatment {
+                    dock_commands.push(ShellCommand::PickTreatment);
+                }
             }
             app.shell.dock_keyboard = app.shell.dock_open && dock.wants_keyboard();
             if welcome_theme_active {
@@ -2276,6 +2282,52 @@ fn run(
                     follow = Some(state);
                 }
                 ShellCommand::StopFollowingTreatment => follow = None,
+                ShellCommand::PickTreatment => {
+                    let start = app.workspace.current().and_then(|track| {
+                        track
+                            .project_path
+                            .as_deref()
+                            .unwrap_or(&track.file_path)
+                            .parent()
+                            .map(Path::to_path_buf)
+                    });
+                    let picked = match probe_treatment_pick.clone() {
+                        Some(path) => Ok(Some(path)),
+                        None => {
+                            let mut dialog = FileDialog::new("Follow a treatment")
+                                .with_filter(dialogs::filters::TREATMENT);
+                            if let Some(start) = start {
+                                dialog = dialog.with_default_path(start);
+                            }
+                            dialog.pick_file()
+                        }
+                    };
+                    match picked {
+                        // Cancellation is silent, as everywhere else.
+                        Ok(None) => {}
+                        Ok(Some(path)) => {
+                            report.treatment_pick = follow_picked_treatment(
+                                &path,
+                                &mut follow,
+                                &audio,
+                                &mut analysis,
+                                &mut music,
+                                &mut app,
+                                &mut scratch,
+                                time_seconds,
+                                rl.get_time(),
+                            )
+                        }
+                        Err(error) => app.shell.notify(
+                            Severity::Warning,
+                            "No file picker is available",
+                            &format!(
+                                "{error}. Drop a *.treatment.json on the window, or start \
+                                 with --treatment FILE."
+                            ),
+                        ),
+                    }
+                }
                 ShellCommand::SetVolume(value) => {
                     volume = value.clamp(0.0, 1.0);
                     // Moving the slider unmutes. A slider that visibly moved while
@@ -5349,6 +5401,78 @@ impl TreatmentFollow {
     }
 }
 
+/// Follows a treatment the Direct view's picker chose, **only if it applies**.
+///
+/// `apply_treatment` refuses before it changes anything, so applying is the
+/// validation: an unreadable file, one that does not parse, one written for
+/// other audio or one that does not compile is refused with its reason, and
+/// whatever was followed before stays followed. A drop, by contrast, follows
+/// the file either way (WX-3): a dropped file is a request to watch it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "apply_treatment's audio graph, plus the follow it replaces"
+)]
+fn follow_picked_treatment<'audio>(
+    path: &Path,
+    follow: &mut Option<TreatmentFollow>,
+    audio: &'audio RaylibAudio,
+    analysis: &mut Analysis,
+    music: &mut Option<Music<'audio>>,
+    app: &mut App,
+    scratch: &mut [f32],
+    time_seconds: f64,
+    now_seconds: f64,
+) -> String {
+    let mut state = TreatmentFollow::new(path);
+    // Named here, because the bare I/O error ("Permission denied") does not
+    // say that it is the treatment that could not be read.
+    let applied = std::fs::File::open(path)
+        .map_err(|error| format!("it cannot be read ({error})"))
+        .and_then(|_| {
+            apply_treatment(
+                path,
+                audio,
+                analysis,
+                music,
+                app,
+                scratch,
+                false,
+                time_seconds,
+            )
+        });
+    match applied {
+        Ok(line) => {
+            state.applied = 1;
+            state.last_applied_at = Some(std::time::Instant::now());
+            if let Some(track) = app.workspace.current_mut() {
+                track.mark_dirty(now_seconds);
+            }
+            let summary = line.split(" — ").next().unwrap_or(&line).to_string();
+            app.shell.notify(
+                Severity::Success,
+                &format!("Following {}", state.name()),
+                &format!("Every save of it applies at the playhead. {summary}."),
+            );
+            let line = format!("followed {}", path.display());
+            *follow = Some(state);
+            line
+        }
+        Err(error) => {
+            // What stays followed first: a long reason is cut at its end.
+            let still = follow.as_ref().map_or_else(
+                || "Nothing is followed".to_owned(),
+                |kept| format!("The window keeps following {}", kept.name()),
+            );
+            app.shell.notify(
+                Severity::Error,
+                &format!("Treatment not followed: {}", state.name()),
+                &format!("{still}. {error}."),
+            );
+            format!("refused {}: {error}", path.display())
+        }
+    }
+}
+
 /// Exact payload changes when section timing is unchanged. Treatment IDs are
 /// regenerated by position (`treatment.rs`), so a re-cut has no durable identity
 /// correspondence: omit its count rather than counting a moved cue twice.
@@ -6148,6 +6272,8 @@ struct Report {
     transport: String,
     /// The resume position (PXF-7): playhead, saved position, playing.
     resume: String,
+    /// The Direct view's last treatment pick: followed or refused, and why.
+    treatment_pick: String,
     /// The followed treatment's counts (WX-3), `None` when nothing is followed.
     follow: Option<String>,
     /// The last drawn frame's shared timeline span, kept for the same reason
@@ -6232,6 +6358,7 @@ impl Default for Report {
             lane_head: String::new(),
             transport: String::new(),
             resume: String::new(),
+            treatment_pick: "none".to_owned(),
             follow: None,
             timeline: String::new(),
             framebuffer: musializer_runtime::draw::FramebufferAudit::default(),
@@ -6905,6 +7032,7 @@ impl Report {
             "treatment follow: {}",
             self.follow.as_deref().unwrap_or("none")
         );
+        println!("treatment pick:   {}", self.treatment_pick);
         // The size invariant `EndTextureMode` does not restore. A frame that ends
         // with rlgl's pair still pointing at a caption blur buffer or an export
         // target scales the next scene panel by that ratio, and the result is a

@@ -89,6 +89,10 @@ it at once.
   notice tray, naming the field the same way the CLI does. The last good state
   stays on screen.
 - The dock header shows the file being followed and when it was last applied.
+- **The Direct view picks the file** (2026-11-13): `choose a file…` with
+  nothing followed, `change` and `stop` while following. A picked file is
+  followed only if it applies; a refused one is named with its reason and the
+  previous follow stays. A dropped `*.treatment.json` is followed either way.
 
 ### WX-4 — native agent sessions
 
@@ -350,7 +354,6 @@ remaining workstation work is:
   [HEADLESS_GPU.md](HEADLESS_GPU.md).
 - **Lyric lane resizing.** Decide whether dragging the lane grip should grow
   the whole band. The current band limits downward growth.
-- **Native agent sessions.** Add a treatment file picker.
 - **Generated video as material.** The scope is in
   [VIDEO_GENERATION.md](VIDEO_GENERATION.md). Implementation needs the consent
   and price display before paid generation, followed by treatment support for

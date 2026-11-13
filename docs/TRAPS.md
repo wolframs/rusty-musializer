@@ -283,6 +283,27 @@ A gate that leaves Direct gives that run a state directory of its own, and
 clears both at its start. Found building `tools/agent_images_check.py`,
 2026-10-31.
 
+## A notice that does not fit used to vanish
+
+`NoticeQueue::push` refuses a title of 80 bytes or more and a detail of 320
+or more (`ErrorStringTooLong`), and `Shell::notify` discarded the result, so
+the notice simply never appeared: no card, no log line, `notices: queued=` one
+short. A treatment refused for an unknown scene names every scene in its reason
+(about 400 bytes), so both the WX-3 refusal and the Direct view's picker
+refusal posted nothing. Found 2026-11-13 by the picker's gate (`column_check.sh`
+check 10, "the refusal posted no error notice"). `notify` now shortens either
+text at a character boundary and ends it with `…`, so put what must survive
+first: the picker writes "The window keeps following X." before the reason.
+`notices.push` called directly still refuses; go through `notify`.
+
+## A stream seeked to its very end reports 0:00
+
+`seek_preview(duration)` (and the End key) lands where raylib wraps:
+`get_time_played()` then reads 0, not the duration, so a resume clamped to the
+end of the track opened at the start. Found 2026-11-13 by `top_bar_check.sh`
+check 6c; the resume lands `RESUME_TAIL_SECONDS` (1 s) before the end instead.
+Any feature that parks the playhead "at the end" has to stop short of it.
+
 ## A check on a name says nothing about the file you then open
 
 `metadata(path)` and then `read(path)` are two lookups, and a FIFO swapped in

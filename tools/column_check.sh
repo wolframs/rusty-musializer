@@ -57,6 +57,12 @@
 #      change the scene (controls, and the dock must report keyboard=true);
 #      the Sound and Geometry tiles report their keys, a keyed tile's tooltip
 #      names its key, and Knot's (no key) does not.
+#  10. The treatment picker (Direct view): with nothing followed the row offers
+#      a pick and no stop; a picked valid file is followed and applied at the
+#      playhead; an invalid, an unreadable, and an invalid-while-following file
+#      are refused with their reason and an error notice, and nothing changes;
+#      change and stop work from following; a press with no stand-in reaches
+#      the dialog path and warns that there is no picker (control).
 #
 # COLUMN_BIN names a different binary, for a negative control without
 # replacing the build. MZ_GL_LAUNCH="" runs it on the CPU.
@@ -89,6 +95,10 @@
 #     text-entry guard (keys-terminal and keys-composer switch to ASCII
 #     Field) and the keycap sentence dropped from the tooltip; the free
 #     controls, the reported keys and Knot's tooltip stayed green.
+#   F (5 failures, check 10, 2026-11-13, GPU): a refused pick followed anyway
+#     (pick-bad, pick-locked and pick-bad-following all report the refused file
+#     as followed) and `Shell::notify` back to refusing over-long text (both
+#     unknown-scene refusals post no notice; the short unreadable one does).
 # The frame-0 control first failed on llvmpipe alone: a readback there
 # returned the newest frame, not the one before (docs/TRAPS.md), so the
 # probe now holds the encoder and photographs a still screen.
@@ -676,6 +686,90 @@ keys_run keys-hover-knot "flyout=scenes,scene-family=geometry,hover=$(centre kno
 case "$(line_of tooltip "$OUT/keys-hover-knot.log")" in
     '"Press'*) fail "a tile without a key claims one" ;;
     'none'|'') fail "hovering Knot drew no tooltip, so the control proves nothing" ;;
+esac
+
+# --- 10. The treatment picker in the Direct view (WX-4 open work) ---------------
+# The row under the head says what the window follows: `follow-pick` (choose a
+# file… / change) and `follow-stop` on the `dock:` line's rows=[…], pressed by
+# name through egui. `treatment-pick=PATH` answers in place of a native dialog;
+# `treatment follow:` and `treatment pick:` report the outcome.
+cat >"$OUT/other.treatment.json" <<'JSON'
+{ "schema": "musializer.treatment/v1", "title": "Column Fixture",
+  "audio": { "path": "fixture.wav" },
+  "segments": [ { "at": 0, "scene": "glyphs" }, { "at": 4, "scene": "knot" } ] }
+JSON
+sed 's/"glyphs"/"no-such-scene"/' "$OUT/other.treatment.json" >"$OUT/bad.treatment.json"
+cp "$OUT/other.treatment.json" "$OUT/locked.treatment.json"
+chmod 000 "$OUT/locked.treatment.json"
+pick_run() { # pick_run NAME PROBE
+    keys_run "$1" "$2" 80
+    printf '%-20s %s | %s\n' "$1" "$(line_of 'treatment follow' "$OUT/$1.log" | sed "s|$OUT/||")" \
+        "$(line_of 'treatment pick' "$OUT/$1.log" | sed "s|$OUT/||" | cut -c1-90)"
+}
+pick_run pick-offer "posters=settle"
+pick_run pick-other "agent-press=follow-pick,treatment-pick=$OUT/other.treatment.json"
+pick_run pick-bad "agent-press=follow-pick,treatment-pick=$OUT/bad.treatment.json"
+pick_run pick-locked "agent-press=follow-pick,treatment-pick=$OUT/locked.treatment.json"
+pick_run pick-bad-following "follow=1,agent-press=follow-pick,treatment-pick=$OUT/bad.treatment.json"
+pick_run pick-change "follow=1,agent-press=follow-pick,treatment-pick=$OUT/other.treatment.json"
+pick_run pick-stop "follow=1,agent-press=follow-stop"
+pick_run pick-no-dialog "agent-press=follow-pick"
+chmod 644 "$OUT/locked.treatment.json"
+rows_of() { line_of dock "$1" | sed -nE 's/.* rows=\[([^]]*)\].*/\1/p'; }
+# With nothing followed the row offers a pick and no stop.
+case "$(rows_of "$OUT/pick-offer.log")" in
+    *follow-pick@*follow-stop@*) fail "with nothing followed the row offers stop" ;;
+    *follow-pick@*) ;;
+    *) fail "with nothing followed the Direct view offers no treatment pick" ;;
+esac
+[ "$(line_of 'treatment follow' "$OUT/pick-offer.log")" = none ] ||
+    fail "a probe run without follow=1 follows something"
+# A valid pick is followed and applied at once: at 3 s the plan is its Glyph Lattice.
+case "$(line_of 'treatment follow' "$OUT/pick-other.log")" in
+    "$OUT/other.treatment.json applied=1 refused=0") ;;
+    *) fail "the picked treatment is not followed: $(line_of 'treatment follow' "$OUT/pick-other.log")" ;;
+esac
+[ "$(scene_of "$OUT/pick-other.log")" = glyphs ] || fail "the picked treatment did not apply at the playhead"
+case "$(rows_of "$OUT/pick-other.log")" in
+    *follow-pick@*follow-stop@*) ;;
+    *) fail "following, the row lacks change and stop: $(rows_of "$OUT/pick-other.log")" ;;
+esac
+# Refusals carry their reason and change nothing, whether or not something
+# was followed before.
+for name in pick-bad pick-locked pick-bad-following; do
+    case "$name" in
+        pick-locked) why='cannot be read' ;;
+        *) why='unknown scene "no-such-scene"' ;;
+    esac
+    case "$(line_of 'treatment pick' "$OUT/$name.log")" in
+        "refused $OUT/"*"$why"*) ;;
+        *) fail "$name: not refused with its reason ($why): $(line_of 'treatment pick' "$OUT/$name.log" | cut -c1-140)" ;;
+    esac
+    case "$(line_of notices "$OUT/$name.log")" in
+        *" error card="*) ;;
+        *) fail "$name: the refusal posted no error notice" ;;
+    esac
+    [ "$(scene_of "$OUT/$name.log")" = loom ] || fail "$name: a refused treatment changed the preview"
+done
+for name in pick-bad pick-locked; do
+    [ "$(line_of 'treatment follow' "$OUT/$name.log")" = none ] || fail "$name: a refused file is followed"
+done
+case "$(line_of 'treatment follow' "$OUT/pick-bad-following.log")" in
+    "$OUT/show.treatment.json "*) ;;
+    *) fail "a refused pick replaced the followed treatment: $(line_of 'treatment follow' "$OUT/pick-bad-following.log")" ;;
+esac
+# Change and stop, from following.
+case "$(line_of 'treatment follow' "$OUT/pick-change.log")" in
+    "$OUT/other.treatment.json applied=1"*) ;;
+    *) fail "change did not move the follow to the new file" ;;
+esac
+[ "$(line_of 'treatment follow' "$OUT/pick-stop.log")" = none ] || fail "stop did not stop following"
+# Control: a press with no stand-in reaches the dialog path, which a headless
+# run has no dialog for (kdialog and zenity are off PATH): a warning, and
+# nothing followed.
+case "$(line_of notices "$OUT/pick-no-dialog.log")|$(line_of 'treatment pick' "$OUT/pick-no-dialog.log")" in
+    *" warning card="*"|none") ;;
+    *) fail "a press without a picker did not say there is none" ;;
 esac
 
 if [ "$failures" -gt 0 ]; then

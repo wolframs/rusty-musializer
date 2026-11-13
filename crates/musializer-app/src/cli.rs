@@ -475,6 +475,11 @@ pub struct UiProbe {
     /// after it — the `.mp4` extension rule, the alias checks, the geometry —
     /// still applies.
     pub save_to: Option<PathBuf>,
+    /// `treatment-pick=PATH`: the Direct view's treatment picker answers
+    /// `PATH` instead of asking a native dialog, the open-side twin of
+    /// `save-to=`. Not checked here: the picker's refusal of an unreadable
+    /// or invalid file is the thing a probe presses.
+    pub treatment_pick: Option<PathBuf>,
     /// `share-frame=playhead`: seed the Render view's first-frame choice from
     /// `time=` before a single `click=` is delivered.
     ///
@@ -1557,6 +1562,7 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         // but `.mp4` and the still path writes a PNG, and a probe that aimed
         // the wrong one must fail *there*, where a real picker's answer would.
         "save-to" => probe.save_to = Some(PathBuf::from(value)),
+        "treatment-pick" => probe.treatment_pick = Some(PathBuf::from(value)),
         "protocol-answer" => {
             // `ID:CHOICE` pairs joined by `+`, colon-separated like `tune-type`
             // because the spec is already split on `,` and `=`. Items are named
@@ -1914,6 +1920,12 @@ mod tests {
         assert_eq!(parse_ui_probe("key=escape").unwrap().key_digit, None);
         assert!(parse_ui_probe("key=12").is_none());
         assert!(parse_ui_probe("key=x").is_none());
+        assert_eq!(
+            parse_ui_probe("treatment-pick=/tmp/a.treatment.json")
+                .unwrap()
+                .treatment_pick,
+            Some(PathBuf::from("/tmp/a.treatment.json"))
+        );
         assert!(!parse_ui_probe("flyout=scenes").unwrap().key_escape);
         {
             use musializer_core::ui::notice::Severity;

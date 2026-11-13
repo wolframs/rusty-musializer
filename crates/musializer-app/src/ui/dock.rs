@@ -216,6 +216,9 @@ pub struct DockOutput {
     pub toggle: bool,
     /// Stop following the treatment (WX-3).
     pub stop_following: bool,
+    /// Pick a treatment file to follow, or another one (the Direct view's
+    /// `choose a file…` and `change`).
+    pub pick_treatment: bool,
 }
 
 #[derive(Default)]

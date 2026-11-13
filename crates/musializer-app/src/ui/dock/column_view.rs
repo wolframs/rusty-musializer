@@ -180,18 +180,33 @@ impl Dock {
                 self.column_head(&mut head_ui, context);
                 let mut top = head.bottom();
 
-                // The followed treatment, as chips.
-                if let Some(following) = &context.following {
+                // The treatment the window follows, as chips: what it is
+                // and how it last applied, with change and stop; with none,
+                // one chip that offers to pick one.
+                {
+                    let height = if context.following.is_some() {
+                        82.0
+                    } else {
+                        46.0
+                    };
                     let row = Rect::from_min_max(
                         egui::pos2(rect.left(), top),
-                        egui::pos2(rect.right(), top + 82.0),
+                        egui::pos2(rect.right(), top + height),
                     );
                     let mut row_ui = ui.new_child(
                         egui::UiBuilder::new()
                             .max_rect(row.shrink2(egui::vec2(14.0, 10.0)))
                             .layout(egui::Layout::top_down(egui::Align::LEFT)),
                     );
-                    output.stop_following = following_chips(&mut row_ui, following);
+                    let pressed = match &context.following {
+                        Some(following) => following_chips(&mut row_ui, following),
+                        None => follow_offer(&mut row_ui),
+                    };
+                    output.stop_following = pressed.stop;
+                    output.pick_treatment = pressed.pick;
+                    for (name, rect) in pressed.rects {
+                        self.earlier_rects.push((name.to_owned(), rect));
+                    }
                     ui.painter().line_segment(
                         [
                             egui::pos2(row.left(), row.bottom() - 0.5),
@@ -887,39 +902,90 @@ fn following_status(following: &super::Following) -> String {
     )
 }
 
-/// `following native.treatment.json · stop` and how often it applied.
-/// Returns whether stop was pressed.
-fn following_chips(ui: &mut egui::Ui, following: &super::Following) -> bool {
+/// What the treatment row's chips asked for, and where its two controls
+/// were drawn, by the names `agent-press=` uses (`follow-pick`,
+/// `follow-stop`).
+#[derive(Default)]
+struct FollowPress {
+    pick: bool,
+    stop: bool,
+    rects: Vec<(&'static str, Rect)>,
+}
+
+/// One rounded chip, as every chip in the column is drawn.
+fn treatment_chip(ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)) {
+    let edge = of(crate::ui::theme::palette().ui_control_edge);
+    egui::Frame::new()
+        .stroke(Stroke::new(1.0, edge))
+        .corner_radius(12.0)
+        .inner_margin(egui::Margin::symmetric(9, 4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                add(ui);
+            });
+        });
+}
+
+/// A frameless chip word: `change`, `stop`, `choose a file…`.
+fn chip_action(ui: &mut egui::Ui, text: &str, colour: egui::Color32) -> egui::Response {
+    ui.add(egui::Button::new(RichText::new(text).size(12.0).color(colour)).frame(false))
+}
+
+/// With nothing followed: `treatment  none followed · choose a file…`, the
+/// way in to the loop WX-3 describes, where the followed file used to be.
+fn follow_offer(ui: &mut egui::Ui) -> FollowPress {
     let ink = color32::ui_ink();
     let weak = ui.visuals().weak_text_color();
-    let edge = of(crate::ui::theme::palette().ui_control_edge);
-    let chip = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
-        egui::Frame::new()
-            .stroke(Stroke::new(1.0, edge))
-            .corner_radius(12.0)
-            .inner_margin(egui::Margin::symmetric(9, 4))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    add(ui);
-                });
-            });
-    };
-    let mut stop = false;
+    let mut press = FollowPress::default();
+    treatment_chip(ui, &mut |ui| {
+        ui.label(RichText::new("treatment").size(12.0).color(weak));
+        ui.label(
+            RichText::new("none followed \u{00b7}")
+                .size(12.0)
+                .color(weak),
+        );
+        let choose = chip_action(ui, "choose a file\u{2026}", ink).on_hover_text(
+            "Pick a *.treatment.json for the window to follow: it applies at the \
+             playhead now, and again every time it is saved",
+        );
+        press.pick = choose.clicked();
+        press.rects.push(("follow-pick", choose.rect));
+    });
+    press
+}
+
+/// `following native.treatment.json · change · stop` and how often it
+/// applied.
+fn following_chips(ui: &mut egui::Ui, following: &super::Following) -> FollowPress {
+    let ink = color32::ui_ink();
+    let weak = ui.visuals().weak_text_color();
+    let chip = treatment_chip;
+    let mut press = FollowPress::default();
     ui.spacing_mut().item_spacing.x = 6.0;
     chip(ui, &mut |ui| {
         ui.label(RichText::new("following").size(12.0).color(weak));
-        ui.add_sized(
-            egui::vec2((ui.available_width() - 46.0).max(0.0), 16.0),
-            egui::Label::new(RichText::new(&following.name).size(12.0).color(ink)).truncate(),
+        // Left-aligned in the room change and stop leave, so the name reads
+        // as the chip's subject rather than floating in its middle.
+        ui.allocate_ui_with_layout(
+            egui::vec2((ui.available_width() - 104.0).max(0.0), 16.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.add(
+                    egui::Label::new(RichText::new(&following.name).size(12.0).color(ink))
+                        .truncate(),
+                );
+            },
         );
-        stop = ui
-            .add(
-                egui::Button::new(RichText::new("\u{00b7} stop").size(12.0).color(weak))
-                    .frame(false),
-            )
-            .on_hover_text("Stop following; the preview keeps what was applied")
-            .clicked();
+        let change = chip_action(ui, "\u{00b7} change", weak)
+            .on_hover_text("Follow another treatment file instead");
+        let stop = chip_action(ui, "\u{00b7} stop", weak)
+            .on_hover_text("Stop following; the preview keeps what was applied");
+        press.pick = change.clicked();
+        press.stop = stop.clicked();
+        press.rects.push(("follow-pick", change.rect));
+        press.rects.push(("follow-stop", stop.rect));
     });
     chip(ui, &mut |ui| match &following.error {
         Some(error) => {
@@ -938,7 +1004,7 @@ fn following_chips(ui: &mut egui::Ui, following: &super::Following) -> bool {
             );
         }
     });
-    stop
+    press
 }
 
 impl Dock {

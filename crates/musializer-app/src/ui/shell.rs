@@ -198,6 +198,9 @@ pub enum ShellCommand {
     /// Apply a `*.treatment.json` now and again whenever it changes (WX-3).
     FollowTreatment(PathBuf),
     StopFollowingTreatment,
+    /// The Direct view's treatment picker: choose a file, and follow it only
+    /// if it applies; a refused one leaves what was followed as it was.
+    PickTreatment,
     /// One keystroke of a running feedback protocol (HX-2). A command because
     /// every consequence — applying a snapshot, seeking the stream, appending
     /// the answer line — needs owners the shell may not hold.
@@ -314,6 +317,8 @@ impl ShellCommand {
             // happens on a later frame than the command.
             ShellCommand::FollowTreatment(_) => true,
             ShellCommand::StopFollowingTreatment => false,
+            // As FollowTreatment: the apply marks the track dirty itself.
+            ShellCommand::PickTreatment => false,
             // A protocol session is a session artifact (HX-1's whole argument
             // for the sidecar): answers append to `*.answers.jsonl`, and the
             // snapshots it applies are auditions, not authored work.
@@ -395,6 +400,20 @@ pub fn classify_drop(path: &Path) -> DropKind {
         "png" | "jpg" | "jpeg" | "bmp" => DropKind::Image,
         _ => DropKind::Audio,
     }
+}
+
+/// `text` shortened to fewer than `capacity` bytes, the notice queue's limit:
+/// cut at a character boundary and ended with `…` when it did not fit.
+fn fit_notice_text(text: &str, capacity: usize) -> std::borrow::Cow<'_, str> {
+    if text.len() < capacity {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let ellipsis = '\u{2026}';
+    let mut end = capacity.saturating_sub(1 + ellipsis.len_utf8());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    std::borrow::Cow::Owned(format!("{}{ellipsis}", text[..end].trim_end()))
 }
 
 /// [`classify_drop`] as the command it produces.
@@ -1446,14 +1465,23 @@ impl Shell {
     /// correctly the whole time (review 1.11, UX0-A11). Fixing it here rather
     /// than at the call sites is the point: a policy spread over fifty-one
     /// literals is a policy that drifts back.
+    ///
+    /// **Text that does not fit is shortened, not refused.** The queue refuses
+    /// a title of 80 bytes or a detail of 320, and this function used to drop
+    /// that refusal with the rest: a treatment refused for an unknown scene,
+    /// whose reason lists every scene name, posted nothing at all. The end is
+    /// cut at a character boundary and marked with `…`, so a caller puts what
+    /// must survive first (`docs/TRAPS.md`).
     pub fn notify(&mut self, severity: Severity, title: &str, detail: &str) {
         let dwell = severity.dwell();
+        let title = fit_notice_text(title, notice::TITLE_CAPACITY);
+        let detail = fit_notice_text(detail, notice::DETAIL_CAPACITY);
         let _ = self.notices.push(&NoticeSpec {
             severity,
             persistent: dwell.persistent,
             duration_seconds: dwell.duration_seconds,
-            title: Some(title),
-            detail,
+            title: Some(&title),
+            detail: &detail,
             path: "",
         });
     }
@@ -6336,6 +6364,24 @@ mod tests {
                 shell.dock_keyboard = true;
             }
         }
+    }
+
+    /// A notice whose text is longer than the queue holds is shortened and
+    /// posted, never silently refused (the treatment picker's unknown-scene
+    /// refusal, whose reason lists every scene, posted nothing).
+    #[test]
+    fn an_over_long_notice_is_shortened_and_still_posted() {
+        let mut shell = Shell::new();
+        let before = shell.notices.len();
+        let detail = "ü".repeat(400);
+        let title = "T".repeat(200);
+        shell.notify(Severity::Error, &title, &detail);
+        assert_eq!(shell.notices.len(), before + 1, "the notice was dropped");
+        let fitted = fit_notice_text(&detail, notice::DETAIL_CAPACITY);
+        assert!(fitted.len() < notice::DETAIL_CAPACITY);
+        assert!(fitted.ends_with('\u{2026}'));
+        assert!(fitted.starts_with("üü"));
+        assert_eq!(fit_notice_text("short", 80), "short");
     }
 
     /// UX0-A06 (review 1.6). Typing "Space Mono" into the font filter used to
