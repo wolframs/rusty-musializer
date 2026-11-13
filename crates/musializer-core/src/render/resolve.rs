@@ -46,6 +46,31 @@
 //! premultiplies, filters and un-premultiplies, which biases RGB by up to 23/255
 //! next to anything translucent — for nothing, since swscale discards alpha on
 //! the way to `yuv420p`.
+//!
+//! # A 16-bit source, and the dither (EX3)
+//!
+//! [`LinearResolver::resolve_deep`] takes the export's 16-bit target
+//! (`runtime::deep_target`) and is where the frame is quantized to 8 bits for
+//! the last time. A slow dark gradient rounded there without a dither is a
+//! staircase of one-code steps, and one code near black is a visible contour;
+//! the same gradient with a dither is the same mean light with the step
+//! dissolved into noise below a code. So every value that is *between* two
+//! codes is dithered, and every value that *is* a code passes through
+//! untouched — a flat fill, a palette colour, anything the 8-bit render would
+//! have produced exactly, comes out exactly.
+//!
+//! The dither is rectangular: `floor(code + u)` with `u` uniform in
+//! `0.0..1.0`, which keeps the mean light exactly and adds at most one code.
+//! Triangular dither (two uniforms, ±1 code) is the textbook alternative and
+//! was measured against it on Constellation's vignetted corner: the same
+//! banding left in the decoded MP4 (0.077 against 0.076 codes at High), for
+//! 16 % more bytes. The noise is a fixed integer hash of the pixel's position
+//! and channel — no wall clock, no frame counter — so a project renders the
+//! same frames on every run, a still is its video frame, and a picture that
+//! holds still holds still in the noise too, which is also what x264's inter
+//! prediction keeps best: on a 0→40 ramp at High, a static dither leaves a
+//! 0.68-code staircase in the decoded file where one reseeded every frame
+//! leaves 0.91.
 
 /// How many bins the encode table splits linear `0.0..=1.0` into.
 ///
@@ -99,6 +124,12 @@ fn linear_to_srgb(linear: f32) -> f32 {
 pub struct LinearResolver {
     decode: [f32; 256],
     encode: Vec<u8>,
+    /// A 16-bit sRGB value (`0..=65535`) to linear light.
+    decode_deep: Vec<f32>,
+    /// Linear light at `ENCODE_BINS` even steps to the *continuous* sRGB code
+    /// value (`0.0..=255.0`), interpolated between: the dither needs the
+    /// fraction the nearest-code table throws away.
+    encode_fine: Vec<f32>,
 }
 
 impl Default for LinearResolver {
@@ -124,7 +155,113 @@ impl LinearResolver {
             let coded = linear_to_srgb(linear) * 255.0;
             *slot = coded.clamp(0.0, 255.0).round() as u8;
         }
-        Self { decode, encode }
+        let decode_deep = (0..=u16::MAX)
+            .map(|value| {
+                let coded = f32::from(value) / 65535.0;
+                if coded <= 0.040_448_237 {
+                    coded / 12.92
+                } else {
+                    ((coded + 0.055) / 1.055).powf(2.4)
+                }
+            })
+            .collect();
+        let encode_fine = (0..=ENCODE_BINS)
+            .map(|bin| linear_to_srgb(bin as f32 / ENCODE_BINS as f32).clamp(0.0, 1.0) * 255.0)
+            .collect();
+        Self {
+            decode,
+            encode,
+            decode_deep,
+            encode_fine,
+        }
+    }
+
+    /// Linear light to the continuous sRGB code value, by the fine table.
+    fn encode_continuous(&self, linear: f32) -> f32 {
+        let position = linear.clamp(0.0, 1.0) * ENCODE_BINS as f32;
+        let bin = (position as usize).min(ENCODE_BINS - 1);
+        let fraction = position - bin as f32;
+        self.encode_fine[bin] + (self.encode_fine[bin + 1] - self.encode_fine[bin]) * fraction
+    }
+
+    /// Resolves a **16-bit** RGBA source (the export's deep target, EX3) into
+    /// 8-bit `destination`, averaging in linear light when `source` is a
+    /// supersampled multiple, and dithering every value that falls between
+    /// two 8-bit codes (see the module notes).
+    ///
+    /// A value the 8-bit render would have produced exactly (`code * 257`, or
+    /// a block of identical such values) comes out as that code, bit for bit.
+    ///
+    /// # Errors
+    /// As [`resolve`](LinearResolver::resolve).
+    pub fn resolve_deep(
+        &self,
+        source: &[u16],
+        source_width: usize,
+        source_height: usize,
+        width: usize,
+        height: usize,
+        destination: &mut Vec<u8>,
+    ) -> Result<(), ResolveError> {
+        let expected = source_width
+            .checked_mul(source_height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or(ResolveError::SourceLength)?;
+        if source.len() != expected {
+            return Err(ResolveError::SourceLength);
+        }
+        if width == 0 || height == 0 || source_width == 0 || source_height == 0 {
+            return Err(ResolveError::Geometry);
+        }
+        if !source_width.is_multiple_of(width) || !source_height.is_multiple_of(height) {
+            return Err(ResolveError::Geometry);
+        }
+        let factor = source_width / width;
+        if factor != source_height / height {
+            return Err(ResolveError::Geometry);
+        }
+
+        destination.clear();
+        destination.reserve(width * height * 4);
+        let samples = (factor * factor) as f32;
+        for row in 0..height {
+            for column in 0..width {
+                let noise = Dither::at(column as u32, row as u32);
+                for channel in 0..3 {
+                    let first =
+                        source[(row * factor * source_width + column * factor) * 4 + channel];
+                    let mut uniform = true;
+                    let mut light = 0.0f32;
+                    for sub_row in 0..factor {
+                        let base = ((row * factor + sub_row) * source_width + column * factor) * 4;
+                        for sub_column in 0..factor {
+                            let value = source[base + sub_column * 4 + channel];
+                            uniform &= value == first;
+                            light += self.decode_deep[value as usize];
+                        }
+                    }
+                    let code = if uniform && first.is_multiple_of(257) {
+                        // A code the 8-bit render would have written: exact.
+                        (first / 257) as u8
+                    } else if uniform {
+                        noise.quantize(channel, f32::from(first) / 257.0)
+                    } else {
+                        noise.quantize(channel, self.encode_continuous(light / samples))
+                    };
+                    destination.push(code);
+                }
+                // Coverage, not light: no transfer function and no dither.
+                let mut alpha = 0u32;
+                for sub_row in 0..factor {
+                    let base = ((row * factor + sub_row) * source_width + column * factor) * 4;
+                    for sub_column in 0..factor {
+                        alpha += u32::from(source[base + sub_column * 4 + 3]);
+                    }
+                }
+                destination.push((alpha as f32 / samples / 257.0).clamp(0.0, 255.0).round() as u8);
+            }
+        }
+        Ok(())
     }
 
     /// Resolves `source` (RGBA8, `source_width` x `source_height`) into
@@ -206,9 +343,158 @@ impl LinearResolver {
     }
 }
 
+/// One pixel's dither: three 16-bit uniforms from one 64-bit integer hash of
+/// its position, one per colour channel.
+///
+/// Integer arithmetic only (splitmix64's finalizer), for the reason the shader
+/// hashes are integer (`AGENTS.md`): the same input is the same noise on every
+/// machine and every run.
+#[derive(Clone, Copy, Debug)]
+struct Dither(u64);
+
+impl Dither {
+    fn at(column: u32, row: u32) -> Self {
+        let mut z = (u64::from(row) << 32 | u64::from(column)).wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        Dither(z ^ (z >> 31))
+    }
+
+    /// Uniform noise in `0.0..1.0` for `channel`.
+    fn uniform(self, channel: usize) -> f32 {
+        ((self.0 >> (channel * 16)) & 0xFFFF) as f32 / 65536.0
+    }
+
+    /// `code` (continuous, `0.0..=255.0`) to the 8-bit code the dither picks:
+    /// the code below with the probability of the distance to the code above,
+    /// so the mean is `code` exactly.
+    fn quantize(self, channel: usize, code: f32) -> u8 {
+        (code + self.uniform(channel)).floor().clamp(0.0, 255.0) as u8
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 8-bit codes widened to the deep target's storage, as GL stores an 8-bit
+    /// colour in `GL_RGBA16`.
+    fn widen(source: &[u8]) -> Vec<u16> {
+        source.iter().map(|&code| u16::from(code) * 257).collect()
+    }
+
+    /// Anything the 8-bit render would have produced exactly comes out
+    /// exactly, at both factors: a flat fill, a palette colour, a hard edge
+    /// between two codes at 1x.
+    #[test]
+    fn exact_codes_pass_through_a_deep_resolve_untouched() {
+        let resolver = LinearResolver::new();
+        let source: Vec<u8> = (0..(16 * 8 * 4))
+            .map(|byte| (byte * 37 % 256) as u8)
+            .collect();
+        let mut destination = Vec::new();
+        resolver
+            .resolve_deep(&widen(&source), 16, 8, 16, 8, &mut destination)
+            .expect("1x");
+        assert_eq!(destination, source);
+        for code in [0u8, 1, 21, 128, 254, 255] {
+            let flat = vec![code; 8 * 8 * 4];
+            resolver
+                .resolve_deep(&widen(&flat), 8, 8, 4, 4, &mut destination)
+                .expect("2x");
+            assert_eq!(destination, vec![code; 4 * 4 * 4], "flat {code} drifted");
+        }
+    }
+
+    /// The 2x deep resolve is the 8-bit resolve plus at most one code of
+    /// dither: the same linear-light average, read more finely.
+    #[test]
+    fn a_deep_box_average_agrees_with_the_eight_bit_one_within_the_dither() {
+        let resolver = LinearResolver::new();
+        let source: Vec<u8> = (0..(32 * 32 * 4))
+            .map(|byte| (byte * 7919 % 251) as u8)
+            .collect();
+        let (mut eight, mut deep) = (Vec::new(), Vec::new());
+        resolver
+            .resolve(&source, 32, 32, 16, 16, &mut eight)
+            .expect("8-bit");
+        resolver
+            .resolve_deep(&widen(&source), 32, 32, 16, 16, &mut deep)
+            .expect("deep");
+        for (index, (a, b)) in eight.iter().zip(&deep).enumerate() {
+            assert!(a.abs_diff(*b) <= 1, "byte {index}: 8-bit {a}, deep {b}");
+        }
+    }
+
+    /// The measurement this exists for. A 0→40 ramp across 1920 columns in
+    /// 16-bit, quantized two ways: rounded, its column means form a staircase
+    /// half a code high, the contour a viewer sees; dithered, the staircase is
+    /// gone into noise and the mean light is unchanged.
+    ///
+    /// Negative control (2026-11-13): `quantize` rounding instead of
+    /// dithering failed the staircase assertion; reverted byte for byte.
+    #[test]
+    fn a_dithered_ramp_loses_its_staircase_and_keeps_its_light() {
+        let resolver = LinearResolver::new();
+        let (width, height) = (1920usize, 64usize);
+        let mut source = Vec::with_capacity(width * height * 4);
+        for _ in 0..height {
+            for column in 0..width {
+                let code = 40.0 * column as f32 / (width - 1) as f32;
+                let value = (code * 257.0).round() as u16;
+                source.extend_from_slice(&[value, value, value, 65535]);
+            }
+        }
+        let mut destination = Vec::new();
+        resolver
+            .resolve_deep(&source, width, height, width, height, &mut destination)
+            .expect("1x");
+        // Column means over every row, against the ideal code.
+        let staircase = |pixels: &dyn Fn(usize, usize) -> f32| -> f32 {
+            (0..width)
+                .map(|column| {
+                    let mean =
+                        (0..height).map(|row| pixels(row, column)).sum::<f32>() / height as f32;
+                    (mean - 40.0 * column as f32 / (width - 1) as f32).abs()
+                })
+                .fold(0.0, f32::max)
+        };
+        let dithered = staircase(&|row, column| f32::from(destination[(row * width + column) * 4]));
+        let rounded = staircase(&|row, column| {
+            (f32::from(source[(row * width + column) * 4]) / 257.0).round()
+        });
+        assert!(rounded > 0.45, "the rounded ramp is a staircase: {rounded}");
+        assert!(
+            dithered < 0.25,
+            "the dithered ramp should have no staircase left: {dithered}"
+        );
+        // Deterministic: the same frame twice is the same bytes.
+        let mut again = Vec::new();
+        resolver
+            .resolve_deep(&source, width, height, width, height, &mut again)
+            .expect("1x");
+        assert_eq!(again, destination);
+    }
+
+    /// The dither's noise is uniform on `0.0..1.0`: bounded, and centred on
+    /// one half, so `floor(code + u)` keeps the mean.
+    #[test]
+    fn the_dither_is_uniform_and_centred() {
+        let mut sum = 0.0f64;
+        let count = 256 * 256;
+        for row in 0..256 {
+            for column in 0..256 {
+                let noise = Dither::at(column, row);
+                for channel in 0..3 {
+                    let value = noise.uniform(channel);
+                    assert!((0.0..1.0).contains(&value), "{value}");
+                    sum += f64::from(value);
+                }
+            }
+        }
+        let mean = sum / f64::from(count * 3);
+        assert!((mean - 0.5).abs() < 0.01, "mean {mean}");
+    }
 
     /// The two tables have to be inverses of each other to within a code value,
     /// or a resolve would shift a flat colour that has nothing to average.

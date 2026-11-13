@@ -1619,8 +1619,8 @@ fn prepare_frames(
         return Ok(Replay::Done);
     };
 
-    let (mut target, achieved_factor) =
-        offline_render_target(rl, thread, &config).ok_or_else(|| {
+    let (mut target, achieved_factor, depth) = offline_render_target(rl, thread, &config)
+        .ok_or_else(|| {
             "the offline surface could not be created; try a lower resolution or Balanced quality"
                 .to_owned()
         })?;
@@ -1664,7 +1664,8 @@ fn prepare_frames(
         total_frames,
         achieved_factor,
     };
-    let mut resolver = LinearResolver::new();
+    let resolver = LinearResolver::new();
+    let mut deep_pixels = Vec::new();
     let mut next_target = 0usize;
     let mut drew_any = false;
     let mut paints = 0u64;
@@ -1708,11 +1709,12 @@ fn prepare_frames(
             )
         };
         let format = format!(
-            "{}\u{00d7}{} \u{00b7} {} \u{00b7} {}x target",
+            "{}\u{00d7}{} \u{00b7} {} \u{00b7} {}x target \u{00b7} {}",
             config.width,
             config.height,
             config.quality.name(),
-            achieved_factor
+            achieved_factor,
+            depth.describe()
         );
         let drawn = {
             let mut ui_draw = d.begin_mode2D(ui_scale.camera());
@@ -1838,7 +1840,14 @@ fn prepare_frames(
                 if prepared.pixels.len() != config.width as usize * config.height as usize * 4 {
                     prepared.pixels = vec![0u8; config.width as usize * config.height as usize * 4];
                 }
-                resolve_offline_frame(&mut target, &mut resolver, &mut prepared.pixels, &config)?;
+                read_resolved(
+                    &target,
+                    depth.is_deep(),
+                    &mut deep_pixels,
+                    &resolver,
+                    &mut prepared.pixels,
+                    &config,
+                )?;
                 prepared.frame_index = frame_index;
                 while next_target < targets.len() && targets[next_target].0 == frame_index {
                     each(targets[next_target].1, &mut prepared)?;
@@ -2490,20 +2499,48 @@ fn ask_for_still_destination(
 /// The readback and the resolve are the export's, verbatim (EX3): a still that
 /// averaged in gamma space would be exactly the third of the light the video
 /// export used to lose, in a file whose whole purpose is to be looked at.
-fn resolve_offline_frame(
-    target: &mut RenderTexture2D,
-    resolver: &mut LinearResolver,
+fn read_resolved(
+    target: &RenderTexture2D,
+    deep: bool,
+    deep_pixels: &mut Vec<u16>,
+    resolver: &LinearResolver,
     pixels: &mut Vec<u8>,
     config: &RenderExportConfig,
 ) -> Result<(), String> {
-    let mut image = target
-        .load_image()
-        .map_err(|error| format!("the frame could not be read back: {error}"))?;
-    let (source_width, source_height) = (image.width.max(0) as usize, image.height.max(0) as usize);
-    let source = musializer_runtime::decode::image_pixels_rgba8(&mut image)
-        .map_err(|error| format!("the frame could not be read back: {error}"))?;
-    resolver
-        .resolve(
+    let (source_width, source_height) = (
+        target.texture.width.max(0) as usize,
+        target.texture.height.max(0) as usize,
+    );
+    let resolved = if deep {
+        // EX3: the 16-bit target, read exactly and quantized to 8 bits here
+        // for the last time, with the dither (`LinearResolver::resolve_deep`).
+        musializer_runtime::deep_target::read(target, deep_pixels)
+            .map_err(|error| format!("the frame could not be read back: {error}"))?;
+        resolver.resolve_deep(
+            deep_pixels,
+            source_width,
+            source_height,
+            config.width as usize,
+            config.height as usize,
+            pixels,
+        )
+    } else {
+        // This used to be `Image::resize` followed by `get_image_data` followed
+        // by a per-pixel rebuild of the byte vector. `Image::resize` is
+        // `ImageResize`, whose 8-bit fast path calls `stbir_resize_uint8_linear`
+        // (`rtextures.c:1770-1773`) — the variant that treats its input as
+        // *already linear*. Averaging sRGB code values as though they were light
+        // darkens every high-contrast edge, so High and Master were resolving
+        // thin bright detail worse than Balanced, which never resamples at all.
+        // `core::render::resolve` does the same average in linear light.
+        // `get_image_data` also goes, being the third raylib-rs wrapper that
+        // forms a slice from `LoadImageColors` without a null check.
+        let mut image = target
+            .load_image()
+            .map_err(|error| format!("the frame could not be read back: {error}"))?;
+        let source = musializer_runtime::decode::image_pixels_rgba8(&mut image)
+            .map_err(|error| format!("the frame could not be read back: {error}"))?;
+        resolver.resolve(
             source,
             source_width,
             source_height,
@@ -2511,7 +2548,14 @@ fn resolve_offline_frame(
             config.height as usize,
             pixels,
         )
-        .map_err(|error| format!("the frame could not be resolved: {error}"))
+    };
+    resolved.map_err(|error| {
+        format!(
+            "the frame could not be resolved: {error}: a {source_width}x{source_height} \
+             target for a {}x{} output",
+            config.width, config.height
+        )
+    })
 }
 
 /// Writes already-resolved bottom-up export pixels as a conventional top-down
@@ -2647,6 +2691,9 @@ pub(crate) struct ExportSession {
     /// inventing one would mean a second code path that can reach the encoder.
     job: Option<RenderJob>,
     target: RenderTexture2D,
+    /// Whether `target` is the 16-bit one (EX3), and its readback buffer.
+    deep: bool,
+    deep_pixels: Vec<u16>,
     /// The supersample resolve's sRGB tables, built once for the whole export
     /// rather than per frame (EX3).
     resolver: LinearResolver,
@@ -2846,7 +2893,7 @@ impl ExportSession {
             },
         };
 
-        let (target, achieved_factor) = match offline_render_target(rl, thread, &config) {
+        let (target, achieved_factor, depth) = match offline_render_target(rl, thread, &config) {
             Some(pair) => pair,
             None => {
                 app.shell.notify(
@@ -2866,18 +2913,19 @@ impl ExportSession {
         // property of a raylib call nobody had read.
         println!(
             "export pipeline: {}x{} out, {}x{} target ({}x asked, {achieved_factor}x got), \
-             {} resolve, quality {}",
+             {} resolve, quality {}, {}",
             config.width,
             config.height,
             target.width(),
             target.height(),
             config.supersample_factor,
-            if achieved_factor > 1 {
-                "linear-light box"
-            } else {
-                "none (copy)"
+            match (achieved_factor > 1, depth.is_deep()) {
+                (true, _) => "linear-light box",
+                (false, true) => "none",
+                (false, false) => "none (copy)",
             },
             config.quality.name(),
+            depth.describe(),
         );
         if achieved_factor < config.supersample_factor {
             app.shell.notify(
@@ -2949,6 +2997,8 @@ impl ExportSession {
         Some(ExportSession {
             job: Some(job),
             target,
+            deep: depth.is_deep(),
+            deep_pixels: Vec::new(),
             resolver: LinearResolver::new(),
             samples_scratch: Vec::new(),
             restore_position,
@@ -3290,60 +3340,26 @@ impl ExportSession {
         }
         let config = self.job().config();
 
-        let mut image = self.target.load_image().map_err(|error| {
+        // The readback, the supersample resolve, the dither and the flatten to
+        // RGBA bytes, in one pass (EX3), resolved straight into a buffer the
+        // encoder's writer thread hands back once a frame is in the pipe, so a
+        // queued frame is never copied and a frame never allocates after the
+        // first few (EX4).
+        let mut frame = self.job_mut().take_frame_buffer(0);
+        read_resolved(
+            &self.target,
+            self.deep,
+            &mut self.deep_pixels,
+            &self.resolver,
+            &mut frame,
+            &config,
+        )
+        .map_err(|error| {
             (
                 "Export failed while reading a frame",
                 format!("{error}. The previous destination was preserved."),
             )
         })?;
-        // Read before the pixel borrow: `image_pixels_rgba8` takes `&mut`, and
-        // the returned slice keeps that borrow alive for the resolve.
-        let (source_width, source_height) =
-            (image.width.max(0) as usize, image.height.max(0) as usize);
-        // The readback, the supersample resolve and the flatten to RGBA bytes,
-        // in one pass instead of four (EX3).
-        //
-        // This used to be `Image::resize` followed by `get_image_data` followed
-        // by a per-pixel rebuild of the byte vector. `Image::resize` is
-        // `ImageResize`, whose 8-bit fast path calls `stbir_resize_uint8_linear`
-        // (`rtextures.c:1770-1773`) — the variant that treats its input as
-        // *already linear*. Averaging sRGB code values as though they were light
-        // darkens every high-contrast edge, so High and Master were resolving
-        // thin bright detail worse than Balanced, which never resamples at all.
-        // `core::render::resolve` does the same average in linear light, and
-        // being pure arithmetic it is pinned by a number rather than by a
-        // capture. `get_image_data` also goes, being the third raylib-rs wrapper
-        // that forms a slice from `LoadImageColors` without a null check.
-        let source =
-            musializer_runtime::decode::image_pixels_rgba8(&mut image).map_err(|error| {
-                (
-                    "Export failed while reading a frame",
-                    format!("{error}. The previous destination was preserved."),
-                )
-            })?;
-        // Resolved straight into a buffer the encoder's writer thread hands
-        // back once a frame is in the pipe, so a queued frame is never copied
-        // and a frame never allocates after the first few (EX4).
-        let mut frame = self.job_mut().take_frame_buffer(0);
-        self.resolver
-            .resolve(
-                source,
-                source_width,
-                source_height,
-                config.width as usize,
-                config.height as usize,
-                &mut frame,
-            )
-            .map_err(|error| {
-                (
-                    "Export failed while resolving a frame",
-                    format!(
-                        "{error}: a {source_width}x{source_height} target for a \
-                         {}x{} output. The previous destination was preserved.",
-                        config.width, config.height
-                    ),
-                )
-            })?;
         let ExportSession {
             job, share_frame, ..
         } = self;
@@ -3553,7 +3569,7 @@ fn offline_render_target(
     rl: &mut RaylibHandle,
     thread: &RaylibThread,
     config: &RenderExportConfig,
-) -> Option<(RenderTexture2D, u32)> {
+) -> Option<(RenderTexture2D, u32, TargetDepth)> {
     if config.validate().is_err() {
         return None;
     }
@@ -3564,19 +3580,59 @@ fn offline_render_target(
     } else {
         config.supersample_factor
     };
+    // Supersampling first, depth second: a 2x RGBA8 target is a sharper video
+    // than a 1x 16-bit one, and the dither has more to work with at 2x anyway.
+    let mut refused = None;
+    let mut attempt = |rl: &mut RaylibHandle,
+                       width: u32,
+                       height: u32|
+     -> Option<(RenderTexture2D, TargetDepth)> {
+        let (width, height) = (width as i32, height as i32);
+        match musializer_runtime::deep_target::load(width, height) {
+            Ok(target) => return Some((target, TargetDepth::Deep)),
+            Err(why) => {
+                eprintln!("RENDER: the 16-bit target was refused ({why}); using RGBA8");
+                refused.get_or_insert(why);
+            }
+        }
+        rl.load_render_texture(thread, width as u32, height as u32)
+            .ok()
+            .map(|target| (target, TargetDepth::Eight(refused)))
+    };
     if factor > 1 {
-        if let Ok(target) =
-            rl.load_render_texture(thread, config.width * factor, config.height * factor)
-        {
-            return Some((target, factor));
+        if let Some((target, depth)) = attempt(rl, config.width * factor, config.height * factor) {
+            return Some((target, factor, depth));
         }
         eprintln!(
             "RENDER: could not create a supersampled target; falling back to the output resolution"
         );
     }
-    rl.load_render_texture(thread, config.width, config.height)
-        .ok()
-        .map(|target| (target, 1))
+    attempt(rl, config.width, config.height).map(|(target, depth)| (target, 1, depth))
+}
+
+/// Which storage the offline target got (EX3), for the `export pipeline:`
+/// line and the progress screen. A fallback is said by name, never silently:
+/// an RGBA8 export is a plausible video with the banding back in it.
+#[derive(Clone, Copy, Debug)]
+enum TargetDepth {
+    /// `GL_RGBA16`, read back exactly and dithered to 8 bits.
+    Deep,
+    /// RGBA8, with the reason the 16-bit target was refused.
+    Eight(Option<musializer_runtime::deep_target::DeepRefusal>),
+}
+
+impl TargetDepth {
+    fn is_deep(self) -> bool {
+        matches!(self, TargetDepth::Deep)
+    }
+
+    fn describe(self) -> String {
+        match self {
+            TargetDepth::Deep => "target RGBA16, dithered to 8 bits".to_owned(),
+            TargetDepth::Eight(Some(why)) => format!("target RGBA8 (16-bit refused: {why})"),
+            TargetDepth::Eight(None) => "target RGBA8".to_owned(),
+        }
+    }
 }
 
 /// Puts the preview back the way the export found it (`start_preview_track` plus

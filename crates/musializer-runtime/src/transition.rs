@@ -65,6 +65,13 @@ pub struct HeldFrame {
     /// The scene time of the held picture. `None` before the first capture,
     /// after a resize and after [`HeldFrame::reset`].
     held_seconds: Option<f64>,
+    /// Whether the buffer is 16-bit, matching a 16-bit caller (EX3): a copy
+    /// of the export's deep target into RGBA8 would round it back to 8 bits
+    /// before the grade, the finish or the transition drew from it.
+    deep: bool,
+    /// Set when a 16-bit buffer was refused, so the next capture does not
+    /// ask again every frame; the copy is then RGBA8, as it always was.
+    deep_refused: bool,
     /// Where the scene's rectangle sits in the buffer, as fractions of it:
     /// left, bottom, width, height, in texture coordinates.
     region: [f32; 4],
@@ -86,6 +93,8 @@ impl HeldFrame {
             refused: false,
             held_seconds: None,
             region: [0.0, 0.0, 1.0, 1.0],
+            deep: false,
+            deep_refused: false,
         }
     }
 
@@ -136,8 +145,9 @@ impl HeldFrame {
     /// to draw it with.
     pub fn prepare(&mut self, d: &mut RaylibDrawHandle<'_>, boundary: Rectangle) -> bool {
         let caller = Caller::capture(d);
-        if !self.fits(caller.width, caller.height) {
-            let ready = self.ensure(caller.width, caller.height);
+        let deep = self.wants_deep(&caller);
+        if !self.fits(caller.width, caller.height, deep) {
+            let ready = self.ensure(caller.width, caller.height, deep);
             caller.restore();
             if !ready {
                 return false;
@@ -145,6 +155,12 @@ impl HeldFrame {
         }
         self.region = caller.region(boundary);
         true
+    }
+
+    /// Whether this capture should be 16-bit: the caller is, and a 16-bit
+    /// buffer has not already been refused.
+    fn wants_deep(&self, caller: &Caller) -> bool {
+        !self.deep_refused && crate::deep_target::is_deep_framebuffer(caller.fbo)
     }
 
     /// Copies what the active framebuffer holds inside `boundary` into the
@@ -162,8 +178,9 @@ impl HeldFrame {
         let (x, y) = (boundary.x as i32, boundary.y as i32);
         let (width, height) = (boundary.width as i32, boundary.height as i32);
         let caller = Caller::capture(d);
-        if !self.fits(caller.width, caller.height) {
-            let ready = self.ensure(caller.width, caller.height);
+        let deep = self.wants_deep(&caller);
+        if !self.fits(caller.width, caller.height, deep) {
+            let ready = self.ensure(caller.width, caller.height, deep);
             caller.restore();
             if !ready {
                 return false;
@@ -207,14 +224,14 @@ impl HeldFrame {
         true
     }
 
-    fn fits(&self, width: i32, height: i32) -> bool {
-        self.target.is_some() && self.width == width && self.height == height
+    fn fits(&self, width: i32, height: i32, deep: bool) -> bool {
+        self.target.is_some() && self.width == width && self.height == height && self.deep == deep
     }
 
     /// Allocates the buffer, or re-allocates it when the boundary changed. A
     /// resize drops the held picture: stretched over new geometry it would be
     /// a picture of nothing that was ever on screen.
-    fn ensure(&mut self, width: i32, height: i32) -> bool {
+    fn ensure(&mut self, width: i32, height: i32, deep: bool) -> bool {
         if self.refused
             || width < 1
             || height < 1
@@ -225,6 +242,35 @@ impl HeldFrame {
         }
         self.target = None;
         self.held_seconds = None;
+        self.deep = false;
+        if deep {
+            match crate::deep_target::load(width, height) {
+                Ok(target) => {
+                    // SAFETY: filter and wrap take the colour texture by
+                    // value, as below; `load` rebinds the framebuffer as
+                    // `LoadRenderTexture` does, which both callers restore.
+                    unsafe {
+                        raylib_sys::SetTextureFilter(
+                            target.texture,
+                            TextureFilter::TEXTURE_FILTER_BILINEAR as i32,
+                        );
+                        raylib_sys::SetTextureWrap(
+                            target.texture,
+                            TextureWrap::TEXTURE_WRAP_CLAMP as i32,
+                        );
+                    }
+                    self.target = Some(target);
+                    self.deep = true;
+                    self.width = width;
+                    self.height = height;
+                    return true;
+                }
+                Err(why) => {
+                    eprintln!("TRANSITION: a 16-bit held frame was refused ({why}); using RGBA8");
+                    self.deep_refused = true;
+                }
+            }
+        }
         // SAFETY: `LoadRenderTexture` takes its dimensions by value; a zero id
         // is its failure signal and is checked before `RenderTexture2D::from_raw`
         // — whose `Drop` is `UnloadRenderTexture` — takes ownership. It rebinds

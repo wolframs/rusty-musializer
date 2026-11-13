@@ -18,6 +18,7 @@ pub mod assist;
 pub mod audio_bridge;
 pub mod clipboard;
 pub mod decode;
+pub mod deep_target;
 pub mod draw;
 pub mod feedback;
 pub mod font;
