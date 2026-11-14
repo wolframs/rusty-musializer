@@ -24,6 +24,10 @@ pub struct TrackClip {
     /// Where the bytes are on this machine: the imported file, or the bundled
     /// copy once saved.
     pub source: PathBuf,
+    /// Why the project's record cannot be read, decided when it was opened: a
+    /// bundled file that is missing, or a path that leaves the project's
+    /// folder. Such a clip draws its card and is never opened.
+    pub unusable: Option<ClipError>,
 }
 
 impl TrackClip {
@@ -80,14 +84,24 @@ pub fn import(path: &Path) -> Result<TrackClip, ClipError> {
     Ok(TrackClip {
         asset,
         source: path.to_path_buf(),
+        unusable: None,
     })
 }
 
 /// Adds a clip to a library, once: a file already there by content keeps its
-/// entry. Returns its digest, or `None` when the library is full.
+/// entry — unless that entry cannot be read (missing, or recorded outside the
+/// project), when the file imported now becomes its bytes. Returns its
+/// digest, or `None` when the library is full.
 pub fn add(clips: &mut Vec<TrackClip>, entry: TrackClip) -> Option<ClipRef> {
     let clip = entry.clip_ref()?;
-    if find(clips, clip).is_some() {
+    if let Some(existing) = clips
+        .iter_mut()
+        .find(|existing| existing.clip_ref() == Some(clip))
+    {
+        if existing.unusable.is_some() {
+            existing.source = entry.source;
+            existing.unusable = None;
+        }
         return Some(clip);
     }
     if clips.len() >= clip::MAX_CLIPS {

@@ -197,3 +197,4 @@ source restored byte for byte (`cmp` against a saved copy):
 | The last frame's recorded duration ignored (the gap before it again) | `the_last_frame_lasts_its_own_recorded_duration` (0.12 s, not 1.08) and `a_probe_reads_how_long_the_last_frame_lasts` against a real held-frame MP4 |
 | A split copying the placement's `from` again | `splitting_a_clip_section_changes_no_moment_of_the_clip`, the section's own `from` (clip time 2 at 15 s, not 7) |
 | The track's `from` read as every section's own | the same test, the track's-clip case |
+| The old fallback restored (an unresolved clip path joined to the folder and used) | `a_clip_record_that_leaves_the_bundle_is_refused_not_read`: the symlink out of the bundle opened with no refusal |

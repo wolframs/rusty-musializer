@@ -84,6 +84,10 @@ const FFMPEG_ALIGNMENT: u64 = 128;
 pub enum ClipError {
     #[error("the file is missing")]
     Missing,
+    /// A project's record names a file outside the project's folder (`../`,
+    /// an absolute path, a symlink leading out). Never opened.
+    #[error("its path leaves the project's folder, so it is not read")]
+    OutsideProject,
     #[error("it is not a regular file")]
     NotAFile,
     #[error("the file could not be read: {0}")]

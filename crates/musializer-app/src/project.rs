@@ -42,6 +42,7 @@ use musializer_core::scene::routes;
 use musializer_core::scene::settings::SettingsSnapshot;
 use musializer_core::scene::{SceneId, SCENE_COUNT};
 use musializer_core::timing::render_export::{Quality, RenderExportConfig};
+use musializer_runtime::clip::ClipError;
 use musializer_runtime::process::publish;
 use musializer_runtime::project_files::{self, AssetCategory};
 
@@ -135,7 +136,14 @@ pub fn build_project(
     let clips = referenced_clips(track)
         .into_iter()
         .map(|entry| ClipAsset {
-            path: entry.source.to_string_lossy().into_owned(),
+            // A clip recorded outside its project has no path of its own here;
+            // its name is written instead, which a recovery can never resolve,
+            // so the refusal outlives the snapshot.
+            path: if entry.unusable == Some(ClipError::OutsideProject) {
+                entry.asset.name.clone()
+            } else {
+                entry.source.to_string_lossy().into_owned()
+            },
             ..entry.asset.clone()
         })
         .collect();
@@ -432,9 +440,16 @@ pub fn save_to_path(
     let mut adopted = Vec::new();
     for entry in referenced_clips(track) {
         let same_project = track.project_path.as_deref() == Some(path);
-        if !entry.source.is_file() && same_project && !entry.asset.path.is_empty() {
+        let unreadable = entry.unusable.is_some() || !entry.source.is_file();
+        if unreadable && same_project && !entry.asset.path.is_empty() {
             clips.push(entry.asset.clone());
             continue;
+        }
+        if let Some(error) = &entry.unusable {
+            return Err(ProjectError::Build(format!(
+                "the clip {} cannot be bundled: {error}",
+                entry.asset.name
+            )));
         }
         let published = project_files::bundle_asset(
             path,
@@ -622,11 +637,20 @@ pub fn open_recovery_json(
     };
     // Clips are not checked here (VG): the decoder checks each one's digest
     // from its own handle before drawing it, and one that is gone draws a
-    // placeholder naming it rather than refusing the whole recovery.
+    // placeholder naming it rather than refusing the whole recovery. A
+    // recovery records runtime paths, all absolute; anything else is a clip
+    // the session had refused, and stays refused.
     let clip_sources = project
         .clips
         .iter()
-        .map(|asset| PathBuf::from(&asset.path))
+        .map(|asset| {
+            let path = PathBuf::from(&asset.path);
+            if path.is_absolute() {
+                (path, None)
+            } else {
+                (PathBuf::new(), Some(ClipError::OutsideProject))
+            }
+        })
         .collect();
     let duration = duration_for(&audio_path).map_err(ProjectError::Build)?;
     hydrate_track(
@@ -717,15 +741,18 @@ pub fn open_path(
     // Each clip resolves inside the bundle (VG). Not refused when it is not
     // there or its digest changed: the decoder checks the bytes from its own
     // handle, and a clip that is gone draws a placeholder naming it, where a
-    // refusal would lose the whole project over one take. A path that cannot
-    // be resolved keeps its spelling, which the placeholder then shows.
+    // refusal would lose the whole project over one take. A record that does
+    // not resolve is never read at all: missing, or a path that leaves the
+    // project (`../`, absolute, a symlink out), each its own placeholder.
     let clip_sources = project
         .clips
         .iter()
-        .map(|asset| {
-            project_files::resolve_bundled_asset_path(path, &asset.path)
-                .unwrap_or_else(|_| path.parent().unwrap_or(Path::new(".")).join(&asset.path))
-        })
+        .map(
+            |asset| match project_files::resolve_bundled_asset_path(path, &asset.path) {
+                Ok(resolved) => (resolved, None),
+                Err(_) => unresolved_clip(path, &asset.path),
+            },
+        )
         .collect();
     let duration = duration_for(&audio_path).map_err(ProjectError::Build)?;
     hydrate_track(
@@ -744,6 +771,30 @@ pub fn open_path(
     })
 }
 
+/// Why a clip's record did not resolve inside its bundle, and the path it
+/// names when that is still inside the project: a bundled file that is not
+/// there is missing; anything else that fails containment — a path that is
+/// not plainly relative, a symlink or a directory leading out, something that
+/// is not a regular file — is refused and gets no path at all.
+fn unresolved_clip(project: &Path, recorded: &str) -> (PathBuf, Option<ClipError>) {
+    if !musializer_core::project::io::is_unambiguous_relative_path(recorded) {
+        return (PathBuf::new(), Some(ClipError::OutsideProject));
+    }
+    let candidate = project.parent().unwrap_or(Path::new(".")).join(recorded);
+    match candidate.symlink_metadata() {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            (candidate, Some(ClipError::Missing))
+        }
+        Ok(metadata) if !metadata.is_file() && !metadata.is_symlink() => {
+            (PathBuf::new(), Some(ClipError::NotAFile))
+        }
+        // A regular file or a symlink that did not resolve back to this path:
+        // reached through a link out of the bundle.
+        Ok(_) => (PathBuf::new(), Some(ClipError::OutsideProject)),
+        Err(error) => (PathBuf::new(), Some(ClipError::Read(error.to_string()))),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn hydrate_track(
     project: Project,
@@ -751,7 +802,7 @@ fn hydrate_track(
     ascii_path: Option<PathBuf>,
     caption_font_path: Option<PathBuf>,
     caption_licence_path: Option<PathBuf>,
-    clip_sources: Vec<PathBuf>,
+    clip_sources: Vec<(PathBuf, Option<ClipError>)>,
     duration: f64,
     project_path: Option<PathBuf>,
 ) -> Result<OpenedProject, ProjectError> {
@@ -826,9 +877,10 @@ fn hydrate_track(
         .clips
         .iter()
         .zip(clip_sources)
-        .map(|(asset, source)| crate::clips::TrackClip {
+        .map(|(asset, (source, unusable))| crate::clips::TrackClip {
             asset: asset.clone(),
             source,
+            unusable,
         })
         .collect();
     track.analysis_lanes = project.analysis_lanes;
@@ -1090,4 +1142,134 @@ mod tests {
             assert_eq!(written(&track), 0.0, "{nonsense}");
         }
     }
+
+    /// A saved project with one clip as its base scene's, in a scratch
+    /// directory that removes itself: (directory, project, recorded path).
+    struct ClipProject(PathBuf);
+
+    impl Drop for ClipProject {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn clip_project(name: &str) -> (ClipProject, PathBuf, String) {
+        let root = std::env::temp_dir().join(format!(
+            "musializer-clip-project-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let directory = root.join("show");
+        std::fs::create_dir_all(&directory).unwrap();
+        let audio = directory.join("song.wav");
+        std::fs::write(&audio, b"pcm bytes for the digest").unwrap();
+        let take = root.join("take.mp4");
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+            .args([
+                "testsrc2=size=64x36:rate=10",
+                "-frames:v",
+                "5",
+                "-c:v",
+                "libx264",
+            ])
+            .args(["-pix_fmt", "yuv420p"])
+            .arg(&take)
+            .stdin(std::process::Stdio::null())
+            .status()
+            .expect("ffmpeg runs");
+        assert!(status.success());
+        let mut track = Track::new(audio, 120.0, SceneId::Clip, 7).unwrap();
+        track.audio_sample_rate = 48_000;
+        track.audio_channels = 2;
+        let entry = crate::clips::import(&take).expect("the take imports");
+        let clip = crate::clips::add(&mut track.clips, entry).unwrap();
+        track.base_clip = Some(musializer_core::project::clip::ClipPlacement::new(clip));
+        let project = directory.join("song.musi");
+        save_to_path(&mut track, &project, false).expect("saves with its clip");
+        let recorded = track.clips[0].asset.path.clone();
+        assert!(recorded.starts_with("song.assets/clips/"), "{recorded}");
+        (ClipProject(root), project, recorded)
+    }
+
+    fn reopened_clip(project: &Path) -> crate::clips::TrackClip {
+        open_path(project, |_| Ok(120.0))
+            .expect("a clip that cannot be read does not refuse the open")
+            .track
+            .clips[0]
+            .clone()
+    }
+
+    fn rewrite_clip_path(project: &Path, recorded: &str, replacement: &str) {
+        let text = std::fs::read_to_string(project).unwrap();
+        let needle = format!("\"{recorded}\"");
+        assert!(text.contains(&needle), "the record names {recorded}");
+        let rewritten = text.replace(&needle, &serde_json_string(replacement));
+        std::fs::write(project, rewritten).unwrap();
+    }
+
+    fn serde_json_string(text: &str) -> String {
+        format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+
+    /// F1b defect 3: a clip record that fails containment is an invalid
+    /// reference — the placeholder by name, its path never opened — however
+    /// it leaves: `../`, an absolute path, or a symlink in the bundle. An
+    /// outside copy with the recorded digest sits there each time, so the
+    /// old fallback would have decoded it and bundled it again.
+    #[test]
+    fn a_clip_record_that_leaves_the_bundle_is_refused_not_read() {
+        let (scratch, project, recorded) = clip_project("contain");
+        let outside = scratch.0.join("take.mp4");
+        let bundled = project.parent().unwrap().join(&recorded);
+
+        let legit = reopened_clip(&project);
+        assert_eq!(legit.unusable, None);
+        assert!(existing_files_alias(&legit.source, &bundled));
+
+        std::fs::remove_file(&bundled).unwrap();
+        std::os::unix::fs::symlink(&outside, &bundled).unwrap();
+        let linked = reopened_clip(&project);
+        assert_eq!(
+            linked.unusable,
+            Some(ClipError::OutsideProject),
+            "symlink out"
+        );
+        assert_eq!(linked.source, PathBuf::new());
+
+        std::fs::remove_file(&bundled).unwrap();
+        let missing = reopened_clip(&project);
+        assert_eq!(missing.unusable, Some(ClipError::Missing));
+
+        rewrite_clip_path(&project, &recorded, "../take.mp4");
+        let dotdot = reopened_clip(&project);
+        assert_eq!(dotdot.unusable, Some(ClipError::OutsideProject), "../");
+        assert_eq!(dotdot.source, PathBuf::new());
+
+        rewrite_clip_path(&project, "../take.mp4", outside.to_str().unwrap());
+        let mut opened = open_path(&project, |_| Ok(120.0)).unwrap().track;
+        assert_eq!(
+            opened.clips[0].unusable,
+            Some(ClipError::OutsideProject),
+            "absolute"
+        );
+        // The same project keeps the record as it was; another refuses it,
+        // since it cannot bundle bytes it may not read.
+        save_to_path(&mut opened, &project, false).expect("re-save keeps the record");
+        let elsewhere = scratch.0.join("other.musi");
+        let error = save_to_path(&mut opened, &elsewhere, false)
+            .expect_err("an unreadable clip is not bundled elsewhere");
+        assert!(error.to_string().contains("leaves the project"), "{error}");
+        assert!(!scratch.0.join("other.assets/clips").exists());
+        // A recovery snapshot of it never names the outside file.
+        let snapshot = build_project(&opened, "/a.wav", None, None, None, 48_000, 2).unwrap();
+        assert!(!snapshot.clips[0].path.starts_with('/'));
+        // Importing the file again gives the clip its bytes back.
+        let again = crate::clips::import(&outside).unwrap();
+        crate::clips::add(&mut opened.clips, again).unwrap();
+        assert_eq!(opened.clips[0].unusable, None);
+        assert_eq!(opened.clips[0].source, outside);
+    }
+
+    use musializer_runtime::project_files::existing_files_alias;
 }

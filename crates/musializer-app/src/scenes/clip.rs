@@ -305,6 +305,10 @@ fn picture(
     boundary: Rectangle,
 ) -> Outcome {
     let name = clip.asset.name.clone();
+    // Decided when the project opened; the file is never touched.
+    if let Some(error) = &clip.unusable {
+        return Outcome::Card(format!("{name}: {error}"), clip.asset.path.clone());
+    }
     let source = clip.source.display().to_string();
     let ClipResources {
         thread,
