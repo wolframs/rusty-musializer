@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The look cards gate (D): Look's section and video cards, pressed.
+"""The look cards gate (D): Look's section, video and captions cards, pressed.
 
 Run by tools/look_cards_check.sh, which owns the X server. Checks, each
 press aimed at a rect from `look cards:` and each with a press into the gap
@@ -46,6 +46,23 @@ file):
  captures
   14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
+
+NEGATIVE CONTROLS (2026-11-14, GPU path), each a binary built from a perturbed
+tree into its own target directory, run as LOOK_CARDS_BIN, then the tree
+restored with `git checkout` and shown clean:
+  A (11 failures): SetTransition accepted but not applied (every kind, the
+    lane's counts, typed and dragged lengths, the intro); the logarithmic and
+    quadratic tracks returning the old value (length, glide, outro length);
+    `card_typing()` false (the 4 typed into a value picked ASCII Field).
+    A fourth perturbation, chips clickable while following, was caught by
+    nothing because the follow guard also drops every edit: two guards,
+    one perturbed.
+  B (10 failures): SetGrade not applied (palette, the lane's grade count,
+    strength, and the paused-frame check, which first passed on this binary
+    through an autosave's notice card over the preview, mean 3.02, until the
+    cards were masked: 0.00); the glide refusal ignored (drawn enabled, the
+    press glided); a style rename without its cascade (the line lost its
+    style); Add a title card never blocked (it offered itself over a card).
 """
 import json
 import os
@@ -265,11 +282,24 @@ if only in ('all', 'section'):
         x, y, w, h = map(int, frame)
         box = (x, y, x + w, y + h)
 
+        # Notice cards sit over the preview, and an edit's autosave can post
+        # one (the recovery warning) that the gap run does not: blank every
+        # card either run drew, in both, so only the picture is compared.
+        cards_drawn = []
+        for name in ('palette', 'palette-gap', 'kind-gap'):
+            notices = line((out / name / 'log.txt').read_text(), 'notices')
+            cards_drawn += [tuple(map(int, m)) for m in re.findall(r'card=(\d+),(\d+),(\d+),(\d+)', notices)]
+
         def shot(name):
-            return Image.open(out / name / 'shot.png').convert('RGB').crop(box)
+            image = Image.open(out / name / 'shot.png').convert('RGB')
+            for cx, cy, cw, ch in cards_drawn:
+                image.paste((0, 0, 0), (cx - 8, cy - 8, cx + cw + 8, cy + ch + 8))
+            return image.crop(box)
         graded = sum(ImageStat.Stat(ImageChops.difference(shot('palette'), shot('palette-gap'))).mean) / 3
         same = sum(ImageStat.Stat(ImageChops.difference(shot('kind-gap'), shot('palette-gap'))).mean) / 3
-        check(graded > 4.0 and graded > 4 * same + 1.0,
+        # Calibrated 2026-11-14 on the GPU path with the cards masked: Ember
+        # over the fixture's dark Spectrum 3.46, the grade dropped 0.00.
+        check(graded > 1.5 and graded > 4 * same + 0.5,
               f'paused, the graded frame differs from the ungraded one at once (mean {graded:.2f}; two ungraded {same:.2f})')
     except ImportError:
         check(False, 'Pillow is needed for the frame check')

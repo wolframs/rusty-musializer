@@ -390,3 +390,14 @@ list, and its finish rows failed that way on the first gate run. Before
 pressing a rect from a scrolling view, check it lies inside the view's
 `viewport=` (the `tune layout:` line for Look), and give the run a window tall
 enough — or scroll first. Found building the look cards gate, 2026-11-14.
+
+## An edit's autosave can put a card over the preview
+
+A probe run that edits the project autosaves it, and in a probe run the
+recovery store has no state directory, so the save posts a warning card —
+over the preview, where the notice tray lives. A pixel comparison of an
+edited run against an unedited one then measures the card: the look cards'
+"the graded frame changed at once" check passed (mean 3.02) on a binary whose
+grade did nothing. Mask every card the `notices:` lines of *both* runs name
+before comparing preview pixels. Found by the look cards gate's negative
+control, 2026-11-14.
