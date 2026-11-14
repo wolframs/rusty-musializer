@@ -40,6 +40,21 @@ process on this machine), `codex` (installed `codex exec`), `openrouter`, and
 | `TC-PLAN` | scene-plan reasoning / review | measured-analysis JSON, section artifacts | `text-leaves-machine` | `builtin`, `codex`, `openrouter` | `none`, `ask`, `local-only`, `same-boundary` |
 | `TC-VERIFY` | independent timing verification | named review excerpts only, never the whole song by default | `audio-leaves-machine` | `local-proc`, `openrouter` | `none`, `ask`, `local-only`, `same-boundary` |
 
+`TC-VIDEO` (VG H4, 2026-11-14) is not in that table because it is not a
+routable Assist contract: generating a clip has one fixed route (OpenRouter's
+video API, a model the person picks per clip) and no row in `assist.json`. What
+leaves the machine is text (the prompt) and **images**: still frames this
+application rendered, when the person or the treatment asks for them. Its rules
+follow this document's: the price is shown before the call and the call is
+confirmed per job (§5, invariant 2: the card's second press, or a command line
+carrying `--generate-clips --max-spend USD`); the key is the `openrouter`
+credential of §3, read the same way and passed to curl on stdin (E2); a refusal
+names status and provider, never the request (E10); the provenance on the clip
+records the model, prompt, parameters, frame digests and both prices, never the
+key or its fingerprint (E5). Video generation is not eligible for zero data
+retention at OpenRouter (2026-11-14), and the card and the command line say so.
+Design and the API as found: `docs/VIDEO_GENERATION.md`, "Generating a clip".
+
 The recommended `TC-WORDING` route is `builtin/local-transcript`: preserve local
 Whisper wording as uncertain evidence, without a remote reviewer. The maximum
 boundary above describes eligible overrides; the default's applied boundary is

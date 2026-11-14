@@ -360,9 +360,62 @@ clip…", or drop the file): it plays in the section selected in the lane, or
 under the playhead when none is, and that section becomes Video Clip if it
 played another scene; with no plan driving, it is the track's own clip and the
 track's scene becomes Video Clip. The notice names which section it went to and
-why. "Generate…" beside it is drawn disabled: generating a clip
-is not built (`docs/VIDEO_GENERATION.md`). Look's section card edits
-everything above for the selected section (*Editing the look in the window*).
+why. "Generate…" beside it opens Look's generate block on that section (next
+heading). Look's section card edits everything above for the selected section
+(*Editing the look in the window*).
+
+### A generated clip: `"clip": { "generate": … }`
+
+A clip section may say how a video model is to make its clip instead of naming
+a file (VG H4, 2026-11-14):
+
+```json
+{ "at": 24.8, "scene": "clip", "clip": { "generate": {
+    "prompt": "The camera glides through a glowing doorway into a night sky of faint constellations",
+    "model": "google/veo-3.1-lite", "seconds": 4, "first": "previous", "last": "next" },
+  "after": "hold" } }
+```
+
+| Member | Meaning |
+| --- | --- |
+| `prompt` | What the clip shows, 1..2000 bytes, sent as written. Describe the shot (subject, motion, light, camera); no name or handle is needed and none should be in it |
+| `model` | An OpenRouter video model id. `--vocabulary` lists the five picks under `video_models` with their lengths, shapes, frames and price per second at 720p and 1080p |
+| `seconds` | One of the model's lengths (Veo 3.1 Lite: 4, 6, 8) |
+| `first` | `"previous"`: the last frame of the section before, as the video draws it; or a PNG/JPEG file relative to the treatment. Absent: no first frame |
+| `last` | `"next"`: the first frame of the section after; or an image file. Absent: none. Refused when the next section is generated too (its first frame does not exist yet) |
+| `from`, `after`, `fit` | As for a file |
+
+The request asks for the project's output shape (the nearest tier and aspect
+the model lists; `--resolution` counts) and **no audio**. The frames are
+rendered through the export's still path at that size, from a draft of the
+treatment in which every section still to be generated plays a stand-in, with
+the cut into the framed section made plain. A clip that starts on `"previous"`
+continues the picture the video leaves; one that ends on `"next"` hands over to
+the picture it arrives at.
+
+**A run never spends by itself.** For each generated section the run prints a
+`generate:` line, then looks for the clip: in the open project (by its
+provenance) and in the store of generated clips. A missing one is refused by
+name with its estimate, the total is printed, and the run exits 1, unless it
+carries the ceiling:
+
+```sh
+tools/headless_run.sh --treatment door.treatment.json --save-project door.musi
+# generate:  segments[7] (0:24.800).clip.generate missing: 4 s of google/veo-3.1-lite at 720p 16:9, $0.12 — …
+# warning: could not apply treatment …: 1 of 1 generated clips are missing, about $0.12 in all: … Nothing was sent.
+tools/headless_run.sh --treatment door.treatment.json --generate-clips --max-spend 1.00 --save-project door.musi
+```
+
+With `--generate-clips --max-spend USD` it asks for what is missing, one job at
+a time, while the estimates of the jobs it submitted stay within the ceiling,
+and refuses the rest by name (exit 1). An unknown price (no price list, one
+older than a week, a model not on it) is refused under a ceiling. The saved
+project bundles the clips like any other, so the next run needs no flag and no
+network; a changed prompt, model, length or frame is a new request. Failures
+are named — a refused submit (402: too little credit), a failed job (and what
+OpenRouter reported for it), a download that is not a video or is too large —
+and nothing of them is imported. Prices, the API and what a clip cost in fact:
+`docs/VIDEO_GENERATION.md`.
 
 ### `transition` and `outro`
 
@@ -814,8 +867,9 @@ Said here so nobody looks for a flag:
 - An imported caption face in a treatment. `"face": "imported"` is refused by
   name; import the face in the Lyrics panel after `--save-project`.
 - Per-section routes, and the caption effects' drive-tuning blocks.
-- Generating a clip (a model, its price, consent), its provenance on the
-  clip asset, and a `generated` transition. See `docs/VIDEO_GENERATION.md`.
+- A `generated` transition (a bridge clip across a cut, made from the two
+  sections' frames). A generated clip section with `"first": "previous"` and
+  `"last": "next"` is the way to it now. See `docs/VIDEO_GENERATION.md`.
 
 ## Evidence
 

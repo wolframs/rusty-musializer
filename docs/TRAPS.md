@@ -615,3 +615,25 @@ encoding error instead, blurred to drop the per-pixel grain (`blotch` in
 material without a finish. Symptom: a "gradient" number for an encode that is
 lower than the source's own. Found by the H2 encoder matrix, 2026-11-14
 (`docs/archive/BALANCED_ENCODER_2026-11.md`).
+## A program named by its bare name is no program under the isolated launcher
+
+`tools/headless_run.sh` runs the application with `PATH` set to a private,
+nearly empty folder (the dialog guard). A child spawned as `Command::new("curl")`
+then fails with "No such file or directory", which reads like curl is not
+installed. The video client resolves curl to an absolute path:
+`MUSIALIZER_CURL`, then `PATH`, then `/usr/bin`, `/usr/local/bin`, `/bin`
+(`generation::client::curl_program`). Any new child the application starts by
+name needs the same, or it works by hand and fails in every gate. Symptom: a
+`NoCurl`-style "could not be started" only under `headless_run.sh`. Found
+building the generation client (VG H4), 2026-11-14.
+
+## A gate's EXIT trap stops at the first `wait` on a child it killed
+
+Under `set -e`, a cleanup function run from `trap … EXIT` that does
+`kill "$PID" && wait "$PID"` exits at the `wait`: a killed child's status is
+143, the last command of the `&&` list failed, and errexit ends the trap there.
+Everything after it — the Xvfb it should also have stopped — is left running,
+and the next gate on the same display finds a foreign server and refuses it.
+Give every `kill` and `wait` in a cleanup its own `|| true`. Symptom: an
+`Xvfb :86` still running after a gate that printed its result. Found in
+`tools/generate_check.sh` (VG H4), 2026-11-14.

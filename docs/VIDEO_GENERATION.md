@@ -7,10 +7,10 @@ only the latest ones, offer users and agents **5 picks**, leave editing
 models for later, and find out which models take images as input (a baseline
 image, or first and last frames).
 
-**The first half is built (2026-11-14):** any video file can be a section of
-the video — see *Clips as material* below. Generating one is not. The rest of
-this file is the shortlist of models and the reasoning behind it. The queue
-row is VG in `FEATURE_PARITY_PLAN.md`.
+**Both halves are built (2026-11-14):** any video file can be a section of
+the video — see *Clips as material* below — and a video model can make one,
+from the window or from a treatment, with the price shown first — see
+*Generating a clip*. The queue row is VG in `FEATURE_PARITY_PLAN.md`.
 
 ## Where the numbers come from
 
@@ -196,19 +196,160 @@ drew the same counts of exact, inexact and opening frames (405/74/421 before,
 the track in 52 s, holding 19 child processes, most of them poster workers no
 frame ever released.
 
-## What the generation half needs from this
+## Generating a clip (built 2026-11-14, H4)
+
+A section's clip can be made by one of the five picks through OpenRouter, from
+a prompt and, when asked for, the frame the section starts on and the frame
+the next one starts on — rendered here through the export's still path, look
+applied. The pure half (the picks, the price list, the estimate, the request
+and its identity, the provenance) is `core::generation`; the client, the job,
+the store and the card are `musializer-app/src/generation/` and
+`ui/panels/tune/cards/generate.rs`; the treatment's grammar is in
+`docs/MUSIC_VIDEO_CLI.md`, the `.musi` member in `docs/PHASE0_INVENTORY.md`
+6.2, the contract in `docs/ASSIST_PROVIDER_CONTRACTS.md` (`TC-VIDEO`).
+
+- **The price first.** `GET /api/v1/videos/models` (public, keyless) is read
+  into the store's `prices.json` with the time it was read: by the card's
+  "Read today's prices", by a treatment run, by `--vocabulary`, when the copy
+  is missing or older than 7 days. A missing or stale list, a model not on
+  it, or a SKU this application does not read is **price unknown**, in those
+  words, on the button and the command line; a run with a ceiling refuses
+  it. The estimate is the listed rate for the request's tier, without audio,
+  times the seconds (`core::generation::price`, unit rules in its header);
+  token-priced models are marked `~` (the token formula is ByteDance's, not
+  OpenRouter's). It is rounded up to the cent.
+- **Consent per job.** In the window the button says "Generate for about
+  $0.12"; its press arms it and the second, "Send to OpenRouter · $0.12", sends.
+  The order carries the price shown, and a request whose price changed since
+  is refused. A treatment run spends only with `--generate-clips --max-spend
+  USD`, within the ceiling by the estimates of the jobs it submitted.
+- **What leaves the machine,** said on the card and on each `generate:` line:
+  the prompt, and the frames when asked for (PNG at the request's size). No
+  audio, no file name, nothing naming a person; the request has no `user`,
+  `session_id` or callback, and the client calls itself `musializer-video/1`.
+  The key goes to curl on stdin, only to the API's own host.
+- **Nothing paid twice.** A request is identified by a digest of everything
+  that determines it (`request_sha256`, including the frames' bytes). A clip
+  the project or the store already has for it is used without a call; a job
+  submitted and not yet downloaded (a Cancel, a crash, a closed window) is
+  recorded in the store first and polled again by the next press.
+- **Nothing half-imported.** The download goes to scratch, capped (1 GiB, and
+  curl's `max-filesize` stops a stream that grows past it), refused when it
+  names itself JSON or text, opened by its handle and probed exactly as
+  "Import clip…" does, and only then kept and placed. A failure says why by
+  name, and what OpenRouter reported for it when it did.
+- **The store**: `$XDG_DATA_HOME/musializer/generated-clips/` — paid clips
+  with a receipt each (their provenance and their bytes' digest), job records,
+  the price list and `spending.tsv` (one line per job sent). Saving a project
+  bundles a placed clip like any other.
+
+### The API as found (read 2026-11-14)
+
+Sources, read 2026-11-14: <https://openrouter.ai/docs/api_reference/videos.md>,
+<https://openrouter.ai/docs/api/api-reference/video-generation/submit-a-video-generation-request.md>,
+`…/poll-video-generation-status.md`, `…/download-generated-video-content.md`,
+<https://openrouter.ai/docs/cookbook/video-generation/text-to-video.md>,
+`…/image-to-video.md`, OpenRouter's `openrouter-video` skill on GitHub
+(data URLs for local images), and the live `/api/v1/videos/models` (32 models,
+28 kept: a model with no duration or an unreadable id is dropped).
+
+- `POST /api/v1/videos` with `model`, `prompt`, `duration` (one of the model's
+  `supported_durations`), `resolution` and `aspect_ratio` (or `size`),
+  `generate_audio` (defaults to the model's capability: send `false`), and
+  `frame_images: [{type: "image_url", image_url: {url}, frame_type:
+  "first_frame" | "last_frame"}]`, where `url` may be `data:image/png;base64,…`.
+  Answers `202 {id, polling_url, status: "pending"}`.
+- `GET /api/v1/videos/{id}`: `pending`, `in_progress`, then `completed`,
+  `failed`, `cancelled` or `expired`; `error` as a string; `usage.cost` in
+  dollars once known; `unsigned_urls` (this API, key needed) and `urls`
+  (signed storage, no key, until `expires_at`).
+- `GET /api/v1/videos/{id}/content?index=0` streams the MP4 (the key needed).
+- Errors are `{error: {code, message}}` with 400 (naming the supported
+  values), 401, 402, 403, 404, 413, 429, 5xx.
+- **There is no cancel call.** Video is not eligible for zero data retention
+  (`provider.zdr: true` fails routing).
+- Not used: `input_references`, `seed`, `callback_url` and webhooks,
+  `previous_job_id` (continuation), provider routing.
+
+### The gate and its negative controls (H4)
+
+`tools/generate_check.sh` (run from `tools/clip_check.sh`) drives the whole
+path against `tools/fake_openrouter.py` on loopback, with a canary key in the
+private credentials file, and `tools/generate_card_check.py` presses the card
+(what each asserts is at the top of each file). The job's own unit tests run it
+against an in-process fake (`generation::job::tests`). Each control below was a
+scratch binary (`GENERATE_BIN`), the source restored byte for byte (`cmp`
+against a saved copy) and rebuilt, 2026-11-14:
+
+| Perturbation | What failed |
+| --- | --- |
+| A run without the flag treated as one with an unlimited ceiling | "without the flag: the estimate … exit 1" (status 0), "no submit reached the provider", and the steps after it that expected the store empty |
+| The card's first press sending at once (no arming) | "the first press arms it: Send and Back", "Send made one submit" (the job had gone already), the card's outcome |
+| The frames rendered at the project's output size instead of the request's | "the frames sent are the stills of the frame before the section and the first after it, byte for byte" |
+| The clip row's Generate… drawn disabled again | "a press on Generate… opens the block" |
+| The store's lookup and the job record ignored (unit tests) | `a_job_submits_polls_downloads_verifies_and_is_found_again_for_nothing` (submitted again) and `a_stop_after_the_submit_says_it_may_be_billed_and_a_second_press_picks_it_up` |
+| The codec dropping `cost_usd` on read | `tools/differential_project_io.sh` step 20: re-written into different bytes |
+
+### What is not built
+
+- **A `generated` transition** (a bridge across a cut as a transition kind).
+  A generated section with `"first": "previous"` and `"last": "next"` is that
+  bridge today, placed as a section; a transition kind would make it one word.
+- **A multi-line prompt field.** The card's field is one line that scrolls;
+  the whole prompt is shown wrapped beneath it once it outgrows the field.
+- **Reference images, a seed, continuation, webhooks**, editing models,
+  upscalers and the model's own sound (out of scope by the brief).
+- **A window that follows a treatment with a generated section**: such a
+  treatment is refused there by name and pointed at the batch run, because
+  its frames are rendered first and the window's follow applies on every
+  save.
+- **Cancelling at the provider**: OpenRouter has no call for it.
+
+### What a clip cost (H4's real calls)
+
+Three calls on 2026-11-14, all `google/veo-3.1-lite`, 4 s, 720p 16:9, no
+audio, placed in a copy of Door, No Room's native treatment rendered at
+1280x720. The clips, the ledger and the sheets judged are in the main
+checkout's `build/generated-clips/` (never committed).
+
+| Call | Frames sent | Estimate | Reported (`usage.cost`) | Submit to download |
+| --- | --- | --- | --- | --- |
+| A, "the architecture opens" (3:50.397) | none | $0.12 | $0.12 | 35 s |
+| B, a new 4 s section at 0:24.8 | first = previous, last = next | $0.12 | $0.12 | 58 s |
+| C, "a shape appeared" (2:05.266) | first = previous, last = next | $0.12 | $0.12 | 59 s |
+
+$0.36 in all; every estimate was the cost to the cent. Frame images cost
+nothing extra on this model (no `reference_images` SKU). Each run after the
+first found the clips already made and sent nothing for them.
+
+What it looked like, judged from contact sheets across each section:
+
+- **A** follows a text prompt closely (translucent panels folding open onto a
+  field of amber lights). Behind the section's iris, under the night-door
+  grade and with the lyric "the architecture opens" over it, it reads as the
+  video's own picture: the grade pulls the model's neutral greys into the
+  video's lavender. The best use of text only: staging a sung line literally.
+- **B and C** start on the frame the video leaves and end on the one it
+  arrives at, and both cuts disappear: the frames either side of each cut are
+  indistinguishable at sheet size. In C (pentagram to atlas) the model
+  dissolves the pentagram's constellation and grows the atlas's spiral out of
+  the dark, under "a shape appeared … that neither of us could have made
+  alone": the cut stops being a cut and becomes the line's event. In B the
+  threshold's last frame was already its "beyond" constellation, so the clip
+  bridges two similar pictures and fills the middle with an invented soft
+  planet drifting across: seamless, but the prompt's doorway never shows. A
+  bridge earns its price where the two pictures differ.
+
+## What the generation half needed from this (the seam, as planned)
 
 The seam is a file. Whatever calls a model ends with an MP4 on disk, and
 `crate::clips::import` (the app) turns it into a library entry with a digest
 and a probe, and a placement puts it in a section — exactly what "Import
 clip…" does. What generation adds, and where it plugs in:
 
-- **The disabled "Generate…"** in the Scenes flyout's footer (while Video Clip
-  is the scene) and in Look's section card beside its Import clip… is where
-  the control goes; `rail.rs`'s `clip_footer` and `cards/clip.rs` draw them,
-  both with `clips::GENERATE_NOT_BUILT` as the reason. The card's poster of
-  the section's first frame (`PosterSeat::SectionStart`) is the frame a
-  generation for the section would start from.
+- **"Generate…"** in the Scenes flyout's footer (while Video Clip is the
+  scene) and in Look's section card beside its Import clip… opens the
+  generate block (built: *Generating a clip* above).
 - **First and last frames**: `--still SECONDS FILE` already renders the exact
   frame at a time; a generation for a section takes the still at the section's
   start (or the previous section's end) and the next section's start, which is

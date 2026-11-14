@@ -218,6 +218,10 @@ impl Store {
     ) -> Result<PathBuf, String> {
         let clips = self.folder("clips")?;
         let destination = self.clip_path(&record.request_sha256);
+        // curl created the download under the umask; the store's files are
+        // the person's alone.
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(download, std::fs::Permissions::from_mode(0o600));
         std::fs::rename(download, &destination)
             .map_err(|error| format!("{}: {error}", destination.display()))?;
         let receipt = Receipt {
@@ -318,7 +322,7 @@ impl Store {
         if fresh {
             let _ = writeln!(
                 file,
-                "utc\trequest_sha256\tmodel\tseconds\testimate_usd\tcost_usd\toutcome"
+                "utc\trequest_sha256\tjob_id\tmodel\tseconds\testimate_usd\tcost_usd\toutcome"
             );
         }
         let cells: Vec<String> = line

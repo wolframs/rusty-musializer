@@ -198,10 +198,16 @@ impl GenerationRequest {
         let frames = match (&self.first, &self.last) {
             (None, None) => String::new(),
             (Some(image), None) | (None, Some(image)) => {
-                format!(" and one frame rendered here ({}x{} PNG)", image.width, image.height)
+                format!(
+                    " and one frame rendered here ({}x{} PNG)",
+                    image.width, image.height
+                )
             }
             (Some(image), Some(_)) => {
-                format!(" and two frames rendered here ({}x{} PNG)", image.width, image.height)
+                format!(
+                    " and two frames rendered here ({}x{} PNG)",
+                    image.width, image.height
+                )
             }
         };
         let verb = if frames.is_empty() { "goes" } else { "go" };

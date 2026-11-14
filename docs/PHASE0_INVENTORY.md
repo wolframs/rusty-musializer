@@ -433,6 +433,8 @@ is the grammar and the ordering, which are the contract.
 | `--still SECONDS FILE` | **2**, repeatable | stored; rendered after the UI probe stage and before `--render` | warn + error |
 | `--contact-sheet FILE` | 1 | stored; rendered with the stills | warn + error if missing value |
 | `--sheet-at SPEC` | 1 | parsed immediately | warn + error, naming the spec |
+| `--generate-clips` (VG H4) | none | a batch `--treatment` run may ask a video model for its generated clips; resolved before the treatment applies (frames rendered, clips looked for, then asked for) | warn + error without `--max-spend` |
+| `--max-spend USD` (VG H4) | 1, dollars 0..=1000 | the ceiling on the estimates of the jobs `--generate-clips` submits in this run | warn + error when not a number in range, or without `--generate-clips` |
 
 Order effects, each observable:
 
@@ -1169,6 +1171,34 @@ placement must name a clip in `clips` and a `from` short of its
 or changed: the clip draws a placeholder naming it (the decoder checks the
 digest from its own handle). Harness: `tools/differential_project_io.sh` steps
 18-20.
+
+**A generated clip's provenance (post-legacy, VG H4, 2026-11-14).** An optional
+`generated` member last in a `clips[]` entry, written only for a clip a video
+model made, so an imported clip's record is byte for byte what it was:
+
+```text
+generated
+  provider        string  "openrouter"                       required, 1..128 bytes
+  model           string  the model id asked for              required, 1..128 bytes
+  prompt          string  as sent, line breaks allowed        required, 1..2000 bytes
+  seconds         uint    the length asked for                required, 1..120
+  resolution      string  "720p", "1080p", "2K", …            required, 1..64 bytes
+  aspect_ratio    string  "16:9", …                           required, 1..64 bytes
+  first_sha256    hex     the first frame image's bytes       only when one was sent
+  last_sha256     hex     the last frame image's bytes        only when one was sent
+  request_sha256  hex     the request's identity (below)      required
+  generated_utc   string  RFC 3339, when it was downloaded    required, 1..32 bytes
+  estimate_usd    number  the price shown before the request  only when it was known
+  cost_usd        number  OpenRouter's `usage.cost`           only when reported
+```
+
+Dollars are finite and 0..10000. `request_sha256` is SHA-256 of the text
+`musializer.video-request/v1\nprovider=…\nmodel=…\nprompt=<bytes>:<prompt>\n
+seconds=…\nresolution=…\naspect_ratio=…\naudio=false\nfirst=<sha|none>\n
+last=<sha|none>\n` (`core::generation::request::GenerationRequest::digest`,
+pinned by a test): what a re-run looks for before it spends. The harness's
+clips fixture carries one generated clip (one frame, both prices); steps 18-20
+check it is written once, read back and re-written to the same bytes.
 
 | Field | Type / bounds | Default | Line |
 | --- | --- | --- | --- |
@@ -2228,6 +2258,10 @@ which that tranche does not own.
 | --- | --- | --- | --- | --- |
 | `MUSIALIZER_ASSIST_SETTINGS` | `runtime::assist::files::settings_path` | Absolute override for `assist.json` | `$XDG_CONFIG_HOME/musializer/assist.json`, else `$HOME/.config/musializer/assist.json` (§2) | non-empty check only; used verbatim as a path |
 | `MUSIALIZER_ASSIST_CREDENTIALS` | `runtime::assist::files::credentials_path` | Absolute override for `credentials.json` | the same ladder with `credentials.json` (§3) | non-empty check only |
+| `MUSIALIZER_GENERATED_DIR` (VG H4) | `generation::store::Store::from_env` | Where generated clips, job records, the video price list and `spending.tsv` live | `$XDG_DATA_HOME/musializer/generated-clips`, else `~/.local/share/musializer/generated-clips` | non-empty, used as a path; created `0700` |
+| `MUSIALIZER_OPENROUTER_URL` (VG H4) | `generation::client::Endpoint::from_env` | The video API's base, for a gate's fake provider | `https://openrouter.ai/api/v1` | refused unless `https://`, or `http://` to `127.0.0.1`, `localhost` or `[::1]` with a port; no quote, backslash or space |
+| `MUSIALIZER_CURL` (VG H4) | `generation::client::curl_program` | The curl the video client runs | first `curl` on `PATH`, then `/usr/bin`, `/usr/local/bin`, `/bin` | used only when absolute |
+| `MUSIALIZER_VIDEO_POLL_MS`, `MUSIALIZER_VIDEO_DEADLINE_S`, `MUSIALIZER_VIDEO_MAX_BYTES` (VG H4) | `generation::job::JobSpec::timings_from_env` | A gate's pace: how often a job is polled, how long it may take, the largest download | 10 s, 30 min, 1 GiB | integers; the poll floored at 20 ms, the deadline at 1 s, the download cap may only be lowered |
 | `MUSIALIZER_ASSIST_SETTINGS_OPEN` | `ui/assist_settings.rs`, `main.rs` | Opens the dialog on a section | dialog closed | `Section::parse`: `1`/`routing`, `local`/`local-models`, `codex`, `openrouter`, `privacy`/`diagnostics`, case-insensitive and trimmed; an unknown token opens nothing |
 | `MUSIALIZER_ASSIST_SETTINGS_TAB` | `apply_probe_state` | How many Tab steps to apply at open, so a focus ring is photographable | no steps | `u32`, **capped at 256**; a non-number is ignored |
 | `MUSIALIZER_ASSIST_SETTINGS_SCROLL` | `apply_probe_state`, applied in `draw_body` | Scroll offset in logical pixels, for photographing a section bottom | no scroll | `f32`, floored at 0; **applied on the first drawn frame**, not at open, then clamped against the measured content height |

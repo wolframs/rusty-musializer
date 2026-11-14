@@ -207,8 +207,10 @@ pub(super) fn report(
     let Some(form) = form.filter(|form| form.cue_id == cue_id) else {
         return "generate=closed".into();
     };
-    let price = draft(view, form, output, true, true)
-        .map_or_else(|| "unknown".to_owned(), |(_, _, estimate)| estimate.short().replace(' ', "-"));
+    let price = draft(view, form, output, true, true).map_or_else(
+        || "unknown".to_owned(),
+        |(_, _, estimate)| estimate.short().replace(' ', "-"),
+    );
     format!(
         "generate=open generate-price={price} generate-key={} generate-model={} generate-seconds={} generate-first={} generate-last={} generate-armed={} generate-prompt-bytes={} generate-running={}",
         if view.key.is_ok() { "stored" } else { "none" },

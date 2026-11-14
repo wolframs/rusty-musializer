@@ -388,9 +388,15 @@ fn run(spec: &JobSpec, stop: &AtomicBool, shared: &Mutex<Shared>) -> Outcome {
             billing: Billing::Nothing
         }
     ) {
+        let job_id = shared
+            .lock()
+            .ok()
+            .and_then(|shared| shared.job_id.clone())
+            .unwrap_or_else(|| "-".to_owned());
         store.log_spending(&[
             &now_utc(),
             &digest,
+            &job_id,
             &spec.request.model,
             &spec.request.seconds.to_string(),
             &money(spec.estimate_usd),

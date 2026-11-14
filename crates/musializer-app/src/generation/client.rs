@@ -605,9 +605,12 @@ mod tests {
 
     #[test]
     fn a_key_goes_only_to_https_or_this_machine() {
-        assert!(Endpoint::new("https://openrouter.ai/api/v1/")
-            .unwrap()
-            .is_openrouter());
+        assert_eq!(
+            Endpoint::new("https://openrouter.ai/api/v1/")
+                .unwrap()
+                .describe(),
+            DEFAULT_BASE
+        );
         assert!(Endpoint::new("http://127.0.0.1:8765/api/v1").is_ok());
         for refused in [
             "http://openrouter.ai/api/v1",
