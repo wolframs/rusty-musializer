@@ -503,6 +503,7 @@ the requested time. The synthetic fixture's boundary at 4.000 happened to
 land exactly and hid it. Anything that seeks "into" a span lands strictly
 inside it (`section_rest_seconds` adds 50 ms), the mirror of the stream's
 end reading 0:00. Found 2026-11-14 (D2) in a capture of the real project.
+
 ## FFmpeg's `-ss` counts from the container's start, and drops what is before it
 
 An input `-ss` is a position measured from the *container's* start time, which
@@ -615,6 +616,7 @@ encoding error instead, blurred to drop the per-pixel grain (`blotch` in
 material without a finish. Symptom: a "gradient" number for an encode that is
 lower than the source's own. Found by the H2 encoder matrix, 2026-11-14
 (`docs/archive/BALANCED_ENCODER_2026-11.md`).
+
 ## A program named by its bare name is no program under the isolated launcher
 
 `tools/headless_run.sh` runs the application with `PATH` set to a private,
