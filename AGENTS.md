@@ -189,8 +189,10 @@ number disagrees, grep it there before debugging from scratch.
   large product, which tears along the lattice.
 - **`Faces::caption_at` lends one face at a time**; a second live borrow panics.
 - **`rlBlitFramebuffer` takes far corners, not extents.**
-- **`BLEND_ALPHA` eats destination alpha**, visible only in a saved PNG.
-  Full-frame washes use `BLEND_ALPHA_PREMULTIPLY`. Read per-plane PSNR.
+- **`BLEND_ALPHA` eats destination alpha**, and a still is written opaque, so
+  no PNG shows it: read `still alpha:` (`tools/still_alpha.py`), not the file's
+  alpha plane. Full-frame washes use `BLEND_ALPHA_PREMULTIPLY`. See
+  `docs/TRAPS.md`.
 - **`--probe-shot` photographs the frame before the last** on the GPU and the
   last on llvmpipe; photograph a state held still for two frames.
 - **A modal masks late chrome too.** Keep its pointer occluder through the notice tray; restore real input only for the overlay. See `docs/TRAPS.md`.

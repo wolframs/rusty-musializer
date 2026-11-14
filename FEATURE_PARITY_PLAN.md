@@ -81,7 +81,7 @@ commit that adds this block; the lead cherry-picks.
   work); D7 number-row scene selection and tile tooltips.
 - [x] **Integrate A–C**: cherry-pick, one review by GPT-6.1-Sol on the merged
   diff, one full `tools/verify.sh`, `cargo build --release`.
-- [ ] **ST — saved stills are opaque.** Found while integrating (2026-11-14):
+- [x] **ST — saved stills are opaque.** Found while integrating (2026-11-14):
   a still's PNG carries whatever alpha the frame's blends left. In the caption
   gate's stills, 230,396 of 230,400 pixels of a Cadence frame are below 255
   (minimum 178), and Pulse Field, Clawd and every caption or title-card glyph
