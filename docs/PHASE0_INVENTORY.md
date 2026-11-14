@@ -271,6 +271,7 @@ short names **and six long aliases**:
 | `pixel-chapel` | Rose Window (post-legacy, id 26) |
 | `pixel-rave` | Gabber Tunnel (post-legacy, id 27) |
 | `glyphs`, `glyph-lattice` | Glyph Lattice (post-legacy, id 28) |
+| `clip` | Video Clip (post-legacy, id 29) |
 
 **`--encoder NAME`** is post-legacy too (2026-08-08) and has no C counterpart:
 `x264` (default, and byte-identical to every export this application has made),
@@ -339,7 +340,7 @@ Keys invented here so far include `hover`, `click`, `wheel`, `wheel-shift`, `whe
 `middle-drag`, `drop`, `scene-pick`, `save-to`, `lyric-tap`, `lyric-undo`,
 `tune-seed`, `tune-explore`, `tune-type`, `protocol-flip`, `protocol-answer`,
 `sidebar`, `inspector`, `timeline-height`, `audio-stall`, `route`, `picker`,
-`tune`, `assist`, `dock`, `dock-run`, `dock-focus`, `follow`, `agent`, `agent-say`, `agent-decide`, `agent-press`, `agent-press-at`, `agent-image`, `agent-image-hold` and `click-after`. What is *not* negotiable is the shape and the refusal
+`tune`, `assist`, `dock`, `dock-run`, `dock-focus`, `follow`, `agent`, `agent-say`, `agent-decide`, `agent-press`, `agent-press-at`, `agent-image`, `agent-image-hold`, `click-after` and `scrub`. What is *not* negotiable is the shape and the refusal
 rules in this section — one argv word, at most one occurrence of each key, an
 unknown key is an error rather than last-wins — because a capture script's typo
 must not quietly photograph the wrong state.
@@ -540,6 +541,11 @@ one implementation and the *Pixel cats* family. See
 Glyph Lattice appends id 28 on 2026-10-24 (`glyphs`): a wireframe solid lit on
 a honeycomb of tiny glyphs, twelve controls, in the *Geometry* family. See
 [`GLYPH_LATTICE.md`](GLYPH_LATTICE.md).
+
+Video Clip appends id 29 on 2026-11-14 (`clip`): a video file as a section's
+picture, six controls, in the *Type & stage* family beside ASCII Field. Which
+file, where in it and how it fits are the section's (`clip` placements, 6.2),
+not settings. See [`VIDEO_GENERATION.md`](VIDEO_GENERATION.md).
 
 Two behaviours of the registry that are still contract, whatever the count is:
 
@@ -977,6 +983,21 @@ persisted, append only.
 3 dodecahedron, 4 icosahedron, 5 tesseract, 6 trefoil knot. Append, never
 reorder.
 
+### `clip` — Video Clip (6 controls, no C counterpart)
+
+Post-legacy, 2026-11-14, id 29. Indices are persisted, append only. Low by
+default: the clip is the picture. `response` 0 removes every audio term (the
+drift keeps its own clock), and a still is then the same bytes over any audio.
+
+| # | Key | Label | Min | Max | Default | Prec | Kind |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `settings.clip.punch` | Kick punch | 0 | 1 | 0.25 | 2 | slider |
+| 1 | `settings.clip.pulse` | Light pulse | 0 | 1 | 0.2 | 2 | slider |
+| 2 | `settings.clip.drift` | Drift | 0 | 1 | 0.3 | 2 | slider |
+| 3 | `settings.clip.shake` | Shake | 0 | 1 | 0 | 2 | slider |
+| 4 | `settings.clip.tint` | Tint | 0 | 1 | 0.15 | 2 | slider |
+| 5 | `settings.clip.response` | Music response | 0 | 2 | 1 | 2 | slider |
+
 ### `knot` — OpenAI Knot (11 controls, no C counterpart)
 
 | Slot | Key | Label | Min | Max | Default | Precision | Kind |
@@ -1119,7 +1140,32 @@ Required (`:9-18`): `schema_version`, `metadata`, `audio`, `output`,
 `deterministic_seed`, `scenes`, `cues`, `analysis_lanes`.
 
 Optional: `ascii_image`, `caption_style`, `lyrics`, `scene_switches`,
-`scene_presets`, `semantic_events`, `manual_events`.
+`scene_presets`, `semantic_events`, `manual_events`, and post-legacy `clips`.
+
+**Video clips (post-legacy, VG, 2026-11-14).** Three members, each optional
+and never written at its default, so a project without clips is the file it
+always was and the version does not move (as MV2's members):
+
+- top-level `clips`, last in the file, never written empty: up to 64
+  `{ "path", "sha256", "name", "width", "height", "frames",
+  "duration_seconds" }`, every member required. `path` is
+  `<stem>.assets/clips/<sha256><.ext>` once saved; `name` is the file's name
+  when imported (1..128 bytes); `width`/`height` 2..7680 and at most
+  7680×4320 pixels; `frames` 1..36000; `duration_seconds` (0, 600]. No digest
+  twice.
+- `scenes[].clip`, after `mappings`: the track's clip, what the `clip` scene
+  plays as the base scene or in a section that places none.
+- `scene_switches.cues[].clip`, after `caption_style`: a section's clip.
+
+A placement is `{ "clip": "<sha256>", "from": seconds, "after": "loop" |
+"bounce", "fit": "contain" }`; only `clip` is required. `from` absent continues
+the section before when it plays the same clip (else 0); `after` absent is
+`hold`, `fit` absent is `cover`, and writing either default is refused. Every
+placement must name a clip in `clips` and a `from` short of its
+`duration_seconds`. Opening does not refuse a project whose clip file is gone
+or changed: the clip draws a placeholder naming it (the decoder checks the
+digest from its own handle). Harness: `tools/differential_project_io.sh` steps
+18-20.
 
 | Field | Type / bounds | Default | Line |
 | --- | --- | --- | --- |
@@ -1472,6 +1518,7 @@ enum at `src/project_io.h:54-58`:
 | `MUSI_PROJECT_ASSET_AUDIO` | 0 | `audio` |
 | `MUSI_PROJECT_ASSET_IMAGE` | 1 | `images` |
 | `MUSI_PROJECT_ASSET_FONT` | 2 | `fonts` |
+| (post-legacy, VG) `AssetCategory::Clip` | — | `clips` |
 
 `musi_project_asset_category_valid` (`src/project_io.c:1267-1270`) is defined
 as "the directory lookup returned non-NULL", with the comment at
@@ -1645,6 +1692,11 @@ Top level: `schema` and `segments` are required; `title`, `notes`, `audio`,
 `output`, `seed`, `caption_style`, `scenes`, `lyrics` and `events` are optional.
 An absent `lyrics` or `events` key leaves that lane of the track untouched; an
 empty array replaces it with nothing.
+
+A `clip` segment names a video file (post-legacy, VG): a path relative to the
+treatment, read, hashed and probed by the application before the treatment
+compiles, and bundled into the project at `--save-project`. The file is the
+one place a treatment points at an asset other than its audio and lyrics.
 
 ### Per-user agent files (2026-10-31)
 

@@ -401,3 +401,45 @@ edited run against an unedited one then measures the card: the look cards'
 grade did nothing. Mask every card the `notices:` lines of *both* runs name
 before comparing preview pixels. Found by the look cards gate's negative
 control, 2026-11-14.
+
+## FFmpeg's `-ss` counts from the container's start, and drops what is before it
+
+An input `-ss` is a position measured from the *container's* start time, which
+is the earliest of all its streams: in a clip whose sound starts before its
+picture (a camera file, an AAC priming delay, `-itsoffset`), `-ss 1.0` is not
+one second into the video. And FFmpeg 8's accurate seek drops every frame
+presented before the position, so a position exactly on a frame's timestamp
+returns that frame only while rounding happens to agree. The clip decoder
+(`runtime::clip`) seeks to the midpoint between frame `k-1` and `k`, plus the
+video's offset from the container's start (`Probe::seek_offset`, from
+`format=start_time` and the first packet's pts). The symptom of getting it wrong
+is a plausible picture one or several frames off, and only after a jump: a
+clip played from the start is right. Pinned by
+`a_stream_that_starts_after_its_container_seeks_by_its_own_frames` and
+`a_seek_returns_exactly_the_frame_read_from_the_start`. Found building the clip
+scene, 2026-11-14.
+
+## A video cannot be piped to FFmpeg if it has to seek
+
+The picture decoder feeds FFmpeg the bytes through a pipe (`decode.rs`), which
+keeps "open once, read the handle" true but makes the input unseekable: an MP4
+with its index at the end does not open, and every seek would decode from the
+start. The clip decoder hands FFmpeg the **open file itself** as its standard
+input and names `file:/proc/self/fd/0` as the input — on Linux a fresh open of
+the same inode, which a name swapped in afterwards cannot reach, and which can
+seek. `-nostdin` is then load-bearing twice: without it FFmpeg also treats that
+descriptor as its keyboard. Pinned by `the_handle_not_the_name_is_what_gets_read`
+(the name renamed and replaced after the open; FFmpeg still reads the clip).
+Found building the clip scene, 2026-11-14.
+
+## A still compared with FFmpeg's frame at another size measures two scalers
+
+A clip frame drawn into a 320x180 export and the same frame scaled to 320x180
+by FFmpeg match at 27 dB with the right frame and 17 dB with its neighbour:
+the GPU's bilinear sample and FFmpeg's area (or bicubic) filter disagree on
+every edge testsrc2 draws, and a threshold set there is calibrated to two
+scalers rather than to the frame. At the clip's own size the still samples
+texel for texel and is **bit-identical** to FFmpeg's frame on both renderers
+(`tools/clip_check.sh`). Compare at the source size; judge any scaled
+comparison by its margin over the neighbouring frames, not by its level.
+Found writing the clip gate, 2026-11-14.

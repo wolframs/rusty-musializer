@@ -412,4 +412,7 @@ python3 tools/treatment_check.py "$OUT"
 # MV2 (2026-11-13): named caption styles and the title lane have their own
 # gate, run here so every caller of this one runs it too.
 tools/caption_styles_check.sh "$OUT/caption-styles"
+# VG (2026-11-14): a section that plays a video clip has its own gate, run
+# here for the same reason.
+tools/clip_check.sh "$OUT/clips"
 echo "PASS: vocabulary, treatment apply/save/reopen, contact sheets, stills and refusals ($OUT)"

@@ -318,6 +318,48 @@ across the short side (fewer is chunkier glyphs), `stroke` the line weight,
 on its own clock. A line with a `voice` turns the palette to the voice's hue
 while it is set.
 
+### A video file as a section: `clip`
+
+`clip` (Video Clip) plays a video file as the section's picture: a clip
+generated elsewhere, footage, or an export from here. Its sound is ignored;
+the track is the music. The section names the file:
+
+```json
+{ "at": 24.8, "scene": "clip", "clip": "takes/door.mp4", "transition": { "kind": "portal", "seconds": 1.4 } },
+{ "at": 31.0, "scene": "clip", "clip": { "path": "takes/door.mp4", "from": 5, "after": "bounce", "fit": "contain" } }
+```
+
+| Member | Meaning |
+| --- | --- |
+| `path` | Relative to the treatment file. Any video FFmpeg reads, up to 8K, ten minutes and 4 GiB. Read, hashed and probed before the treatment compiles; `--save-project` bundles it into `<stem>.assets/clips/`, so the project does not need the original afterwards |
+| `sha256` | Optional: the file must have this digest |
+| `from` | Seconds into the clip the section starts at (a number or `"m:ss"`). Absent: 0 — or, when the section before plays the same clip, its clock continues, so splitting a clip section to change its tuning does not restart the picture |
+| `after` | What happens when the section outlasts the clip: `hold` (the last frame stays, the default), `loop`, `bounce` (back to the start, then forward again) |
+| `fit` | `cover` (fills the frame, cropping the long side; the default) or `contain` (the whole clip, black where the shapes differ) |
+
+Which of the clip's frames a video frame shows is arithmetic on the frame's
+time, from the clip's own frame times (23.976 and variable rates included),
+so a still is exactly the export's frame and two exports are the same frames.
+Grades, the finish, the pixel look, transitions and captions work over a clip
+section as over any scene; a `portal` into one opens a doorway onto the clip.
+
+The music touches the picture through six settings, low by default: `punch`
+(a short zoom on each kick), `pulse` (the kick lifts its light), `drift` (a
+slow push and sway, hurried by loudness), `shake` (a jolt on the hardest hits,
+off by default), `tint` (highlights warm with the bass, cool with the treble)
+and `response` (0 plays the clip as it is, the drift on its own clock). Set
+them all to 0 for the clip untouched.
+
+Refused by name: a `clip` on another scene, a `clip` section without one, an
+unknown `after` or `fit`, a `from` past the clip's end, a file that is missing,
+not a video, cut short, or larger than 8K. The `clip:` report line names the
+clip frame drawn against the one asked for, or the placeholder and why.
+
+A clip can also be imported in the window (Scenes, Video Clip, "Import
+clip…", or drop the file): it plays in the section selected in the lane, or
+under the playhead. "Generate…" beside it is drawn disabled: generating a clip
+is not built (`docs/VIDEO_GENERATION.md`).
+
 ### `transition` and `outro`
 
 A section's `transition` is how that section **arrives**. It is a kind's name,
@@ -747,6 +789,9 @@ Said here so nobody looks for a flag:
 - An imported caption face in a treatment. `"face": "imported"` is refused by
   name; import the face in the Lyrics panel after `--save-project`.
 - Per-section routes, and the caption effects' drive-tuning blocks.
+- Generating a clip (a model, its price, consent) and a `generated`
+  transition; editing a clip section's `from`, `after` and `fit` in the window
+  (a treatment's, or "Import clip…" again). See `docs/VIDEO_GENERATION.md`.
 
 ## Evidence
 
@@ -767,6 +812,17 @@ rather than against the report line that claims them. Among them:
 - A still is the frame the export encodes: 39.10 dB against the decoded MP4
   frame, with a neighbouring moment at 21.55 dB as the control.
 - Each refusal exits 1, names the place, and leaves no project and no sheet.
+- Clips (`tools/clip_check.sh`, run after it): stills of a 23.976 fps and a
+  variable-rate clip at times on and near frame edges are **bit-identical** to
+  the frames FFmpeg extracts from the clips, on the GPU and on llvmpipe, and
+  each beats its neighbouring frames by 16 dB and more; `hold`, `loop` and
+  `bounce` past the end land on the computed frames; `cover` crops to the
+  centre and `contain` leaves black bars; `response` 0 is the same bytes over
+  music and over silence (and `response` 1 is not); two exports of one window
+  have the same per-frame digests; a saved project reopens from its bundle with
+  the source deleted, and with the bundle's copy deleted too draws a card
+  naming the missing file; a truncated file, a 16000x9000 claim and a missing
+  file are refused by name.
 - Named caption styles and title cards (`tools/caption_styles_check.sh`, run
   last): the saved styles, line and section styles and cards are the
   treatment's and survive a reopen; where each caption landed, counted by its

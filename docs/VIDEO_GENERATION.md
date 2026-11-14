@@ -7,8 +7,10 @@ only the latest ones, offer users and agents **5 picks**, leave editing
 models for later, and find out which models take images as input (a baseline
 image, or first and last frames).
 
-Nothing is built yet. This file is the shortlist and the reasoning behind it.
-The queue row is VG in `FEATURE_PARITY_PLAN.md`.
+**The first half is built (2026-11-14):** any video file can be a section of
+the video — see *Clips as material* below. Generating one is not. The rest of
+this file is the shortlist of models and the reasoning behind it. The queue
+row is VG in `FEATURE_PARITY_PLAN.md`.
 
 ## Where the numbers come from
 
@@ -85,3 +87,98 @@ questions:
   instead of a scene, or a `generated` transition between two sections'
   frames, so the dock's agents can direct it. For the operator it is a button
   that shows the price first.
+
+## Clips as material (built 2026-11-14)
+
+A section can play a video file: the scene `clip` (Video Clip, id 29), in a
+treatment `{ "scene": "clip", "clip": "take.mp4" }` with `from`, `after` (hold,
+loop, bounce) and `fit` (cover, contain), or in the window through "Import
+clip…" in the Scenes flyout or a dropped file. The grammar is in
+`docs/MUSIC_VIDEO_CLI.md`, the `.musi` members in `docs/PHASE0_INVENTORY.md`
+6.2, the gate is `tools/clip_check.sh`.
+
+- **The file is an asset**: content-addressed and bundled like the audio
+  (`<stem>.assets/clips/<sha256>.<ext>`), so a project and its exports do not
+  need the original path, and two sections of one file share one copy.
+- **Which frame is arithmetic on time** (`core::project::clip`): the probe
+  reads every frame's presentation timestamp; a video frame at track time `t`
+  in a section shows the last clip frame presented at or before
+  `from + (t - origin)`, folded by `after`. A still and the export's frame at
+  `t` are therefore one frame, and the gate finds them bit-identical to the
+  frame FFmpeg extracts from the clip.
+- **Bounded before anything allocates**: the file is opened once without
+  blocking and checked by its handle; FFmpeg reads that handle
+  (`/proc/self/fd/0`); the probe refuses a size past 8K before listing a frame
+  (a 53-byte y4m claiming 16000x9000: refused, ffprobe peaking at 53 MB); the
+  frame list is read through a cap; a decoder's output is cut at one probed
+  frame and FFmpeg runs with `-max_pixels`.
+- **A clip that cannot be drawn says so**: missing, changed (digest), decoding
+  differently from what the project recorded, truncated, or still opening — a
+  card naming the clip and the reason, and a `clip:` report line.
+
+### Decoding: one FFmpeg per clip, restarted on a jump
+
+Measured 2026-11-14 on this machine (FFmpeg 8.0.1, 24 cores) with 1080p H.264
+clips: the testsrc2 fixtures (20 s at 30 fps, 12 s at 23.976) and
+`door-title.mp4` (10 s, keyframes up to 205 frames apart).
+
+| | |
+| --- | --- |
+| Reading on, 1080p to RGBA through a pipe | 240-268 frames/s (8x a 30 fps clip) |
+| First frame after starting FFmpeg at a position | 95-126 ms near a keyframe, up to 340 ms deep in a long GOP |
+| Same with one decoder thread | 95 ms to 2.2 s: frame threading is what makes seeks fast |
+
+So the choice was a decoder restarted on a jump rather than an intermediate
+decoded once at import: an all-intra proxy would still pay the ~100 ms start
+floor and cost disk on `/` (a 30 s 1080p clip at 480x270 is ~175 MB even as
+YUV), and a frame cache of the whole clip does not fit memory (a 30 s 1080p
+clip is 7.5 GB of RGBA). `runtime::clip::ClipWorker` owns one FFmpeg and a
+thread per clip and role: it reads on for small steps (up to 30 frames),
+restarts at a jump, reads six frames ahead while nothing new is asked, and for
+a bounce's way back decodes a run of 24 frames ending at the frame and keeps
+them. FFmpeg 8's accurate input seek drops every frame presented before the
+position, so a restart for frame `k` is told the midpoint between `k-1` and
+`k`, offset by the container's start (a clip whose sound starts first);
+unit tests pin both against the frames read from the start.
+
+The export, stills, contact sheets and posters wait for the exact frame. The
+preview waits at most 8 ms and otherwise draws the nearest it has, counted on
+the `clip:` line: playing 240 frames, 221 exact, 3 inexact (16 while the clip
+opened); a 60-step drag forward over 14 s, 68 inexact, exact 8 frames after it
+ended; a 30-step drag back, 28 inexact, exact at once.
+
+## What the generation half needs from this
+
+The seam is a file. Whatever calls a model ends with an MP4 on disk, and
+`crate::clips::import` (the app) turns it into a library entry with a digest
+and a probe, and a placement puts it in a section — exactly what "Import
+clip…" does. What generation adds, and where it plugs in:
+
+- **The disabled "Generate…"** in the Scenes flyout's footer (while Video Clip
+  is the scene) is where the control goes; `rail.rs`'s `clip_footer` draws it.
+- **First and last frames**: `--still SECONDS FILE` already renders the exact
+  frame at a time; a generation for a section takes the still at the section's
+  start (or the previous section's end) and the next section's start, which is
+  the bridge idea above.
+- **The asset's provenance**: a generated clip is an ordinary `ClipAsset`. A
+  `.musi` has no field for the model, prompt and price that made it; that
+  wants an optional member on the asset, written only when present, as the
+  rest of the clip members are.
+- **Consent and price**: the Assist provider contracts, as above. Nothing in
+  the clip half calls a network service.
+- **A `generated` transition** between two sections' frames would be a clip
+  section of its own, generated from the two stills and placed across the cut.
+
+### The gate's negative controls
+
+`tools/clip_check.sh` (run from `tools/treatment_check.sh`). Each control was a
+scratch binary (`CLIP_BIN`, GPU only), the source reverted byte for byte after
+the build (`git diff --quiet` on the file), 2026-11-14:
+
+| Perturbation | What failed |
+| --- | --- |
+| Frame index as clip time × 24 instead of the probed frame times | six of eight exact stills: the matched frame at 14-19 dB and a neighbour at `inf` (t = 3.4 and 6.9 land on the same frame either way) |
+| `loop` and `bounce` swapped | the loop and both bounce stills, each matching a neighbour better than its own frame |
+| The missing-clip card not drawn | "the missing-clip card has no ink" (the report line alone still named it) |
+| The drift's clock hurried by loudness whatever `response` says | "response 0: the still over music differs from the still over silence" |
+| Exports drawing in the preview's role (no wait for the exact frame) | every exact still (3.7 dB: the "Opening" card), and the clip line's placeholder count |
