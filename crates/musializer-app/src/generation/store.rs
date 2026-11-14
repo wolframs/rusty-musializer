@@ -184,25 +184,23 @@ impl Store {
             return None;
         }
         let digest = musializer_runtime::project_files::sha256_file_hex(&path).ok()?;
-        (digest == receipt.clip_sha256).then(|| {
-            (
-                path,
-                ClipProvenance {
-                    provider: receipt.provider,
-                    model: receipt.model,
-                    prompt: receipt.prompt,
-                    seconds: receipt.seconds,
-                    resolution: receipt.resolution,
-                    aspect_ratio: receipt.aspect_ratio,
-                    first_sha256: receipt.first_sha256,
-                    last_sha256: receipt.last_sha256,
-                    request_sha256: receipt.request_sha256,
-                    generated_utc: receipt.generated_utc,
-                    estimate_usd: receipt.estimate_usd,
-                    cost_usd: receipt.cost_usd,
-                },
-            )
-        })
+        (digest == receipt.clip_sha256).then_some((
+            path,
+            ClipProvenance {
+                provider: receipt.provider,
+                model: receipt.model,
+                prompt: receipt.prompt,
+                seconds: receipt.seconds,
+                resolution: receipt.resolution,
+                aspect_ratio: receipt.aspect_ratio,
+                first_sha256: receipt.first_sha256,
+                last_sha256: receipt.last_sha256,
+                request_sha256: receipt.request_sha256,
+                generated_utc: receipt.generated_utc,
+                estimate_usd: receipt.estimate_usd,
+                cost_usd: receipt.cost_usd,
+            },
+        ))
     }
 
     /// Moves a verified download in and writes its receipt.

@@ -123,6 +123,10 @@ pub enum Reuse {
 
 /// How a job ended.
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "one per job, made once and moved once into the track"
+)]
 pub enum Outcome {
     Done(Generated),
     Failed { reason: String, billing: Billing },
