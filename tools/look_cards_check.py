@@ -1142,13 +1142,13 @@ if only in ('all', 'captures'):
 
 if only in ('all', 'captures'):
     # 36. (F1c) the clip rows in both appearances, at 1280 and at the 300 px
-    #     column: inside the list, the section's poster and every clip's
+    #     column (a tall window, so the whole card is on screen): inside the list, the section's poster and every clip's
     #     middle frame drawn (posters=settle waits for both), and the end and
     #     fit glyphs inked against their chips.
     from PIL import Image
     for theme in ['dark', 'light']:
         for scope, probe in [('clip', 'size=1280x720,column=look,time=5,play=0,section=3,posters=settle'),
-                             ('clip-narrow', 'size=960x640,column=look,column-width=300,time=5,play=0,section=3,posters=settle')]:
+                             ('clip-narrow', 'size=960x1200,column=look,column-width=300,time=5,play=0,section=3,posters=settle')]:
             log, _ = run(f'capture-{scope}-{theme}', probe, frames=40, theme=theme, project='clip')
             b = cards(log)
             area = tuple(map(int, field(b, 'area').split(',')))
@@ -1172,8 +1172,8 @@ if only in ('all', 'captures'):
             check(not weak, f'{scope}/{theme}: every end and fit glyph drew (weak {weak})')
             # The poster is a picture, not the empty well: many colours in it.
             poster = rect(b, 'clip-poster')
-            colours = len(set(image.crop((poster[0] + 2, poster[1] + 2, poster[0] + poster[2] - 2,
-                                          poster[1] + poster[3] - 2)).getdata()))
+            well = image.crop((poster[0] + 2, poster[1] + 2, poster[0] + poster[2] - 2, poster[1] + poster[3] - 2))
+            colours = len({well.getpixel((x, y)) for x in range(well.width) for y in range(well.height)})
             check(colours > 50, f"{scope}/{theme}: the poster holds a picture ({colours} colours)")
 
 (out / 'result.json').write_text(json.dumps({'failures': failures}, indent=2))
