@@ -88,12 +88,17 @@ verified; delete the block when done, with the record in the archive.
   count and instruments is built (two sessions in the Listening Lab; commands
   in the results doc). After he has answered, run the converter, commit the
   ground-truth file and re-score.
-- [ ] **H3 follow-ups in the application's MiMo lane**, from the results doc's
-  list: send a completion cap and treat a cut-off or empty answer as a failed
-  run (one uncapped call emitted 65,536 tokens and cost 0.13 USD); estimate
-  cost from completion tokens, not audio seconds; define the numeric scales in
-  the schema. Not to build: MiMo tempo in the interface, a lyric field, a
-  separate reformatter model. Repeats 2 and 3 of most cells are not run.
+- [x] **H3 follow-ups in the application's MiMo lane** (merged 2026-11-14):
+  a 16,000-token completion cap, a cut-off or empty or off-scale answer as a
+  failed run with its reason and cost, an estimate from completion tokens
+  shown before Start, the numeric scales stated. Left: the estimate's line in
+  the confirmation is cut off with an ellipsis at the default width; the
+  suitability row for `xiaomi/mimo-v2.5` still says no benchmark has been run
+  (it feeds `suitability_revision`, so changing it is a decision); repeats 2
+  and 3 of most benchmark cells are not run.
+- [ ] **A test that fails under load**: `clip::tests::a_budget_of_two_decoders_runs_two_whatever_the_clips`
+  (musializer-runtime) failed once on 2026-11-14 while another gate ran and
+  passed alone. Find the timing assumption.
 - [ ] **H4 — generating a clip** (F2, second half of VG): provider call, price
   shown first, consent, provenance, a real test clip (at most 3.50 USD in all).
 - [ ] **Close**: one review by GPT-6.1-Sol per stream before its release

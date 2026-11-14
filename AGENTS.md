@@ -236,6 +236,8 @@ number disagrees, grep it there before debugging from scratch.
 - **The gate's gradient measure reads film grain as detail**: an encoder that flattens grain lowers it, so under a finish read the blurred encoding error instead. See `docs/TRAPS.md`.
 - **A child started by bare name is no child under `headless_run.sh`**: its `PATH` is private, so resolve the program to an absolute path. See `docs/TRAPS.md`.
 - **A gate's EXIT trap stops at the first `wait` on a child it killed** under `set -e`: give every `kill`/`wait` in a cleanup its own `|| true`, or the Xvfb outlives the gate. See `docs/TRAPS.md`.
+- **A reasoning model with no `max_tokens` stops at the provider's ceiling** (65,536 for MiMo, all whitespace once): send a cap on every hosted call, and treat `length` as a failure even when the text parses. See `docs/TRAPS.md`.
+- **A helper's own reason dies at `_run`**, which reports only "exited with code N": a child that knows why it failed writes a receipt, checked for schema and audio hash, that the parent reads. See `docs/TRAPS.md`.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe
