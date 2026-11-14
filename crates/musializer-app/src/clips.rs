@@ -294,6 +294,9 @@ pub enum ImportTarget {
         selected: bool,
         /// It plays another scene and becomes Video Clip first.
         retarget: bool,
+        /// The plan is off: the section holds the clip, and plays it once
+        /// Auto is on (only a section's own card names a section then).
+        plan_off: bool,
     },
 }
 
@@ -324,7 +327,29 @@ pub fn import_target(plan: &SceneSwitchTimeline, selected: u64, time_seconds: f6
         end_seconds: cue.end_seconds,
         selected: picked.is_some(),
         retarget: cue.scene_index != SceneId::Clip.index() as u32,
+        plan_off: false,
     }
+}
+
+/// The section with `cue_id` as an import's target, named by a section's own
+/// card (G): the card edits that section, plan on or off, so its Import does
+/// too, rather than the generic rule's track clip when the plan is off.
+/// `None` when the section is gone.
+#[must_use]
+pub fn section_target(plan: &SceneSwitchTimeline, cue_id: u64) -> Option<ImportTarget> {
+    let cues = plan.cues();
+    let index = cues.iter().position(|cue| cue.id == cue_id)?;
+    let cue = cues[index];
+    Some(ImportTarget::Section {
+        index,
+        total: cues.len(),
+        cue_id,
+        start_seconds: cue.start_seconds,
+        end_seconds: cue.end_seconds,
+        selected: true,
+        retarget: cue.scene_index != SceneId::Clip.index() as u32,
+        plan_off: !plan.enabled,
+    })
 }
 
 /// Where the import's notice says the clip plays.
@@ -342,9 +367,10 @@ pub fn import_place(target: ImportTarget) -> String {
             end_seconds,
             selected,
             retarget,
+            plan_off,
             ..
         } => format!(
-            "in section {} of {total} ({} to {}), the one {}{}",
+            "in section {} of {total} ({} to {}), the one {}{}{}",
             index + 1,
             crate::ui::widgets::format_timestamp(start_seconds),
             crate::ui::widgets::format_timestamp(end_seconds),
@@ -353,7 +379,12 @@ pub fn import_place(target: ImportTarget) -> String {
             } else {
                 "under the playhead"
             },
-            if retarget { ", now Video Clip" } else { "" }
+            if retarget { ", now Video Clip" } else { "" },
+            if plan_off {
+                " (the plan is off: Auto on in the plan lane plays it)"
+            } else {
+                ""
+            }
         ),
     }
 }
@@ -362,9 +393,16 @@ pub fn import_place(target: ImportTarget) -> String {
 /// track's library, and have it play where [`import_target`] says — the
 /// section selected in the lane, else the one under the playhead, made Video
 /// Clip first when it plays another scene; with no plan driving, as the
-/// track's own clip, the track's scene becoming Video Clip. The notice names
-/// which.
-pub fn import_command(app: &mut crate::App, path: &Path, time_seconds: f64, now: f64) {
+/// track's own clip, the track's scene becoming Video Clip. `into` names the
+/// section instead (a section card's Import, [`section_target`]). The notice
+/// names which.
+pub fn import_command(
+    app: &mut crate::App,
+    path: &Path,
+    into: Option<u64>,
+    time_seconds: f64,
+    now: f64,
+) {
     let Some(track) = app.workspace.current() else {
         app.shell.notify(
             Severity::Warning,
@@ -373,11 +411,24 @@ pub fn import_command(app: &mut crate::App, path: &Path, time_seconds: f64, now:
         );
         return;
     };
-    let target = import_target(
-        &track.scene_switches,
-        app.shell.scene_lane.selected_id,
-        time_seconds,
-    );
+    let target = match into {
+        Some(cue_id) => {
+            let Some(target) = section_target(&track.scene_switches, cue_id) else {
+                app.shell.notify(
+                    Severity::Warning,
+                    "Clip not imported",
+                    "The section it was for is no longer in the plan.",
+                );
+                return;
+            };
+            target
+        }
+        None => import_target(
+            &track.scene_switches,
+            app.shell.scene_lane.selected_id,
+            time_seconds,
+        ),
+    };
     let entry = match import(path) {
         Ok(entry) => entry,
         Err(error) => {

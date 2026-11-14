@@ -97,6 +97,8 @@ file):
       (0.12 s; it lasts 1.08): once probed the card reads playback's clock
       (0.5, not 0.02), Own start pins 0.5 and keeps frame 2, the saved
       record is 1.08, and opening alone writes nothing.
+  38. (G) with the plan off, the card's Import lands in its own section
+      (named on the report, `clip-import-to=`), the track's clip untouched.
  captures
   14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
@@ -193,6 +195,8 @@ compared with `cmp`:
   37 (2 failures): the recorded length never corrected from the probe: the
     card read clip-at 0.0200 against playback's 0.5; Own start pinned 0.02
     and drew frame 1 where frame 2 had been, the record still 0.12.
+  38 (1 failure): the card's Import dispatching the generic import: with the
+    plan off, section 4 kept b.mp4 and the track's clip became c.mp4.
 """
 import json
 import os
@@ -1215,6 +1219,27 @@ if only in ('all', 'clip'):
           and abs(saved['clips'][0]['duration_seconds'] - 1.08) < 1e-9,
           f"Own start pins 0.5 with the probed length and keeps frame {held_before}: from {start}, "
           f"frame {clip_frame(log)}, recorded {saved['clips'][0]['duration_seconds']}")
+
+    # 38. (G) with the plan off, a section card's Import lands in its own
+    #     section, not on the track's clip the generic rule would pick; the
+    #     report names the target and says the plan is off. The control is
+    #     the plan-on import of check 29.
+    def plan_off(work):
+        path = work / 'clip.musi'
+        project = json.loads(path.read_text())
+        project['scene_switches']['enabled'] = False
+        path.write_text(json.dumps(project, indent=2))
+    off4 = cards(run('clip-off-s4', CLIP + ',section=4', project='clip', frames=60, prepare=plan_off)[0])
+    log, saved = run('clip-off-import', CLIP + ',section=4' + click(centre(rect(off4, 'clip-import')))
+                     + f",clip-pick={out / 'c.mp4'}", project='clip', frames=200, prepare=plan_off)
+    c_sha = next((entry['sha256'] for entry in saved.get('clips', []) if entry['name'] == 'c.mp4'), None)
+    base_clip = saved['scenes'][0].get('clip')
+    check(field(off4, 'clip-import-to') == 'section-4' and field(off4, 'clip-plan') == 'off'
+          and 'clip-import@disabled' not in off4,
+          f"plan off: the card's Import names section 4 ({field(off4, 'clip-import-to')}, plan {field(off4, 'clip-plan')})")
+    check(c_sha and cue(saved, 3)['clip'].get('clip') == c_sha and base_clip == original['clip']['scenes'][0].get('clip')
+          and saved['scene_switches']['enabled'] is False,
+          f"plan off: Import lands c.mp4 in section 4, the track's clip stays ({cue(saved, 3).get('clip')}, track {base_clip})")
 
 if only in ('all', 'captures'):
     for theme in ['dark', 'light']:

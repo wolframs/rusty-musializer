@@ -94,6 +94,10 @@ pub enum ShellCommand {
     ImportClip(PathBuf),
     /// Ask for a video file through a native picker, then import it (VG).
     ImportClipDialog,
+    /// [`Self::ImportClipDialog`] from a section's card: the clip lands in
+    /// the section with this cue id, whatever the generic rule would pick
+    /// (G, 2026-11-14: with the plan off that rule is the track's clip).
+    ImportClipDialogInto(u64),
     /// Reopen a project named by the welcome screen's recent list (UX0-C06).
     OpenRecentProject(PathBuf),
     /// Take an entry out of the recent list and persist the shorter list.
@@ -316,6 +320,7 @@ impl ShellCommand {
             | ShellCommand::OpenRecentProject(_)
             | ShellCommand::ImportAsciiImageDialog
             | ShellCommand::ImportClipDialog
+            | ShellCommand::ImportClipDialogInto(_)
             | ShellCommand::SaveProject
             | ShellCommand::SaveProjectAs
             | ShellCommand::SaveUiPreferences(_) => false,

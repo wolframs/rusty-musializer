@@ -2631,9 +2631,14 @@ fn run(
                     clear_ascii_image(&mut app, rl.get_time());
                 }
                 ShellCommand::ImportClip(path) => {
-                    clips::import_command(&mut app, &path, time_seconds, rl.get_time());
+                    clips::import_command(&mut app, &path, None, time_seconds, rl.get_time());
                 }
-                ShellCommand::ImportClipDialog => {
+                command @ (ShellCommand::ImportClipDialog
+                | ShellCommand::ImportClipDialogInto(_)) => {
+                    let into = match command {
+                        ShellCommand::ImportClipDialogInto(cue_id) => Some(cue_id),
+                        _ => None,
+                    };
                     let picked = match probe_clip_pick.clone() {
                         Some(path) => Ok(Some(path)),
                         None => FileDialog::new("Import a video clip")
@@ -2643,7 +2648,13 @@ fn run(
                     match picked {
                         Ok(None) => {}
                         Ok(Some(path)) => {
-                            clips::import_command(&mut app, &path, time_seconds, rl.get_time());
+                            clips::import_command(
+                                &mut app,
+                                &path,
+                                into,
+                                time_seconds,
+                                rl.get_time(),
+                            );
                         }
                         Err(error) => app.shell.notify(
                             Severity::Warning,

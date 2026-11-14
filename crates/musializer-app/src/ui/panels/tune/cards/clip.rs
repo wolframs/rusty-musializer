@@ -153,6 +153,17 @@ fn choice_words(clip: &TrackClip, thumb: &ThumbView<'_>) -> (String, bool) {
     }
 }
 
+/// What the card's Import says it does: always into the card's section; with
+/// the plan off, that the section holds it until Auto is on.
+fn import_words(number: usize, plan_on: bool) -> String {
+    let base = crate::clips::IMPORT_HINT.replacen("this section", &format!("section {number}"), 1);
+    if plan_on {
+        base
+    } else {
+        format!("{base}. The plan is off: the section holds the clip, and Auto on in the plan lane plays it")
+    }
+}
+
 /// The section's start, in words: continuing, its own, or the clip's start.
 fn start_words(section: &ClipSection, index: usize, length: f64) -> String {
     let at = section.start_on_screen(length);
@@ -203,13 +214,15 @@ pub(super) fn report(track: &Track, index: usize, cards: &CardState) -> String {
         "start".to_owned()
     };
     format!(
-        "clip={} clip-whose={} clip-from={from} clip-at={:.4} clip-after={} clip-fit={} clip-library={}{}",
+        "clip={} clip-whose={} clip-from={from} clip-at={:.4} clip-after={} clip-fit={} clip-library={} clip-import-to=section-{} clip-plan={}{}",
         short(section.placement.clip),
         if section.inherited { "track" } else { "own" },
         section.start_on_screen(length),
         section.placement.after.name(),
         section.placement.fit.name(),
         track.clips.len(),
+        index + 1,
+        if track.scene_switches.enabled { "on" } else { "off" },
         cards.clip_drawn,
     )
 }
@@ -586,9 +599,14 @@ impl Shell {
                         ..state
                     }
                 };
-                self.card_hint(d, state, import_id, import, crate::clips::IMPORT_HINT);
+                // The card names its target (G): this section, plan on or
+                // off. The generic import's rule would give the track's clip
+                // with the plan off.
+                let hint = import_words(cx.index + 1, track.scene_switches.enabled);
+                self.card_hint(d, state, import_id, import, &hint);
                 if state.clicked {
-                    cx.commands.push(ShellCommand::ImportClipDialog);
+                    cx.commands
+                        .push(ShellCommand::ImportClipDialogInto(cx.cue.id));
                 }
                 // A real registration for the hover and to take the press, so
                 // a click on the disabled control lands nowhere, as in the
@@ -1226,6 +1244,42 @@ mod tests {
             .map(|entry| entry.asset.clone())
             .collect();
         assert!(clip_model::placement_fits(&assets, &own));
+    }
+
+    /// G defect 3: the card's Import names its own section, plan on or off;
+    /// the generic rule gives the track's clip with the plan off, which is
+    /// what the card's press used to reach.
+    #[test]
+    fn the_cards_import_lands_in_its_section_with_the_plan_off() {
+        use crate::clips::{import_target, section_target, ImportTarget};
+        let mut track = track();
+        track.scene_switches.enabled = false;
+        assert_eq!(
+            import_target(&track.scene_switches, 2, 15.0),
+            ImportTarget::Track
+        );
+        let Some(ImportTarget::Section {
+            cue_id, plan_off, ..
+        }) = section_target(&track.scene_switches, 2)
+        else {
+            panic!("the card's section is a target");
+        };
+        assert_eq!((cue_id, plan_off), (2, true));
+        assert!(
+            crate::clips::import_place(section_target(&track.scene_switches, 2).unwrap())
+                .contains("the plan is off")
+        );
+        assert_eq!(section_target(&track.scene_switches, 99), None);
+        assert!(
+            import_words(2, false).contains("section 2")
+                && import_words(2, false).contains("plan is off")
+        );
+        assert!(!import_words(2, true).contains("plan is off"));
+        let words = report(&track, 1, &CardState::default());
+        assert!(
+            words.contains("clip-import-to=section-2 clip-plan=off"),
+            "{words}"
+        );
     }
 
     #[test]
