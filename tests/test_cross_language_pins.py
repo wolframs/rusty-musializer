@@ -113,14 +113,14 @@ class MimoCostEstimate(unittest.TestCase):
             mimo_openrouter.PRICES_USD_PER_MILLION)
 
     def test_the_helper_computes_the_number_the_rust_test_pins(self) -> None:
-        # cost.rs pins 200 s at 2 380 input tokens and 0.008952 / 0.022952 /
-        # 0.032952 USD; the helper must record the same figures.
+        # cost.rs pins 200 s at 1 680 input tokens and 0.003672 / 0.022672 /
+        # 0.032672 USD; the helper must record the same figures.
         estimate = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", 200.0)
-        self.assertEqual(estimate["input_tokens"], 2_380)
-        self.assertEqual(estimate["usd_typical"], [0.008952, 0.022952])
-        self.assertEqual(estimate["usd_max"], 0.032952)
+        self.assertEqual(estimate["input_tokens"], 1_680)
+        self.assertEqual(estimate["usd_typical"], [0.003672, 0.022672])
+        self.assertEqual(estimate["usd_max"], 0.032672)
         source = rust_source(COST_RS)
-        for figure in ("2_380", "0.008_952", "0.022_952", "0.032_952"):
+        for figure in ("1_680", "0.003_672", "0.022_672", "0.032_672"):
             self.assertIn(figure, source)
 
 

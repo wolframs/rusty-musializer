@@ -77,12 +77,13 @@ PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
 PRICES_LISTED_ON = "2026-11-14"
 # Calibrated from the benchmark's recorded `usage.prompt_tokens`.
 AUDIO_TOKENS_PER_SECOND = 7.4
-# This request's text, instruction and schema, as prompt tokens: measured on
-# the 2026-11-14 capped call (`usage.prompt_tokens` less the audio).
-PROMPT_TEXT_TOKENS = 900
-# The span of whole-excerpt answers the benchmark saw (5 110 for this lane's
-# own shape, 10 942 the largest legitimate one). The ceiling is the cap.
-TYPICAL_COMPLETION_TOKENS = (4_000, 11_000)
+# This request's text as prompt tokens: the 2026-11-14 capped call reported
+# 928 prompt tokens for 100 s, 740 of them audio at the rate above.
+PROMPT_TEXT_TOKENS = 200
+# The span of whole-excerpt answers seen so far: 2 044 and 2 407 on this
+# lane's capped request (two calls, 2026-11-14), 5 110 on the benchmark's
+# shape of it, 10 942 the largest legitimate one. The ceiling is the cap.
+TYPICAL_COMPLETION_TOKENS = (1_500, 11_000)
 # Bytes of a failed answer's text kept in its receipt: enough to see what kind
 # of failure it was (whitespace, prose, half a JSON object), never 65 k tokens.
 FAILED_CONTENT_KEEP = 4096

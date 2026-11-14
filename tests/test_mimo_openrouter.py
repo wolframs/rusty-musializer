@@ -228,23 +228,25 @@ class FailedRuns(LaneTestCase):
 class CostEstimate(LaneTestCase):
     def test_a_whole_track_is_priced_from_its_answer_not_its_audio(self) -> None:
         estimate = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", 200.0)
-        self.assertEqual(estimate["input_tokens"], 1_480 + 900)
-        self.assertEqual(estimate["completion_tokens_typical"], [4_000, 11_000])
+        self.assertEqual(estimate["input_tokens"], 1_480 + 200)
+        self.assertEqual(estimate["completion_tokens_typical"], [1_500, 11_000])
         self.assertEqual(estimate["completion_tokens_max"], 16_000)
-        self.assertEqual(estimate["usd_typical"], [0.008952, 0.022952])
-        self.assertEqual(estimate["usd_max"], 0.032952)
-        # The audio alone is a twentieth of the low end.
-        self.assertLess(1_480 * 0.40 / 1e6 * 10, estimate["usd_typical"][0])
+        self.assertEqual(estimate["usd_typical"], [0.003672, 0.022672])
+        self.assertEqual(estimate["usd_max"], 0.032672)
+        # The audio alone is under a sixth of the low end.
+        self.assertLess(1_480 * 0.40 / 1e6 * 6, estimate["usd_typical"][0])
 
     def test_the_benchmarks_recorded_call_lands_inside_the_range(self) -> None:
-        # 100 s, 5 110 completion tokens, reported 0.010596 USD.
+        # 100 s: the benchmark's 5 110 completion tokens (0.010596 USD) and
+        # this lane's two capped calls, 2 407 and 2 044 (0.0051852, 0.00417248).
         low, high = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", 100.0)["usd_typical"]
-        self.assertLessEqual(low, 0.010596)
-        self.assertLessEqual(0.010596, high)
+        for reported in (0.010596, 0.0051852, 0.00417248):
+            self.assertLessEqual(low, reported)
+            self.assertLessEqual(reported, high)
 
     def test_an_unlisted_model_gets_tokens_and_no_dollars(self) -> None:
         estimate = mimo_openrouter.estimate_cost("acme/never-priced", 200.0)
-        self.assertEqual(estimate["input_tokens"], 2_380)
+        self.assertEqual(estimate["input_tokens"], 1_680)
         self.assertIsNone(estimate["usd_typical"])
         self.assertIsNone(estimate["usd_max"])
 
@@ -252,7 +254,7 @@ class CostEstimate(LaneTestCase):
         payload, settings = mimo_openrouter.build_request(
             b"\x00", audio_format="wav", audio_duration=200.0)
         dump = mimo_openrouter.redacted_request_dump(payload, settings, "a" * 64)
-        self.assertEqual(dump["cost_estimate"]["usd_max"], 0.032952)
+        self.assertEqual(dump["cost_estimate"]["usd_max"], 0.032672)
 
     def test_the_cached_answer_records_the_estimate_beside_the_reported_cost(self) -> None:
         _, envelope = self.run_lane(response(answer(), cost=0.010596))

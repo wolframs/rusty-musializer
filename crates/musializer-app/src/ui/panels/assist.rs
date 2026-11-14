@@ -4626,7 +4626,7 @@ mod tests {
                 assert_eq!(entry.model_id, "xiaomi/mimo-v2.5");
                 assert_eq!(
                     line.as_deref(),
-                    Some("Estimated cost: about 0.009\u{2013}0.023 USD, at most 0.033 USD (answer capped at 16000 tokens)")
+                    Some("Estimated cost: about 0.004\u{2013}0.023 USD, at most 0.033 USD (answer capped at 16000 tokens)")
                 );
                 priced += 1;
             } else {

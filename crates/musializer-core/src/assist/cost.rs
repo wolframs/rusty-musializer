@@ -20,13 +20,14 @@ pub const SEMANTIC_MAX_COMPLETION_TOKENS: u32 = 16_000;
 /// Calibrated from the benchmark's recorded `usage.prompt_tokens`.
 pub const AUDIO_TOKENS_PER_SECOND: f64 = 7.4;
 
-/// The request's text, instruction and schema as prompt tokens, measured on the
-/// 2026-11-14 capped call.
-pub const PROMPT_TEXT_TOKENS: u32 = 900;
+/// The request's text as prompt tokens: the 2026-11-14 capped call reported 928
+/// prompt tokens for 100 s, 740 of them audio at the rate above.
+pub const PROMPT_TEXT_TOKENS: u32 = 200;
 
-/// The span of whole-excerpt answers the benchmark saw: 5 110 tokens for this
-/// lane's own request shape, 10 942 the largest legitimate answer.
-pub const TYPICAL_COMPLETION_TOKENS_LOW: u32 = 4_000;
+/// The span of whole-excerpt answers seen so far: 2 044 and 2 407 tokens on
+/// this lane's capped request (two calls, 2026-11-14), 5 110 on the benchmark's
+/// shape of it, 10 942 the largest legitimate answer.
+pub const TYPICAL_COMPLETION_TOKENS_LOW: u32 = 1_500;
 pub const TYPICAL_COMPLETION_TOKENS_HIGH: u32 = 11_000;
 
 /// The date the prices below were read off OpenRouter's endpoint list.
@@ -140,19 +141,19 @@ pub fn semantic_line(model_id: &str, duration_seconds: f64) -> String {
 mod tests {
     use super::*;
 
-    /// Pinned numbers, not properties: 200 s is 1 480 audio tokens plus 900 of
-    /// text, so 2 380 at 0.40 USD/M and 4 000 / 11 000 / 16 000 at 2.00 USD/M.
+    /// Pinned numbers, not properties: 200 s is 1 480 audio tokens plus 200 of
+    /// text, so 1 680 at 0.40 USD/M and 1 500 / 11 000 / 16 000 at 2.00 USD/M.
     #[test]
     fn a_three_minute_twenty_track_costs_cents_not_tenths() {
         let estimate = semantic_estimate("xiaomi/mimo-v2.5", 200.0).expect("priced");
-        assert_eq!(estimate.input_tokens, 2_380);
+        assert_eq!(estimate.input_tokens, 1_680);
         let close = |a: f64, b: f64| (a - b).abs() < 1e-12;
-        assert!(close(estimate.usd_typical[0], 0.008_952), "{estimate:?}");
-        assert!(close(estimate.usd_typical[1], 0.022_952), "{estimate:?}");
-        assert!(close(estimate.usd_max, 0.032_952), "{estimate:?}");
+        assert!(close(estimate.usd_typical[0], 0.003_672), "{estimate:?}");
+        assert!(close(estimate.usd_typical[1], 0.022_672), "{estimate:?}");
+        assert!(close(estimate.usd_max, 0.032_672), "{estimate:?}");
         assert_eq!(
             estimate.sentence(),
-            "Estimated cost: about 0.009\u{2013}0.023 USD, at most 0.033 USD (answer capped at 16000 tokens)"
+            "Estimated cost: about 0.004\u{2013}0.023 USD, at most 0.033 USD (answer capped at 16000 tokens)"
         );
     }
 
@@ -163,17 +164,23 @@ mod tests {
     fn the_benchmarks_recorded_call_falls_inside_the_range() {
         let estimate = semantic_estimate("xiaomi/mimo-v2.5", 100.0).expect("priced");
         assert!(estimate.usd_typical[0] <= 0.010_596 && 0.010_596 <= estimate.usd_typical[1]);
+        // And this lane's own two capped calls on the same excerpt: 928 prompt
+        // tokens and 2 407 / 2 044 completion tokens, reported at 0.0051852 and
+        // 0.00417248 USD.
+        for reported in [0.005_185_2, 0.004_172_48] {
+            assert!(estimate.usd_typical[0] <= reported && reported <= estimate.usd_typical[1]);
+        }
         // The runaway (0.131 USD) is past the ceiling, which is the cap's point.
         assert!(estimate.usd_max < 0.131);
     }
 
     /// The order-of-magnitude error the change exists for: audio alone, at the
-    /// prompt rate, is a twentieth of the low end.
+    /// prompt rate, is under a sixth of the low end.
     #[test]
     fn the_audio_is_a_small_part_of_the_price() {
         let estimate = semantic_estimate("xiaomi/mimo-v2.5", 200.0).expect("priced");
         let audio_only = 1_480.0 * 0.40 / 1_000_000.0;
-        assert!(audio_only * 10.0 < estimate.usd_typical[0]);
+        assert!(audio_only * 6.0 < estimate.usd_typical[0]);
     }
 
     #[test]
