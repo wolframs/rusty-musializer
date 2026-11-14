@@ -62,8 +62,9 @@ Per call, where the money went:
 (shut-up-cat c05x20, chunk 2) emitted **65 536 tokens of whitespace** and
 stopped on `length`: 0.131 USD, 27 % of all recorded spend. One casual-checklist
 free-text answer ran to ~43 000 tokens (0.087 USD). Two calls returned null
-content. The application's request (`tools/mimo_openrouter.py`) sets no
-`max_tokens` either, so the app is exposed to the same thing.
+content. The application's request (`tools/mimo_openrouter.py`) set no
+`max_tokens` either, so the app was exposed to the same thing (capped since
+2026-11-14; see item 1 below).
 
 ## The table
 
@@ -132,14 +133,21 @@ lets a quote straddle two aligned lines; every number here is v2.
 
 ## What this means for the application's MiMo lane
 
-Changes the gates and the run justify, for the lead to queue (none made here):
+Changes the gates and the run justify, for the lead to queue (none made here;
+items 1, 2 and 7 landed on 2026-11-14, see `ASSIST_PIPELINE.md`, "The MiMo
+feelings request", and `DIVERGENCES.md`, "The MiMo lane's request"):
 
-1. **Cap the completion.** Send `max_tokens` (reasoning included; ~12 000 would
+1. ~~**Cap the completion.**~~ *Landed: `max_tokens` 16 000, failed runs never
+   cached.* Send `max_tokens` (reasoning included; ~12 000 would
    have cut both runaways, 65 536 and 43 578 tokens, and no other call: the
    largest of the rest used 10 942) and treat
    `finish_reason: length` or null content as a failed run, never as a result.
    One uncapped call cost more than the rest of a chunked cell.
-2. **Show cost from completion tokens, not audio.** A whole-track MiMo call
+2. ~~**Show cost from completion tokens, not audio.**~~ *Landed: the
+   confirmation's estimate, and the artifact's estimate beside the billed cost.
+   The lane's own two capped calls on shut-up-cat cost 0.0052 and 0.0042 USD
+   (2 407 and 2 044 completion tokens, 294 and 452 reasoning): this prompt
+   reasons far less than the benchmark's.* A whole-track MiMo call
    costs about 0.01–0.02 USD, nearly all of it reasoning output; any estimate
    built on audio seconds is wrong by an order of magnitude in the other
    direction.
@@ -152,7 +160,8 @@ Changes the gates and the run justify, for the lead to queue (none made here):
    field in `SemanticScore` yet (G8). If lyric moments are wanted later, the
    5–20 s chunked runs place them within ~1 s, at more fabrication.
 6. **No separate reformatter model** (G5).
-7. **Define the numeric scales in the schema.** Unprompted, `energy` came back
+7. ~~**Define the numeric scales in the schema.**~~ *Landed: prompt v2 states
+   them; an off-scale number fails the run.* Unprompted, `energy` came back
    as 78, 8 and 5 from three chunks of the same excerpt.
 
 ## What is not yet answered

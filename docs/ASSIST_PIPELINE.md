@@ -250,6 +250,33 @@ The stable output directory permits reuse, but cache provenance includes source
 and audio identities plus the relevant model, policy, and settings versions.
 Changing a timing policy must invalidate the artifact it changes.
 
+### The MiMo feelings request (2026-11-14)
+
+`tools/mimo_openrouter.py` sends the whole track once, with the checklist-style
+prompt the benchmark kept ([`MIMO_BENCHMARK_RESULTS.md`](MIMO_BENCHMARK_RESULTS.md)),
+and three guards it found missing:
+
+- **A completion cap.** `max_tokens: 16000`, reasoning included, part of the
+  request identity. Without it the provider's 65 536 applied.
+- **Failed runs.** A response that did not finish with `stop`, carries null or
+  empty text, is not JSON, or does not fit the schema is never cached and never
+  staged. A `musializer.mimo-failed-run/v1` receipt goes beside the cache
+  (`semantic.cache.failed.json`), and the job fails with one sentence naming the
+  reason and what OpenRouter billed for it (or, unreported, the most it can
+  have cost). A billed empty answer is not retried.
+- **Stated scales.** The prompt and the model's schema give energy, tension
+  (0–1), valence (−1–1) and confidence (0–1) a range and a meaning. A value
+  outside its range fails the run, naming the field, rather than being clamped
+  or dropped: the bridge needs all four, and an answer on another scale has its
+  other numbers on it too. Prompt `musializer-semantic-score/v2`; a v1 cache is
+  regenerated, and its document still opens.
+
+The cost is estimated from completion tokens, not audio
+(`musializer.mimo-cost-estimate/v1`, `core::assist::cost` and its pinned Python
+twin): the confirmation shows a range and the cap's ceiling under the MiMo
+route, and the artifact's `provenance.generation` and the manifest's
+`semantic_cost` keep that estimate beside the provider's `usage` and cost.
+
 ### Local performed-phrase recovery (2026-09-08)
 
 The recommended Timed lyrics workflow stays local, including tracks without
@@ -481,6 +508,9 @@ Failure should remain visible at the narrowest boundary that can explain it:
   Assist panel.
 - Invalid schema, wrong audio, duration mismatch, or excess lane authority: Rust
   rejects the bridge and stages nothing.
+- A MiMo answer cut off at its cap, empty, unparseable, off-schema or off-scale:
+  a failed run before any bridge exists; the job's failure line names the
+  reason and the billed cost, and the receipt keeps the provider's `usage`.
 - Authorized mode producing no changes: a truthful terminal no-change result,
   not an empty candidate.
 - Weak boundary evidence within one occurrence: retain timing as uncertain.
@@ -504,6 +534,7 @@ Failure should remain visible at the narrowest boundary that can explain it:
 | Assist state and mode authority | core tests, anchored by `tools/differential_assist_ui.sh` (341 policy decisions; run deliberately, not part of `verify.sh`) |
 | Process start, timeout, cancellation, and reaping | runtime `process::assist` tests |
 | Bridge bounds, identity, coverage, and staging | core bridge/candidate tests and app panel tests |
+| MiMo request: cap, failed runs, cost estimate, numeric scales | [`tests/test_mimo_openrouter.py`](../tests/test_mimo_openrouter.py) (fake OpenRouter), the `MimoCostEstimate` pins in [`tests/test_cross_language_pins.py`](../tests/test_cross_language_pins.py), `core::assist::cost` tests |
 | Execution snapshot: route resolution at Start, provenance, mid-job settings immutability | [`tests/test_assist_execution.py`](../tests/test_assist_execution.py), `core::assist::execution` tests, [`crates/musializer-runtime/examples/assist_canary_probe.rs`](../crates/musializer-runtime/examples/assist_canary_probe.rs) |
 | Installed helper and local-lyrics assets | `python3 tools/musializer_doctor.py --require local_lyrics` |
 | Support workflow | `tools/support_bundle_check.sh` |

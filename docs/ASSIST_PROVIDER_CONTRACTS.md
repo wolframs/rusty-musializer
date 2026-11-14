@@ -112,6 +112,19 @@ The four workflow buttons map to output lanes and stages as follows:
 | MiMo feelings | semantic cues only | measured analysis, OpenRouter MiMo over the track audio, deterministic planner |
 | Full assist | all three lanes | the union of the preceding stages |
 
+### What a `TC-SEMANTIC` call is told and what it may cost (2026-11-14)
+
+The OpenRouter request for `TC-SEMANTIC` carries `max_tokens: 16000` (reasoning
+included) and no `reasoning` setting; the cap is part of the request identity
+(§5 rule 7). Before Start the confirmation shows the call's estimated cost,
+built on completion tokens from a dated price table (`core::assist::cost`),
+under the route row; a model with no listed price shows only the cap, never a
+guessed figure. A response that is cut off, empty, off-schema or off-scale is a
+failed run: the contract fails (fallback `none`), nothing is cached, and the
+failure names what the provider billed. Details and the numbers behind them:
+`ASSIST_PIPELINE.md`, "The MiMo feelings request", and `DIVERGENCES.md`, "The
+MiMo lane's request".
+
 ## 2. Non-secret preferences record
 
 One versioned, atomically replaced file in the per-user config directory.

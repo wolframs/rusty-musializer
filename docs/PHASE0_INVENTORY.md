@@ -1121,7 +1121,7 @@ get wrong.
 | `project-v1.schema.json` | **Canonical `.musi` project contract** — see 6.2/6.3. |
 | `scene-plan-v1.schema.json` | Deterministic scene-switch plan (the imported suggestion sequence behind `--auto-scenes`). |
 | `semantic-notes-v1.schema.json` | Imported free-form MiMo interpretation notes. |
-| `semantic-score-v1.schema.json` | MiMo SemanticScore (the `semantic_score` lane artifact: energy / tension / valence / confidence). |
+| `semantic-score-v1.schema.json` | MiMo SemanticScore (the `semantic_score` lane artifact: energy / tension / valence / confidence). Unchanged by prompt v2 (2026-11-14); see 6.7a. |
 
 All except `codex-lyric-review-output-v1` use `$id`
 `https://musializer.local/schemas/...` — **except** `font-import-v1`, which
@@ -1681,6 +1681,22 @@ All five join the request identity, so changing any of them regenerates the
 semantic lane instead of reusing an answer another policy produced. The
 credential still reaches the helper **only** through the environment: no flag
 here or anywhere takes a key (E2).
+
+### 6.7a The MiMo request, its failed runs and its estimate (2026-11-14)
+
+Not files in `schemas/`; the helper writes them and the tests pin them.
+
+| Name | Where | Contents |
+| --- | --- | --- |
+| prompt `musializer-semantic-score/v2` | `PROMPT_VERSION`, request identity | The scales stated (energy, tension, confidence 0–1; valence −1–1, each with a meaning); the model schema `musializer_semantic_score_v2` carries the same text as `description`. An off-range value (beyond 1e-6) fails the run. v1 identities no longer match, so a v1 cache is regenerated; the document format stays `musializer.semantic-score/v1` |
+| `max_tokens` | request identity and payload | `16000`, reasoning included |
+| `musializer.mimo-failed-run/v1` | `<cache stem>.failed.json` beside the cache | `reason`, `message` (the user's sentence), `detail`, `audio_sha256`, `request` (the identity), `finish_reason`, `generation` (`id`, `created`, `model`, `provider`, `usage`), `estimate`, `reported_cost_usd`, `content_characters`, `content_start` (first 4096 characters) |
+| `musializer.mimo-cost-estimate/v1` | helper `--dry-run` `cost_estimate`; `assist --dry-run` `semantic_cost_estimate`; artifact `provenance.generation.estimate` | `model`, `audio_seconds`, `input_tokens`, `completion_tokens_typical` [low, high], `completion_tokens_max`, `prices_usd_per_million` {prompt, completion} or null, `prices_listed_on`, `usd_typical` [low, high] or null, `usd_max` or null |
+| `provenance.generation.reported_cost_usd` | semantic artifact | OpenRouter's `usage.cost`, or null |
+| `semantic_cost` | `assist-manifest.json`, when the semantic artifact has an estimate | `estimate`, `reported_cost_usd`, `completion_tokens`, `prompt_tokens`, `billed_this_run` (`cache_status.semantic == "generated"`) |
+| `assist cost:` | report line, Assist confirmation | `model=… seconds=… input-tokens=… usd-typical=LOW..HIGH usd-max=… cap=16000`, or `unpriced` |
+
+No environment variable was added.
 
 ### 6.8 `musializer.assist-settings/v1` — `assist.json` (tranche AP1)
 

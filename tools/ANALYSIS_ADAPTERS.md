@@ -139,7 +139,7 @@ diagnostic-only: it disables flash attention as whisper.cpp requires and
 imports its centisecond `t_dtw` moments, but real repeated-song tests made that
 decoding path hallucinate loops and collapse many tokens onto the same moment.
 The umbrella timeout is at least ten minutes and defaults to 40 minutes so the
-local alignment and MiMo's bounded retries can finish.
+local alignment and MiMo's bounded retries (of transient HTTP refusals only) can finish.
 
 `--dry-run` performs no child process or network call and emits a credential-
 free action description. Child processes are argv arrays without a shell.
@@ -289,6 +289,16 @@ the normalizer enforces it with a one-millisecond boundary tolerance, and the
 persisted schema records the cross-item rule as
 `x-musializer-coverage: contiguous-full-duration`. Incomplete model timelines
 are rejected rather than silently promoted to a complete creative score.
+
+Since 2026-11-14 the request carries `max_tokens: 16000` (reasoning included,
+part of the cache key), and the prompt and schema state each numeric scale
+(energy, tension, confidence 0–1; valence −1–1). An answer cut off at the cap,
+empty, not JSON, off-schema or off a stated scale is a failed run: no cache
+write, a `<cache stem>.failed.json` receipt with the provider's `usage` and
+cost, exit status 1, and one stderr sentence naming the reason and what was
+billed. A billed empty answer is not retried. `--dry-run` also prints the
+call's `cost_estimate` (completion-token range and the cap's ceiling); the
+cache's `provenance.generation` keeps that estimate beside `reported_cost_usd`.
 
 ## Google Fonts caption faces
 

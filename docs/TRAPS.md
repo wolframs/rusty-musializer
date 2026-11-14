@@ -639,3 +639,27 @@ and the next gate on the same display finds a foreign server and refuses it.
 Give every `kill` and `wait` in a cleanup its own `|| true`. Symptom: an
 `Xvfb :86` still running after a gate that printed its result. Found in
 `tools/generate_check.sh` (VG H4), 2026-11-14.
+
+## A reasoning model with no completion limit stops at the provider's ceiling
+
+OpenRouter applies the endpoint's own `max_completion_tokens` when a request
+sends no `max_tokens`; for MiMo v2.5 on Venice that is 65 536, and one
+benchmark call spent all of it on whitespace (0.131 USD, `finish_reason:
+length`). Reasoning tokens bill as completion tokens and count against the
+same limit. Send `max_tokens` on every hosted model call, and treat `length`
+as a failure even when the text parses, since a truncated JSON list is still
+JSON. Symptom: a call costing ten times its neighbours with a `usage` of
+exactly 65 536 completion tokens. Found in the MiMo benchmark and fixed in
+`tools/mimo_openrouter.py` (H3b), 2026-11-14.
+
+## A helper's own reason dies at `_run`
+
+`external_analysis._run` turns a failed child into "`NAME` exited with code
+`N`", and that sentence is what the Assist panel shows; whatever the child
+printed is not read (it may hold lyrics or provider text). A child that knows
+why it failed must leave that reason somewhere the parent reads it: the MiMo
+helper writes a receipt beside its cache and `_mimo_failure` raises its
+sentence instead. A receipt is checked for its schema and audio hash and
+deleted before each attempt, so a stale one cannot explain a new failure.
+Symptom: a toast saying "python3 exited with code 1" for a failure the helper
+had named precisely. Found in the MiMo lane (H3b), 2026-11-14.
