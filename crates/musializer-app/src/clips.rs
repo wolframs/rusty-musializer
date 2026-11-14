@@ -11,7 +11,9 @@
 use std::path::{Path, PathBuf};
 
 use musializer_core::project::clip::{self, ClipAsset, ClipPlacement, ClipRef};
+use musializer_core::scene::SceneId;
 use musializer_core::treatment::Treatment;
+use musializer_core::ui::notice::Severity;
 use musializer_runtime::clip::{probe, ClipError, ClipSource};
 
 /// One clip a track holds.
@@ -141,4 +143,86 @@ pub fn attach_treatment_clips(
         entries.push((file.path, entry));
     }
     Ok(entries)
+}
+
+/// Import a clip picked or dropped in the window (VG): read it, put it in the
+/// track's library, and have it play — in the section the lane has selected,
+/// else the one under the playhead, when the plan drives; as the track's own
+/// clip otherwise. The scene becomes Video Clip there first, the way a tile
+/// press retargets that section.
+pub fn import_command(app: &mut crate::App, path: &Path, time_seconds: f64, now: f64) {
+    if app.workspace.current().is_none() {
+        app.shell.notify(
+            Severity::Warning,
+            "Open a track first",
+            "A clip plays in a section of a track's video.",
+        );
+        return;
+    }
+    let entry = match import(path) {
+        Ok(entry) => entry,
+        Err(error) => {
+            app.shell.notify(
+                Severity::Error,
+                "Clip could not be imported",
+                &format!("{}: {error}.", path.display()),
+            );
+            return;
+        }
+    };
+    if app.scene.id() != SceneId::Clip {
+        app.select_scene_interactive(SceneId::Clip, time_seconds, now);
+    }
+    let selected = app.shell.scene_lane.selected_id;
+    let Some(track) = app.workspace.current_mut() else {
+        return;
+    };
+    let (name, size, seconds) = (
+        entry.asset.name.clone(),
+        (entry.asset.width, entry.asset.height),
+        entry.asset.duration_seconds,
+    );
+    let Some(clip) = add(&mut track.clips, entry) else {
+        app.shell.notify(
+            Severity::Error,
+            "Clip could not be imported",
+            &format!("The project already holds {} clips.", clip::MAX_CLIPS),
+        );
+        return;
+    };
+    let placement = ClipPlacement::new(clip);
+    let plan = &track.scene_switches;
+    let target = (plan.enabled && !plan.is_empty())
+        .then(|| {
+            let cues = plan.cues();
+            cues.iter()
+                .position(|cue| cue.id == selected)
+                .or_else(|| {
+                    cues.iter().position(|cue| {
+                        cue.start_seconds <= time_seconds && time_seconds < cue.end_seconds
+                    })
+                })
+                .map(|index| (index, cues[index]))
+        })
+        .flatten()
+        .filter(|(_, cue)| cue.scene_index == SceneId::Clip.index() as u32);
+    let place = match target {
+        Some((index, cue)) => {
+            track.scene_switches.set_clip(cue.id, Some(placement));
+            format!("section {} of {}", index + 1, track.scene_switches.len())
+        }
+        None => {
+            track.base_clip = Some(placement);
+            "the Video Clip scene".to_owned()
+        }
+    };
+    track.mark_dirty(now);
+    app.shell.notify(
+        Severity::Info,
+        "Clip imported",
+        &format!(
+            "{name}, {}x{}, {seconds:.1} s, plays in {place}. Its sound is ignored; the track is the music.",
+            size.0, size.1
+        ),
+    );
 }

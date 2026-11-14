@@ -2606,6 +2606,24 @@ fn run(
                 ShellCommand::ClearAsciiImage => {
                     clear_ascii_image(&mut app, rl.get_time());
                 }
+                ShellCommand::ImportClip(path) => {
+                    clips::import_command(&mut app, &path, time_seconds, rl.get_time());
+                }
+                ShellCommand::ImportClipDialog => {
+                    let dialog = FileDialog::new("Import a video clip")
+                        .with_filter(dialogs::filters::VIDEO_CLIP);
+                    match dialog.pick_file() {
+                        Ok(None) => {}
+                        Ok(Some(path)) => {
+                            clips::import_command(&mut app, &path, time_seconds, rl.get_time());
+                        }
+                        Err(error) => app.shell.notify(
+                            Severity::Warning,
+                            "No file picker is available",
+                            &format!("{error}. Name the clip in a treatment instead."),
+                        ),
+                    }
+                }
                 ShellCommand::ForgetRecentProject(path) => {
                     if app.shell.recent.remove(&path) {
                         persist_recent_projects(&mut app);

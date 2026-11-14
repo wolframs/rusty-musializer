@@ -566,10 +566,23 @@ impl Shell {
                 widgets::fill(d, thumb, color::ui_muted());
             }
         }
-        let (import, clear) = self.ascii_image_footer(d, input, footer, commands);
+        // The footer belongs to the scene being drawn: Video Clip's import and
+        // its not-yet-built Generate while it is the scene, ASCII Field's pair
+        // otherwise (VG).
+        let footer_report = if input.scene == SceneId::Clip {
+            let (import, generate) = self.clip_footer(d, input, footer, commands);
+            format!(
+                "clip@{};generate@{}(disabled)",
+                rect_token(import),
+                rect_token(generate)
+            )
+        } else {
+            let (import, clear) = self.ascii_image_footer(d, input, footer, commands);
+            format!("import@{};clear@{}", rect_token(import), rect_token(clear))
+        };
         self.scene_picker_report = format!(
             "family={} active={} visible=[{}] offset={:.1}/{:.1} viewport={:.0}x{:.0}@{:.0},{:.0} \
-             font={:.1} tabs={} tiles={} footer=import@{};clear@{} posters={} keys={}",
+             font={:.1} tabs={} tiles={} footer={} posters={} keys={}",
             self.scene_picker.family.stable_name(),
             input.scene.stable_name(),
             visible.join(","),
@@ -586,8 +599,7 @@ impl Shell {
             } else {
                 tiles.join(";")
             },
-            rect_token(import),
-            rect_token(clear),
+            footer_report,
             posters.join(";"),
             if keys.is_empty() {
                 "none".to_owned()
@@ -595,6 +607,79 @@ impl Shell {
                 keys.join(";")
             },
         );
+    }
+
+    /// The scenes flyout's footer while Video Clip is the scene (VG): "Import
+    /// clip…", and beside it a "Generate…" drawn disabled with its reason —
+    /// generating a clip from the section's frames is the other half of VG and
+    /// is not built, and a missing control would teach nothing about it.
+    fn clip_footer(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        footer: UiRect,
+        commands: &mut Vec<ShellCommand>,
+    ) -> (UiRect, UiRect) {
+        let font = input.fonts.ui();
+        let gap = 4.0;
+        let generate_width = (footer.width * 0.42).clamp(0.0, 112.0);
+        let import = UiRect::new(
+            footer.x,
+            footer.y,
+            (footer.width - generate_width - gap).max(0.0),
+            footer.height,
+        );
+        let generate = UiRect::new(
+            footer.x + footer.width - generate_width,
+            footer.y,
+            generate_width,
+            footer.height,
+        );
+        if footer.is_empty() {
+            return (import, generate);
+        }
+        let import_id = widgets::widget_id(widgets::id::SCENE_CLIP, 0);
+        let state = self.widgets.text_button(
+            d,
+            font,
+            import_id,
+            import,
+            "Import clip…",
+            false,
+            ButtonStyle::Neutral,
+            Some(metric::UI_FONT_CAPTION),
+        );
+        self.widgets.hint(
+            d,
+            state,
+            import_id,
+            import,
+            "Play a video file in this section: a generated clip, footage, or an export. \
+             It is bundled with the project; its sound is ignored",
+        );
+        if state.clicked {
+            commands.push(ShellCommand::ImportClipDialog);
+        }
+        // A real registration for the hover and to take the press, so a click
+        // on the disabled control lands nowhere (as `assist_settings` does).
+        let generate_id = widgets::widget_id(widgets::id::SCENE_CLIP, 1);
+        let hover = self.widgets.button(d, generate_id, generate);
+        self.widgets.disabled_button(
+            d,
+            font,
+            generate,
+            "Generate…",
+            Some(metric::UI_FONT_CAPTION),
+        );
+        self.widgets.hint(
+            d,
+            hover,
+            generate_id,
+            generate,
+            "Generating clips is not built yet: a model that starts and ends on this \
+             section's frames, with its price shown before anything is spent",
+        );
+        (import, generate)
     }
 
     /// The scenes flyout's "Import image" / "Clear" pair (D2,

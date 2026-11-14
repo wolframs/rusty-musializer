@@ -125,6 +125,15 @@ pub mod filters {
         label: "lyric text",
         patterns: &["*.txt", "*.lyrics.txt"],
     };
+    /// The video files a clip section can play (VG): the containers FFmpeg
+    /// reads that generators and cameras hand out. The probe decides; this
+    /// only keeps the picker from offering a song.
+    pub const VIDEO_CLIP: FileFilter = FileFilter {
+        label: "video clips",
+        patterns: &[
+            "*.mp4", "*.mov", "*.m4v", "*.webm", "*.mkv", "*.avi", "*.gif",
+        ],
+    };
     pub const MP4_VIDEO: FileFilter = FileFilter {
         label: "MP4 video",
         patterns: &["*.mp4"],

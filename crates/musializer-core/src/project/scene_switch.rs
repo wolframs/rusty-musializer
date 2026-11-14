@@ -586,6 +586,18 @@ impl SceneSwitchTimeline {
         }
     }
 
+    /// Sets the clip one section plays (VG); `None` plays the track's. That
+    /// the clip is in the project's library is the caller's, which owns it.
+    pub fn set_clip(&mut self, cue_id: u64, clip: Option<ClipPlacement>) -> bool {
+        match self.cues.iter_mut().find(|cue| cue.id == cue_id) {
+            Some(cue) => {
+                cue.clip = clip;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// `scene_switch_reset` (`scene_switch.c:18-21`): forgets which cue is active
     /// without touching the plan, so the next [`Self::update`] re-reports a switch.
     pub fn reset(&mut self) {

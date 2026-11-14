@@ -2913,6 +2913,9 @@ pub mod id {
     /// Not [`SCENE_BROWSER`] indices, because those are `SceneId::ALL`'s own
     /// positions — an eleventh scene would silently inherit Import's id.
     pub const SCENE_ASCII: u32 = 13;
+    /// The scene flyout's footer while Video Clip is the scene (VG): Import
+    /// clip, and the disabled Generate that names what is not built.
+    pub const SCENE_CLIP: u32 = 30;
     /// Family navigation and its scrollbar; never aliases a scene tile.
     pub const SCENE_FAMILY: u32 = 66;
     /// One per merged event marker over the waveform lane, indexed by the
@@ -2974,7 +2977,7 @@ pub mod id {
         dead_code,
         reason = "the allocation table itself; only the collision tests read it, and it is the thing that has to exist rather than the thing that has to be called"
     )]
-    pub const ALL: [(&str, u32); 31] = [
+    pub const ALL: [(&str, u32); 32] = [
         ("ABOUT", ABOUT),
         ("PIXEL_LOOK", PIXEL_LOOK),
         ("LOOK_CARDS", LOOK_CARDS),
@@ -2991,6 +2994,7 @@ pub mod id {
         ("EVENT_PRESET", EVENT_PRESET),
         ("WELCOME_RECENT", WELCOME_RECENT),
         ("SCENE_ASCII", SCENE_ASCII),
+        ("SCENE_CLIP", SCENE_CLIP),
         ("SCENE_FAMILY", SCENE_FAMILY),
         ("TIMELINE_EVENTS", TIMELINE_EVENTS),
         ("LYRICS_ACTIONS", LYRICS_ACTIONS),

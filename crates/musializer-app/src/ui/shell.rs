@@ -90,6 +90,10 @@ pub enum ShellCommand {
     ImportAsciiImageDialog,
     /// Drop the current track's image-backed grid (D2, `plug.c:6386-6393`).
     ClearAsciiImage,
+    /// A picked video file, to become the clip a section plays (VG).
+    ImportClip(PathBuf),
+    /// Ask for a video file through a native picker, then import it (VG).
+    ImportClipDialog,
     /// Reopen a project named by the welcome screen's recent list (UX0-C06).
     OpenRecentProject(PathBuf),
     /// Take an entry out of the recent list and persist the shorter list.
@@ -292,6 +296,9 @@ impl ShellCommand {
             // below with `OpenAudio`: it only asks which file, and the durable
             // command it produces is the one that owes the mark.
             ShellCommand::ImportAsciiImage(_) | ShellCommand::ClearAsciiImage => true,
+            // A clip is a library entry and a placement in the `.musi` (VG);
+            // the handler marks dirty on success.
+            ShellCommand::ImportClip(_) => true,
             // These write files, or replace the track wholesale. A freshly opened
             // or saved track is clean by definition, and `SaveUiPreferences`
             // writes the per-user config rather than the project.
@@ -301,6 +308,7 @@ impl ShellCommand {
             | ShellCommand::OpenDroppedProject(_)
             | ShellCommand::OpenRecentProject(_)
             | ShellCommand::ImportAsciiImageDialog
+            | ShellCommand::ImportClipDialog
             | ShellCommand::SaveProject
             | ShellCommand::SaveProjectAs
             | ShellCommand::SaveUiPreferences(_) => false,
@@ -352,6 +360,9 @@ pub enum DropKind {
     /// `*.treatment.json` (WX-3): applied to the open track and then
     /// followed, so an agent's edits show up as it saves them.
     Treatment,
+    /// A video file (VG): imported as the clip a section plays. Was the
+    /// audio branch, which refused every one of these: raylib opens no video.
+    Video,
 }
 
 impl DropKind {
@@ -365,6 +376,7 @@ impl DropKind {
             DropKind::Audio => "audio file",
             DropKind::Protocol => "protocol",
             DropKind::Treatment => "treatment",
+            DropKind::Video => "video clip",
         }
     }
 }
@@ -398,6 +410,8 @@ pub fn classify_drop(path: &Path) -> DropKind {
     match extension.as_str() {
         "musi" => DropKind::Project,
         "png" | "jpg" | "jpeg" | "bmp" => DropKind::Image,
+        // The clip picker's own list (`dialogs::filters::VIDEO_CLIP`).
+        "mp4" | "mov" | "m4v" | "webm" | "mkv" | "avi" | "gif" => DropKind::Video,
         _ => DropKind::Audio,
     }
 }
@@ -426,6 +440,7 @@ fn drop_command(path: &Path) -> ShellCommand {
         DropKind::Audio => ShellCommand::LoadTrack(path),
         DropKind::Protocol => ShellCommand::OpenDroppedProtocol(path),
         DropKind::Treatment => ShellCommand::FollowTreatment(path),
+        DropKind::Video => ShellCommand::ImportClip(path),
     }
 }
 
@@ -6153,7 +6168,7 @@ mod tests {
     #[test]
     fn a_dropped_file_is_dispatched_by_what_it_is() {
         use std::path::PathBuf;
-        let cases: [(&str, DropKind); 22] = [
+        let cases: [(&str, DropKind); 25] = [
             // The protocol branch (HX-2): the double extension, case blind,
             // and never a bare `.json` — which stays on the oracle's audio
             // else-branch below.
@@ -6175,6 +6190,10 @@ mod tests {
             ("/tmp/cover.jpeg", DropKind::Image),
             ("/tmp/cover.bmp", DropKind::Image),
             ("/tmp/CAMERA.JPG", DropKind::Image),
+            // VG: a video is a clip, not a song.
+            ("/tmp/take.mp4", DropKind::Video),
+            ("/tmp/TAKE.MOV", DropKind::Video),
+            ("/tmp/gen.webm", DropKind::Video),
             // The else branch is audio, which is the oracle's (`plug.c:7559`) —
             // including for the seven formats it can actually open, and for a
             // file it cannot, which is *attempted* as audio and refused by the
@@ -6199,6 +6218,7 @@ mod tests {
                 DropKind::Audio => ShellCommand::LoadTrack(path.clone()),
                 DropKind::Protocol => ShellCommand::OpenDroppedProtocol(path.clone()),
                 DropKind::Treatment => ShellCommand::FollowTreatment(path.clone()),
+                DropKind::Video => ShellCommand::ImportClip(path.clone()),
             };
             assert_eq!(command, expected_command, "{}", path.display());
         }
