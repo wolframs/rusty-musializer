@@ -72,7 +72,7 @@ agents here feedback". The spending cap he agreed to is 5 USD for the benchmark
 and the generation test clips together. Tick a step when it is merged and
 verified; delete the block when done, with the record in the archive.
 
-- [ ] **H1 — a click on a section jumps**, playing or paused; Shift+click
+- [x] **H1 — a click on a section jumps**, playing or paused; Shift+click
   selects without moving the playhead.
 - [ ] **H2 — Balanced exports keep their gradients** (EX3 remainder): measure
   `-aq-mode 3` and its neighbours for size and banding on real videos, adopt
