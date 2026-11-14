@@ -737,3 +737,44 @@ after checking it is still the record that was read (the job id): see
 `Store::forget_job_if`. Symptom: two submits where one was expected, with no
 "may have been billed" in between. Found by the second review of the
 generation job (H4c), 2026-11-14; the gate's `stale` group stages it.
+
+## A ceiling checked one request at a time bounds only what was seen so far
+
+The treatment run checked each generated section against `--max-spend` as it
+reached it, counting the sends it had made and what it had found so far. A
+held send (an earlier answer lost, possibly billed) in a later section was
+found only after the earlier section had been sent: $0.24 committed or
+possibly billed against a $0.12 ceiling, each check correct when it was made.
+Read every item's state first, add up what is already committed, decide, and
+only then act; re-check each act with what is known at that moment
+(`generation::treatment::prepare`, its plan). Symptom: a refusal for a late
+item that names a committed sum already past the ceiling. Found by the second
+review of the treatment run (H4c), 2026-11-14.
+
+## Replacing a record of possible spending erases a possible charge
+
+The generation store kept one intent per request and each agreed resend wrote
+a new one over it, so two sends whose answers were lost counted as one. Any
+record that stands for money that may have been spent is appended to, not
+replaced, and goes only when the thing paid for is in hand (`Store::add_attempt`,
+`clear_intent_held`). Symptom: a ceiling admits a send that, summed with the
+person's activity page, passes it. Found by the second review (H4c), 2026-11-14.
+
+## A gateway error is not proof the request was not processed
+
+The MiMo helper retried 502 and 503 as "transient (unbilled)". A gateway
+answers those after it forwarded the request, sometimes after the model ran
+and billed; three tries cost up to three calls against a confirmation for one.
+Retry only what the provider says it did not process (a 429) or what never
+left whole (`urllib` raises `URLError` only from connecting and sending);
+anything after the send is a failed run that says it may have been billed.
+The video client draws the same line with curl's `size_request`. Found by the
+second review (H4c), 2026-11-14.
+
+## An upper bound printed at a precision must be rounded up
+
+`{:.3}` of 0.032376 is "0.032": "at most 0.032 USD" for a call that can cost
+0.0324. Every maximum the person reads is rounded up at the precision shown
+(`ceil_thousandths`, `ceil_usd`, `ceil_cents`), with a tolerance for float
+noise so an exact 0.033 is not shown as 0.034; a ceiling the person typed is
+shown as given. Found by the second review (H4c), 2026-11-14.
