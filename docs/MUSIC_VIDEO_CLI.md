@@ -361,7 +361,8 @@ under the playhead when none is, and that section becomes Video Clip if it
 played another scene; with no plan driving, it is the track's own clip and the
 track's scene becomes Video Clip. The notice names which section it went to and
 why. "Generate…" beside it is drawn disabled: generating a clip
-is not built (`docs/VIDEO_GENERATION.md`).
+is not built (`docs/VIDEO_GENERATION.md`). Look's section card edits
+everything above for the selected section (*Editing the look in the window*).
 
 ### `transition` and `outro`
 
@@ -700,7 +701,16 @@ three faces:
   section arrives — the fourteen kinds, each a small picture and a name, and
   a length — its glide (drawn disabled, saying why, after another scene), its
   grade (the named palettes, strength, the hue turn), the caption style its
-  lines begin in, and a threshold's door. **Play the cut** plays from 1.5 s
+  lines begin in, and a threshold's door. A Video Clip section also gets its
+  clip: the project's clips as rows (each one's middle frame, name and
+  length, the section's own marked), **Import clip…** (the flyout's import,
+  landing here) beside the disabled **Generate…**, where it starts
+  (**Continue** the section before, or **Own start**, and a **From** track;
+  switching between the two leaves the picture where it is until the number
+  changes), what happens after its end (**Hold**, **Loop**, **Bounce**), its
+  **fit** (**Cover**, **Contain**), and a poster of the frame it starts on. A
+  clip whose file is missing or refused says so there, in the placeholder's
+  words. **Play the cut** plays from 1.5 s
   before the picture starts to change through the transition and a second
   past it, and pauses there when it started paused, whichever view is open;
   a seek or a play of your own lets it go.

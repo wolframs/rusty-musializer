@@ -93,7 +93,11 @@ questions:
 A section can play a video file: the scene `clip` (Video Clip, id 29), in a
 treatment `{ "scene": "clip", "clip": "take.mp4" }` with `from`, `after` (hold,
 loop, bounce) and `fit` (cover, contain), or in the window through "Import
-clip…" in the Scenes flyout or a dropped file. The grammar is in
+clip…" in the Scenes flyout or a dropped file. Look's section card (F1c)
+edits all four for the selected section, with the library as rows of
+middle frames and a poster of the section's first frame
+(`ui/panels/tune/cards/clip.rs`, gate `tools/look_cards_check.sh`, groups
+`clip` and `captures`). The grammar is in
 `docs/MUSIC_VIDEO_CLI.md`, the `.musi` members in `docs/PHASE0_INVENTORY.md`
 6.2, the gate is `tools/clip_check.sh`.
 
@@ -199,7 +203,11 @@ and a probe, and a placement puts it in a section — exactly what "Import
 clip…" does. What generation adds, and where it plugs in:
 
 - **The disabled "Generate…"** in the Scenes flyout's footer (while Video Clip
-  is the scene) is where the control goes; `rail.rs`'s `clip_footer` draws it.
+  is the scene) and in Look's section card beside its Import clip… is where
+  the control goes; `rail.rs`'s `clip_footer` and `cards/clip.rs` draw them,
+  both with `clips::GENERATE_NOT_BUILT` as the reason. The card's poster of
+  the section's first frame (`PosterSeat::SectionStart`) is the frame a
+  generation for the section would start from.
 - **First and last frames**: `--still SECONDS FILE` already renders the exact
   frame at a time; a generation for a section takes the still at the section's
   start (or the previous section's end) and the next section's start, which is

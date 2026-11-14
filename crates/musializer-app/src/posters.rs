@@ -996,6 +996,51 @@ fn write_dump(entry: &Entry, path: &Path) {
     }
 }
 
+/// F1c: a clip section's poster is drawn again when anything about its
+/// clip changes, and a section's own seat never aliases its run's.
+#[cfg(test)]
+mod clip_poster_tests {
+    use super::*;
+    use musializer_core::project::clip::{ClipOverrun, ClipPlacement};
+
+    #[test]
+    fn a_clip_edit_changes_the_section_posters_key() {
+        let mut track = crate::ui::panels::tune::clip_fixture::track();
+        let tuning = Tuning {
+            preroll_seconds: 2.0,
+            box_size: (256, 144),
+        };
+        let request = PosterRequest::section(&track, 0, 1).unwrap();
+        assert_eq!(request.identity(), PosterId::Section(2));
+        assert_ne!(request.identity(), PosterId::Run(2));
+        let key = |track: &Track| recipe::resolve(track, &request, &tuning).key;
+        let first = key(&track);
+        assert_eq!(first, key(&track));
+        let aa = crate::ui::panels::tune::clip_fixture::clip("aa");
+        let mut seen = vec![first];
+        for placement in [
+            ClipPlacement {
+                from_seconds: Some(2.0),
+                ..ClipPlacement::new(aa)
+            },
+            ClipPlacement {
+                after: ClipOverrun::Bounce,
+                ..ClipPlacement::new(aa)
+            },
+            ClipPlacement::new(crate::ui::panels::tune::clip_fixture::clip("bb")),
+        ] {
+            track.scene_switches.set_clip(2, Some(placement));
+            let moved = key(&track);
+            assert!(!seen.contains(&moved), "{placement:?}");
+            seen.push(moved);
+        }
+        // The file going missing changes the picture (a card), so the key.
+        let before = key(&track);
+        track.clips[1].unusable = Some(musializer_runtime::clip::ClipError::Missing);
+        assert_ne!(key(&track), before);
+    }
+}
+
 #[cfg(test)]
 mod picker_tests {
     use super::*;

@@ -317,6 +317,25 @@ words_show = dict(base_show,
 other_show = dict(words_show, title='Other fixture',
                   titles=[{'at': 0.5, 'until': 2.0, 'title': 'Other Title'}])
 films = {'plain': base_show, 'film': dict(base_show, finish='film'), 'words': words_show, 'other': other_show}
+if only in ('all', 'clip', 'captures'):
+    # The clip rows (F1c): FFmpeg's testsrc2 burns its frame number into
+    # every frame; made here, never committed. a.mp4 30 fps 6 s, b.mp4 square
+    # 25 fps 4 s, c.mp4 for an import.
+    for name, source, seconds in [('a', 'testsrc2=size=640x360:rate=30', 6), ('b', 'testsrc2=size=360x360:rate=25', 4),
+                                  ('c', 'testsrc2=size=480x270:rate=24', 3)]:
+        subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-y', '-f', 'lavfi', '-i', source, '-t', str(seconds),
+                        '-c:v', 'libx264', '-g', '30', '-pix_fmt', 'yuv420p', str(out / f'{name}.mp4')], check=True)
+    clip_segments = [
+        {'at': 0, 'scene': 'spectrum'},
+        {'at': 2, 'scene': 'clip', 'clip': {'path': 'a.mp4', 'from': 1}},
+        {'at': 4, 'scene': 'clip', 'clip': 'a.mp4', 'transition': {'kind': 'fade', 'seconds': 0.6}},
+        {'at': 6, 'scene': 'clip', 'clip': {'path': 'b.mp4', 'after': 'loop', 'fit': 'contain'}},
+    ]
+    films['clip'] = dict({key: value for key, value in base_show.items() if key != 'outro'},
+                         title='Clip fixture', segments=clip_segments)
+    # Section 3 with an own start where the clock already is (1 + 2 s).
+    films['clipown'] = dict(films['clip'], segments=[dict(segment) for segment in clip_segments])
+    films['clipown']['segments'][2]['clip'] = {'path': 'a.mp4', 'from': 3}
 for name, show in films.items():
     (out / f'{name}.treatment.json').write_text(json.dumps(show))
     with (out / f'seed-{name}.log').open('w') as log:
@@ -341,10 +360,11 @@ def copy_project(project, work):
         shutil.copytree(assets, work / f'{project}.assets')
 
 
-def run(name, probe, frames=150, project='plain', theme='dark', follow=False, also=(), drive=None):
+def run(name, probe, frames=150, project='plain', theme='dark', follow=False, also=(), drive=None, prepare=None):
     """One probe run on a fresh copy of a seeded project. Returns (log, saved).
 
-    `also` names projects copied beside it, for a `drop=` of a second one."""
+    `also` names projects copied beside it, for a `drop=` of a second one;
+    `prepare(work)` changes the copy before the launch."""
     work = out / name
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir()
@@ -353,10 +373,14 @@ def run(name, probe, frames=150, project='plain', theme='dark', follow=False, al
     if follow:
         shutil.copy(out / 'fixture.wav', work / 'fixture.wav')
         shutil.copy(out / f'{project}.treatment.json', work / 'show.treatment.json')
+        for clip_file in out.glob('*.mp4'):
+            shutil.copy(clip_file, work / clip_file.name)
         source = ['--treatment', str(work / 'show.treatment.json')]
     else:
         copy_project(project, work)
         source = ['--project', str(work / f'{project}.musi')]
+    if prepare is not None:
+        prepare(work)
     cmd = ['tools/headless_run.sh', *source, '--ui-scale', '100', '--hud=0', '--ui-theme', theme,
            '--ui-probe', probe, '--probe-frames', str(frames), '--probe-shot', str(work / 'shot.png')]
     run_env = dict(env, MZ_STATE_DIR=str(work / 'state'))
@@ -938,6 +962,154 @@ if only in ('all', 'follow'):
     check(line(log, 'treatment follow') == 'none' and field(cards(log), 'editable') == '1',
           'Stop following stops it, and the card is editable again')
 
+if only in ('all', 'clip'):
+    # 24-33. A Video Clip section's clip (F1c), on the clip fixture: sections
+    # 2 and 3 play a.mp4 (2 from 1 s, 3 going on from it), 4 plays b.mp4
+    # (loop, contain). The playhead at 5 s is inside section 3: clip time
+    # 1 + 3 = 4.0 s, frame 120.
+    CLIP = 'size=1280x720,column=look,time=5,play=0'
+    a_sha = original['clip']['clips'][0]['sha256']
+    b_sha = original['clip']['clips'][1]['sha256']
+
+    def clip_frame(log):
+        """The clip frame the preview drew, and whether it was the exact one."""
+        found = re.search(r'drew frame (\d+)/\d+ (EXACT|INEXACT)', line(log, 'clip'))
+        return (int(found[1]), found[2] == 'EXACT') if found else (None, False)
+
+    def clip_unchanged(saved, project='clip'):
+        return unchanged(saved, project) and saved.get('clips') == original[project].get('clips')
+
+    c3, _ = run('clip-s3', CLIP + ',section=3', project='clip', frames=60)
+    c4, _ = run('clip-s4', CLIP + ',section=4', project='clip', frames=60)
+    c1, _ = run('clip-s1', CLIP + ',section=1', project='clip', frames=30)
+    b3, b4, b1 = cards(c3), cards(c4), cards(c1)
+    frame3 = clip_frame(c3)
+    check(field(b3, 'clip') == a_sha[:8] and field(b3, 'clip-from') == 'continues-2' and field(b3, 'clip-at') == '3.0000'
+          and frame3 == (120, True),
+          f"section 3 reads a.mp4 going on from section 2 at 3.00 s; the preview drew frame 120 exactly: "
+          f"{field(b3, 'clip')} {field(b3, 'clip-from')} {field(b3, 'clip-at')} {frame3}")
+    # 33. Only a Video Clip section has clip rows.
+    check(field(b1, 'clip') == '-' and 'clip-choice-' not in b1 and 'clip-import@' not in b1,
+          'a Spectrum section shows none of the clip rows')
+
+    # 24. which clip: a press on a library row plays that clip here.
+    log, saved = run('clip-pick-a', CLIP + ',section=4' + click(centre(rect(b4, 'clip-choice-0'))), project='clip')
+    check(field(cards(log), 'clip') == a_sha[:8] and cue(saved, 3)['clip'].get('clip') == a_sha
+          and cue(saved, 3)['clip'].get('after') == 'loop',
+          f"a press on a.mp4's row plays it in section 4, saved; its end stays loop: {cue(saved, 3).get('clip')}")
+    first, second = rect(b4, 'clip-choice-0'), rect(b4, 'clip-choice-1')
+    log, saved = run('clip-pick-gap', CLIP + ',section=4' + click((first[0] + 20, first[1] + first[3] + 2)), project='clip')
+    check(field(cards(log), 'clip') == b_sha[:8] and clip_unchanged(saved) and claimed_nothing(log),
+          'the gap between two clip rows changes nothing')
+    check('(chosen)' in re.search(r'clip-choice-1@[^;]*', b4)[0] and 'thumbs=' in line(c4, 'posters'),
+          'the clip section 4 plays is the chosen row')
+
+    # 25. continue -> own start: pinned where the clock is, the frame does not move.
+    own = rect(b3, 'start-own')
+    log, saved = run('clip-own', CLIP + ',section=3' + click(centre(own)), project='clip', frames=150)
+    frame = clip_frame(log)
+    check(field(cards(log), 'clip-from') == 'own' and abs(cue(saved, 2)['clip'].get('from', -1) - 3.0) < 1e-9,
+          f"Own start pins section 3 at 3.0 s, saved: {cue(saved, 2).get('clip')}")
+    check(frame == frame3, f'Own start draws the same clip frame: {frame} against {frame3}')
+    cont = rect(b3, 'start-continue')
+    log, saved = run('clip-own-gap', CLIP + ',section=3' + click((cont[0] + cont[2] + 2, cont[1] + cont[3] // 2)), project='clip')
+    check(field(cards(log), 'clip-from') == 'continues-2' and clip_unchanged(saved) and claimed_nothing(log),
+          'the gap between Continue and Own start changes nothing')
+
+    # 26. own start (unchanged number) -> continue: the frame does not move.
+    o3, _ = run('clipown-s3', CLIP + ',section=3', project='clipown', frames=60)
+    before = clip_frame(o3)
+    log, saved = run('clipown-continue', CLIP + ',section=3' + click(centre(rect(cards(o3), 'start-continue'))),
+                     project='clipown', frames=150)
+    check(field(cards(o3), 'clip-from') == 'own' and field(cards(log), 'clip-from') == 'continues-2'
+          and 'from' not in cue(saved, 2)['clip'],
+          f"Continue drops section 3's own start, saved: {cue(saved, 2).get('clip')}")
+    check(clip_frame(log) == before == (120, True), f'Continue draws the same clip frame: {clip_frame(log)} against {before}')
+    # 27. Continue is not offered where the section before plays another clip.
+    check('start-continue@disabled:' in b4, 'Continue is drawn disabled on section 4 (section 3 plays a.mp4)')
+
+    # 28. the number: a press on the From track and a typed one move the frame.
+    bar = rect(b3, 'clip-from')
+    point, unit = at_fraction(bar, 0.25)
+    log, saved = run('clip-from', CLIP + ',section=3' + click(point), project='clip', frames=150)
+    start = cue(saved, 2)['clip'].get('from')
+    expected = round(unit * 5.99 * 100) / 100
+    check(start is not None and abs(start - expected) < 0.0051 and clip_frame(log)[0] == int((start + 1.0) * 30 + 1e-6),
+          f'the From track at {unit:.3f} sets {expected:.2f} s and the frame follows: saved {start}, frame {clip_frame(log)}')
+    check(int(field(line(log, 'posters'), 'refreshed')) >= 1,
+          f"the section's poster is drawn again for the new start: {field(line(log, 'posters'), 'refreshed')}")
+    log, saved = run('clip-from-gap', CLIP + ',section=3' + click((point[0], bar[1] + bar[3] // 2 - 15 - 3)), project='clip')
+    check(field(cards(log), 'clip-from') == 'continues-2' and clip_unchanged(saved), 'the space above the From row changes nothing')
+    value = centre(rect(b3, 'clip-from-value'))
+    log, saved = run('clip-from-typed', CLIP + ',section=3' + click(value) + ',look-text=2.5,look-action=commit',
+                     project='clip', frames=150)
+    check(abs(cue(saved, 2)['clip'].get('from', -1) - 2.5) < 1e-9 and clip_frame(log) == (105, True),
+          f"a typed 2.5 starts section 3 at 2.5 s: frame {clip_frame(log)} (2.5 + 1 s = 105)")
+
+    # 29. after its end, by name.
+    log, saved = run('clip-bounce', CLIP + ',section=4' + click(centre(rect(b4, 'after-bounce'))), project='clip')
+    check(field(cards(log), 'clip-after') == 'bounce' and cue(saved, 3)['clip'].get('after') == 'bounce',
+          f"Bounce: section 4 bounces, saved: {cue(saved, 3).get('clip')}")
+    loop, bounce = rect(b4, 'after-loop'), rect(b4, 'after-bounce')
+    log, saved = run('clip-after-gap', CLIP + ',section=4' + click((loop[0] + loop[2] + 2, loop[1] + loop[3] // 2)), project='clip')
+    check(field(cards(log), 'clip-after') == 'loop' and clip_unchanged(saved) and claimed_nothing(log),
+          'the gap between Loop and Bounce changes nothing')
+
+    # 30. fit.
+    log, saved = run('clip-cover', CLIP + ',section=4' + click(centre(rect(b4, 'fit-cover'))), project='clip')
+    check(field(cards(log), 'clip-fit') == 'cover' and 'fit' not in cue(saved, 3)['clip'],
+          f"Cover: section 4 fills the frame; the default is not written: {cue(saved, 3).get('clip')}")
+    cover = rect(b4, 'fit-cover')
+    log, saved = run('clip-fit-gap', CLIP + ',section=4' + click((cover[0] + cover[2] + 2, cover[1] + cover[3] // 2)), project='clip')
+    check(field(cards(log), 'clip-fit') == 'contain' and clip_unchanged(saved) and claimed_nothing(log),
+          'the gap between Cover and Contain changes nothing')
+    glyphs = re.findall(r'(?:after|fit)-\w+-glyph@', b4)
+    check(len(glyphs) == 5, f'every end and fit chip has its glyph beside its name ({len(glyphs)})')
+
+    # 31. Import clip (the flyout's import, landing here), and Generate drawn
+    #     disabled with nothing behind it.
+    log, saved = run('clip-import', CLIP + ',section=2' + click(centre(rect(b3, 'clip-import'))) + f",clip-pick={out / 'c.mp4'}",
+                     project='clip', frames=90)
+    names = [entry['name'] for entry in saved.get('clips', [])]
+    c_sha = next((entry['sha256'] for entry in saved.get('clips', []) if entry['name'] == 'c.mp4'), None)
+    check(names == ['a.mp4', 'b.mp4', 'c.mp4'] and c_sha and cue(saved, 1)['clip'].get('clip') == c_sha
+          and field(cards(log), 'clip-library') == '3',
+          f'Import clip adds c.mp4 and section 2 plays it, saved: {names}')
+    imp, gen = rect(b3, 'clip-import'), rect(b3, 'clip-generate')
+    log, saved = run('clip-import-gap', CLIP + ',section=2' + click((imp[0] + imp[2] + 2, imp[1] + imp[3] // 2)) + f",clip-pick={out / 'c.mp4'}",
+                     project='clip')
+    check(clip_unchanged(saved) and claimed_nothing(log), 'the gap between Import and Generate changes nothing')
+    log, saved = run('clip-generate', CLIP + ',section=2' + click(centre(gen)) + f",clip-pick={out / 'c.mp4'}", project='clip')
+    check('clip-generate@disabled:' in b3 and clip_unchanged(saved) and field(cards(log), 'clip-library') == '2',
+          'Generate is drawn disabled and a press on it changes nothing')
+
+    # 32. a clip whose file is gone says so, in the placeholder's words.
+    def lose_a(work):
+        for path in (work / 'clip.assets' / 'clips').glob(a_sha + '.*'):
+            path.unlink()
+    log, _ = run('clip-missing', CLIP + ',section=3', project='clip', frames=60, prepare=lose_a)
+    words = re.search(r'clip-words="([^"]*)"', cards(log))
+    placeholder = re.search(r'PLACEHOLDER "([^"]*)"', line(log, 'clip'))
+    check(words and placeholder and words[1] == placeholder[1] and 'the file is missing' in words[1],
+          f"a missing clip says why, as the placeholder does: {words and words[1]!r} / {placeholder and placeholder[1]!r}")
+    check('clip-import@' in cards(log) and 'clip-import@disabled' not in cards(log), 'Import is the way out')
+
+    # 34. Play the cut over a clip section: from 2.5 through the fade to 5.6.
+    log, _ = run('clip-play', CLIP + ',section=3' + click(centre(rect(b3, 'play'))), project='clip', frames=420)
+    playhead = float(field(line(log, 'transport'), 'playhead'))
+    check(5.5 <= playhead <= 6.0 and 'playing=false' in line(log, 'resume') and clip_frame(log)[0] is not None,
+          f'Play the cut plays through section 3\'s fade and pauses: playhead {playhead:.3f}, clip {clip_frame(log)}')
+
+    # 35. following a treatment, the clip rows are disabled and say why.
+    log, _ = run('clip-follow-base', CLIP + ',section=4,follow=1', project='clip', follow=True, frames=60)
+    followed = cards(log)
+    log, _ = run('clip-follow', CLIP + ',section=4,follow=1' + click(centre(rect(followed, 'after-bounce'))),
+                 project='clip', follow=True, frames=60)
+    report = cards(log)
+    check('clip-import@disabled:' in followed and 'start-own@disabled:' in followed and field(followed, 'editable') == '0'
+          and field(report, 'clip-after') == 'loop' and field(report, 'follow') == 'show.treatment.json',
+          f"following, the clip rows are drawn disabled and a press on Bounce changes nothing ({field(report, 'clip-after')})")
+
 if only in ('all', 'captures'):
     for theme in ['dark', 'light']:
         for scope, probe in [('section', SECTION + ',section=3'), ('video', SECTION + ',look=video'),
@@ -967,6 +1139,42 @@ if only in ('all', 'captures'):
                     if inked < 8:
                         weak.append(f'{kind}:{inked}')
                 check(len(glyphs) == 14 and not weak, f'{scope}/{theme}: all 14 kind glyphs drew ({len(glyphs)} placed, weak {weak})')
+
+if only in ('all', 'captures'):
+    # 36. (F1c) the clip rows in both appearances, at 1280 and at the 300 px
+    #     column: inside the list, the section's poster and every clip's
+    #     middle frame drawn (posters=settle waits for both), and the end and
+    #     fit glyphs inked against their chips.
+    from PIL import Image
+    for theme in ['dark', 'light']:
+        for scope, probe in [('clip', 'size=1280x720,column=look,time=5,play=0,section=3,posters=settle'),
+                             ('clip-narrow', 'size=960x640,column=look,column-width=300,time=5,play=0,section=3,posters=settle')]:
+            log, _ = run(f'capture-{scope}-{theme}', probe, frames=40, theme=theme, project='clip')
+            b = cards(log)
+            area = tuple(map(int, field(b, 'area').split(',')))
+            viewport = tuple(map(int, re.search(r'viewport=([\d,]+)', line(log, 'tune layout'))[1].split(',')))
+            check(area[0] >= viewport[0] and area[0] + area[2] <= viewport[0] + viewport[2],
+                  f'{scope}/{theme}: the card lies inside the list ({field(b, "area")} in {viewport})')
+            thumbs = re.findall(r'clip-thumb-\d+=(\w+)', b)
+            check(field(b, 'clip-poster') == 'ready' and thumbs == ['ready', 'ready'],
+                  f"{scope}/{theme}: the section's poster and both clips' frames drew ({field(b, 'clip-poster')}, {thumbs})")
+            image = Image.open(out / f'capture-{scope}-{theme}' / 'shot.png').convert('RGB')
+            px = image.load()
+            weak = []
+            for name, gx, gy, gw, gh in re.findall(r'((?:after|fit)-\w+)-glyph@(\d+),(\d+),(\d+),(\d+)', b):
+                gx, gy, gw, gh = map(int, (gx, gy, gw, gh))
+                chip = rect(b, name)
+                ground = px[chip[0] + 4, chip[1] + chip[3] // 2]
+                inked = sum(1 for yy in range(gy, gy + gh) for xx in range(gx, gx + gw)
+                            if sum(abs(a - c) for a, c in zip(px[xx, yy], ground)) > 60)
+                if inked < 8:
+                    weak.append(f'{name}:{inked}')
+            check(not weak, f'{scope}/{theme}: every end and fit glyph drew (weak {weak})')
+            # The poster is a picture, not the empty well: many colours in it.
+            poster = rect(b, 'clip-poster')
+            colours = len(set(image.crop((poster[0] + 2, poster[1] + 2, poster[0] + poster[2] - 2,
+                                          poster[1] + poster[3] - 2)).getdata()))
+            check(colours > 50, f"{scope}/{theme}: the poster holds a picture ({colours} colours)")
 
 (out / 'result.json').write_text(json.dumps({'failures': failures}, indent=2))
 print(f'{len(failures)} failures; evidence {out}', flush=True)

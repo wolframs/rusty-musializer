@@ -22,6 +22,8 @@ mod tables;
 pub(crate) use tables::apply_table_edit;
 #[path = "cards/clip.rs"]
 mod clip;
+#[cfg(test)]
+pub(crate) use clip::fixture as clip_fixture;
 
 /// Which card the block shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

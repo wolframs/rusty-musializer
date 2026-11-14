@@ -1011,8 +1011,110 @@ fn draw_fit_glyph(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod fixture {
     use super::*;
+    use musializer_core::project::clip::ClipAsset;
+
+    /// A track of 30 s: Spectrum 0-10, Video Clip 10-20 playing clip `aa`
+    /// (6 s), Video Clip 20-30 playing nothing of its own; `aa` and `bb` in
+    /// the library.
+    pub(crate) fn track() -> Track {
+        let mut track = Track::new("fixture.wav".into(), 30.0, SceneId::Spectrum, 7).unwrap();
+        let cue = |id: u64, start: f64, end: f64, scene: SceneId| SceneSwitchCue {
+            id,
+            start_seconds: start,
+            end_seconds: end,
+            scene_index: scene.index() as u32,
+            strength: 0.5,
+            ..SceneSwitchCue::default()
+        };
+        track
+            .scene_switches
+            .replace(
+                &[
+                    cue(1, 0.0, 10.0, SceneId::Spectrum),
+                    cue(2, 10.0, 20.0, SceneId::Clip),
+                    cue(3, 20.0, 30.0, SceneId::Clip),
+                ],
+                30.0,
+                musializer_core::scene::SCENE_COUNT as u32,
+            )
+            .unwrap();
+        track.scene_switches.enabled = true;
+        for (seed, seconds) in [("aa", 6.0), ("bb", 4.0)] {
+            track.clips.push(TrackClip {
+                asset: ClipAsset {
+                    path: format!("{seed}.mp4"),
+                    sha256: seed.repeat(32),
+                    name: format!("{seed}.mp4"),
+                    width: 640,
+                    height: 360,
+                    frames: (seconds * 30.0) as u32,
+                    duration_seconds: seconds,
+                },
+                source: format!("{seed}.mp4").into(),
+                unusable: None,
+            });
+        }
+        track
+            .scene_switches
+            .set_clip(2, Some(ClipPlacement::new(clip("aa"))));
+        track
+    }
+
+    pub(crate) fn clip(seed: &str) -> ClipRef {
+        ClipRef::from_hex(&seed.repeat(32)).unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixture::{clip, track};
+    use super::*;
+
+    /// The card's edit holds a section to the loader's rules: a Video Clip
+    /// section, a clip the project holds, a `from` inside it.
+    #[test]
+    fn a_clip_edit_is_refused_where_a_loader_would_refuse_it() {
+        let mut track = track();
+        let placed = |track: &Track, id: u64| {
+            track
+                .scene_switches
+                .cues()
+                .iter()
+                .find(|cue| cue.id == id)
+                .and_then(|cue| cue.clip)
+        };
+        let from = |seconds| ClipPlacement {
+            from_seconds: Some(seconds),
+            ..ClipPlacement::new(clip("aa"))
+        };
+        assert!(
+            !apply_clip_edit(&mut track, 1, ClipPlacement::new(clip("aa"))),
+            "Spectrum"
+        );
+        assert!(
+            !apply_clip_edit(&mut track, 2, ClipPlacement::new(clip("cc"))),
+            "not held"
+        );
+        assert!(!apply_clip_edit(&mut track, 2, from(6.0)), "past the end");
+        assert!(
+            !apply_clip_edit(&mut track, 9, from(1.0)),
+            "no such section"
+        );
+        assert_eq!(placed(&track, 2), Some(ClipPlacement::new(clip("aa"))));
+        assert!(apply_clip_edit(&mut track, 2, from(5.99)));
+        assert_eq!(placed(&track, 2), Some(from(5.99)));
+        assert!(apply_clip_edit(
+            &mut track,
+            3,
+            ClipPlacement::new(clip("bb"))
+        ));
+        assert_eq!(
+            placed(&track, 3).map(|placement| placement.clip),
+            Some(clip("bb"))
+        );
+    }
 
     #[test]
     fn every_end_and_fit_has_a_name_and_words() {
