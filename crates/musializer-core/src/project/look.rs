@@ -96,6 +96,30 @@ impl Grade {
         }
     }
 
+    /// The named palette whose stops this grade holds exactly, if any: what
+    /// the Look view's section card shows selected. A treatment's listed
+    /// colours that happen to equal a palette read as that palette.
+    #[must_use]
+    pub fn named_palette(&self) -> Option<Palette> {
+        Palette::ALL
+            .into_iter()
+            .find(|palette| palette.stops() == self.stops())
+    }
+
+    /// This grade with `palette`'s stops and every other member kept, so
+    /// picking another palette in the window keeps a strength and a hue turn
+    /// the user already set.
+    #[must_use]
+    pub fn with_palette(self, palette: Palette) -> Self {
+        Self {
+            map: self.map,
+            shift_from: self.shift_from,
+            shift_by: self.shift_by,
+            shift_width: self.shift_width,
+            ..Self::from_palette(palette, self.map)
+        }
+    }
+
     /// The meaningful stops.
     #[must_use]
     pub fn stops(&self) -> &[u32] {

@@ -471,6 +471,50 @@ impl SceneSwitchTimeline {
         }
     }
 
+    /// Sets one section's glide (D, the Look view's section card). Refuses an
+    /// unknown id or a length outside [`glide_is_valid`], and changes nothing
+    /// when it refuses.
+    pub fn set_glide(&mut self, cue_id: u64, seconds: f32) -> bool {
+        if !glide_is_valid(seconds) {
+            return false;
+        }
+        match self.cues.iter_mut().find(|cue| cue.id == cue_id) {
+            Some(cue) => {
+                cue.glide = seconds;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sets one section's grade; `None` clears it. Refuses an unknown id or a
+    /// grade outside its bounds, and changes nothing when it refuses.
+    pub fn set_grade(&mut self, cue_id: u64, grade: Option<Grade>) -> bool {
+        if grade.is_some_and(|grade| !grade.is_valid()) {
+            return false;
+        }
+        match self.cues.iter_mut().find(|cue| cue.id == cue_id) {
+            Some(cue) => {
+                cue.grade = grade;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sets the named caption style one section's lines begin in; `None` is
+    /// the base. The name is checked against the project's table by the
+    /// caller, which owns the table (as [`crate::project::lyrics::LyricsDocument::set_cue_style`]).
+    pub fn set_caption_style(&mut self, cue_id: u64, style: Option<StyleName>) -> bool {
+        match self.cues.iter_mut().find(|cue| cue.id == cue_id) {
+            Some(cue) => {
+                cue.caption_style = style;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// `scene_switch_reset` (`scene_switch.c:18-21`): forgets which cue is active
     /// without touching the plan, so the next [`Self::update`] re-reports a switch.
     pub fn reset(&mut self) {

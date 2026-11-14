@@ -83,6 +83,57 @@ pub enum ScenePlanEdit {
     /// The whole video's pixel look: the finish's `pixel`, which applies with
     /// or without a plan.
     SetVideoPixel(musializer_core::project::pixel::Pixel),
+    /// How one section arrives (D, Look's section card); on the first
+    /// section, the intro out of black. The field a treatment's `transition`
+    /// compiles into.
+    SetTransition {
+        cue_id: u64,
+        transition: musializer_core::project::transition::Transition,
+    },
+    /// One section's glide, in seconds; 0 is none.
+    SetGlide {
+        cue_id: u64,
+        seconds: f32,
+    },
+    /// One section's grade; `None` clears it.
+    SetGrade {
+        cue_id: u64,
+        grade: Option<musializer_core::project::look::Grade>,
+    },
+    /// The named caption style the lines that begin in one section wear;
+    /// `None` is the base. Refused when the project's table lacks the name.
+    SetCaptionStyle {
+        cue_id: u64,
+        style: Option<musializer_core::project::caption_styles::StyleName>,
+    },
+    /// How the track ends: the outro into black (D, Look's video card).
+    SetOutro(musializer_core::project::transition::Transition),
+    /// The finish over every frame. Carries the whole block; the video card
+    /// writes it with the pixel look it read, so the Pixel look group's own
+    /// edits are never undone by a finish edit.
+    SetFinish(musializer_core::project::look::Finish),
+}
+
+impl ScenePlanEdit {
+    /// Edits that change how a frame looks and nothing about which scene runs
+    /// or with what state: applied without rebuilding the running scene, and
+    /// without a notice per edit, because a slider sends one every frame it
+    /// is dragged and the change is on screen already (the pixel look's rule,
+    /// `docs/DIVERGENCES.md`).
+    #[must_use]
+    pub fn is_look_only(&self) -> bool {
+        matches!(
+            self,
+            Self::SetPixel { .. }
+                | Self::SetVideoPixel(_)
+                | Self::SetTransition { .. }
+                | Self::SetGlide { .. }
+                | Self::SetGrade { .. }
+                | Self::SetCaptionStyle { .. }
+                | Self::SetOutro(_)
+                | Self::SetFinish(_)
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -125,6 +176,10 @@ const DOUBLE_CLICK_PIXELS: f32 = 4.0;
 /// controls row's `20 + index` and the strip's `1`, and the namespace's
 /// collision test walks 0..4096.
 const RUN_HINT_IDS: u32 = 1000;
+
+/// The selected section's name field, a press that opens its look card (D):
+/// the controls row's next index after Delete's 5.
+const NAME_FIELD: u32 = 6;
 
 /// The margin either side of a run that a double-click opens, as a share of
 /// the run, so its first and last cut are not on the lane's edge.
@@ -778,9 +833,70 @@ impl Shell {
                     text.push_str(" \u{00b7} ");
                     text.push_str(&detail);
                 }
-                let text = fit_text(input, &text, rect.width - 12.0);
-                widgets::fill(d, rect, color::ui_raised());
+                // The field is the way into the section's look card (D): a
+                // press shows Look on this section. Inviting rather than
+                // automatic, so a click on the lane never takes the column
+                // away from a chat or a lyric edit.
+                let id = widgets::widget_id(widgets::id::TIMELINE, 20 + NAME_FIELD);
+                let state = self.widgets.button(d, id, rect);
+                let on_look = self.column_view() == super::super::shell::ColumnView::Look;
+                let invite = if on_look { "" } else { "Look \u{203a}" };
+                let invite = if font.all_loaded() {
+                    invite
+                } else {
+                    invite.trim_end_matches(" \u{203a}")
+                };
+                let invite_width = if invite.is_empty() {
+                    0.0
+                } else {
+                    widgets::measure(font, invite, metric::UI_FONT_CAPTION) + 8.0
+                };
+                let invite_width = if rect.width - invite_width >= 120.0 {
+                    invite_width
+                } else {
+                    0.0
+                };
+                let text = fit_text(input, &text, rect.width - 12.0 - invite_width);
+                widgets::fill(
+                    d,
+                    rect,
+                    if state.hovered {
+                        color::ui_hover()
+                    } else {
+                        color::ui_raised()
+                    },
+                );
                 d.draw_rectangle_lines_ex(widgets::rectangle(rect), 1.0, color::ui_rule());
+                if invite_width > 0.0 {
+                    widgets::draw_text(
+                        d,
+                        font,
+                        invite,
+                        rect.x + rect.width - invite_width,
+                        rect.y + (rect.height - metric::UI_FONT_CAPTION) * 0.5,
+                        metric::UI_FONT_CAPTION,
+                        if state.hovered {
+                            color::ui_ink()
+                        } else {
+                            color::ui_muted()
+                        },
+                    );
+                }
+                self.widgets.hint(
+                    d,
+                    state,
+                    id,
+                    rect,
+                    "Shape how this section arrives, glides and looks: opens its card in Look",
+                );
+                if state.clicked {
+                    self.show_column_view(
+                        super::super::shell::ColumnView::Look,
+                        input.workspace,
+                        commands,
+                    );
+                    self.probe_look_scope(super::tune::CardScope::Section);
+                }
                 widgets::draw_text(
                     d,
                     font,

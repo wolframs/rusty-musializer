@@ -202,6 +202,9 @@ pub fn groups(scene: SceneId) -> Vec<GroupRows> {
         .collect()
 }
 
+#[path = "look_cards.rs"]
+pub mod look_cards;
+
 // ---------------------------------------------------------------------------
 // The Look column's geometry.
 //
@@ -264,6 +267,10 @@ const PRESET_ACTION_GAP: f32 = 4.0;
 #[derive(Clone, Debug, PartialEq)]
 pub struct LookSpec {
     pub pixel_look: bool,
+    /// The look cards' height (D: how the selected section arrives and looks,
+    /// and the whole video's intro, outro and finish), drawn first in the
+    /// list; `0` for none. Measured by [`look_cards::layout`].
+    pub cards: f32,
     /// Rows per drawn group, in drawing order (from [`groups`]).
     pub groups: Vec<(Group, usize)>,
     /// A route draft for another scene or track is waiting (its bar draws first).
@@ -320,6 +327,8 @@ pub struct GroupLayout {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LookLayout {
     pub pixel: Option<UiRect>,
+    /// The look cards' block, when [`LookSpec::cards`] asked for one.
+    pub cards: Option<UiRect>,
     pub title: UiRect,
     pub scope: UiRect,
     /// The scrolling list's window; the list is clipped to it.
@@ -406,6 +415,11 @@ pub fn look_layout(body: UiRect, spec: &LookSpec, offset: f32) -> LookLayout {
     let draft_bar = spec.draft_bar.then(|| {
         let rect = UiRect::new(x, y, width, DRAFT_BAR_HEIGHT);
         y += DRAFT_BAR_HEIGHT + BLOCK_GAP;
+        rect
+    });
+    let cards = (spec.cards > 0.0).then(|| {
+        let rect = UiRect::new(x, y, width, spec.cards);
+        y += spec.cards + BLOCK_GAP;
         rect
     });
 
@@ -610,6 +624,7 @@ pub fn look_layout(body: UiRect, spec: &LookSpec, offset: f32) -> LookLayout {
 
     LookLayout {
         pixel: pixel.map(moved),
+        cards: cards.map(moved),
         title,
         scope,
         viewport,
@@ -747,6 +762,7 @@ mod tests {
     fn cadence_spec() -> LookSpec {
         LookSpec {
             pixel_look: false,
+            cards: 0.0,
             groups: vec![
                 (Group::Type, 4),
                 (Group::Motion, 3),

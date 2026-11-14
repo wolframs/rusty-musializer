@@ -523,6 +523,18 @@ pub struct UiProbe {
     /// `pixel=video|section`: reveal the Look filter and choose its scope.
     /// Invented because Xvfb has no wheel; edits still require real click=.
     pub pixel_scope: Option<bool>,
+    /// `section=N` (D): select plan section N (from 1, as `scene runs:`
+    /// counts), the state a click on its block leaves. Invented because one
+    /// probe run has one `click=`, and pressing a look card's control needs
+    /// the section selected first; the press itself is still a real click.
+    pub section: Option<usize>,
+    /// `look=section|video` (D): which look card the Look view shows.
+    pub look_scope: Option<crate::ui::panels::tune::CardScope>,
+    /// `look-text=TEXT,look-action=draft|commit|cancel` (D): typed input for
+    /// the look card field a real `click=` focused, at frame 12, like the
+    /// artist draft; refused and reported with no field focused.
+    pub look_text: Option<String>,
+    pub look_action: Option<crate::ui::panels::tune::CardProbeAction>,
     /// `column-switch=VIEW` (WX-5d): change the column to VIEW on frame 40,
     /// through the press path, after `dock-focus=` (frame 20) and
     /// `agent-say=` (frame 30) have run. Invented because the claims about
@@ -1499,6 +1511,23 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         }
         "poster-dump" => probe.poster_dump = Some(std::path::PathBuf::from(value)),
         "run-open" => probe.run_open = Some(value.parse().ok()?),
+        "section" => probe.section = Some(value.parse().ok().filter(|n: &usize| *n > 0)?),
+        "look" => {
+            probe.look_scope = Some(match value {
+                "section" => crate::ui::panels::tune::CardScope::Section,
+                "video" => crate::ui::panels::tune::CardScope::Video,
+                _ => return None,
+            })
+        }
+        "look-text" => probe.look_text = Some(value.to_owned()),
+        "look-action" => {
+            probe.look_action = Some(match value {
+                "draft" => crate::ui::panels::tune::CardProbeAction::Draft,
+                "commit" => crate::ui::panels::tune::CardProbeAction::Commit,
+                "cancel" => crate::ui::panels::tune::CardProbeAction::Cancel,
+                _ => return None,
+            })
+        }
         "flyout" => probe.flyout = Some(crate::ui::shell::Flyout::from_probe_name(value)?),
         "notices" => {
             use musializer_core::ui::notice::Severity;
@@ -1735,6 +1764,10 @@ Diagnostics:
                           column=direct|lyrics|look|assist|render|closed
                           shows that column view (not with panel=),
                           pixel=video|section reveals Look's pixel filter,
+                          section=N selects plan section N, look=section|video
+                          picks Look's card, look-text=TEXT,look-action=
+                          draft|commit|cancel types into the card field a
+                          click= focused (frame 12),
                           column-width=PX, column-switch=VIEW (frame 40),
                           lyrics-pane=cues|style|effects,
                           assist-card=lyrics|scenes|feelings|full,

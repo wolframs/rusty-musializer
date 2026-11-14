@@ -2869,6 +2869,10 @@ pub mod id {
     pub const ABOUT: u32 = 25;
     /// Pixel filter and workspace appearance controls in Look.
     pub const PIXEL_LOOK: u32 = 24;
+    /// Look's look cards (D): the selected section's arrival, glide, grade
+    /// and caption style, and the whole video's intro, outro and finish
+    /// (`panels::tune::cards`, whose `slot` names the indices).
+    pub const LOOK_CARDS: u32 = 27;
     pub const TOOLBAR: u32 = 1;
     pub const SCENE_BROWSER: u32 = 2;
     pub const TRACKS: u32 = 3;
@@ -2970,9 +2974,10 @@ pub mod id {
         dead_code,
         reason = "the allocation table itself; only the collision tests read it, and it is the thing that has to exist rather than the thing that has to be called"
     )]
-    pub const ALL: [(&str, u32); 30] = [
+    pub const ALL: [(&str, u32); 31] = [
         ("ABOUT", ABOUT),
         ("PIXEL_LOOK", PIXEL_LOOK),
+        ("LOOK_CARDS", LOOK_CARDS),
         ("TOOLBAR", TOOLBAR),
         ("SCENE_BROWSER", SCENE_BROWSER),
         ("TRACKS", TRACKS),

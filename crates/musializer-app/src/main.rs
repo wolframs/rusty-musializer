@@ -1020,6 +1020,12 @@ fn run(
             if let Some(section) = probe.pixel_scope {
                 app.shell.probe_pixel_scope(section);
             }
+            if let Some(scope) = probe.look_scope {
+                app.shell.probe_look_scope(scope);
+            }
+            if let Some(number) = probe.section {
+                app.shell.probe_select_section(&app.workspace, number);
+            }
             hover_at = probe.hover;
             // `click=` parks the pointer too, so a run that passed both would
             // fight over `SetMousePosition`; the click wins, being the more
@@ -1865,6 +1871,9 @@ fn run(
                 if let Some(action) = probe.artist_action {
                     app.shell.probe_artist(probe.artist_text.clone(), action);
                 }
+                if let Some(action) = probe.look_action {
+                    app.shell.probe_look_text(probe.look_text.clone(), action);
+                }
             }
         }
         let egui_active = welcome_theme_active || dock_rect.is_some();
@@ -1954,6 +1963,9 @@ fn run(
         report.logical_window = workspace_window;
         report.timeline = app.shell.describe_timeline(duration_seconds);
         report.click_at = click_at;
+        // The look cards (D) defer to a followed treatment by name.
+        app.shell
+            .set_followed_treatment(follow.as_ref().map(TreatmentFollow::name));
         let shell_input = ShellInput {
             window: report.logical_window,
             ui_scale,
@@ -4854,6 +4866,7 @@ fn handle_scene_plan_edit(
     }
 
     let pixel_only = matches!(edit, Edit::SetPixel { .. } | Edit::SetVideoPixel(_));
+    let look_only = edit.is_look_only();
     let live_scene = app.scene.id();
     let result = {
         let Some(track) = app.workspace.current_mut() else {
@@ -4888,6 +4901,39 @@ fn handle_scene_plan_edit(
                     Err(workspace::SceneCueError::Settings)
                 }
             }
+            // The look cards (D): the model validates, a refusal changes nothing.
+            Edit::SetTransition { cue_id, transition } => {
+                plan_result(track.scene_switches.set_transition(cue_id, transition))
+            }
+            Edit::SetGlide { cue_id, seconds } => {
+                plan_result(track.scene_switches.set_glide(cue_id, seconds))
+            }
+            Edit::SetGrade { cue_id, grade } => {
+                plan_result(track.scene_switches.set_grade(cue_id, grade))
+            }
+            Edit::SetCaptionStyle { cue_id, style } => plan_result(
+                style.is_none_or(|name| {
+                    musializer_core::project::caption_styles::find(
+                        &track.caption_style.styles,
+                        name,
+                    )
+                    .is_some()
+                }) && track.scene_switches.set_caption_style(cue_id, style),
+            ),
+            Edit::SetOutro(outro) => {
+                let valid = outro.is_valid();
+                if valid {
+                    track.scene_switches.outro = outro;
+                }
+                plan_result(valid)
+            }
+            Edit::SetFinish(finish) => {
+                let valid = finish.is_valid();
+                if valid {
+                    track.scene_switches.finish = finish;
+                }
+                plan_result(valid)
+            }
             Edit::SetEnabled(_) => unreachable!("handled above"),
         };
         if result.is_ok() {
@@ -4911,6 +4957,9 @@ fn handle_scene_plan_edit(
             // change which running scene owns deterministic state.
             if pixel_only {
                 app.pixel_notice_pending = true;
+                return;
+            }
+            if look_only {
                 return;
             }
             let enabled = app
@@ -4943,10 +4992,28 @@ fn handle_scene_plan_edit(
                     Edit::SetPixel { .. } => "The section has its own pixel look.",
                     Edit::SetVideoPixel(look) if !look.is_on() => "The video's pixel look is off.",
                     Edit::SetVideoPixel(_) => "The whole video now has a pixel look.",
-                    Edit::SetEnabled(_) => unreachable!("handled above"),
+                    Edit::SetEnabled(_)
+                    | Edit::SetTransition { .. }
+                    | Edit::SetGlide { .. }
+                    | Edit::SetGrade { .. }
+                    | Edit::SetCaptionStyle { .. }
+                    | Edit::SetOutro(_)
+                    | Edit::SetFinish(_) => unreachable!("handled above"),
                 },
             );
         }
+    }
+}
+
+/// A plan setter's refusal as the edit handler's error: the setters say
+/// only whether the value was one the model may hold.
+fn plan_result(accepted: bool) -> Result<(), workspace::SceneCueError> {
+    if accepted {
+        Ok(())
+    } else {
+        Err(workspace::SceneCueError::Plan(
+            musializer_core::project::scene_switch::SceneSwitchError::Cue,
+        ))
     }
 }
 
@@ -7049,6 +7116,7 @@ impl Report {
             ),
             ("route editor:", app.shell.describe_route_editor()),
             ("pixel look:", app.shell.describe_pixel_look()),
+            ("look cards:", app.shell.describe_look_cards()),
             (
                 "tune layout:",
                 app.shell.describe_tune_layout(&app.workspace),

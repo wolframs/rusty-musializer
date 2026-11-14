@@ -46,8 +46,11 @@ use musializer_core::ui::tune_explore::{
     self, ExploreSource, ExploreState, Side, SplitMix64, Strength, TuneTarget, TypedValueError,
 };
 use musializer_core::ui::tune_groups;
+#[path = "tune/cards.rs"]
+mod cards;
 #[path = "tune/pixel.rs"]
 mod pixel;
+pub(crate) use cards::{CardProbeAction, CardScope};
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::AuthoredText;
 use raylib::prelude::{KeyboardKey, RaylibDraw, RaylibDrawHandle, Rectangle};
@@ -360,7 +363,7 @@ impl Shell {
     pub(crate) fn tune_value_typing(&self) -> bool {
         self.peek_editor(|host| host.typing.is_some())
             || (self.column_view() == super::super::shell::ColumnView::Look
-                && self.look_column.pixel_typing.is_some())
+                && (self.look_column.pixel_typing.is_some() || self.card_typing()))
     }
 
     /// Puts a value chip in the state a user reaches by clicking it, for
@@ -847,6 +850,8 @@ pub struct LookColumn {
     route_report: String,
     pixel_report: String,
     appearance_report: String,
+    /// The look cards' state (D): which card, a typed value, play the cut.
+    pub(crate) cards: cards::CardState,
 }
 
 /// Two presses on one track within this many seconds reset it (§3.3).
@@ -1280,8 +1285,10 @@ impl Shell {
             .state
             .draft()
             .is_some_and(|draft| draft.source == AnalysisSource::Band);
+        let cards = self.plan_look_cards(input);
         let spec = tune_groups::LookSpec {
             pixel_look: true,
+            cards: Self::look_cards_height(&cards, card_width),
             groups: groups
                 .iter()
                 .map(|rows| (rows.group, rows.indices.len()))
@@ -1368,6 +1375,9 @@ impl Shell {
             let d = &mut *clip;
             if let Some(bar) = layout.draft_bar {
                 self.hidden_route_draft_bar(d, input, bar, commands);
+            }
+            if let Some(area) = layout.cards {
+                self.look_cards(d, input, &cards, area, commands);
             }
             explore_report =
                 self.look_explore(d, input, &layout.explore, target, audition, commands);
