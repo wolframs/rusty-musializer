@@ -6,15 +6,14 @@
 //! So the replay reads its tuning from [`Resolved::table`], which this module
 //! built from the same values it put in the recipe, rather than from the track.
 
+use crate::posters::PosterRequest;
+use crate::scene_host;
+use crate::workspace::Track;
 use musializer_core::render::poster::{
-    poster_moment, PosterKey, PosterRecipe, POSTER_RENDERER_VERSION,
+    poster_moment, section_start_moment, PosterKey, PosterRecipe, POSTER_RENDERER_VERSION,
 };
 use musializer_core::scene::settings::SceneSettings;
 use musializer_core::scene::SceneId;
-use musializer_core::ui::plan_runs::RunSpan;
-
-use crate::scene_host;
-use crate::workspace::Track;
 
 /// The service's knobs that reach the picture, so they are in the key too.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -119,13 +118,20 @@ fn draws_its_line(id: SceneId) -> bool {
         || musializer_core::scenes::pixel_cats::Staging::of(id).is_some()
 }
 
-/// Builds the recipe for `run` of `track`.
+/// Builds the recipe for `request`'s run of `track`: at the run's
+/// representative moment, or for a section's own poster where the section
+/// has arrived.
 #[must_use]
-pub fn resolve(track: &Track, run: &RunSpan, tuning: &Tuning) -> Resolved {
+pub fn resolve(track: &Track, request: &PosterRequest, tuning: &Tuning) -> Resolved {
+    let run = &request.run;
     let config = track.render_config;
     let fps = config.fps.max(1);
     let plan = &track.scene_switches;
-    let frame_index = poster_moment(plan, &track.lyrics, run, fps, track.duration_seconds);
+    let frame_index = if request.seat == crate::posters::PosterSeat::SectionStart {
+        section_start_moment(plan, run.first_section, fps, track.duration_seconds)
+    } else {
+        poster_moment(plan, &track.lyrics, run, fps, track.duration_seconds)
+    };
     let time = frame_index as f64 / f64::from(fps);
     let scene = run.scene;
 
@@ -232,6 +238,15 @@ pub fn resolve(track: &Track, run: &RunSpan, tuning: &Tuning) -> Resolved {
         atlas: track.atlas_map().is_some(),
         export_size,
         poster_size: poster_size(export_size, tuning.box_size),
+        // The clip the replay will draw, as the clip scene resolves it.
+        clip: (scene == SceneId::Clip || nested == Some(SceneId::Clip))
+            .then(|| plan.clip_at(time, track.base_clip))
+            .flatten()
+            .map(|moment| {
+                let readable = crate::clips::find(&track.clips, moment.clip)
+                    .is_some_and(|clip| clip.unusable.is_none());
+                (moment, readable)
+            }),
         version: POSTER_RENDERER_VERSION,
     };
     Resolved {

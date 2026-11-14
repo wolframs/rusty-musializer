@@ -38,6 +38,17 @@ impl TrackClip {
     }
 }
 
+/// Why "Generate…" is drawn disabled, wherever it is (the Scenes flyout's
+/// footer, Look's section card): the one sentence both say.
+pub const GENERATE_NOT_BUILT: &str =
+    "Generating clips is not built yet: a model that starts and ends on this \
+     section's frames, with its price shown before anything is spent";
+
+/// What "Import clip…" does, wherever it is.
+pub const IMPORT_HINT: &str =
+    "Play a video file in this section: a generated clip, footage, or an export. \
+     It is bundled with the project; its sound is ignored";
+
 /// The clip a library holds for `clip`.
 #[must_use]
 pub fn find(clips: &[TrackClip], clip: ClipRef) -> Option<&TrackClip> {

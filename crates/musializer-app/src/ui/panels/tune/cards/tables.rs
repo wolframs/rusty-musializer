@@ -317,6 +317,9 @@ pub(crate) fn apply_table_edit(track: &mut Track, edit: ScenePlanEdit) -> bool {
             track.scene_switches = plan;
             true
         }
+        ScenePlanEdit::SetClip { cue_id, clip } => {
+            super::clip::apply_clip_edit(track, cue_id, clip)
+        }
         ScenePlanEdit::SetTitles(titles) => {
             if !caption_styles::titles_are_valid(
                 &titles,

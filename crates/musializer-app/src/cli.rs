@@ -483,6 +483,10 @@ pub struct UiProbe {
     /// `save-to=`. Not checked here: the picker's refusal of an unreadable
     /// or invalid file is the thing a probe presses.
     pub treatment_pick: Option<PathBuf>,
+    /// `clip-pick=PATH` (F1c): "Import clip…"'s picker answers `PATH`, the
+    /// same stand-in for the clip picker. The import after it, its refusals
+    /// and where it lands are the real ones.
+    pub clip_pick: Option<PathBuf>,
     /// `share-frame=playhead`: seed the Render view's first-frame choice from
     /// `time=` before a single `click=` is delivered.
     ///
@@ -1635,6 +1639,7 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         // the wrong one must fail *there*, where a real picker's answer would.
         "save-to" => probe.save_to = Some(PathBuf::from(value)),
         "treatment-pick" => probe.treatment_pick = Some(PathBuf::from(value)),
+        "clip-pick" => probe.clip_pick = Some(PathBuf::from(value)),
         "protocol-answer" => {
             // `ID:CHOICE` pairs joined by `+`, colon-separated like `tune-type`
             // because the spec is already split on `,` and `=`. Items are named
@@ -2025,6 +2030,10 @@ mod tests {
                 .unwrap()
                 .treatment_pick,
             Some(PathBuf::from("/tmp/a.treatment.json"))
+        );
+        assert_eq!(
+            parse_ui_probe("clip-pick=/tmp/take.mp4").unwrap().clip_pick,
+            Some(PathBuf::from("/tmp/take.mp4"))
         );
         assert!(!parse_ui_probe("flyout=scenes").unwrap().key_escape);
         {

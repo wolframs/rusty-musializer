@@ -370,20 +370,26 @@ impl ClipTiming {
     /// The clip time a section's local time folds to, by `after`.
     #[must_use]
     pub fn fold(&self, seconds: f64, after: ClipOverrun) -> f64 {
-        let length = self.duration;
-        if !seconds.is_finite() || seconds <= 0.0 {
-            return 0.0;
-        }
-        match after {
-            ClipOverrun::Hold => seconds.min(length),
-            ClipOverrun::Loop => seconds.rem_euclid(length),
-            ClipOverrun::Bounce => {
-                let phase = seconds.rem_euclid(2.0 * length);
-                if phase >= length {
-                    2.0 * length - phase
-                } else {
-                    phase
-                }
+        fold_seconds(seconds, self.duration, after)
+    }
+}
+
+/// The clip time a section's local time `seconds` folds to in a clip
+/// `length` seconds long, by `after`.
+#[must_use]
+pub fn fold_seconds(seconds: f64, length: f64, after: ClipOverrun) -> f64 {
+    if !seconds.is_finite() || seconds <= 0.0 || !length.is_finite() || length <= 0.0 {
+        return 0.0;
+    }
+    match after {
+        ClipOverrun::Hold => seconds.min(length),
+        ClipOverrun::Loop => seconds.rem_euclid(length),
+        ClipOverrun::Bounce => {
+            let phase = seconds.rem_euclid(2.0 * length);
+            if phase >= length {
+                2.0 * length - phase
+            } else {
+                phase
             }
         }
     }

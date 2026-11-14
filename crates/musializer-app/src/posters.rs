@@ -34,6 +34,7 @@
 mod audio;
 mod recipe;
 mod replay;
+mod thumbs;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -51,6 +52,7 @@ use raylib::prelude::{
 pub use audio::PosterAudio;
 use recipe::{Resolved, Tuning};
 use replay::{Advance, Job};
+pub use thumbs::ThumbView;
 
 use crate::scene_host::SceneRenderer;
 use crate::workspace::{Track, Workspace};
@@ -58,8 +60,9 @@ use crate::workspace::{Track, Workspace};
 /// One run the lane drew this frame and wants a poster for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PosterRequest {
-    /// Picker requests have their own identity, separate from every plan cue.
-    pub picker: bool,
+    /// Whose poster it is: a lane run's, a picker tile's, a section's own,
+    /// or a library clip's frame.
+    pub seat: PosterSeat,
     pub track_slot: usize,
     pub run: RunSpan,
     /// Inside the lane's visible span this frame. Visible runs are served
@@ -67,11 +70,29 @@ pub struct PosterRequest {
     pub visible: bool,
 }
 
+/// Who asked for a poster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PosterSeat {
+    /// A plan-lane run, at its representative moment.
+    Run,
+    /// A scene picker tile: its own identity, separate from every plan cue.
+    Picker,
+    /// A section's own poster, Look's section card (F1c): shown where the
+    /// section has arrived rather than at the run's representative moment.
+    /// The request's run is that one section.
+    SectionStart,
+    /// One frame of a library clip, decoded rather than replayed (F1c, the
+    /// card's clip choices; `posters/thumbs.rs`). The run is unused.
+    ClipThumb(musializer_core::project::clip::ClipRef),
+}
+
 /// A cache seat cannot alias a plan cue, even if its id equals a scene index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PosterId {
     Run(u64),
     Picker(musializer_core::scene::SceneId),
+    /// A section's own poster, by its cue id (F1c).
+    Section(u64),
 }
 
 impl std::fmt::Display for PosterId {
@@ -79,16 +100,17 @@ impl std::fmt::Display for PosterId {
         match self {
             Self::Run(id) => write!(f, "{id}"),
             Self::Picker(scene) => write!(f, "picker-{}", scene.stable_name()),
+            Self::Section(id) => write!(f, "section-{id}"),
         }
     }
 }
 
 impl PosterRequest {
     fn identity(&self) -> PosterId {
-        if self.picker {
-            PosterId::Picker(self.run.scene)
-        } else {
-            PosterId::Run(self.run.first_cue_id)
+        match self.seat {
+            PosterSeat::Picker => PosterId::Picker(self.run.scene),
+            PosterSeat::SectionStart => PosterId::Section(self.run.first_cue_id),
+            PosterSeat::Run | PosterSeat::ClipThumb(_) => PosterId::Run(self.run.first_cue_id),
         }
     }
 
@@ -97,7 +119,7 @@ impl PosterRequest {
     pub fn scene(track: &Track, track_slot: usize, scene: musializer_core::scene::SceneId) -> Self {
         Self {
             track_slot,
-            picker: true,
+            seat: PosterSeat::Picker,
             visible: true,
             run: RunSpan {
                 scene,
@@ -109,6 +131,25 @@ impl PosterRequest {
                 first_cue_id: 0,
             },
         }
+    }
+
+    /// Section `index`'s own poster, where it has arrived (F1c). `None` past
+    /// the plan's end.
+    pub fn section(track: &Track, track_slot: usize, index: usize) -> Option<Self> {
+        let cue = track.scene_switches.cues().get(index)?;
+        Some(Self {
+            track_slot,
+            seat: PosterSeat::SectionStart,
+            visible: true,
+            run: RunSpan {
+                scene: musializer_core::scene::SceneId::from_index(cue.scene_index as usize)?,
+                start_seconds: cue.start_seconds,
+                end_seconds: cue.end_seconds,
+                first_section: index,
+                sections: 1,
+                first_cue_id: cue.id,
+            },
+        })
     }
 }
 
@@ -246,6 +287,8 @@ pub struct PosterBoard {
     refusal: Option<&'static str>,
     clock: u64,
     stats: Stats,
+    /// The library clips' frames (F1c), decoded rather than replayed.
+    thumbs: thumbs::ClipThumbs,
 }
 
 impl Default for PosterBoard {
@@ -268,6 +311,7 @@ impl Default for PosterBoard {
             refusal: None,
             clock: 0,
             stats: Stats::default(),
+            thumbs: thumbs::ClipThumbs::default(),
         }
     }
 }
@@ -336,7 +380,7 @@ impl PosterBoard {
             &PosterRequest {
                 track_slot: _track_slot,
                 run: *run,
-                picker: false,
+                seat: PosterSeat::Run,
                 visible: true,
             },
         )
@@ -347,7 +391,7 @@ impl PosterBoard {
         if let Some(reason) = self.refused(track) {
             return PosterView::Unavailable(reason);
         }
-        let key = recipe::resolve(track, &request.run, &self.tuning).key;
+        let key = recipe::resolve(track, request, &self.tuning).key;
         match self.entry(&track.file_path, request.identity()) {
             Some(entry) => {
                 let Some(texture) = entry.canvas.render_texture() else {
@@ -372,9 +416,31 @@ impl PosterBoard {
         }
     }
 
-    /// Hands the frame's requests to the service.
+    /// Hands the frame's requests to the service: replays for runs and
+    /// sections, decodes for library clips.
     pub fn enqueue(&mut self, requests: Vec<PosterRequest>) {
-        self.requests = requests;
+        let (clips, runs): (Vec<_>, Vec<_>) = requests
+            .into_iter()
+            .partition(|request| matches!(request.seat, PosterSeat::ClipThumb(_)));
+        self.thumbs.want(
+            clips
+                .iter()
+                .filter_map(|request| match request.seat {
+                    PosterSeat::ClipThumb(clip) => Some((request.track_slot, clip)),
+                    _ => None,
+                })
+                .collect(),
+        );
+        self.requests = runs;
+    }
+
+    /// What a library clip's choice draws (F1c): its middle frame, or why
+    /// there is none.
+    pub fn view_clip(&self, clip: &crate::clips::TrackClip) -> ThumbView<'_> {
+        if self.probe == Some(PosterProbe::Off) {
+            return ThumbView::Refused("posters are switched off for this run".to_owned());
+        }
+        self.thumbs.view(clip)
     }
 
     /// Does up to one frame's budget of poster work. See the module comment
@@ -401,6 +467,7 @@ impl PosterBoard {
         // the lane's own `view`, instead of three.
         let mut survey = self.survey(workspace);
         if self.probe != Some(PosterProbe::Off) && !d.is_window_minimized() {
+            self.thumbs.step(d, thread, workspace, settle);
             let budget = if playing {
                 BUDGET_PLAYING
             } else {
@@ -507,7 +574,7 @@ impl PosterBoard {
                 let resolved = workspace
                     .get(request.track_slot)
                     .filter(|track| self.refused(track).is_none())
-                    .map(|track| recipe::resolve(track, &request.run, &self.tuning));
+                    .map(|track| recipe::resolve(track, request, &self.tuning));
                 Surveyed {
                     request: *request,
                     key: resolved.as_ref().map(|resolved| resolved.key),
@@ -835,7 +902,7 @@ impl PosterBoard {
              size={width}x{height} preroll={:.1}s step-worst={:.1}ms settle-worst={:.1}ms \
              frame-worst={:.1}ms idle-worst={:.2}ms budget={}ms/{}ms rendered={} refreshed={} abandoned={} poster-median={median:.1}ms \
              poster-worst={worst:.1}ms isolated={} load={} version={POSTER_RENDERER_VERSION} \
-             probe={} dump={}",
+             thumbs={} probe={} dump={}",
             stats.requested,
             stats.ready,
             stats.stale,
@@ -867,6 +934,7 @@ impl PosterBoard {
                         stats.renderer_resident
                     ),
                 ),
+            self.thumbs.describe(),
             match self.probe {
                 None => "none",
                 Some(PosterProbe::Settle) => "settle",
@@ -944,7 +1012,7 @@ mod picker_tests {
             let request = PosterRequest::scene(&track, 0, scene);
             assert_eq!(request.identity(), PosterId::Picker(scene));
             assert_ne!(request.identity(), PosterId::Run(scene.index() as u64));
-            let resolved = recipe::resolve(&track, &request.run, &tuning);
+            let resolved = recipe::resolve(&track, &request, &tuning);
             assert_eq!(resolved.recipe.scene, scene);
             assert_eq!(resolved.recipe.frame_index, 300);
             assert_eq!(resolved.recipe.seed, 7);

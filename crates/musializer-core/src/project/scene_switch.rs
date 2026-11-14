@@ -279,18 +279,26 @@ impl SceneSwitchTimeline {
     /// run of such sections starts, not where each one restarts.
     #[must_use]
     pub fn clip_at(&self, time_seconds: f64, base: Option<ClipPlacement>) -> Option<ClipMoment> {
-        let clip_scene = SceneId::Clip.index() as u32;
         let Some(index) = self.covering_index(time_seconds) else {
             return base.map(ClipMoment::from_start);
         };
+        self.section_clip(index, base)
+            .or_else(|| base.map(ClipMoment::from_start))
+    }
+
+    /// The clip section `index` plays and where its clock started, plan on
+    /// or off (F1c, Look's section card): [`Self::clip_at`] for a time inside
+    /// it. `None` when the section does not play the clip scene, or plays
+    /// the track's clip and the track has none.
+    #[must_use]
+    pub fn section_clip(&self, index: usize, base: Option<ClipPlacement>) -> Option<ClipMoment> {
+        let clip_scene = SceneId::Clip.index() as u32;
         let placement_of = |cue: &SceneSwitchCue| {
             (cue.scene_index == clip_scene)
                 .then(|| cue.clip.or(base))
                 .flatten()
         };
-        let Some(placement) = placement_of(&self.cues[index]) else {
-            return base.map(ClipMoment::from_start);
-        };
+        let placement = placement_of(self.cues.get(index)?)?;
         // The section's own `from`; one that plays the track's clip has none.
         let own_from = |cue: &SceneSwitchCue| cue.clip.and_then(|own| own.from_seconds);
         let mut origin = index;
@@ -320,6 +328,102 @@ impl SceneSwitchTimeline {
         })
     }
 
+    /// What Look's section card says about clip section `index` (F1c):
+    /// the clock in force, whether it continues the section before, and the
+    /// placement an edit starts from. `None` as [`Self::section_clip`].
+    #[must_use]
+    pub fn clip_section(&self, index: usize, base: Option<ClipPlacement>) -> Option<ClipSection> {
+        let moment = self.section_clip(index, base)?;
+        let cue = &self.cues[index];
+        let clip_scene = SceneId::Clip.index() as u32;
+        let continuable = index
+            .checked_sub(1)
+            .map(|before| &self.cues[before])
+            .filter(|before| before.scene_index == clip_scene)
+            .and_then(|before| before.clip.or(base))
+            .is_some_and(|before| before.clip == moment.clip);
+        let own_from = cue.clip.and_then(|own| own.from_seconds);
+        let continues = continuable && own_from.is_none();
+        // The section's own placement, or the track's made its own without
+        // moving a frame: a run of sections playing the track's clip
+        // continues through it, and the run's first takes the track's `from`.
+        let placement = cue.clip.unwrap_or_else(|| {
+            let base = base.expect("section_clip found the track's clip");
+            ClipPlacement {
+                from_seconds: if continues { None } else { base.from_seconds },
+                ..base
+            }
+        });
+        Some(ClipSection {
+            moment,
+            placement,
+            inherited: cue.clip.is_none(),
+            continuable,
+            continues,
+            start_seconds: moment.local_seconds(cue.start_seconds),
+        })
+    }
+}
+
+/// A clip section as Look's section card shows and edits it (F1c).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipSection {
+    /// The clock in force: which clip, from where, since when.
+    pub moment: ClipMoment,
+    /// The placement an edit of this section starts from: its own, or the
+    /// track's with the `from` that keeps every frame where it is.
+    pub placement: ClipPlacement,
+    /// The section names no clip of its own and plays the track's.
+    pub inherited: bool,
+    /// The section before plays the same clip, so a section with no `from`
+    /// continues its clock.
+    pub continuable: bool,
+    /// It does: no `from` of its own, and the section before plays its clip.
+    pub continues: bool,
+    /// The clip time at the section's start, before `after` folds it.
+    pub start_seconds: f64,
+}
+
+impl ClipSection {
+    /// The clip time on screen at the section's start, in a clip `length`
+    /// seconds long.
+    #[must_use]
+    pub fn start_on_screen(&self, length: f64) -> f64 {
+        crate::project::clip::fold_seconds(self.start_seconds, length, self.moment.after)
+    }
+
+    /// The own start that shows the same frame at the section's start as
+    /// now: the clip time on screen there, kept inside the clip (a `from`
+    /// must lie before its end, and the last frame is still the last frame
+    /// a millisecond before it). Exact, not rounded to a readout, because a
+    /// rounding can cross a frame. A bounce on its way back starts forward
+    /// from that frame: a `from` cannot say "backwards".
+    #[must_use]
+    pub fn pinned_start(&self, length: f64) -> f64 {
+        let on_screen = self.start_on_screen(length);
+        on_screen.min((length - 0.001).max(0.0)).max(0.0)
+    }
+
+    /// The placement that continues the section before.
+    #[must_use]
+    pub fn continued(&self) -> ClipPlacement {
+        ClipPlacement {
+            from_seconds: None,
+            ..self.placement
+        }
+    }
+
+    /// The placement that starts at `seconds` of the clip.
+    #[must_use]
+    pub fn starting_at(&self, seconds: f64) -> ClipPlacement {
+        ClipPlacement {
+            from_seconds: Some(seconds),
+            ..self.placement
+        }
+    }
+}
+
+impl SceneSwitchTimeline {
     /// The clips the plan's `clip` sections play anywhere in
     /// `[start_seconds, end_seconds]` (VG, F1b): each section's own, else the
     /// track's (`base`). Empty with the plan off, when the base scene decides.
@@ -1529,6 +1633,90 @@ mod tests {
             let after: Vec<_> = times.iter().map(|&t| local(&timeline, base, t)).collect();
             assert_eq!(after, before, "own={own:?} base={base:?}");
         }
+    }
+
+    /// F1c: Look's section card reads whether a clip section continues the
+    /// one before, and its two edits between continuing and an own start
+    /// show the same clip time at every moment of the section, whether the
+    /// section names its clip or plays the track's.
+    #[test]
+    fn continuing_and_pinning_an_own_start_move_no_frame() {
+        use crate::project::clip::{fold_seconds, ClipOverrun, ClipPlacement, ClipRef};
+        let clip_scene = SceneId::Clip.index() as u32;
+        let take = ClipRef::from_hex(&"cd".repeat(32)).unwrap();
+        let other = ClipRef::from_hex(&"ef".repeat(32)).unwrap();
+        let length = 8.0;
+        let shown = |timeline: &SceneSwitchTimeline, base, t: f64| {
+            timeline
+                .clip_at(t, base)
+                .map(|moment| fold_seconds(moment.local_seconds(t), length, moment.after))
+        };
+        let from_two = ClipPlacement {
+            from_seconds: Some(2.0),
+            ..ClipPlacement::new(take)
+        };
+        for (first, second, base) in [
+            (Some(from_two), Some(ClipPlacement::new(take)), None),
+            (None, None, Some(from_two)),
+            (
+                Some(from_two),
+                Some(ClipPlacement {
+                    after: ClipOverrun::Loop,
+                    ..ClipPlacement::new(take)
+                }),
+                None,
+            ),
+        ] {
+            let mut a = cue(2, 10.0, 13.0, clip_scene);
+            a.clip = first;
+            let mut b = cue(3, 13.0, DURATION, clip_scene);
+            b.clip = second;
+            let mut timeline = SceneSwitchTimeline::new();
+            timeline
+                .replace(&[cue(1, 0.0, 10.0, 0), a, b], DURATION, SCENES)
+                .unwrap();
+            timeline.enabled = true;
+            assert!(timeline.clip_section(0, base).is_none(), "spectrum");
+            let head = timeline.clip_section(1, base).unwrap();
+            assert!(!head.continuable && !head.continues);
+            assert_eq!(head.placement.from_seconds, Some(2.0), "{base:?}");
+            let section = timeline.clip_section(2, base).unwrap();
+            assert!(section.continuable && section.continues);
+            // 2 + 3 s of the section before.
+            assert_eq!(section.start_seconds, 5.0);
+            let times = [13.0, 13.5, 15.0, 19.9];
+            let before: Vec<_> = times.iter().map(|&t| shown(&timeline, base, t)).collect();
+            // Pinned: an own start where the clock was.
+            let pinned = section.pinned_start(length);
+            assert_eq!(pinned, fold_seconds(5.0, length, section.moment.after));
+            assert!(timeline.set_clip(3, Some(section.starting_at(pinned))));
+            let after: Vec<_> = times.iter().map(|&t| shown(&timeline, base, t)).collect();
+            assert_eq!(after, before, "pinned, base={base:?}");
+            let own = timeline.clip_section(2, base).unwrap();
+            assert!(own.continuable && !own.continues && !own.inherited);
+            // And back: continuing again is the same clock.
+            assert!(timeline.set_clip(3, Some(own.continued())));
+            let again: Vec<_> = times.iter().map(|&t| shown(&timeline, base, t)).collect();
+            assert_eq!(again, before, "continued, base={base:?}");
+        }
+        // Another clip before is nothing to continue.
+        let mut a = cue(2, 10.0, 13.0, clip_scene);
+        a.clip = Some(ClipPlacement::new(other));
+        let mut b = cue(3, 13.0, DURATION, clip_scene);
+        b.clip = Some(ClipPlacement::new(take));
+        let mut timeline = SceneSwitchTimeline::new();
+        timeline
+            .replace(&[cue(1, 0.0, 10.0, 0), a, b], DURATION, SCENES)
+            .unwrap();
+        let section = timeline.clip_section(2, None).unwrap();
+        assert!(!section.continuable && !section.continues);
+        assert_eq!(section.start_seconds, 0.0);
+        // Held past its end: pinned a millisecond before it, the last frame.
+        let held = ClipSection {
+            start_seconds: 9.0,
+            ..section
+        };
+        assert!((held.pinned_start(length) - 7.999).abs() < 1e-12);
     }
 
     /// F1b defect 2: the clips a stretch of the plan plays, for the renderer

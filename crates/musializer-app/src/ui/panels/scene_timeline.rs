@@ -140,6 +140,14 @@ pub enum ScenePlanEdit {
         cue_id: u64,
         beyond: f32,
     },
+    /// The clip one Video Clip section plays, where it starts, what happens
+    /// after its end and how it fits (F1c, Look's section card). The field a
+    /// treatment's section `clip` compiles into. Refused unless the section
+    /// plays Video Clip and the clip is in the project with `from` inside it.
+    SetClip {
+        cue_id: u64,
+        clip: musializer_core::project::clip::ClipPlacement,
+    },
 }
 
 impl ScenePlanEdit {
@@ -165,6 +173,7 @@ impl ScenePlanEdit {
                 | Self::SetCueVoices(_)
                 | Self::SetCaptionStyles { .. }
                 | Self::SetTitles(_)
+                | Self::SetClip { .. }
         )
     }
 }
@@ -1183,7 +1192,7 @@ impl Shell {
             );
             if let Some(slot) = track_slot {
                 self.poster_requests.push(crate::posters::PosterRequest {
-                    picker: false,
+                    seat: crate::posters::PosterSeat::Run,
                     track_slot: slot,
                     run: *run,
                     visible: geometry.is_some(),

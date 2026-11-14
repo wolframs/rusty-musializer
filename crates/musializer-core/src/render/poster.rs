@@ -17,6 +17,7 @@
 
 use std::fmt::Write as _;
 
+use crate::project::clip::ClipMoment;
 use crate::project::look::{Finish, Grade};
 use crate::project::lyrics::{LyricCue, LyricsDocument};
 use crate::project::model::CaptionStyle;
@@ -75,6 +76,11 @@ pub struct PosterRecipe {
     /// scale fixed-size details are drawn at.
     pub export_size: (u32, u32),
     pub poster_size: (u32, u32),
+    /// The clip the frame shows, for a clip section (F1c): which clip, from
+    /// where, folded how and fitted how, and whether the project has a file
+    /// it can read for it (a missing one draws a card). A section's clip
+    /// edits change the picture, so they change the key.
+    pub clip: Option<(ClipMoment, bool)>,
     pub version: u32,
 }
 
@@ -129,7 +135,6 @@ pub fn poster_moment(
     duration_seconds: f64,
 ) -> u64 {
     let fps = fps.max(1);
-    let frame = 1.0 / f64::from(fps);
     let middle = (run.start_seconds + run.end_seconds) * 0.5;
     let mut moment = middle;
     let mut nearest = f64::INFINITY;
@@ -157,35 +162,76 @@ pub fn poster_moment(
         cue.start_seconds <= moment && moment < cue.end_seconds
     });
     if let Some(index) = section {
-        let cue = &cues[index];
-        let room = cue.end_seconds - cue.start_seconds;
-        let arrival = if cue.transition.kind == TransitionKind::Dip {
-            fitted_seconds(cue.transition, room * 2.0) * 0.5
-        } else {
-            fitted_seconds(cue.transition, room)
-        };
-        let glide = f64::from(cue.glide).min(room);
-        let low = cue.start_seconds + arrival.max(glide);
-        let mut high = cue.end_seconds;
-        if let Some(next) = cues.get(index + 1) {
-            if next.transition.kind == TransitionKind::Dip {
-                let next_room = next.end_seconds - next.start_seconds;
-                let half = fitted_seconds(next.transition, next_room * 2.0) * 0.5;
-                high = high.min(next.start_seconds - half.min(room));
-            }
-        }
-        if !plan.outro.is_cut() && duration_seconds > 0.0 {
-            let length = f64::from(plan.outro.seconds).min(duration_seconds);
-            high = high.min(duration_seconds - length);
-        }
-        // Half a frame inside on both sides, so the snap below cannot land
-        // back on the excluded edge.
-        let (low, high) = (low + frame * 0.5, high - frame * 1.5);
-        if low <= high {
-            moment = moment.clamp(low, high);
+        moment = settled(plan, index, moment, fps, duration_seconds);
+    }
+    snap(moment, fps, duration_seconds)
+}
+
+/// The frame a section's own poster shows (F1c, Look's section card): where
+/// it has arrived, as early as [`poster_moment`] would allow inside it — out
+/// of its arrival and its glide, so the poster is the picture the section
+/// starts on rather than a blend with the one before.
+#[must_use]
+pub fn section_start_moment(
+    plan: &SceneSwitchTimeline,
+    index: usize,
+    fps: u32,
+    duration_seconds: f64,
+) -> u64 {
+    let fps = fps.max(1);
+    let start = plan.cues().get(index).map_or(0.0, |cue| cue.start_seconds);
+    snap(
+        settled(plan, index, start, fps, duration_seconds),
+        fps,
+        duration_seconds,
+    )
+}
+
+/// `moment` pushed out of section `index`'s arrival transition and glide,
+/// out of a dip that begins before the next section, and out of the outro.
+fn settled(
+    plan: &SceneSwitchTimeline,
+    index: usize,
+    mut moment: f64,
+    fps: u32,
+    duration_seconds: f64,
+) -> f64 {
+    let frame = 1.0 / f64::from(fps.max(1));
+    let cues = plan.cues();
+    let Some(cue) = cues.get(index) else {
+        return moment;
+    };
+    let room = cue.end_seconds - cue.start_seconds;
+    let arrival = if cue.transition.kind == TransitionKind::Dip {
+        fitted_seconds(cue.transition, room * 2.0) * 0.5
+    } else {
+        fitted_seconds(cue.transition, room)
+    };
+    let glide = f64::from(cue.glide).min(room);
+    let low = cue.start_seconds + arrival.max(glide);
+    let mut high = cue.end_seconds;
+    if let Some(next) = cues.get(index + 1) {
+        if next.transition.kind == TransitionKind::Dip {
+            let next_room = next.end_seconds - next.start_seconds;
+            let half = fitted_seconds(next.transition, next_room * 2.0) * 0.5;
+            high = high.min(next.start_seconds - half.min(room));
         }
     }
+    if !plan.outro.is_cut() && duration_seconds > 0.0 {
+        let length = f64::from(plan.outro.seconds).min(duration_seconds);
+        high = high.min(duration_seconds - length);
+    }
+    // Half a frame inside on both sides, so the snap cannot land back on
+    // the excluded edge.
+    let (low, high) = (low + frame * 0.5, high - frame * 1.5);
+    if low <= high {
+        moment = moment.clamp(low, high);
+    }
+    moment
+}
 
+/// A moment as a frame of the track.
+fn snap(moment: f64, fps: u32, duration_seconds: f64) -> u64 {
     let last_frame = ((duration_seconds * f64::from(fps)).ceil() as u64).saturating_sub(1);
     ((moment.max(0.0) * f64::from(fps)).floor() as u64).min(last_frame)
 }
@@ -346,6 +392,34 @@ mod tests {
         }
     }
 
+    /// F1c: a section's own poster is where it has arrived: past its fade
+    /// and its glide, the first frame of its own picture.
+    #[test]
+    fn a_sections_own_poster_is_where_it_has_arrived() {
+        let mut timeline = SceneSwitchTimeline::new();
+        let mut second = SceneSwitchCue {
+            id: 2,
+            start_seconds: 10.0,
+            end_seconds: 20.0,
+            scene_index: 1,
+            ..SceneSwitchCue::default()
+        };
+        second.transition = Transition::new(TransitionKind::Fade, 0.6);
+        let first = SceneSwitchCue {
+            id: 1,
+            start_seconds: 0.0,
+            end_seconds: 10.0,
+            ..SceneSwitchCue::default()
+        };
+        timeline.replace(&[first, second], 20.0, 30).unwrap();
+        // 10.6 s plus half a frame, floored: frame 318 at 30 fps.
+        assert_eq!(section_start_moment(&timeline, 1, 30, 20.0), 318);
+        // A cut arrives at once: half a frame in is the first frame.
+        assert_eq!(section_start_moment(&timeline, 0, 30, 20.0), 0);
+        // Out of range is the start of the track, never a panic.
+        assert_eq!(section_start_moment(&timeline, 9, 30, 20.0), 0);
+    }
+
     #[test]
     fn the_key_moves_with_every_input_and_only_with_them() {
         let recipe = PosterRecipe {
@@ -369,6 +443,7 @@ mod tests {
             atlas: false,
             export_size: (1920, 1080),
             poster_size: (256, 144),
+            clip: None,
             version: POSTER_RENDERER_VERSION,
         };
         assert_eq!(recipe.key(), recipe.clone().key());
@@ -391,6 +466,15 @@ mod tests {
             },
             PosterRecipe {
                 poster_size: (128, 72),
+                ..recipe.clone()
+            },
+            PosterRecipe {
+                clip: Some((
+                    ClipMoment::from_start(crate::project::clip::ClipPlacement::new(
+                        crate::project::clip::ClipRef::from_hex(&"ab".repeat(32)).unwrap(),
+                    )),
+                    true,
+                )),
                 ..recipe.clone()
             },
         ];

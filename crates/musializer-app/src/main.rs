@@ -817,6 +817,8 @@ fn run(
     let mut probe_save_to: Option<std::path::PathBuf> = None;
     // `--ui-probe treatment-pick=PATH`, the treatment picker's stand-in.
     let mut probe_treatment_pick: Option<std::path::PathBuf> = None;
+    // `--ui-probe clip-pick=PATH`, the clip picker's stand-in (F1c).
+    let mut probe_clip_pick: Option<std::path::PathBuf> = None;
     let mut audio_stall_ms: Option<u64> = None;
     // `scrub=` (VG): the seeks still to make, one a frame.
     let mut scrub: Option<((f64, f64, u32), u32)> = None;
@@ -1089,6 +1091,7 @@ fn run(
             // one level further along.
             probe_save_to = probe.save_to.clone();
             probe_treatment_pick = probe.treatment_pick.clone();
+            probe_clip_pick = probe.clip_pick.clone();
             if probe.share_frame_playhead {
                 app.shell.export_share_frame_seconds = Some(probe.seek_seconds.unwrap_or(0.0));
             }
@@ -2627,9 +2630,13 @@ fn run(
                     clips::import_command(&mut app, &path, time_seconds, rl.get_time());
                 }
                 ShellCommand::ImportClipDialog => {
-                    let dialog = FileDialog::new("Import a video clip")
-                        .with_filter(dialogs::filters::VIDEO_CLIP);
-                    match dialog.pick_file() {
+                    let picked = match probe_clip_pick.clone() {
+                        Some(path) => Ok(Some(path)),
+                        None => FileDialog::new("Import a video clip")
+                            .with_filter(dialogs::filters::VIDEO_CLIP)
+                            .pick_file(),
+                    };
+                    match picked {
                         Ok(None) => {}
                         Ok(Some(path)) => {
                             clips::import_command(&mut app, &path, time_seconds, rl.get_time());
@@ -5035,7 +5042,8 @@ fn handle_scene_plan_edit(
             | Edit::SetCueVoices(_)
             | Edit::SetCaptionStyles { .. }
             | Edit::SetTitles(_)
-            | Edit::SetBeyond { .. }) => {
+            | Edit::SetBeyond { .. }
+            | Edit::SetClip { .. }) => {
                 plan_result(ui::panels::tune::apply_table_edit(track, table))
             }
             Edit::SetEnabled(_) => unreachable!("handled above"),
@@ -5107,7 +5115,8 @@ fn handle_scene_plan_edit(
                     | Edit::RemoveVoice(_)
                     | Edit::SetCueVoices(_)
                     | Edit::SetCaptionStyles { .. }
-                    | Edit::SetTitles(_) => unreachable!("handled above"),
+                    | Edit::SetTitles(_)
+                    | Edit::SetClip { .. } => unreachable!("handled above"),
                     Edit::SetBeyond { .. } => "The doorway now shows another scene.",
                 },
             );

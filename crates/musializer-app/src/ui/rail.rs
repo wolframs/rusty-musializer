@@ -649,14 +649,8 @@ impl Shell {
             ButtonStyle::Neutral,
             Some(metric::UI_FONT_CAPTION),
         );
-        self.widgets.hint(
-            d,
-            state,
-            import_id,
-            import,
-            "Play a video file in this section: a generated clip, footage, or an export. \
-             It is bundled with the project; its sound is ignored",
-        );
+        self.widgets
+            .hint(d, state, import_id, import, crate::clips::IMPORT_HINT);
         if state.clicked {
             commands.push(ShellCommand::ImportClipDialog);
         }
@@ -676,8 +670,7 @@ impl Shell {
             hover,
             generate_id,
             generate,
-            "Generating clips is not built yet: a model that starts and ends on this \
-             section's frames, with its price shown before anything is spent",
+            crate::clips::GENERATE_NOT_BUILT,
         );
         (import, generate)
     }

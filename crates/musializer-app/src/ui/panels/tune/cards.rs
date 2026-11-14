@@ -20,6 +20,8 @@ use musializer_core::ui::tune_groups::look_cards::{self, Block, Placed};
 #[path = "cards/tables.rs"]
 mod tables;
 pub(crate) use tables::apply_table_edit;
+#[path = "cards/clip.rs"]
+mod clip;
 
 /// Which card the block shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -61,6 +63,8 @@ pub(crate) enum CardField {
     Grain,
     Shadow,
     Highlight,
+    /// Where a Video Clip section starts in its clip (F1c).
+    ClipFrom,
     /// The tables (slice 3), by row.
     VoiceName(u8),
     VoiceHue(u8),
@@ -135,6 +139,7 @@ impl CardField {
             Self::Grain,
             Self::Shadow,
             Self::Highlight,
+            Self::ClipFrom,
         ]
         .iter()
         .position(|field| *field == self)
@@ -160,6 +165,7 @@ impl CardField {
             Self::Grain => "grain",
             Self::Shadow => "shadow",
             Self::Highlight => "highlight",
+            Self::ClipFrom => "clip-from",
             _ => "table",
         }
     }
@@ -178,13 +184,15 @@ enum Unit {
     Plain,
     /// A share of the frame's short edge, as `1.6%`.
     ShortEdge,
+    /// A time in a clip, `4.20 s`; zero is a time like any other (F1c).
+    ClipSeconds,
 }
 
 impl Unit {
     fn show(self, value: f32) -> String {
         match self {
             Self::Seconds if value <= 0.0 => "none".to_owned(),
-            Self::Seconds => format!("{value:.2} s"),
+            Self::Seconds | Self::ClipSeconds => format!("{value:.2} s"),
             Self::Percent => format!("{:.0}%", value * 100.0),
             Self::Degrees => format!("{value:.0}\u{00b0}"),
             Self::SignedDegrees => format!("{value:+.0}\u{00b0}"),
@@ -196,7 +204,7 @@ impl Unit {
     /// What the field holds when typing opens: the number, no unit.
     fn edit_text(self, value: f32) -> String {
         match self {
-            Self::Seconds => format!("{value:.2}"),
+            Self::Seconds | Self::ClipSeconds => format!("{value:.2}"),
             Self::Percent => format!("{:.0}", value * 100.0),
             Self::Degrees | Self::SignedDegrees => format!("{value:.0}"),
             Self::Plain => format!("{value:.2}"),
@@ -212,7 +220,7 @@ impl Unit {
             return Some(0.0);
         }
         let text = text.trim_end_matches(['%', '\u{00b0}']).trim();
-        let number = if self == Self::Seconds {
+        let number = if matches!(self, Self::Seconds | Self::ClipSeconds) {
             look_cards::parse_seconds(text)?
         } else {
             let number: f32 = text.parse().ok()?;
@@ -228,7 +236,7 @@ impl Unit {
     /// what the row prints.
     fn snap(self, value: f32) -> f32 {
         let step = match self {
-            Self::Seconds | Self::Percent | Self::Plain => 0.01,
+            Self::Seconds | Self::ClipSeconds | Self::Percent | Self::Plain => 0.01,
             Self::Degrees | Self::SignedDegrees => 1.0,
             Self::ShortEdge => 0.001,
         };
@@ -393,6 +401,9 @@ pub(crate) struct CardState {
     /// The section the last frame's card edited, so a new selection takes the
     /// card back to the section scope and drops a half-typed value.
     shown: Option<u64>,
+    /// What the clip rows drew last frame (their poster's state and the
+    /// words they said), for the report (F1c).
+    clip_drawn: String,
 }
 
 /// A removal waiting for its confirming press (D2 review, defect 2). It
@@ -520,6 +531,8 @@ enum Part {
     Grain,
     /// A row of the captions card's tables (`tables.rs`).
     Table(tables::TablePart),
+    /// A Video Clip section's clip rows (`clip.rs`, F1c).
+    Clip(clip::ClipPart),
     Space,
 }
 
@@ -977,6 +990,9 @@ impl Shell {
                 (Part::Beyond, Block::Buttons),
                 (Part::Space, Block::Gap(look_cards::GROUP_GAP)),
             ]);
+        }
+        if cue.scene_index == SceneId::Clip.index() as u32 {
+            clip::plan(track, selected, &mut parts);
         }
         parts.extend([
             (Part::ArrivesLabel, Block::Label),
@@ -1554,6 +1570,7 @@ impl Shell {
             return;
         }
         let font = input.fonts.ui();
+        self.look_column.cards.clip_drawn.clear();
         let (placed, frame) = Self::place_cards(plan, area);
         if plan.framed {
             widgets::rounded_box(d, frame, 4.0, color::ui_raised(), color::ui_rule(), 1.0);
@@ -2494,6 +2511,22 @@ impl Shell {
                     };
                     self.table_part(d, font, *row, &mut context);
                 }
+                Part::Clip(row) => {
+                    let Some((index, cue, _)) = selected else { continue };
+                    let mut context = clip::Context {
+                        track,
+                        input,
+                        index,
+                        cue,
+                        place,
+                        enabled,
+                        label_width,
+                        controls: &mut controls,
+                        edits: &mut edits,
+                        commands,
+                    };
+                    self.clip_part(d, font, *row, &mut context);
+                }
                 Part::Space => {}
             }
         }
@@ -2534,6 +2567,10 @@ impl Shell {
                     },
                 )
             },
+        );
+        let clip_text = selected.map_or_else(
+            || "clip=-".to_owned(),
+            |(index, _, _)| clip::report(track, index, &self.look_column.cards),
         );
         let cut = self.look_column.cards.cut.map_or_else(
             || "none".to_owned(),
@@ -2583,7 +2620,7 @@ impl Shell {
             finish.highlight_rgb,
         );
         self.look_column.cards.report = format!(
-            "scope={} target={target_text} {video_text} follow={} editable={} cut={cut} typing={typing} refused={} stale={} armed={} open={} area={} frame={} controls={}{probe}",
+            "scope={} target={target_text} {clip_text} {video_text} follow={} editable={} cut={cut} typing={typing} refused={} stale={} armed={} open={} area={} frame={} controls={}{probe}",
             self.look_column.cards.scope.name(),
             followed.as_deref().unwrap_or("none"),
             u8::from(enabled),
