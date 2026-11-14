@@ -89,8 +89,8 @@ async function readProtocol(id: string): Promise<SourceProtocol> {
   const parsed = JSON.parse(await readFile(protocolFile(id), 'utf8')) as SourceProtocol
   if (parsed.schema !== 'musializer.listening-test/v1') throw new Error('unsupported protocol schema')
   if (parsed.id !== id) throw new Error('protocol filename and id disagree')
-  if (!parsed.title || !Array.isArray(parsed.tracks) || parsed.tracks.length < 1 || parsed.tracks.length > 4) {
-    throw new Error('protocol needs a title and 1..4 tracks')
+  if (!parsed.title || !Array.isArray(parsed.tracks) || parsed.tracks.length < 1 || parsed.tracks.length > 8) {
+    throw new Error('protocol needs a title and 1..8 tracks')
   }
   if (!Array.isArray(parsed.questions) || parsed.questions.length < 1 || parsed.questions.length > 100) {
     throw new Error('protocol needs 1..100 questions')
@@ -127,7 +127,7 @@ async function readProtocol(id: string): Promise<SourceProtocol> {
     if (!question.window || question.window.pre < 0 || question.window.post <= 0) {
       throw new Error(`question ${question.id} has an invalid audition window`)
     }
-    if (!Array.isArray(question.tracks) || question.tracks.length < 1 || question.tracks.some((id) => !trackIds.has(id))) {
+    if (!Array.isArray(question.tracks) || question.tracks.length < 1 || question.tracks.length > 4 || question.tracks.some((id) => !trackIds.has(id))) {
       throw new Error(`question ${question.id} names an unknown track`)
     }
     if (question.kind !== 'text' && (!question.options || question.options.length < 2 || question.options.length > 7)) {
@@ -160,8 +160,10 @@ async function readProtocol(id: string): Promise<SourceProtocol> {
 }
 
 function validateFeedbackForm(form: FeedbackForm, context: string) {
-  if (!form || !Array.isArray(form.fields) || form.fields.length > 12) {
-    throw new Error(`${context} needs 0..12 feedback fields`)
+  if (!form || !Array.isArray(form.fields) || form.fields.length > 32) {
+    // 32 leaves room for a per-item checklist (one three-state row per
+    // instrument); short forms stay short by authoring, not by this cap.
+    throw new Error(`${context} needs 0..32 feedback fields`)
   }
   const ids = new Set<string>()
   for (const field of form.fields) {

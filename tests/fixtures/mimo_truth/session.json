@@ -1,0 +1,43 @@
+{
+  "schema": "musializer.mimo-bench-truth-sidecar/v1",
+  "session_version": "musializer.mimo-bench-truth-session/v1",
+  "protocols": {
+    "mimo-truth-v1-shut-up-cat": {
+      "slug": "shut-up-cat",
+      "title": "Shut Up Cat",
+      "protocol_path": "SET-BY-TEST",
+      "protocol_sha256": "SET-BY-TEST",
+      "audio": {},
+      "key": {
+        "candidates": [
+          {"tonic": "Eb", "mode": "major", "correlation": 0.72},
+          {"tonic": "Eb", "mode": "minor", "correlation": 0.56},
+          {"tonic": "Ab", "mode": "minor", "correlation": 0.5}
+        ],
+        "options": {
+          "B · E♭ major fits": {"status": "adjudicated", "tonic": "Eb", "mode": "major"},
+          "C · E♭ minor fits": {"status": "adjudicated", "tonic": "Eb", "mode": "minor"},
+          "D · A♭ minor fits": {"status": "adjudicated", "tonic": "Ab", "mode": "minor"},
+          "None of these sits right": {"status": "unadjudicated", "tonic": null, "mode": null},
+          "No stable home note: it wanders or never settles": {"status": "none", "tonic": null, "mode": null},
+          "Can't tell": {"status": "unadjudicated", "tonic": null, "mode": null}
+        }
+      },
+      "meter": {
+        "offered": ["4/4", "3/4", "6/8"],
+        "options": {
+          "E · 4/4 fits": {"status": "adjudicated", "value": "4/4"},
+          "F · 3/4 fits": {"status": "adjudicated", "value": "3/4"},
+          "G · 6/8 fits": {"status": "adjudicated", "value": "6/8"},
+          "Free: no steady count fits": {"status": "adjudicated", "value": "free"},
+          "Can't tell": {"status": "unadjudicated", "value": null}
+        }
+      },
+      "instruments": {
+        "rows": ["lead vocal", "kick", "synth pad", "electric guitar"],
+        "promoted_from_mimo_claims": [],
+        "other_groups": [["piano", "organ"], ["harp"]]
+      }
+    }
+  }
+}

@@ -66,7 +66,8 @@ The directory and new files are requested as mode `0700` and `0600`.
 
 ### Protocol shape
 
-- `tracks`: one to four audio paths. Supported browser-oriented extensions are
+- `tracks`: one to eight audio paths; a question names at most four of them,
+  because the switcher shows four. Supported browser-oriented extensions are
   WAV, MP3, FLAC, OGG/Opus, M4A, and AAC; actual codec support is the browser's.
 - `questions`: one to 100 time-anchored prompts.
 - `at_seconds`: the marker/anchor in seconds; decimals are preserved.
