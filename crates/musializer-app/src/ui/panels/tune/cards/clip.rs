@@ -1069,6 +1069,7 @@ pub(crate) mod fixture {
                     height: 360,
                     frames: (seconds * 30.0) as u32,
                     duration_seconds: seconds,
+                    generated: None,
                 },
                 source: format!("{seed}.mp4").into(),
                 unusable: None,

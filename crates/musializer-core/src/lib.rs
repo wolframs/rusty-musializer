@@ -13,6 +13,7 @@ pub mod agent;
 pub mod assist;
 pub mod audio;
 pub mod feedback;
+pub mod generation;
 pub mod project;
 pub mod render;
 pub mod scene;

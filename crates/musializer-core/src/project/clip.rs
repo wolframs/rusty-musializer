@@ -179,6 +179,67 @@ pub struct ClipAsset {
     pub height: u32,
     pub frames: u32,
     pub duration_seconds: f64,
+    /// How a model made it, when one did (VG H4, `generated` in the `.musi`).
+    /// `None` for every imported file, and then nothing is written.
+    pub generated: Option<ClipProvenance>,
+}
+
+/// How a generated clip was made (post-legacy, 2026-11-14, VG H4): the model,
+/// the prompt, the request's parameters, the frame images' digests, when, and
+/// what it was estimated and reported to cost. Enough to ask for it again,
+/// and to find it again: `request_sha256` is what a re-run of a treatment or
+/// a press of Generate looks for before it spends anything
+/// (`crate::generation::request`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClipProvenance {
+    /// `openrouter`.
+    pub provider: String,
+    pub model: String,
+    pub prompt: String,
+    pub seconds: u32,
+    pub resolution: String,
+    pub aspect_ratio: String,
+    pub first_sha256: Option<String>,
+    pub last_sha256: Option<String>,
+    pub request_sha256: String,
+    /// RFC 3339, UTC, when the clip was downloaded.
+    pub generated_utc: String,
+    /// What was shown before the request, in dollars; `None` when the price
+    /// was unknown and the person agreed to that.
+    pub estimate_usd: Option<f64>,
+    /// What the provider reported (`usage.cost`), when it did.
+    pub cost_usd: Option<f64>,
+}
+
+impl ClipProvenance {
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        use crate::project::model::capacity;
+        let token = |text: &str, max: usize| {
+            !text.is_empty() && text.len() <= max && !text.chars().any(char::is_control)
+        };
+        let digest = |text: &str| crate::project::sha256::is_hex_digest(text);
+        let dollars = |value: Option<f64>| {
+            value.is_none_or(|usd| usd.is_finite() && (0.0..=10_000.0).contains(&usd))
+        };
+        token(&self.provider, capacity::PROVIDER)
+            && token(&self.model, capacity::PROVIDER)
+            && !self.prompt.trim().is_empty()
+            && self.prompt.len() <= crate::generation::MAX_PROMPT_BYTES
+            && !self
+                .prompt
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t')
+            && (1..=crate::generation::MAX_SECONDS * 4).contains(&self.seconds)
+            && token(&self.resolution, capacity::TYPE)
+            && token(&self.aspect_ratio, capacity::TYPE)
+            && self.first_sha256.as_deref().is_none_or(digest)
+            && self.last_sha256.as_deref().is_none_or(digest)
+            && digest(&self.request_sha256)
+            && token(&self.generated_utc, capacity::TIMESTAMP)
+            && dollars(self.estimate_usd)
+            && dollars(self.cost_usd)
+    }
 }
 
 impl ClipAsset {
@@ -200,6 +261,7 @@ impl ClipAsset {
             && self.duration_seconds.is_finite()
             && self.duration_seconds > 0.0
             && self.duration_seconds <= MAX_CLIP_SECONDS
+            && self.generated.as_ref().is_none_or(ClipProvenance::is_valid)
     }
 }
 
@@ -699,6 +761,7 @@ mod tests {
             height: 1080,
             frames: 300,
             duration_seconds: 10.0,
+            generated: None,
         }
     }
 

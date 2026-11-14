@@ -46,7 +46,8 @@ use crate::project::caption_styles::{
     TITLE_TEXT_MAX_BYTES,
 };
 use crate::project::clip::{
-    ClipAsset, ClipFit, ClipOverrun, ClipPlacement, ClipRef, CLIP_NAME_MAX_BYTES, MAX_CLIPS,
+    ClipAsset, ClipFit, ClipOverrun, ClipPlacement, ClipProvenance, ClipRef, CLIP_NAME_MAX_BYTES,
+    MAX_CLIPS,
 };
 use crate::project::lyrics::{LyricCue, LyricsDocument, CUE_CAPACITY as LYRIC_CUE_CAPACITY};
 use crate::project::model::{
@@ -744,7 +745,94 @@ fn write_clip_asset(out: &mut String, asset: &ClipAsset) {
         asset.width, asset.height, asset.frames
     ));
     write_f64(out, asset.duration_seconds);
+    // VG H4: how a model made it, only when one did, so an imported clip is
+    // the record it always was.
+    if let Some(record) = &asset.generated {
+        out.push_str(",\"generated\":");
+        write_clip_provenance(out, record);
+    }
     out.push('}');
+}
+
+/// A generated clip's provenance (VG H4). Required members first, then the
+/// optional ones, each only when present.
+fn write_clip_provenance(out: &mut String, record: &ClipProvenance) {
+    out.push_str("{\"provider\":");
+    write_string(out, &record.provider);
+    out.push_str(",\"model\":");
+    write_string(out, &record.model);
+    out.push_str(",\"prompt\":");
+    write_string(out, &record.prompt);
+    out.push_str(&format!(",\"seconds\":{}", record.seconds));
+    out.push_str(",\"resolution\":");
+    write_string(out, &record.resolution);
+    out.push_str(",\"aspect_ratio\":");
+    write_string(out, &record.aspect_ratio);
+    if let Some(digest) = &record.first_sha256 {
+        out.push_str(",\"first_sha256\":");
+        write_string(out, digest);
+    }
+    if let Some(digest) = &record.last_sha256 {
+        out.push_str(",\"last_sha256\":");
+        write_string(out, digest);
+    }
+    out.push_str(",\"request_sha256\":");
+    write_string(out, &record.request_sha256);
+    out.push_str(",\"generated_utc\":");
+    write_string(out, &record.generated_utc);
+    if let Some(usd) = record.estimate_usd {
+        out.push_str(",\"estimate_usd\":");
+        write_f64(out, usd);
+    }
+    if let Some(usd) = record.cost_usd {
+        out.push_str(",\"cost_usd\":");
+        write_f64(out, usd);
+    }
+    out.push('}');
+}
+
+fn parse_clip_provenance(parser: &mut Parser<'_>) -> Parsed<ClipProvenance> {
+    const NAMES: [&str; 12] = [
+        "provider",
+        "model",
+        "prompt",
+        "seconds",
+        "resolution",
+        "aspect_ratio",
+        "first_sha256",
+        "last_sha256",
+        "request_sha256",
+        "generated_utc",
+        "estimate_usd",
+        "cost_usd",
+    ];
+    // Everything but the two frames and the two prices.
+    const REQUIRED: u64 = 0b0011_0011_1111;
+    let mut record = ClipProvenance::default();
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        match field {
+            0 => record.provider = parser.string(capacity::PROVIDER)?,
+            1 => record.model = parser.string(capacity::PROVIDER)?,
+            2 => record.prompt = parser.string(crate::generation::MAX_PROMPT_BYTES)?,
+            3 => record.seconds = parser.bounded_u32()?,
+            4 => record.resolution = parser.string(capacity::TYPE)?,
+            5 => record.aspect_ratio = parser.string(capacity::TYPE)?,
+            6 => record.first_sha256 = Some(parser.string(capacity::ID)?),
+            7 => record.last_sha256 = Some(parser.string(capacity::ID)?),
+            8 => record.request_sha256 = parser.string(capacity::ID)?,
+            9 => record.generated_utc = parser.string(capacity::TIMESTAMP)?,
+            10 => record.estimate_usd = Some(parser.f64()?),
+            _ => record.cost_usd = Some(parser.f64()?),
+        }
+        Ok(())
+    })?;
+    if !seen.has_all(REQUIRED) {
+        return Err(ProjectIoError::MissingField);
+    }
+    Ok(record)
 }
 
 fn parse_clip_placement(parser: &mut Parser<'_>) -> Parsed<ClipPlacement> {
@@ -790,7 +878,7 @@ fn parse_clip_placement(parser: &mut Parser<'_>) -> Parsed<ClipPlacement> {
 }
 
 fn parse_clip_asset(parser: &mut Parser<'_>) -> Parsed<ClipAsset> {
-    const NAMES: [&str; 7] = [
+    const NAMES: [&str; 8] = [
         "path",
         "sha256",
         "name",
@@ -798,6 +886,7 @@ fn parse_clip_asset(parser: &mut Parser<'_>) -> Parsed<ClipAsset> {
         "height",
         "frames",
         "duration_seconds",
+        "generated",
     ];
     let mut asset = ClipAsset::default();
     let mut seen = Seen::default();
@@ -811,7 +900,8 @@ fn parse_clip_asset(parser: &mut Parser<'_>) -> Parsed<ClipAsset> {
             3 => asset.width = parser.bounded_u32()?,
             4 => asset.height = parser.bounded_u32()?,
             5 => asset.frames = parser.bounded_u32()?,
-            _ => asset.duration_seconds = parser.f64()?,
+            6 => asset.duration_seconds = parser.f64()?,
+            _ => asset.generated = Some(parse_clip_provenance(parser)?),
         }
         Ok(())
     })?;
@@ -3031,6 +3121,7 @@ mod tests {
             height: 1080,
             frames: 300,
             duration_seconds: 10.0,
+            generated: None,
         }];
         project.scenes[0].scene_type = "clip".into();
         project.scenes[0].clip = Some(ClipPlacement::new(clip));
@@ -3137,6 +3228,61 @@ mod tests {
         let mut twice = project.clone();
         twice.clips.push(twice.clips[0].clone());
         assert!(twice.validate().is_err());
+
+        // VG H4: a generated clip's provenance, written after the probe's
+        // members and only for that clip; the optional members only when set.
+        let mut generated = project.clone();
+        let record = crate::project::clip::ClipProvenance {
+            provider: "openrouter".into(),
+            model: "google/veo-3.1-lite".into(),
+            prompt: "fog \"rolls\"\nin".into(),
+            seconds: 4,
+            resolution: "720p".into(),
+            aspect_ratio: "16:9".into(),
+            first_sha256: Some(sha256::digest_hex(b"first")),
+            last_sha256: None,
+            request_sha256: sha256::digest_hex(b"request"),
+            generated_utc: "2026-11-14T20:00:00Z".into(),
+            estimate_usd: Some(0.12),
+            cost_usd: None,
+        };
+        generated.clips[0].generated = Some(record.clone());
+        let with = serialize(&generated).unwrap();
+        assert_eq!(
+            with.replacen(
+                &format!(
+                    ",\"generated\":{{\"provider\":\"openrouter\",\"model\":\"google/veo-3.1-lite\",\
+                     \"prompt\":\"fog \\\"rolls\\\"\\nin\",\"seconds\":4,\"resolution\":\"720p\",\
+                     \"aspect_ratio\":\"16:9\",\"first_sha256\":\"{}\",\"request_sha256\":\"{}\",\
+                     \"generated_utc\":\"2026-11-14T20:00:00Z\",\"estimate_usd\":0.12}}",
+                    sha256::digest_hex(b"first"),
+                    sha256::digest_hex(b"request")
+                ),
+                "",
+                1
+            ),
+            text,
+            "the record is the one difference from the imported clip's file"
+        );
+        let reparsed = deserialize(with.as_bytes()).unwrap();
+        assert_eq!(reparsed.clips[0].generated.as_ref(), Some(&record));
+        assert_eq!(serialize(&reparsed).unwrap(), with, "byte-stable");
+        for (from, to, error) in [
+            ("\"seconds\":4,", "", ProjectIoError::MissingField),
+            ("\"prompt\":", "\"prompts\":", ProjectIoError::UnknownField),
+            (
+                "\"estimate_usd\":0.12",
+                "\"estimate_usd\":0.12,\"estimate_usd\":0.12",
+                ProjectIoError::DuplicateField,
+            ),
+        ] {
+            assert!(with.contains(from), "{from}");
+            let broken = with.replacen(from, to, 1);
+            assert_eq!(deserialize(broken.as_bytes()).unwrap_err(), error, "{to}");
+        }
+        let mut bad = generated.clone();
+        bad.clips[0].generated.as_mut().unwrap().cost_usd = Some(-1.0);
+        assert!(bad.validate().is_err(), "a negative cost is no project");
     }
 
     /// project from before it is byte-identical; written last in `metadata`

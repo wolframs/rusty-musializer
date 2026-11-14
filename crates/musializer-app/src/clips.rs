@@ -124,6 +124,7 @@ pub fn import(path: &Path) -> Result<TrackClip, ClipError> {
         height: probe.height,
         frames: probe.timing.frame_count() as u32,
         duration_seconds: probe.timing.duration(),
+        generated: None,
     };
     Ok(TrackClip {
         asset,

@@ -287,6 +287,21 @@ if [ "$(grep -oF '"clip":{"clip":"' "$OUT_DIR/rust_clips.musi" | wc -l)" -ne 3 ]
     echo "FAIL: the clips fixture does not carry three placements" >&2
     exit 1
 fi
+# VG H4: the generated clip's provenance, on the second clip only.
+if [ "$(grep -oF '"generated":{"provider":"openrouter"' "$OUT_DIR/rust_clips.musi" | wc -l)" -ne 1 ]; then
+    echo "FAIL: the clips fixture does not carry exactly one generated clip's provenance" >&2
+    exit 1
+fi
+for member in '"last_sha256":"' '"estimate_usd":0.12,"cost_usd":'; do
+    if ! grep -qF "$member" "$OUT_DIR/rust_clips.musi"; then
+        echo "FAIL: the clips fixture's provenance does not carry $member" >&2
+        exit 1
+    fi
+done
+if grep -qF '"first_sha256"' "$OUT_DIR/rust_clips.musi"; then
+    echo "FAIL: the provenance writes a first frame it does not have" >&2
+    exit 1
+fi
 if grep -qF '"clip' "$OUT_DIR/rust.musi"; then
     echo "FAIL: the plain fixture carries a clip member; it must write nothing it does not use" >&2
     exit 1

@@ -327,6 +327,7 @@ fn add_clips(project: &mut Project) {
             height: 1080,
             frames: 300,
             duration_seconds: 10.0,
+            generated: None,
         },
         ClipAsset {
             path: format!("fixture.assets/clips/{second}.webm"),
@@ -336,6 +337,22 @@ fn add_clips(project: &mut Project) {
             height: 1920,
             frames: 1,
             duration_seconds: f64::from_bits(0x3FA1_1111_1111_1111),
+            // VG H4: a generated clip's provenance, one frame image and both
+            // prices; the first clip, an imported one, carries none.
+            generated: Some(musializer_core::project::clip::ClipProvenance {
+                provider: "openrouter".to_owned(),
+                model: "google/veo-3.1-lite".to_owned(),
+                prompt: "Nebel \"zieht\"\n— 霧".to_owned(),
+                seconds: 4,
+                resolution: "720p".to_owned(),
+                aspect_ratio: "9:16".to_owned(),
+                first_sha256: None,
+                last_sha256: Some(sha256::digest_hex(b"last frame")),
+                request_sha256: sha256::digest_hex(b"request"),
+                generated_utc: "2026-11-14T20:00:00Z".to_owned(),
+                estimate_usd: Some(0.12),
+                cost_usd: Some(f64::from_bits(0x3FBE_B851_EB85_1EB9)),
+            }),
         },
     ];
     let clip = |hex: &str| ClipRef::from_hex(hex).expect("a digest");
@@ -670,6 +687,39 @@ fn dump_project(project: &Project) {
                 &format!("{prefix}.duration_seconds"),
                 asset.duration_seconds,
             );
+            // VG H4: printed only for a generated clip.
+            if let Some(record) = &asset.generated {
+                let prefix = format!("{prefix}.generated");
+                dump_string(&format!("{prefix}.provider"), &record.provider);
+                dump_string(&format!("{prefix}.model"), &record.model);
+                dump_string(&format!("{prefix}.prompt"), &record.prompt);
+                dump_uint(&format!("{prefix}.seconds"), u64::from(record.seconds));
+                dump_string(&format!("{prefix}.resolution"), &record.resolution);
+                dump_string(&format!("{prefix}.aspect_ratio"), &record.aspect_ratio);
+                dump_string(
+                    &format!("{prefix}.first_sha256"),
+                    record.first_sha256.as_deref().unwrap_or("-"),
+                );
+                dump_string(
+                    &format!("{prefix}.last_sha256"),
+                    record.last_sha256.as_deref().unwrap_or("-"),
+                );
+                dump_string(&format!("{prefix}.request_sha256"), &record.request_sha256);
+                dump_string(&format!("{prefix}.generated_utc"), &record.generated_utc);
+                dump_bool(
+                    &format!("{prefix}.has_estimate"),
+                    record.estimate_usd.is_some(),
+                );
+                dump_real(
+                    &format!("{prefix}.estimate_usd"),
+                    record.estimate_usd.unwrap_or(0.0),
+                );
+                dump_bool(&format!("{prefix}.has_cost"), record.cost_usd.is_some());
+                dump_real(
+                    &format!("{prefix}.cost_usd"),
+                    record.cost_usd.unwrap_or(0.0),
+                );
+            }
         }
     }
     if !switches.titles.is_empty() {

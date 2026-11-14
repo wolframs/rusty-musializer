@@ -195,6 +195,7 @@ pub(super) mod tests {
             height: 1080,
             frames: 300,
             duration_seconds: 10.0,
+            generated: None,
         }
     }
 
