@@ -229,6 +229,33 @@ pub(crate) fn apply_table_edit(track: &mut Track, edit: ScenePlanEdit) -> bool {
             track.scene_switches.titles = titles;
             true
         }
+        ScenePlanEdit::SetBeyond { cue_id, beyond } => {
+            use musializer_core::scene::settings::index::threshold::BEYOND;
+            let scene = SceneId::Threshold;
+            let Some(cue) = track
+                .scene_switches
+                .cues()
+                .iter()
+                .find(|cue| cue.id == cue_id)
+            else {
+                return false;
+            };
+            if cue.scene_index != scene.index() as u32 {
+                return false;
+            }
+            // The section's tuning as it plays: the track's table with its
+            // own snapshot over it, then the one value changed.
+            let mut table = track.scene_settings;
+            if cue.settings.captured {
+                table.apply_snapshot(scene, &cue.settings);
+            }
+            if !table.set(scene, BEYOND, beyond) {
+                return false;
+            }
+            table
+                .capture(scene)
+                .is_some_and(|snapshot| track.scene_switches.set_settings(cue_id, snapshot))
+        }
         _ => false,
     }
 }

@@ -130,6 +130,13 @@ pub enum ScenePlanEdit {
     },
     /// The title cards, in order. Nothing adds one but a press on Add.
     SetTitles(Vec<musializer_core::project::caption_styles::TitleCard>),
+    /// What a threshold section's doorway shows: `beyond`, a scene index plus
+    /// one, or 0 for its fog. Written into the section's own tuning, so the
+    /// running scene is set again from the plan, as a retarget is.
+    SetBeyond {
+        cue_id: u64,
+        beyond: f32,
+    },
 }
 
 impl ScenePlanEdit {

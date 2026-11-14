@@ -46,6 +46,12 @@ pub const GLIDE_CHOICE_STEPS: f32 = 16.0;
 
 fn glides(descriptor: &crate::scene::SettingDescriptor) -> bool {
     use crate::scene::SettingKind;
+    // The threshold's `beyond` names a scene by its index: thirty steps wide,
+    // and still a choice. Easing it walked the doorway through every scene
+    // between the two (found with Look's door picker, D, 2026-11-14).
+    if descriptor.key == "settings.threshold.beyond" {
+        return false;
+    }
     match descriptor.kind {
         SettingKind::Toggle => false,
         SettingKind::Slider => {
@@ -502,6 +508,24 @@ impl SceneSwitchTimeline {
         }
     }
 
+    /// Replaces one section's captured tuning (D: the threshold's beyond,
+    /// picked by name in Look). Refuses an unknown id, a snapshot that is not
+    /// captured or does not fit the section's scene, and changes nothing when
+    /// it refuses.
+    pub fn set_settings(&mut self, cue_id: u64, settings: SettingsSnapshot) -> bool {
+        let Some(cue) = self.cues.iter_mut().find(|cue| cue.id == cue_id) else {
+            return false;
+        };
+        let Some(scene) = SceneId::from_index(cue.scene_index as usize) else {
+            return false;
+        };
+        if !settings.captured || !settings.is_valid_for(scene) {
+            return false;
+        }
+        cue.settings = settings;
+        true
+    }
+
     /// Sets the named caption style one section's lines begin in; `None` is
     /// the base. The name is checked against the project's table by the
     /// caller, which owns the table (as [`crate::project::lyrics::LyricsDocument::set_cue_style`]).
@@ -934,6 +958,39 @@ mod tests {
         // A plan switched off glides nothing.
         timeline.enabled = false;
         assert!(timeline.glided_settings(&base, 22.0).is_none());
+    }
+
+    #[test]
+    fn the_doorways_scene_is_a_choice_and_snaps_while_the_camera_glides() {
+        use crate::scene::settings::index::threshold;
+        let scene = SceneId::Threshold;
+        let mut first = SceneSettings::new();
+        first.set(scene, threshold::BEYOND, 7.0);
+        first.set(scene, threshold::DISTANCE, 1.0);
+        let mut second = first;
+        second.set(scene, threshold::BEYOND, 21.0);
+        second.set(scene, threshold::DISTANCE, 0.0);
+        let index = scene.index() as u32;
+        let mut a = cue(1, 0.0, 20.0, index);
+        a.settings = first.capture(scene).unwrap();
+        let mut b = cue(2, 20.0, 60.0, index);
+        b.settings = second.capture(scene).unwrap();
+        b.glide = 4.0;
+        let mut timeline = SceneSwitchTimeline::new();
+        timeline.replace(&[a, b], DURATION, SCENES).unwrap();
+        timeline.enabled = true;
+        let mid = timeline
+            .glided_settings(&SceneSettings::new(), 22.0)
+            .expect("halfway in");
+        assert_eq!(
+            mid.get(scene, threshold::BEYOND),
+            21.0,
+            "never a scene in between"
+        );
+        assert!(
+            (mid.get(scene, threshold::DISTANCE) - 0.5).abs() < 1.0e-5,
+            "the camera eases"
+        );
     }
 
     #[test]

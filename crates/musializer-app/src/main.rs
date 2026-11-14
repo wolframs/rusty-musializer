@@ -4939,7 +4939,10 @@ fn handle_scene_plan_edit(
             table @ (Edit::SetVoices(_)
             | Edit::RemoveVoice(_)
             | Edit::SetCaptionStyles { .. }
-            | Edit::SetTitles(_)) => plan_result(ui::panels::tune::apply_table_edit(track, table)),
+            | Edit::SetTitles(_)
+            | Edit::SetBeyond { .. }) => {
+                plan_result(ui::panels::tune::apply_table_edit(track, table))
+            }
             Edit::SetEnabled(_) => unreachable!("handled above"),
         };
         if result.is_ok() {
@@ -5009,6 +5012,7 @@ fn handle_scene_plan_edit(
                     | Edit::RemoveVoice(_)
                     | Edit::SetCaptionStyles { .. }
                     | Edit::SetTitles(_) => unreachable!("handled above"),
+                    Edit::SetBeyond { .. } => "The doorway now shows another scene.",
                 },
             );
         }

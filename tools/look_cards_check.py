@@ -24,7 +24,8 @@ file):
    8. Done lets the section go; with none selected, the invitation selects
       the section under the playhead; the scope switch shows the video card;
    9. the lane head's name field opens Look from Direct; the gap beside it
-      does not;
+      does not; a threshold section's door steps through scenes by name and
+      Fog, written into the section's tuning;
   10. a digit typed into a card value does not select a scene (the control,
       the same key with no field open, does).
  video
@@ -78,6 +79,7 @@ base_show = {
         {'at': 2.5, 'scene': 'spectrum', 'transition': 'fade'},
         {'at': 4.0, 'scene': 'spectrum', 'grade': 'night-door', 'glide': 1.0},
         {'at': 5.5, 'scene': 'cadence'},
+        {'at': 6.5, 'scene': 'threshold', 'settings': {'beyond': 7}},
     ],
     'outro': {'kind': 'fade', 'seconds': 1.6},
 }
@@ -316,6 +318,20 @@ if only in ('all', 'section'):
           'the selected section\'s name field opens its card in Look')
     log, _ = run('name-gap', 'size=1280x720,column=direct,time=3,play=0,section=2' + click((name[0] + name[2] + 3, name[1] + name[3] // 2)), frames=30)
     check(field(line(log, 'column'), 'view') == 'direct', 'the gap beside the name field leaves Direct')
+
+    # 9b. a threshold section's door, by name
+    s5, _ = run('base-s5', SECTION + ',section=5', frames=30)
+    b5 = cards(s5)
+    check(field(b5, 'beyond') == 'constellation' and 'beyond-next@' in b5, 'a threshold section shows its door onto Constellation')
+    log, saved = run('beyond-next', SECTION + ',section=5' + click(centre(rect(b5, 'beyond-next'))))
+    check(field(cards(log), 'beyond') not in ('constellation', 'fog', None)
+          and cue(saved, 4).get('settings') != cue(original['plain'], 4).get('settings'),
+          f"the door's next scene: {field(cards(log), 'beyond')}, saved in the section's tuning")
+    log, saved = run('beyond-fog', SECTION + ',section=5' + click(centre(rect(b5, 'beyond-fog'))))
+    check(field(cards(log), 'beyond') == 'fog', 'Fog: the doorway shows its own fog')
+    r = rect(b5, 'beyond-previous')
+    log, saved = run('beyond-gap', SECTION + ',section=5' + click((r[0] + r[2] + 2, r[1] + r[3] // 2)))
+    check(field(cards(log), 'beyond') == 'constellation' and unchanged(saved), 'the gap beside the door stepper changes nothing')
 
     # 10. digits typed into a value do not select a scene
     def scene_of(log):

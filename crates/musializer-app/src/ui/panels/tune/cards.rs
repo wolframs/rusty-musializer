@@ -372,6 +372,9 @@ mod slot {
     pub const SHIFT_WIDTH: u32 = 82;
     pub const STYLE: u32 = 100;
     pub const PLAY_END: u32 = 14;
+    pub const BEYOND_FOG: u32 = 15;
+    pub const BEYOND_PREVIOUS: u32 = 16;
+    pub const BEYOND_NEXT: u32 = 17;
     pub const INTRO_KIND: u32 = 160;
     pub const INTRO_LENGTH: u32 = 180;
     pub const OUTRO_KIND: u32 = 190;
@@ -403,6 +406,8 @@ enum Part {
     InviteButton,
     Title,
     Sub,
+    BeyondLabel,
+    Beyond,
     ArrivesLabel,
     Kinds,
     Length,
@@ -776,6 +781,15 @@ impl Shell {
             (Part::Title, Block::Buttons),
             (Part::Sub, Block::Line),
             (Part::Space, Block::Gap(look_cards::GROUP_GAP)),
+        ]);
+        if cue.scene_index == SceneId::Threshold.index() as u32 {
+            parts.extend([
+                (Part::BeyondLabel, Block::Label),
+                (Part::Beyond, Block::Buttons),
+                (Part::Space, Block::Gap(look_cards::GROUP_GAP)),
+            ]);
+        }
+        parts.extend([
             (Part::ArrivesLabel, Block::Label),
             (Part::Kinds, Block::Grid(KINDS.len())),
             (Part::Space, Block::Gap(6.0)),
@@ -1468,6 +1482,78 @@ impl Shell {
                         color::ui_muted(),
                     );
                 }
+                Part::BeyondLabel | Part::Beyond => {
+                    let Some((_, cue, _)) = selected else { continue };
+                    let shown = beyond_of(track, cue);
+                    if *part == Part::BeyondLabel {
+                        Self::card_label(
+                            d,
+                            font,
+                            rect,
+                            "Through the door",
+                            shown.map_or("its own fog", SceneId::display_name),
+                        );
+                        continue;
+                    }
+                    // Fog, then a stepper over every scene but the room itself.
+                    let doors: Vec<SceneId> =
+                        SceneId::ALL.into_iter().filter(|scene| *scene != SceneId::Threshold).collect();
+                    let fog_width = (measure("Fog") + 24.0).ceil();
+                    let fog = UiRect::new(rect.x, rect.y, fog_width, rect.height);
+                    let previous = UiRect::new(fog.x + fog.width + 6.0, rect.y, 26.0, rect.height);
+                    let next = UiRect::new(rect.x + rect.width - 26.0, rect.y, 26.0, rect.height);
+                    let name = UiRect::new(previous.x + 30.0, rect.y, (next.x - 4.0 - previous.x - 30.0).max(0.0), rect.height);
+                    let id = |slot| widgets::widget_id(widgets::id::LOOK_CARDS, slot);
+                    let fog_state = self.card_chip(d, font, id(slot::BEYOND_FOG), fog, "Fog", shown.is_none(), enabled);
+                    self.widgets.hint(d, fog_state, id(slot::BEYOND_FOG), fog, "The doorway's own luminous fog");
+                    let back = self.card_chip(d, font, id(slot::BEYOND_PREVIOUS), previous, "<", false, enabled);
+                    let forward = self.card_chip(d, font, id(slot::BEYOND_NEXT), next, ">", false, enabled);
+                    widgets::control_box(d, name, color::ui_selected(), color::ui_selected_edge(), 1.0);
+                    widgets::text_label(
+                        d,
+                        font,
+                        name,
+                        shown.map_or("Fog", SceneId::display_name),
+                        metric::UI_FONT_CAPTION,
+                        if enabled { color::ui_ink() } else { color::ui_disabled() },
+                    );
+                    self.widgets.hint(
+                        d,
+                        back,
+                        id(slot::BEYOND_PREVIOUS),
+                        previous,
+                        "The scene before, live in the doorway",
+                    );
+                    self.widgets.hint(d, forward, id(slot::BEYOND_NEXT), next, "The scene after, live in the doorway");
+                    controls.push(format!(
+                        "beyond-fog@{};beyond-previous@{};beyond-name@{};beyond-next@{}",
+                        rect_text(fog),
+                        rect_text(previous),
+                        rect_text(name),
+                        rect_text(next)
+                    ));
+                    let position = shown.and_then(|scene| doors.iter().position(|door| *door == scene));
+                    let step = |by: isize| {
+                        let count = doors.len() as isize;
+                        let from = position.map_or(if by > 0 { -1 } else { 0 }, |p| p as isize);
+                        doors[(from + by).rem_euclid(count) as usize]
+                    };
+                    let pick = if fog_state.clicked && shown.is_some() {
+                        Some(None)
+                    } else if back.clicked {
+                        Some(Some(step(-1)))
+                    } else if forward.clicked {
+                        Some(Some(step(1)))
+                    } else {
+                        None
+                    };
+                    if let Some(scene) = pick {
+                        edits.push(ScenePlanEdit::SetBeyond {
+                            cue_id: cue.id,
+                            beyond: scene.map_or(0.0, |scene| scene.index() as f32 + 1.0),
+                        });
+                    }
+                }
                 Part::ArrivesLabel => {
                     let Some((index, cue, _)) = selected else { continue };
                     let value = if cue.transition.is_cut() {
@@ -2021,7 +2107,7 @@ impl Shell {
             || "none".to_owned(),
             |(index, cue, _)| {
                 format!(
-                    "{} id={} kind={} seconds={:.2} glide={:.2} grade={} style={}",
+                    "{} id={} kind={} seconds={:.2} glide={:.2} grade={} style={} beyond={}",
                     index + 1,
                     cue.id,
                     cue.transition.kind.name(),
@@ -2030,6 +2116,11 @@ impl Shell {
                     grade_text(cue.grade),
                     cue.caption_style
                         .map_or_else(|| "base".to_owned(), |name| name.to_string()),
+                    if cue.scene_index == SceneId::Threshold.index() as u32 {
+                        beyond_of(track, cue).map_or("fog", SceneId::stable_name)
+                    } else {
+                        "-"
+                    },
                 )
             },
         );
@@ -2091,6 +2182,17 @@ impl Shell {
             controls.join(";"),
         );
     }
+}
+
+/// The scene a threshold section's doorway shows, as it plays: the track's
+/// table with the section's own tuning over it.
+fn beyond_of(track: &Track, cue: &SceneSwitchCue) -> Option<SceneId> {
+    use musializer_core::scene::settings::index::threshold::BEYOND;
+    let mut table = track.scene_settings;
+    if cue.settings.captured {
+        table.apply_snapshot(SceneId::Threshold, &cue.settings);
+    }
+    musializer_core::scenes::threshold::beyond_scene(table.get(SceneId::Threshold, BEYOND))
 }
 
 /// Which of [`FINISH_PRESETS`] a finish is, ignoring its pixel look.
