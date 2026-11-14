@@ -201,3 +201,4 @@ source restored byte for byte (`cmp` against a saved copy):
 | The import target filtered to clip sections again (a selected Spectrum section falls through to the track) | `an_import_lands_in_the_section_pointed_at` and `the_notice_says_where_it_landed`. By hand, playhead at 4.5 s in the clip section of spectrum/clip/spectrum, section 1 selected, a clip dropped: before, the plan stayed `spectrum, clip, spectrum`; after, `clip, clip, spectrum` |
 | The hash's look at `stop` removed | `dropping_a_worker_cancels_its_hash`: the drop waited 13.1 s for a 3 GiB hash |
 | ffprobe's group unregistered and its poll blind to `stop` (as before) | `dropping_a_worker_kills_its_probe`: the drop waited 20.0 s, the probe's deadline |
+| The display matrix ignored (the coded size forced again) | `a_turned_clip_decodes_as_ffmpeg_shows_it` (the frames differ from FFmpeg's), and the gate's turned still: 12.4 dB against FFmpeg's frame 25 (inf with the fix), the clip line `of 320x180` |

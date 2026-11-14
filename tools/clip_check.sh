@@ -101,6 +101,11 @@ ff -f lavfi -i testsrc2=size=360x360:rate=25 -t 4 -c:v libx264 -g 25 -pix_fmt yu
 ff -f lavfi -i testsrc2=size=640x360:rate=30 -frames:v 90 \
     -vf "setpts='if(lt(N,60),N/30,2+(N-60)/15)/TB'" -fps_mode passthrough \
     -c:v libx264 -g 30 -pix_fmt yuv420p "$OUT/vfr.mp4"
+# A phone clip: 320x180 pixels and a display matrix that turns them a quarter,
+# so a player shows it 180x320, upright.
+ff -f lavfi -i testsrc2=size=320x180:rate=25 -t 2 -c:v libx264 -g 25 -pix_fmt yuv420p \
+    "$OUT/flat.mp4"
+ff -display_rotation:v:0 90 -i "$OUT/flat.mp4" -c copy "$OUT/turned.mp4"
 # Hostile: the first half of a clip (its index is at the end), and 53 bytes
 # claiming a 16000x9000 picture.
 head -c "$(( $(stat -c %s "$OUT/ntsc.mp4") / 2 ))" "$OUT/ntsc.mp4" > "$OUT/truncated.mp4"
@@ -138,6 +143,14 @@ cat > "$OUT/fit.treatment.json" <<EOF
   $QUIET,
   "segments": [ { "at": 0, "scene": "clip", "clip": "square.mp4" },
                 { "at": 6, "scene": "clip", "clip": { "path": "square.mp4", "from": 0, "fit": "contain" } } ] }
+EOF
+# The turned clip at its displayed size, so the still samples it texel for
+# texel against the frame FFmpeg shows.
+cat > "$OUT/turned.treatment.json" <<EOF
+{ "schema": "musializer.treatment/v1", "audio": { "path": "fixture.wav" },
+  "output": { "resolution": "180x320", "fps": 25, "quality": "balanced" }, "seed": 7,
+  $QUIET,
+  "segments": [ { "at": 0, "scene": "clip", "clip": "turned.mp4" } ] }
 EOF
 # The music on (defaults), at response 0 and 1, over the fixture and silence.
 for response in 0 1; do
@@ -193,6 +206,8 @@ run --treatment "$OUT/overrun.treatment.json" \
 run --treatment "$OUT/fit.treatment.json" \
     --still 2.0 "$OUT/cover.png" --still 8.0 "$OUT/contain.png" > "$OUT/fit.log" 2>&1
 
+run --treatment "$OUT/turned.treatment.json" --still 1.0 "$OUT/turned.png" > "$OUT/turned.log" 2>&1
+
 for response in 0 1; do
     for audio in fixture silent; do
         run --treatment "$OUT/response-$response-$audio.treatment.json" \
@@ -230,4 +245,4 @@ for bad in truncated huge missing; do
 done
 
 python3 tools/clip_check.py "$OUT" $RENDERERS
-echo "PASS: clip frames, overruns, fit, response 0, export determinism, bundle, placeholder, refusals ($OUT)"
+echo "PASS: clip frames, overruns, fit, a turned clip, response 0, export determinism, bundle, placeholder, refusals ($OUT)"

@@ -227,8 +227,14 @@ impl ClipSource {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Probe {
     pub codec: String,
+    /// The size a player shows: the coded size turned by the stream's display
+    /// matrix. FFmpeg turns the picture itself (its autorotate), so this is
+    /// also the size its decoder's frames come out at.
     pub width: u32,
     pub height: u32,
+    /// The display matrix turns the picture a quarter or three quarters, so
+    /// the coded size is `height x width`.
+    pub turned: bool,
     /// The stream's average rate, for a report line; frame times come from
     /// [`Probe::timing`], not from this.
     pub rate: (i64, i64),
@@ -369,6 +375,17 @@ fn run_bounded(
     Ok((out, status.is_some_and(|status| status.success())))
 }
 
+/// Whether a display matrix's rotation, in degrees, turns the picture by an
+/// odd number of quarters: what FFmpeg's autorotate transposes for. Other
+/// angles it turns inside the coded size (its `rotate` filter keeps it).
+fn turns_a_quarter(degrees: f64) -> bool {
+    if !degrees.is_finite() {
+        return false;
+    }
+    let quarters = (degrees / 90.0).round();
+    (degrees - quarters * 90.0).abs() < 1.0 && (quarters as i64).rem_euclid(2) == 1
+}
+
 fn rational(text: &str) -> Option<(i64, i64)> {
     let (num, den) = text.split_once('/')?;
     Some((num.trim().parse().ok()?, den.trim().parse().ok()?))
@@ -405,7 +422,7 @@ fn probe_with(
             "-select_streams",
             "v:0",
             "-show_entries",
-            "stream=codec_name,width,height,time_base,avg_frame_rate,start_pts:format=start_time",
+            "stream=codec_name,width,height,time_base,avg_frame_rate,start_pts:stream_side_data=rotation:format=start_time",
             "-of",
             "default=nw=1",
             input,
@@ -426,12 +443,24 @@ fn probe_with(
             .filter(|value| !value.is_empty() && *value != "N/A")
     };
     let codec = field("codec_name").ok_or(ClipError::NoVideo)?.to_owned();
-    let width: u32 = field("width")
+    let coded_width: u32 = field("width")
         .and_then(|value| value.parse().ok())
         .ok_or(ClipError::NoVideo)?;
-    let height: u32 = field("height")
+    let coded_height: u32 = field("height")
         .and_then(|value| value.parse().ok())
         .ok_or(ClipError::NoVideo)?;
+    // A phone records portrait as landscape pixels and a display matrix that
+    // turns them. FFmpeg's decoder turns the frames by it (autorotate), so a
+    // decoder asked for the coded size would squeeze the turned picture back
+    // into it.
+    let turned = field("rotation")
+        .and_then(|value| value.parse::<f64>().ok())
+        .is_some_and(turns_a_quarter);
+    let (width, height) = if turned {
+        (coded_height, coded_width)
+    } else {
+        (coded_width, coded_height)
+    };
     // Refused here, before any frame is listed or decoded.
     if !clip::size_is_valid(width, height) {
         return Err(ClipError::Size(width, height));
@@ -511,6 +540,7 @@ fn probe_with(
         codec,
         width,
         height,
+        turned,
         rate,
         timing,
         seek_offset: (video_start - container_start).max(0.0),
@@ -527,6 +557,7 @@ struct Decoder {
 }
 
 impl Decoder {
+    #[cfg(test)]
     fn start(
         source: &ClipSource,
         probe: &Probe,
@@ -809,7 +840,11 @@ fn run(shared: &Shared, path: &Path, expected: &Expected, programs: &Programs) {
         Err(error) => return fail(error),
     };
     let found = (probe.width, probe.height, probe.timing.frame_count());
-    if found != (expected.width, expected.height, expected.frames as usize) {
+    // A turned clip recorded before its turn was read carries its coded
+    // size; it is the same clip, now shown upright.
+    let coded = (probe.height, probe.width, probe.timing.frame_count());
+    let recorded = (expected.width, expected.height, expected.frames as usize);
+    if found != recorded && !(probe.turned && coded == recorded) {
         return fail(ClipError::Different {
             expected: format!(
                 "{}x{} in {} frames",
@@ -1150,6 +1185,86 @@ mod tests {
             "{}",
             probe.timing.duration()
         );
+    }
+
+    /// F1b defect 5: a clip whose display matrix turns it a quarter (a phone
+    /// video) is the size a player shows, upright, and every frame the
+    /// decoder returns is byte for byte the frame FFmpeg itself shows — not
+    /// the turned picture squeezed back into the coded size.
+    #[test]
+    fn a_turned_clip_decodes_as_ffmpeg_shows_it() {
+        let scratch = Scratch::new("turned");
+        let flat = make_clip(
+            &scratch.0,
+            "flat.mp4",
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=96x54:rate=25",
+                "-t",
+                "1",
+                "-c:v",
+                "libx264",
+                "-g",
+                "10",
+                "-pix_fmt",
+                "yuv420p",
+            ],
+        );
+        for (degrees, turned) in [("90", true), ("-90", true), ("180", false)] {
+            let name = format!("turned{degrees}.mp4");
+            let path = make_clip(
+                &scratch.0,
+                &name,
+                &[
+                    "-display_rotation:v:0",
+                    degrees,
+                    "-i",
+                    flat.to_str().unwrap(),
+                    "-c",
+                    "copy",
+                ],
+            );
+            let source = ClipSource::open(&path).unwrap();
+            let probe = probe(&source).unwrap();
+            let size = if turned { (54, 96) } else { (96, 54) };
+            assert_eq!((probe.width, probe.height), size, "{degrees}");
+            assert_eq!(probe.turned, turned, "{degrees}");
+            // FFmpeg's own frames, turned by its default autorotate.
+            let shown = Command::new("ffmpeg")
+                .args(["-nostdin", "-v", "error", "-i"])
+                .arg(&path)
+                .args([
+                    "-fps_mode",
+                    "passthrough",
+                    "-f",
+                    "rawvideo",
+                    "-pix_fmt",
+                    "rgba",
+                    "-",
+                ])
+                .stdin(Stdio::null())
+                .output()
+                .unwrap()
+                .stdout;
+            let ours: Vec<u8> = all_frames(&source, &probe).concat();
+            assert_eq!(ours.len(), shown.len(), "{degrees}: frame count and size");
+            assert!(ours == shown, "{degrees}: the frames differ from FFmpeg's");
+            // A seek lands on the same turned frame.
+            let group = Mutex::new(None);
+            let mut decoder = Decoder::start(&source, &probe, 13, &group).unwrap();
+            let mut frame = vec![0u8; probe.frame_bytes()];
+            assert!(decoder.read(&mut frame).unwrap());
+            decoder.stop(&group);
+            let at = 13 * probe.frame_bytes();
+            assert!(
+                frame == shown[at..at + probe.frame_bytes()],
+                "{degrees}: seek"
+            );
+        }
+        assert!(turns_a_quarter(270.0) && turns_a_quarter(-270.0) && turns_a_quarter(90.4));
+        assert!(!turns_a_quarter(0.0) && !turns_a_quarter(45.0) && !turns_a_quarter(f64::NAN));
     }
 
     #[test]

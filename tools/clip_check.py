@@ -189,6 +189,26 @@ def check_fit(out: Path) -> None:
     check(got >= 28.0, f"contain: the clip is not the middle 180x180 ({got:.2f} dB)")
 
 
+def check_turned(out: Path) -> None:
+    """A clip whose display matrix turns it a quarter is drawn as a player
+    shows it: 180x320 and upright, the frame FFmpeg itself shows (its
+    autorotate), not the turned picture squeezed into the coded 320x180."""
+    size = (180, 320)
+    image = still(out / "turned.png", size)
+    index = 25  # 1.0 s into a 25 fps clip
+    shown = clip_frame(out / "turned.mp4", index, "null", size)
+    neighbours = [psnr(image, clip_frame(out / "turned.mp4", other, "null", size)) for other in (24, 26)]
+    # The control: the turned picture squeezed into the coded size and drawn
+    # back at the frame's, which is what the old decode looked like.
+    squeezed = clip_frame(out / "turned.mp4", index, "scale=320:180,scale=180:320", size)
+    got, control = psnr(image, shown), psnr(image, squeezed)
+    print(f"turned: frame {index} at {got:.2f} dB, neighbours {max(neighbours):.2f} dB, squeezed {control:.2f} dB")
+    check(got >= MATCH_DB and got >= max(neighbours) + MARGIN_DB, f"turned: not FFmpeg's frame {index} ({got:.2f} dB)")
+    check(got >= control + MARGIN_DB, f"turned: no better than the squeezed picture ({got:.2f} vs {control:.2f} dB)")
+    line = report_line(read(out / "turned.log"), "clip")
+    check(f"drew frame {index}/50 EXACT of 180x320" in line, f"turned: the clip line says {line}")
+
+
 def check_response(out: Path) -> None:
     quiet = (out / "response-0-fixture.png").read_bytes()
     silent = (out / "response-0-silent.png").read_bytes()
@@ -248,7 +268,7 @@ def check_refusals(out: Path) -> None:
 def main() -> int:
     out = Path(sys.argv[1])
     renderers = sys.argv[2:] or ["gpu"]
-    for step in (check_exact, check_overrun, check_fit, check_response, check_exports, check_project, check_refusals):
+    for step in (check_exact, check_overrun, check_fit, check_turned, check_response, check_exports, check_project, check_refusals):
         if step is check_exact:
             step(out, renderers)
         else:

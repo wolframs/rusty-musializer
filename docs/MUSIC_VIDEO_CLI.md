@@ -830,7 +830,9 @@ rather than against the report line that claims them. Among them:
   the frames FFmpeg extracts from the clips, on the GPU and on llvmpipe, and
   each beats its neighbouring frames by 16 dB and more; `hold`, `loop` and
   `bounce` past the end land on the computed frames; `cover` crops to the
-  centre and `contain` leaves black bars; `response` 0 is the same bytes over
+  centre and `contain` leaves black bars; a clip whose display matrix turns
+  it a quarter (a phone video) is drawn upright at its shown size, the frame
+  FFmpeg shows bit for bit; `response` 0 is the same bytes over
   music and over silence (and `response` 1 is not); two exports of one window
   have the same per-frame digests; a saved project reopens from its bundle with
   the source deleted, and with the bundle's copy deleted too draws a card
