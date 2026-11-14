@@ -378,3 +378,15 @@ named on a report line. The same file's half-float format is not a drop-in
 for a deeper RGBA8 either: a float target does not clamp, so additive light
 past 1.0 survives into the next blend and into any pass that reads the frame.
 Found building EX3's deep target, 2026-11-13.
+
+## A rect the report names can lie below the list's fold
+
+A scrolling column clips input to its viewport (`Widgets::set_input_clip`), and
+its report lines print every control's rect whether or not it is on screen. A
+`click=` aimed at one past the viewport's bottom is swallowed by the clip and
+reads exactly like a dead control: `claimed=nothing`, no edit, a green gap
+control beside it. The look cards' video card is taller than a 720 px window's
+list, and its finish rows failed that way on the first gate run. Before
+pressing a rect from a scrolling view, check it lies inside the view's
+`viewport=` (the `tune layout:` line for Look), and give the run a window tall
+enough — or scroll first. Found building the look cards gate, 2026-11-14.

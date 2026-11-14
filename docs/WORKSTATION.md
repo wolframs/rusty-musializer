@@ -338,6 +338,21 @@ under [Open work](#open-work) and tracked in the live queue.
      covered by the column checks and the gate's dark section.
    - The welcome screen has no column, so an agent cannot
      be started before a track is open.
+3c. **Look's look cards (D, MV9-l / MV3-a).** *Landed 2026-11-14 on a branch
+   for the lead to integrate.* Look gains a card above the scene's tuning with
+   a three-way switch: *This section* (the lane's selected section: arrival by
+   name and length, glide, grade, caption style, a threshold's door, Play the
+   cut), *Whole video* (intro, outro, finish) and *Captions* (voices, caption
+   styles, title cards). The card speaks the column's vocabulary: micro section
+   heads with the current value in ink at their right, named chips in a grid
+   (the selection look, never the accent), `slider_row`s whose value chip
+   types, swatches with a typed hex, and disabled controls that say why on
+   hover. The decisions and their reasons are the look cards rows in
+   [DIVERGENCES.md](DIVERGENCES.md); the gate is `tools/look_cards_check.sh`,
+   check 11 of `column_check.sh`. **Left:** writing an edit back into a
+   followed treatment; giving lines a voice; a style's other members; undo for
+   plan edits (none exists for any).
+
 The welcome theme gate was repaired in the WX-5a polish after the theme menu's
 rows changed order.
 

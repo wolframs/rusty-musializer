@@ -603,8 +603,9 @@ needed:
 
 In the window, the cue card shows the style a line is drawn in — `STYLE
 SHOUT`, or `STYLE TOP · SECTION` when it comes from its section — and a press
-steps the line's own style through the table and back to none. The table and a
-section's style are written here.
+steps the line's own style through the table and back to none. Look's section
+card picks a section's style, and its Captions card edits the table (see
+*Editing the look in the window*).
 
 ### Title cards
 
@@ -634,8 +635,37 @@ the pixel stagings too — and under the black of an intro, an outro or a dip.
   `{ "anchor": "bottom_left", "box": "plate" }` makes a lower third.
   `"box": "none"` drops the band.
 
-The Lyrics view lists the cards above the cues (a press seeks to one). They are
-written here.
+The Lyrics view lists the cards above the cues (a press seeks to one); Look's
+Captions card edits, adds and removes them (see *Editing the look in the
+window*).
+
+## Editing the look in the window
+
+Everything above that says how the video looks — how a section arrives, its
+glide, its grade and caption style, a threshold's door, the intro and outro,
+the finish, the voices, the caption styles and the title cards — is also
+edited in the window, in **Look**, in a card above the scene's tuning with
+three faces:
+
+- **This section** edits the section selected in the plan lane (the lane
+  head's section field, "Look ›", opens it): how it arrives — the fourteen
+  kinds by name, and a length — its glide (drawn disabled, saying why, after
+  another scene), its grade (the named palettes, strength, the hue turn), the
+  caption style its lines begin in, and a threshold's door. **Play the cut**
+  plays from 1.5 s before the picture starts to change through the
+  transition and a second past it, and pauses there when it started paused.
+- **Whole video**: the intro out of black (the first section's arrival), the
+  outro into it, Play the intro, Play the end, and the finish — None or Film to
+  start from, then every member.
+- **Captions**: the voices, the caption styles (a rename takes every line,
+  section and card along) and the title cards (added only on a press, at the
+  playhead, with the project's title and artist).
+
+Every edit is saved with the project and autosaved like a plan edit, the
+lane's marks follow at once, and a grade or finish changes the frame on screen
+while paused. The file a window edit writes is the same one a treatment
+writes, so a treatment applied later replaces what it names. The `look cards:`
+report line names every control and the selected section's values.
 
 ## What the report says
 
@@ -700,19 +730,20 @@ Found while making the first video, each one from a contact sheet:
 
 Said here so nobody looks for a flag:
 
-- Editing the named styles, a section's style or the title cards in the window.
-  The cue card picks a line's own style and the Lyrics view lists the cards;
-  everything else about them comes from a treatment.
+- Writing a window edit back into a followed treatment. Look's look cards
+  (see *Editing the look in the window*) edit the `.musi`; while a treatment
+  is followed they are drawn disabled and name the file, because its next save
+  would undo them.
+- Giving a line a voice, or adding a voice, in the window. A voice's name,
+  hue, ink and glow are edited in Look's Captions card, and a voice can be
+  removed there; which line a voice sings comes from a treatment.
+- Clearing a voice's or a style's hue, ink or size back to "its own" in the
+  window, and the rest of a style's members (face, box, margins, effects):
+  a treatment's.
 - Transitions where both scenes keep moving. The outgoing picture is a held
   frame (see `transition`); a true crossfade of two live scenes is not built.
   The one place two scenes run at once is the threshold's doorway.
-- Authoring a transition, a grade, a glide, the rest of the finish or voices in
-  the window (the pixel look is the exception: Look's Pixel look group picks it).
-  They come from a treatment and are saved in the `.musi`. The scene lane
-  *shows* them — a light band for how a segment arrives, a ramp for a glide, a
-  palette strip for a grade, a dark band for the outro, and a selected
-  segment's details (a threshold's beyond among them) in the name field — but
-  nothing edits them yet. A `scene marks:` report line counts what it drew.
+- Undo for plan edits, the look cards' among them.
 - An imported caption face in a treatment. `"face": "imported"` is refused by
   name; import the face in the Lyrics panel after `--save-project`.
 - Per-section routes, and the caption effects' drive-tuning blocks.

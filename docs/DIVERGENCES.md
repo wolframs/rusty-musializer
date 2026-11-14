@@ -412,3 +412,26 @@ expanded band separately.
 The embedded dependency bundle covers every registry package in Cargo.lock, with an exact package-set and lock-digest test. A source-audit correction on 2026-10-30 replaced the initial incomplete generator selection; `tools/refresh_credits_notices.py` refreshes notices offline and fails closed on a missing notice. The legal reader uses the existing authored-face fallback for contributor alphabets outside the interface atlas.
 
 The late notice tray stays under About's pointer mask (2026-10-30). Its report-addressed close control formerly claimed a press through an empty part of the dialog; the About gate catches that covered-control case as well as the footer gap.
+
+## The look cards (D, 2026-11-14)
+
+MV9-l and MV3-a: everything a treatment says about how a video looks is now
+edited in the window, in Look. The code is `ui/panels/tune/cards.rs` and
+`tune/tables.rs`, the geometry and slider scales
+`core::ui::tune_groups::look_cards`; the gate is `tools/look_cards_check.sh`
+(column check 11).
+
+| Earlier behaviour | Current behaviour | Reason |
+| --- | --- | --- |
+| Transitions, the intro and outro, glides, grades, the finish, voices, caption styles, title cards and a threshold's beyond came only from a treatment; the lane showed them and nothing edited them | **Look's look cards**, above the scene's tuning, behind a three-way switch: *This section* (how the lane's selected section arrives by name and length, its glide, grade, caption style, a threshold's door, Play the cut), *Whole video* (intro, outro, finish, Play the intro / the end), *Captions* (voices, caption styles, title cards) | A card in Look rather than a fifth view: Look is "how this looks", and the tuning under the card is the same section's picture. One card at a time keeps the column readable at its 300 px minimum |
+| A click on a plan section selects it | Unchanged; the lane head's selected-section field is a press ("Look ›") that opens its card, and with Look already open the card follows every selection | Opening Look on any lane click would take the column away from a chat in Direct or a half-typed lyric |
+| — | While a treatment is followed, every card control is drawn disabled, the card names the file and offers **Stop following** | The next save of the file would silently undo an edit made in the window (WX-3). Writing edits back into the file is not built |
+| — | Card edits change the plan without rebuilding the running scene and post no notice per edit (the pixel look's rule, extended); a door pick sets the scene again from the plan, as a retarget does | A slider sends an edit every frame it is dragged, and the change is on screen already |
+| — | Lengths move on a logarithmic track (0.05 to 30 s, 0.6 s at two fifths), glides on a quadratic one (0 is exactly none); every value is stored at its readout's resolution (0.01 s, whole percent, whole degrees) | Nearly every transition worth making is under two seconds; what the row prints is what the file holds |
+| — | The toning colours with Toning at 0, and the bloom's threshold and spread with Bloom at 0, are drawn disabled with their reason | An inactive finish is never written, so a pick there vanished on reload |
+| — | **Add a voice** is drawn disabled with its reason; a voice's name, hue, ink and glow edit, and Remove asks to confirm when lines are sung in it (later voices keep their lines) | A line gets its voice in a treatment; a voice no line sings would draw nothing |
+| — | A caption style a line, section or card wears cannot be removed (disabled, saying how many); a rename takes all of them along; Add makes `style-N`, top centre | A project naming a style its table lacks cannot be opened again |
+| — | **Add a title card** puts one at the playhead for five seconds with the project's title and artist, only on a press, and waits (saying why) while a card is on screen there; Remove asks to confirm | Operator, 2026-10-12: no card unless asked for, and an asked-for card carries the artist |
+| A glide between two threshold sections eased `beyond` (a scene index, 0..29) and walked the doorway through every scene between the two | `beyond` snaps like any other choice; the camera still eases | Found with the door picker. An export of a plan with two different doors and a glide changes; one with the same door on both sides (Door, No Room) does not |
+| — | Plan edits from the cards have no undo, as no plan edit has | Follows the plan lane's edits; an undo for the plan is its own piece of work |
+| No seam to select a section or type into a card | `--ui-probe section=N` selects plan section N; `look=section|video|captions` picks the card; `look-text=…,look-action=draft|commit|cancel` types into the field a real `click=` focused (frame 12); `look cards:` names every control rect, the target's values, the video's and what was refused | One probe run has one click; the press itself is still a real one through the widget bank |

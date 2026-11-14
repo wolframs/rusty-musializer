@@ -66,6 +66,10 @@ changes projects or exports. **Deliberate grammar removal (2026-10-30):**
 `--editor-ui` was removed with the operator-retired F8 modal. It now reports retirement and returns exit status 1. Use Look/Lyrics tabs; capture with `--ui-probe column=look`
 or `column=lyrics`. `pixel=video|section` reveals Look's pixel group and selects
 its scope for a capture; it performs no project edit. Edits require `click=`.
+`section=N` selects plan section N and `look=section|video|captions` picks the
+card Look's look cards show (D, 2026-11-14); `look-text=TEXT,look-action=draft|commit|cancel`
+types into the card field a `click=` focused, at frame 12. None of the three
+edits anything by itself.
 See [UI_TOOLKIT.md](UI_TOOLKIT.md).
 
 The directing flags — `--treatment`, `--vocabulary`, `--contact-sheet`,
