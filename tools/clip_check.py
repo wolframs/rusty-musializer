@@ -209,6 +209,17 @@ def check_turned(out: Path) -> None:
     check(f"drew frame {index}/50 EXACT of 180x320" in line, f"turned: the clip line says {line}")
 
 
+def check_release(out: Path) -> None:
+    """A clip section, then Spectrum: after the still on Spectrum, no clip
+    worker is resident, no decoder runs and no frame is kept, though the
+    clip drew exactly before (F1b, defect 2)."""
+    line = report_line(read(out / "release.log"), "clip")
+    print(f"release: {line[line.find('resident'):]}")
+    check("drew frame 23/144 EXACT" in line, f"release: the clip did not draw its frame first: {line}")
+    for expected in ("resident entries=0", "released=1", "decoders 0/", "frames 0/", "workers 0,"):
+        check(expected in line, f"release: '{expected}' missing after the video moved on: {line}")
+
+
 def check_response(out: Path) -> None:
     quiet = (out / "response-0-fixture.png").read_bytes()
     silent = (out / "response-0-silent.png").read_bytes()
@@ -268,7 +279,7 @@ def check_refusals(out: Path) -> None:
 def main() -> int:
     out = Path(sys.argv[1])
     renderers = sys.argv[2:] or ["gpu"]
-    for step in (check_exact, check_overrun, check_fit, check_turned, check_response, check_exports, check_project, check_refusals):
+    for step in (check_exact, check_overrun, check_fit, check_turned, check_release, check_response, check_exports, check_project, check_refusals):
         if step is check_exact:
             step(out, renderers)
         else:

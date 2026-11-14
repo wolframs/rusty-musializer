@@ -352,6 +352,21 @@ the drop can kill it. The thread clears the group and reaps under one lock,
 and the drop signals under it, so a reaped id is never signalled. Found by
 review of the clip scene, 2026-11-14.
 
+## An eviction clock that only one scene advances stops when the video moves on
+
+The clip scene stopped a decoder after 900 of its own draws without it. Those
+draws happen only while a clip section is on screen, so when the video moved
+on to Spectrum the clock stopped and every decoder stayed — thirty one-second
+1080p sections held 6.2 GiB and 31 FFmpeg processes to the end of an export,
+and the poster renderer, which draws only now and then, never released its
+own. Per-resource budgets also multiply: "192 MiB per clip" was 5.7 GiB for
+thirty. Release from a hook that runs after every frame whatever scene drew
+(`SceneRenderer::draw` → `ClipResources::end_frame`), judge by what is on
+screen or coming up rather than by a count, give each role (preview, export,
+poster) its own judgement so one does not evict the other, and bound the sum
+in one process-wide budget (`runtime::clip::ClipBudget`). Found by review of
+the clip scene, 2026-11-14; numbers in `docs/VIDEO_GENERATION.md`.
+
 ## A small file can claim a huge picture
 
 File size says nothing about decoded size: a PNG of a few hundred KB can

@@ -162,7 +162,7 @@ pub struct SceneSwitchTimeline {
 }
 
 use crate::project::caption_styles::{StyleName, TitleCard};
-use crate::project::clip::{ClipMoment, ClipPlacement};
+use crate::project::clip::{ClipMoment, ClipPlacement, ClipRef};
 
 impl SceneSwitchTimeline {
     /// `scene_switch_init` (`scene_switch.c:11-16`).
@@ -318,6 +318,36 @@ impl SceneSwitchTimeline {
             from_seconds: from.unwrap_or(0.0),
             origin_seconds: self.cues[origin].start_seconds,
         })
+    }
+
+    /// The clips the plan's `clip` sections play anywhere in
+    /// `[start_seconds, end_seconds]` (VG, F1b): each section's own, else the
+    /// track's (`base`). Empty with the plan off, when the base scene decides.
+    /// What a renderer keeps decoders for: on screen now, or soon.
+    #[must_use]
+    pub fn clips_between(
+        &self,
+        start_seconds: f64,
+        end_seconds: f64,
+        base: Option<ClipPlacement>,
+    ) -> Vec<ClipRef> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        let clip_scene = SceneId::Clip.index() as u32;
+        let mut clips: Vec<ClipRef> = self
+            .cues
+            .iter()
+            .filter(|cue| {
+                cue.scene_index == clip_scene
+                    && cue.start_seconds <= end_seconds
+                    && cue.end_seconds >= start_seconds
+            })
+            .filter_map(|cue| cue.clip.or(base).map(|placement| placement.clip))
+            .collect();
+        clips.sort_unstable();
+        clips.dedup();
+        clips
     }
 
     /// The title card on screen at `time_seconds` (MV2), plan on or off.
@@ -1499,6 +1529,38 @@ mod tests {
             let after: Vec<_> = times.iter().map(|&t| local(&timeline, base, t)).collect();
             assert_eq!(after, before, "own={own:?} base={base:?}");
         }
+    }
+
+    /// F1b defect 2: the clips a stretch of the plan plays, for the renderer
+    /// to keep and nothing else.
+    #[test]
+    fn the_clips_between_two_times_are_the_clip_sections_there() {
+        use crate::project::clip::{ClipPlacement, ClipRef};
+        let clip_scene = SceneId::Clip.index() as u32;
+        let take = |seed: &str| ClipRef::from_hex(&seed.repeat(32)).unwrap();
+        let mut own = cue(2, 10.0, 20.0, clip_scene);
+        own.clip = Some(ClipPlacement::new(take("aa")));
+        let inherits = cue(3, 20.0, 30.0, clip_scene);
+        let mut timeline = SceneSwitchTimeline::new();
+        timeline
+            .replace(
+                &[cue(1, 0.0, 10.0, 0), own, inherits, cue(4, 30.0, 60.0, 0)],
+                DURATION,
+                SCENES,
+            )
+            .unwrap();
+        timeline.enabled = true;
+        let base = Some(ClipPlacement::new(take("bb")));
+        assert_eq!(timeline.clips_between(0.0, 9.0, base), vec![]);
+        assert_eq!(timeline.clips_between(8.0, 10.5, base), vec![take("aa")]);
+        assert_eq!(
+            timeline.clips_between(15.0, 25.0, base),
+            vec![take("aa"), take("bb")]
+        );
+        assert_eq!(timeline.clips_between(25.0, 40.0, None), vec![]);
+        assert_eq!(timeline.clips_between(31.0, 40.0, base), vec![]);
+        timeline.enabled = false;
+        assert_eq!(timeline.clips_between(15.0, 25.0, base), vec![]);
     }
 
     #[test]

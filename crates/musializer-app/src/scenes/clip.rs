@@ -13,18 +13,27 @@
 //!   `clip:` report line counts every frame it drew that was not the one asked
 //!   for, so "the preview showed another frame while scrubbing" is a number.
 //!
+//! **What stays resident** (F1b): a decoder worker exists for a clip only
+//! while that clip is on screen or soon will be — drawn this frame, or played
+//! by a plan section within [`KEEP_BEHIND`] before and [`KEEP_AHEAD`] after
+//! the frame's time — judged after every frame whatever scene drew it
+//! ([`ClipResources::end_frame`]). Entries of another role that has stopped
+//! drawing (an export that finished) go after [`ROLE_IDLE`]. The decoders
+//! and kept frames all workers run are one budget across the process
+//! (`runtime::clip::ClipBudget`), counted on the `clip:` line.
+//!
 //! A clip that cannot be drawn — none chosen, gone, changed, unreadable,
 //! still opening — draws a card that says which, by name, and the report
 //! line says it drew one. Never a black frame: a black frame is a plausible
 //! picture of a broken clip.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use musializer_core::project::clip::{self as model, ClipMoment, ClipRef};
 use musializer_core::scene::SceneFrame;
 use musializer_core::scenes::clip::ClipState;
-use musializer_runtime::clip::{ClipPhase, ClipWorker, Expected, Frame};
+use musializer_runtime::clip::{ClipBudget, ClipPhase, ClipWorker, Expected, Frame};
 use musializer_runtime::font::Faces;
 use raylib::prelude::*;
 
@@ -40,8 +49,14 @@ const EXACT_DEADLINE: Duration = Duration::from_secs(60);
 /// it has: long enough for a frame being decoded (about 4 ms at 1080p), short
 /// enough that a scrub never stalls the window.
 const PREVIEW_GRACE: Duration = Duration::from_millis(8);
-/// Draws a worker may go unused before its FFmpeg is stopped.
-const IDLE_DRAWS: u64 = 900;
+/// A clip played this long before the frame's time keeps its worker: a scrub
+/// back over a cut does not start it again.
+const KEEP_BEHIND: f64 = 0.5;
+/// A clip played this soon after the frame's time keeps its worker.
+const KEEP_AHEAD: f64 = 2.0;
+/// How long a role that stopped drawing (an export that ended) keeps its
+/// workers.
+const ROLE_IDLE: Duration = Duration::from_secs(10);
 
 /// Who is drawing, which decides whether a frame is waited for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -67,6 +82,14 @@ impl ClipRole {
             ClipRole::Poster => "poster",
         }
     }
+
+    fn slot(self) -> usize {
+        match self {
+            ClipRole::Preview => 0,
+            ClipRole::Export => 1,
+            ClipRole::Poster => 2,
+        }
+    }
 }
 
 struct Entry {
@@ -76,6 +99,7 @@ struct Entry {
     worker: ClipWorker,
     texture: Option<Texture2D>,
     uploaded: Option<usize>,
+    /// The frame (on [`ClipResources::frames`]) it last drew.
     last_used: u64,
 }
 
@@ -89,7 +113,12 @@ pub struct ClipResources {
     thread: RaylibThread,
     shader: Option<Shader>,
     entries: Vec<Entry>,
-    draws: u64,
+    /// Frames finished ([`ClipResources::end_frame`]), whatever drew them.
+    frames: u64,
+    /// When each role last finished a frame: preview, export, poster.
+    role_seen: [Option<Instant>; 3],
+    /// Workers released because their clip left the screen, for the report.
+    released: u64,
     last: Drawn,
     exact_frames: u64,
     inexact_frames: u64,
@@ -110,7 +139,9 @@ impl ClipResources {
             thread: thread.clone(),
             shader: valid.then_some(shader),
             entries: Vec::new(),
-            draws: 0,
+            frames: 0,
+            role_seen: [None; 3],
+            released: 0,
             last: Drawn::default(),
             exact_frames: 0,
             inexact_frames: 0,
@@ -127,7 +158,8 @@ impl ClipResources {
             return "none".into();
         }
         format!(
-            "{}; frames exact={} inexact={} (longest run {}) placeholder={} shader={}",
+            "{}; frames exact={} inexact={} (longest run {}) placeholder={} shader={}; \
+             resident entries={} released={}, budget {}",
             self.last.line,
             self.exact_frames,
             self.inexact_frames,
@@ -137,22 +169,49 @@ impl ClipResources {
                 "compiled"
             } else {
                 "FALLBACK"
-            }
+            },
+            self.entries.len(),
+            self.released,
+            ClipBudget::shared().usage().describe()
         )
     }
 
-    /// Stops the decoders nothing has drawn from for a while.
-    fn evict(&mut self) {
-        let now = self.draws;
-        self.entries
-            .retain(|entry| now.saturating_sub(entry.last_used) < IDLE_DRAWS);
+    /// After every frame, whatever scene drew it: the workers of the role
+    /// that drew keep only the clips on screen now or soon; another role's
+    /// workers go once that role has drawn nothing for [`ROLE_IDLE`]. A
+    /// dropped worker stops its FFmpeg, joins its thread and frees its frames
+    /// and texture. Never blocks on a decode.
+    pub fn end_frame(&mut self, time_seconds: f64, assets: TrackAssets<'_>) {
+        let frame = self.frames;
+        self.frames += 1;
+        let role = assets.clip_role;
+        let now = Instant::now();
+        self.role_seen[role.slot()] = Some(now);
+        let soon = assets.scene_plan.map_or_else(Vec::new, |plan| {
+            plan.clips_between(
+                time_seconds - KEEP_BEHIND,
+                time_seconds + KEEP_AHEAD,
+                assets.base_clip,
+            )
+        });
+        let role_seen = self.role_seen;
+        let before = self.entries.len();
+        self.entries.retain(|entry| {
+            if entry.role == role {
+                entry.last_used == frame || soon.contains(&entry.clip)
+            } else {
+                role_seen[entry.role.slot()]
+                    .is_some_and(|seen| now.duration_since(seen) < ROLE_IDLE)
+            }
+        });
+        self.released += (before - self.entries.len()) as u64;
     }
 }
 
 /// The worker for `clip` in `role`, started when there is none.
 fn entry<'a>(
     entries: &'a mut Vec<Entry>,
-    draws: u64,
+    frame: u64,
     clip: &TrackClip,
     role: ClipRole,
 ) -> Option<&'a mut Entry> {
@@ -180,13 +239,13 @@ fn entry<'a>(
             ),
             texture: None,
             uploaded: None,
-            last_used: draws,
+            last_used: frame,
         });
     }
     let entry = entries
         .iter_mut()
         .find(|entry| entry.clip == key && entry.role == role)?;
-    entry.last_used = draws;
+    entry.last_used = frame;
     Some(entry)
 }
 
@@ -214,8 +273,6 @@ pub fn draw(
     assets: TrackAssets<'_>,
     boundary: Rectangle,
 ) {
-    resources.draws += 1;
-    resources.evict();
     d.draw_rectangle_rec(boundary, Color::BLACK);
     let role = assets.clip_role;
     let moment = match assets.scene_plan {
@@ -314,10 +371,10 @@ fn picture(
         thread,
         shader,
         entries,
-        draws,
+        frames,
         ..
     } = resources;
-    let Some(entry) = entry(entries, *draws, clip, role) else {
+    let Some(entry) = entry(entries, *frames, clip, role) else {
         return Outcome::Card(format!("{name}: no usable digest"), source);
     };
     // The exact roles wait out the opening; the preview says it is opening.

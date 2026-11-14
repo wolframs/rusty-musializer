@@ -37,16 +37,33 @@
 //! run of frames ending at the one asked for and keeps them, so a bounce
 //! plays backwards at a restart per run rather than per frame. The choice and
 //! its numbers: `docs/VIDEO_GENERATION.md`, *Decoding*.
+//!
+//! # One budget for every clip
+//!
+//! A running decoder and its kept frames are a lease from one process-wide
+//! [`ClipBudget`]: at most [`BUDGET_DECODERS`] FFmpeg decoders and
+//! [`BUDGET_BYTES`] of kept frames, whichever renderer asks. A worker takes a
+//! lease when it starts a decoder; when the budget is full, the worker asked
+//! least recently gives its lease back (its decoder stops, its kept frames
+//! go) before the new one starts. A worker nobody has asked anything for
+//! [`BUDGET_IDLE`] gives its lease back on its own. Either way it keeps the
+//! last frame it served, so a paused picture stays. A clip whose file was
+//! hashed and probed once in this process is not hashed again while the
+//! file's inode, size, modification and change times are the same
+//! ([`verified`]), so a worker started again for a clip coming back on screen
+//! costs a decoder start, not a hash.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -67,8 +84,18 @@ const STREAM_REPORT_BYTES: usize = 4096;
 /// restart costs 95–340 ms on a 1080p H.264 clip and a frame read about 4 ms
 /// (measured 2026-11-14; `docs/VIDEO_GENERATION.md`).
 const SKIP_LIMIT: usize = 30;
-/// What the frames kept for backwards playback may hold.
-const CACHE_BYTES: usize = 192 * 1024 * 1024;
+/// The most FFmpeg decoders all clips together run at once.
+pub const BUDGET_DECODERS: usize = 4;
+/// What the frames all clips keep may hold together. One lease is its share,
+/// `BUDGET_BYTES / BUDGET_DECODERS`, at most: 15 frames of 1080p.
+pub const BUDGET_BYTES: usize = 512 * 1024 * 1024;
+/// How long a worker nobody asks anything keeps its decoder and its frames.
+pub const BUDGET_IDLE: Duration = Duration::from_secs(3);
+/// How long a new decoder waits for an evicted one to give its lease back
+/// before it starts anyway (and the overrun is counted).
+const LEASE_WAIT: Duration = Duration::from_secs(2);
+/// How many verified files the identity cache remembers.
+const VERIFIED_FILES: usize = 128;
 /// The longest run decoded and kept for one backwards step.
 const BACK_RUN: usize = 24;
 /// Frames read ahead of the last one asked for while nothing new is asked:
@@ -644,6 +671,245 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Orders requests across every worker, so the budget can tell which was
+/// asked least recently.
+static ASKED: AtomicU64 = AtomicU64::new(1);
+/// Workers alive in this process, for the report.
+static WORKERS: AtomicUsize = AtomicUsize::new(0);
+
+/// The decoders and kept frames all clip workers share (see the module
+/// comment). Locks are taken budget first, then a worker's state, never the
+/// other way round.
+pub struct ClipBudget {
+    decoders: usize,
+    bytes: usize,
+    idle: Duration,
+    state: Mutex<BudgetState>,
+    released: Condvar,
+}
+
+#[derive(Default)]
+struct BudgetState {
+    leases: Vec<Lease>,
+    evictions: u64,
+    overruns: u64,
+}
+
+struct Lease {
+    worker: u64,
+    bytes: usize,
+    /// Asked to give it back, and not yet done.
+    recalled: bool,
+    shared: Weak<Shared>,
+}
+
+/// What the budget holds now, for a report line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BudgetUse {
+    pub decoders: usize,
+    pub decoder_limit: usize,
+    pub bytes: usize,
+    pub byte_limit: usize,
+    pub workers: usize,
+    /// Leases taken back from a worker to make room for another.
+    pub evictions: u64,
+    /// Decoders started past the budget because an eviction took too long.
+    pub overruns: u64,
+}
+
+impl BudgetUse {
+    /// `decoders 1/4, frames 120/512 MiB, workers 3, evictions 5, overruns 0`.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        format!(
+            "decoders {}/{}, frames {}/{} MiB, workers {}, evictions {}, overruns {}",
+            self.decoders,
+            self.decoder_limit,
+            self.bytes >> 20,
+            self.byte_limit >> 20,
+            self.workers,
+            self.evictions,
+            self.overruns
+        )
+    }
+}
+
+impl ClipBudget {
+    #[must_use]
+    pub fn new(decoders: usize, bytes: usize, idle: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            decoders: decoders.max(1),
+            bytes,
+            idle,
+            state: Mutex::new(BudgetState::default()),
+            released: Condvar::new(),
+        })
+    }
+
+    /// The process's budget, which every [`ClipWorker::spawn`] draws on.
+    #[must_use]
+    pub fn shared() -> Arc<Self> {
+        static SHARED: OnceLock<Arc<ClipBudget>> = OnceLock::new();
+        Arc::clone(SHARED.get_or_init(|| Self::new(BUDGET_DECODERS, BUDGET_BYTES, BUDGET_IDLE)))
+    }
+
+    #[must_use]
+    pub fn usage(&self) -> BudgetUse {
+        let state = lock(&self.state);
+        BudgetUse {
+            decoders: state.leases.len(),
+            decoder_limit: self.decoders,
+            bytes: state.leases.iter().map(|lease| lease.bytes).sum(),
+            byte_limit: self.bytes,
+            workers: WORKERS.load(Ordering::Relaxed),
+            evictions: state.evictions,
+            overruns: state.overruns,
+        }
+    }
+
+    /// The frames one lease may keep, for frames of `frame_bytes`.
+    fn capacity(&self, frame_bytes: usize) -> usize {
+        (self.bytes / self.decoders / frame_bytes.max(1)).clamp(2, BACK_RUN * 2)
+    }
+
+    /// Takes a lease of `bytes` for `worker`, recalling the least recently
+    /// asked worker's lease while the budget is full, and waiting for it to
+    /// be given back. One lease is always granted, whatever its size.
+    fn acquire(&self, worker: u64, bytes: usize, shared: &Arc<Shared>) {
+        let started = Instant::now();
+        let mut state = lock(&self.state);
+        loop {
+            state.leases.retain(|lease| lease.shared.strong_count() > 0);
+            let used: usize = state.leases.iter().map(|lease| lease.bytes).sum();
+            let fits = state.leases.len() < self.decoders && used + bytes <= self.bytes;
+            if fits || state.leases.is_empty() {
+                break;
+            }
+            if started.elapsed() >= LEASE_WAIT {
+                state.overruns += 1;
+                break;
+            }
+            // Recall the least recently asked lease not already recalled.
+            let victim = state
+                .leases
+                .iter_mut()
+                .filter(|lease| !lease.recalled && lease.worker != worker)
+                .filter_map(|lease| {
+                    let other = lease.shared.upgrade()?;
+                    let asked = lock(&other.state).asked;
+                    Some((asked, lease, other))
+                })
+                .min_by_key(|(asked, _, _)| *asked);
+            if let Some((_, lease, other)) = victim {
+                lease.recalled = true;
+                lock(&other.state).recall = true;
+                other.changed.notify_all();
+                state.evictions += 1;
+            }
+            let left = LEASE_WAIT.saturating_sub(started.elapsed());
+            state = self
+                .released
+                .wait_timeout(state, left.min(Duration::from_millis(50)))
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        state.leases.push(Lease {
+            worker,
+            bytes,
+            recalled: false,
+            shared: Arc::downgrade(shared),
+        });
+    }
+
+    fn release(&self, worker: u64) {
+        lock(&self.state)
+            .leases
+            .retain(|lease| lease.worker != worker);
+        self.released.notify_all();
+    }
+}
+
+/// A worker's hold on its lease: taken before a decoder starts, given back
+/// when the decoder and the kept frames go, and on every way out of the
+/// thread.
+struct Holder<'a> {
+    budget: &'a ClipBudget,
+    worker: u64,
+    bytes: usize,
+    shared: &'a Arc<Shared>,
+    held: bool,
+}
+
+impl Holder<'_> {
+    fn take(&mut self) {
+        if !self.held {
+            self.budget.acquire(self.worker, self.bytes, self.shared);
+            self.held = true;
+        }
+    }
+
+    fn give_back(&mut self) {
+        if self.held {
+            self.budget.release(self.worker);
+            self.held = false;
+        }
+    }
+}
+
+impl Drop for Holder<'_> {
+    fn drop(&mut self) {
+        self.give_back();
+    }
+}
+
+/// What makes a file the same file without reading it again: its inode, its
+/// size, and its modification and change times to the nanosecond. Any write
+/// moves the change time, which no program can set back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileKey {
+    device: u64,
+    inode: u64,
+    bytes: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+impl FileKey {
+    fn of(file: &File) -> Option<Self> {
+        let metadata = file.metadata().ok()?;
+        Some(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            bytes: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        })
+    }
+}
+
+/// Files this process hashed and probed and found to be the clip they were
+/// asked to be: the digest and the probe, by [`FileKey`].
+fn verified() -> &'static Mutex<Vec<(FileKey, String, Probe)>> {
+    static VERIFIED: OnceLock<Mutex<Vec<(FileKey, String, Probe)>>> = OnceLock::new();
+    VERIFIED.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn remember_verified(key: FileKey, sha256: &str, probe: &Probe) {
+    let mut known = lock(verified());
+    known.retain(|(other, _, _)| *other != key);
+    if known.len() >= VERIFIED_FILES {
+        known.remove(0);
+    }
+    known.push((key, sha256.to_owned(), probe.clone()));
+}
+
+fn recall_verified(key: FileKey, sha256: &str) -> Option<Probe> {
+    lock(verified())
+        .iter()
+        .find(|(other, digest, _)| *other == key && digest == sha256)
+        .map(|(_, _, probe)| probe.clone())
+}
+
 /// What a clip worker is doing.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClipPhase {
@@ -662,8 +928,15 @@ struct State {
     wanted: Option<usize>,
     latest: Option<(usize, Frame)>,
     stop: bool,
+    /// The budget wants this worker's lease back.
+    recall: bool,
+    /// When this worker was last asked for a frame, on [`ASKED`]'s clock.
+    asked: u64,
     restarts: u64,
     decoded: u64,
+    /// Whether the last start-up skipped the hash and the probe because the
+    /// file was verified before.
+    reused_identity: bool,
 }
 
 struct Shared {
@@ -688,12 +961,14 @@ pub struct Expected {
 pub struct WorkerStats {
     pub restarts: u64,
     pub decoded: u64,
+    pub reused_identity: bool,
 }
 
 /// One clip's decoder thread. Dropping it stops FFmpeg and joins the thread.
 pub struct ClipWorker {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
+    budget: Arc<ClipBudget>,
 }
 
 impl ClipWorker {
@@ -701,31 +976,57 @@ impl ClipWorker {
     /// against `expected`, then waits to be asked for frames.
     #[must_use]
     pub fn spawn(path: PathBuf, expected: Expected) -> Self {
-        Self::spawn_with(path, expected, Programs::default())
+        Self::spawn_with(path, expected, Programs::default(), ClipBudget::shared())
     }
 
-    fn spawn_with(path: PathBuf, expected: Expected, programs: Programs) -> Self {
+    /// [`ClipWorker::spawn`], drawing on `budget` instead of the process's.
+    #[must_use]
+    pub fn spawn_in(path: PathBuf, expected: Expected, budget: Arc<ClipBudget>) -> Self {
+        Self::spawn_with(path, expected, Programs::default(), budget)
+    }
+
+    fn spawn_with(
+        path: PathBuf,
+        expected: Expected,
+        programs: Programs,
+        budget: Arc<ClipBudget>,
+    ) -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 phase: ClipPhase::Starting,
                 wanted: None,
                 latest: None,
                 stop: false,
+                recall: false,
+                asked: ASKED.fetch_add(1, Ordering::Relaxed),
                 restarts: 0,
                 decoded: 0,
+                reused_identity: false,
             }),
             changed: Condvar::new(),
             group: Mutex::new(None),
         });
+        WORKERS.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::clone(&shared);
+        let thread_budget = Arc::clone(&budget);
         let thread = std::thread::Builder::new()
             .name("clip-decoder".into())
-            .spawn(move || run(&inner, &path, &expected, &programs))
+            .spawn(move || run(&inner, &path, &expected, &programs, &thread_budget))
             .ok();
         if thread.is_none() {
             lock(&shared.state).phase = ClipPhase::Failed(ClipError::NoFfmpeg("no thread".into()));
         }
-        Self { shared, thread }
+        Self {
+            shared,
+            thread,
+            budget,
+        }
+    }
+
+    /// What the budget this worker draws on holds now.
+    #[must_use]
+    pub fn budget(&self) -> BudgetUse {
+        self.budget.usage()
     }
 
     #[must_use]
@@ -739,12 +1040,14 @@ impl ClipWorker {
         WorkerStats {
             restarts: state.restarts,
             decoded: state.decoded,
+            reused_identity: state.reused_identity,
         }
     }
 
     /// Asks for frame `index`, without waiting.
     pub fn request(&self, index: usize) {
         let mut state = lock(&self.shared.state);
+        state.asked = ASKED.fetch_add(1, Ordering::Relaxed);
         if state.wanted != Some(index) {
             state.wanted = Some(index);
             self.shared.changed.notify_all();
@@ -803,11 +1106,18 @@ impl Drop for ClipWorker {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        WORKERS.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
 /// The worker thread.
-fn run(shared: &Shared, path: &Path, expected: &Expected, programs: &Programs) {
+fn run(
+    shared: &Arc<Shared>,
+    path: &Path,
+    expected: &Expected,
+    programs: &Programs,
+    budget: &ClipBudget,
+) {
     let stopped = || lock(&shared.state).stop;
     let fail = |error: ClipError| {
         // A stop is nobody's failure: whoever asked is gone.
@@ -825,19 +1135,26 @@ fn run(shared: &Shared, path: &Path, expected: &Expected, programs: &Programs) {
         Ok(source) => source,
         Err(error) => return fail(error),
     };
-    match source.sha256_hex_until(&stopped) {
-        Ok(found) if found == expected.sha256 => {}
-        Ok(found) => {
-            return fail(ClipError::Changed {
-                expected: expected.sha256.clone(),
-                found,
-            });
+    let key = FileKey::of(&source.file);
+    let known = key.and_then(|key| recall_verified(key, &expected.sha256));
+    lock(&shared.state).reused_identity = known.is_some();
+    let probe = if let Some(probe) = known {
+        probe
+    } else {
+        match source.sha256_hex_until(&stopped) {
+            Ok(found) if found == expected.sha256 => {}
+            Ok(found) => {
+                return fail(ClipError::Changed {
+                    expected: expected.sha256.clone(),
+                    found,
+                });
+            }
+            Err(error) => return fail(error),
         }
-        Err(error) => return fail(error),
-    }
-    let probe = match probe_with(&source, programs, &interrupt) {
-        Ok(probe) => probe,
-        Err(error) => return fail(error),
+        match probe_with(&source, programs, &interrupt) {
+            Ok(probe) => probe,
+            Err(error) => return fail(error),
+        }
     };
     let found = (probe.width, probe.height, probe.timing.frame_count());
     // A turned clip recorded before its turn was read carries its coded
@@ -853,12 +1170,22 @@ fn run(shared: &Shared, path: &Path, expected: &Expected, programs: &Programs) {
             found: format!("{}x{} in {} frames", found.0, found.1, found.2),
         });
     }
+    if let Some(key) = key {
+        remember_verified(key, &expected.sha256, &probe);
+    }
     lock(&shared.state).phase = ClipPhase::Ready(probe.clone());
     shared.changed.notify_all();
 
     let mut decoder: Option<Decoder> = None;
     let mut cache: BTreeMap<usize, Frame> = BTreeMap::new();
-    let capacity = (CACHE_BYTES / probe.frame_bytes().max(1)).clamp(2, BACK_RUN * 2);
+    let capacity = budget.capacity(probe.frame_bytes());
+    let mut holder = Holder {
+        budget,
+        worker: Arc::as_ptr(shared) as u64,
+        bytes: capacity * probe.frame_bytes(),
+        shared,
+        held: false,
+    };
     let mut served: Option<usize> = None;
     let last = probe.timing.frame_count() - 1;
     loop {
@@ -871,6 +1198,21 @@ fn run(shared: &Shared, path: &Path, expected: &Expected, programs: &Programs) {
                         decoder.stop(&shared.group);
                     }
                     return;
+                }
+                // Recalled by the budget, or nobody asked anything for a
+                // while: the decoder and the kept frames go, the lease goes
+                // back. The last frame served stays, so a paused picture
+                // does not turn into a card.
+                if state.recall {
+                    state.recall = false;
+                    drop(state);
+                    if let Some(decoder) = decoder.take() {
+                        decoder.stop(&shared.group);
+                    }
+                    cache.clear();
+                    holder.give_back();
+                    state = lock(&shared.state);
+                    continue;
                 }
                 match state.wanted {
                     Some(wanted) if Some(wanted) != served => break wanted.min(last),
@@ -887,10 +1229,22 @@ fn run(shared: &Shared, path: &Path, expected: &Expected, programs: &Programs) {
                 if ahead {
                     break usize::MAX;
                 }
-                state = shared
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner);
+                if holder.held {
+                    let (next, timeout) = shared
+                        .changed
+                        .wait_timeout(state, budget.idle)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    state = next;
+                    if timeout.timed_out() {
+                        // Nothing changed for the whole wait: idle.
+                        state.recall = true;
+                    }
+                } else {
+                    state = shared
+                        .changed
+                        .wait(state)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
             }
         };
         if wanted == usize::MAX {
@@ -926,6 +1280,7 @@ fn run(shared: &Shared, path: &Path, expected: &Expected, programs: &Programs) {
                     &source,
                     &probe,
                     programs,
+                    &mut holder,
                     &mut decoder,
                     &mut cache,
                     capacity,
@@ -964,6 +1319,7 @@ fn produce(
     source: &ClipSource,
     probe: &Probe,
     programs: &Programs,
+    holder: &mut Holder<'_>,
     decoder: &mut Option<Decoder>,
     cache: &mut BTreeMap<usize, Frame>,
     capacity: usize,
@@ -984,6 +1340,9 @@ fn produce(
         } else {
             wanted
         };
+        // The budget first: this may wait for another worker to stop its
+        // decoder and drop its frames.
+        holder.take();
         let started = Decoder::start_with(source, probe, start, programs, &shared.group)?;
         // A drop that read the group before this spawn registered it.
         if lock(&shared.state).stop {
@@ -1495,6 +1854,7 @@ mod tests {
                 ffprobe: stand_in.into_os_string(),
                 ..Programs::default()
             },
+            ClipBudget::new(2, usize::MAX, Duration::from_secs(60)),
         );
         let waited = Instant::now();
         while !sleeping() {
@@ -1509,5 +1869,134 @@ mod tests {
         let took = started.elapsed();
         assert!(took < Duration::from_secs(1), "the drop waited {took:?}");
         assert!(!sleeping(), "the probe outlived its worker");
+    }
+
+    /// `count` copies of the 23.976 clip under distinct names: distinct
+    /// inodes, so each is its own file to the identity cache.
+    fn copies(dir: &Path, count: usize) -> (Vec<PathBuf>, Expected, Vec<Vec<u8>>) {
+        let path = ntsc_clip(dir);
+        let source = ClipSource::open(&path).unwrap();
+        let probe = probe(&source).unwrap();
+        let frames = all_frames(&source, &probe);
+        let paths = (0..count)
+            .map(|index| {
+                let copy = dir.join(format!("copy{index}.mp4"));
+                std::fs::copy(&path, &copy).unwrap();
+                copy
+            })
+            .collect();
+        (paths, expected(&source, &probe), frames)
+    }
+
+    /// F1b defect 2: one budget across every clip. Three clips asked in turn
+    /// on a budget of two decoders: the third recalls the least recently
+    /// asked clip's lease, so two decoders run, never three, and the recalled
+    /// clip still serves its last frame and decodes again when asked
+    /// something new.
+    #[test]
+    fn a_budget_of_two_decoders_runs_two_whatever_the_clips() {
+        let scratch = Scratch::new("budget");
+        let (paths, expected, frames) = copies(&scratch.0, 3);
+        let budget = ClipBudget::new(2, usize::MAX, Duration::from_secs(60));
+        let workers: Vec<ClipWorker> = paths
+            .iter()
+            .map(|path| ClipWorker::spawn_in(path.clone(), expected.clone(), Arc::clone(&budget)))
+            .collect();
+        let deadline = Duration::from_secs(20);
+        for (index, worker) in workers.iter().enumerate() {
+            let frame = worker.wait_for(10 + index, deadline).unwrap();
+            assert!(*frame == frames[10 + index]);
+            assert!(budget.usage().decoders <= 2, "{:?}", budget.usage());
+        }
+        assert_eq!(budget.usage().evictions, 1, "{:?}", budget.usage());
+        // The first, recalled: its frame is still there without a decoder.
+        assert!(*workers[0].wait_for(10, deadline).unwrap() == frames[10]);
+        // Asked something new it takes a lease again, from the second.
+        assert!(*workers[0].wait_for(20, deadline).unwrap() == frames[20]);
+        let usage = budget.usage();
+        assert_eq!((usage.decoders, usage.evictions, usage.overruns), (2, 2, 0));
+        drop(workers);
+        assert_eq!(budget.usage().decoders, 0, "every lease went back");
+    }
+
+    /// F1b defect 2: the budget's bytes bound the kept frames the same way,
+    /// and a worker nobody asks gives its lease back on its own.
+    #[test]
+    fn the_budget_bounds_kept_frames_and_idle_workers_give_back() {
+        let scratch = Scratch::new("budget-bytes");
+        let (paths, expected, frames) = copies(&scratch.0, 2);
+        let frame = 96 * 54 * 4;
+        // Room for one lease of the smallest cache (two frames) and no more.
+        let budget = ClipBudget::new(4, 3 * frame, Duration::from_millis(200));
+        let first = ClipWorker::spawn_in(paths[0].clone(), expected.clone(), Arc::clone(&budget));
+        let second = ClipWorker::spawn_in(paths[1].clone(), expected.clone(), Arc::clone(&budget));
+        let deadline = Duration::from_secs(20);
+        assert!(*first.wait_for(5, deadline).unwrap() == frames[5]);
+        assert_eq!(budget.usage().bytes, 2 * frame);
+        assert!(*second.wait_for(6, deadline).unwrap() == frames[6]);
+        let usage = budget.usage();
+        assert_eq!(
+            (usage.decoders, usage.bytes, usage.evictions),
+            (1, 2 * frame, 1)
+        );
+        // Idle: nobody asks the second anything new.
+        let waited = Instant::now();
+        while budget.usage().decoders > 0 {
+            assert!(
+                waited.elapsed() < Duration::from_secs(5),
+                "{:?}",
+                budget.usage()
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let restarts = second.stats().restarts;
+        assert!(
+            *second.wait_for(6, deadline).unwrap() == frames[6],
+            "the paused frame stays"
+        );
+        assert_eq!(
+            second.stats().restarts,
+            restarts,
+            "a paused frame needs no decoder"
+        );
+    }
+
+    /// F1b defect 2: a clip verified once in this process is not hashed and
+    /// probed again by the next worker for the same unchanged file, and is
+    /// the moment the file is touched.
+    #[test]
+    fn a_verified_file_is_not_hashed_again_until_it_changes() {
+        let scratch = Scratch::new("verified");
+        let (paths, expected, _) = copies(&scratch.0, 1);
+        let budget = ClipBudget::new(2, usize::MAX, Duration::from_secs(60));
+        let deadline = Duration::from_secs(20);
+        let first = ClipWorker::spawn_in(paths[0].clone(), expected.clone(), Arc::clone(&budget));
+        first.wait_for(0, deadline).unwrap();
+        assert!(!first.stats().reused_identity);
+        drop(first);
+        let again = ClipWorker::spawn_in(paths[0].clone(), expected.clone(), Arc::clone(&budget));
+        again.wait_for(0, deadline).unwrap();
+        assert!(
+            again.stats().reused_identity,
+            "the same file, verified before"
+        );
+        drop(again);
+        // Any write moves the change time: verified again, from the bytes.
+        let file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&paths[0])
+            .unwrap();
+        file.set_len(std::fs::metadata(&paths[0]).unwrap().len())
+            .unwrap();
+        drop(file);
+        std::thread::sleep(Duration::from_millis(20));
+        let bytes = std::fs::read(&paths[0]).unwrap();
+        std::fs::write(&paths[0], &bytes).unwrap();
+        let touched = ClipWorker::spawn_in(paths[0].clone(), expected, budget);
+        touched.wait_for(0, deadline).unwrap();
+        assert!(
+            !touched.stats().reused_identity,
+            "a written file is hashed again"
+        );
     }
 }

@@ -152,6 +152,13 @@ cat > "$OUT/turned.treatment.json" <<EOF
   $QUIET,
   "segments": [ { "at": 0, "scene": "clip", "clip": "turned.mp4" } ] }
 EOF
+# A clip section, then the video moves on: once Spectrum draws, the clip's
+# decoder, its frames and its worker are gone, whatever scene is drawing.
+cat > "$OUT/release.treatment.json" <<EOF
+{ "schema": "musializer.treatment/v1", "audio": { "path": "fixture.wav" },
+  "output": { "resolution": "320x180", "fps": 30, "quality": "balanced" }, "seed": 7,
+  "segments": [ { "at": 0, "scene": "clip", "clip": "ntsc.mp4" }, { "at": 2, "scene": "spectrum" } ] }
+EOF
 # The music on (defaults), at response 0 and 1, over the fixture and silence.
 for response in 0 1; do
     for audio in fixture silent; do
@@ -207,6 +214,8 @@ run --treatment "$OUT/fit.treatment.json" \
     --still 2.0 "$OUT/cover.png" --still 8.0 "$OUT/contain.png" > "$OUT/fit.log" 2>&1
 
 run --treatment "$OUT/turned.treatment.json" --still 1.0 "$OUT/turned.png" > "$OUT/turned.log" 2>&1
+run --treatment "$OUT/release.treatment.json" --still 1.0 "$OUT/release-clip.png" \
+    --still 8.0 "$OUT/release-after.png" > "$OUT/release.log" 2>&1
 
 for response in 0 1; do
     for audio in fixture silent; do
@@ -245,4 +254,4 @@ for bad in truncated huge missing; do
 done
 
 python3 tools/clip_check.py "$OUT" $RENDERERS
-echo "PASS: clip frames, overruns, fit, a turned clip, response 0, export determinism, bundle, placeholder, refusals ($OUT)"
+echo "PASS: clip frames, overruns, fit, a turned clip, release, response 0, export determinism, bundle, placeholder, refusals ($OUT)"

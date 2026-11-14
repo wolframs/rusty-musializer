@@ -766,6 +766,9 @@ impl SceneRenderer {
     ) {
         self.draw_body(d, fonts, instance, frame, assets, boundary, pixel_scale);
         self.draw_overlays(d, fonts, instance, frame, assets, boundary, pixel_scale);
+        // Whatever scene drew: clip decoders whose clip is neither on screen
+        // nor coming up go now (F1b), not after some number of clip draws.
+        self.clip.end_frame(frame.time_seconds, assets);
     }
 
     /// The scene itself: its offscreen preparation, then its picture inside

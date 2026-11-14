@@ -149,6 +149,48 @@ the `clip:` line: playing 240 frames, 221 exact, 3 inexact (16 while the clip
 opened); a 60-step drag forward over 14 s, 68 inexact, exact 8 frames after it
 ended; a 30-step drag back, 28 inexact, exact at once.
 
+### What stays resident, across all clips (F1b, 2026-11-14)
+
+Each worker used to keep up to 192 MiB of frames and its FFmpeg until it had
+gone unused for 900 clip draws, and the count stopped whenever another scene
+drew; thirty one-second 1080p sections kept thirty decoders and their frames
+to the end of the video. Now:
+
+- **One budget per process** (`runtime::clip::ClipBudget`): at most 4 FFmpeg
+  decoders and 512 MiB of kept frames, a lease's share being 128 MiB (15
+  frames of 1080p). A decoder starts only with a lease; when the budget is
+  full the least recently asked worker gives its lease back first. A worker
+  asked nothing for 3 s gives it back on its own. Both keep the last frame
+  served, so a paused picture stays.
+- **A worker exists only while its clip is on screen or coming up**: drawn
+  this frame, or played by a section within 0.5 s before and 2 s after the
+  frame's time, judged after every frame whatever scene drew it
+  (`ClipResources::end_frame`). An export's workers go 10 s after it stops
+  drawing.
+- **A clip verified once is not hashed again** while its inode, size,
+  modification and change times are the same, so a worker started again for
+  a clip coming back costs a decoder start, not a hash.
+- The `clip:` line ends with `resident entries=N released=N, budget decoders
+  N/4, frames N/512 MiB, workers N, evictions N, overruns N`.
+
+Measured with thirty distinct one-second 1080p H.264 clips as sections 1-31
+of a 40 s track, Spectrum before and after, resident memory of the process
+and its child processes sampled every 0.2 s (export at 640x360 with NVENC; the
+preview a 1200-frame scrub across the track, posters on):
+
+| | Peak resident | Peak children | On the closing Spectrum (80-95 % of the run) |
+| --- | --- | --- | --- |
+| Export, before | 6186 MiB | 31 | 6186 MiB, 31 |
+| Export, after | 558 MiB | 3 | 289 MiB, 1 (the encoder) |
+| Preview, before | 4314 MiB | 31 | 4314 MiB, 31 |
+| Preview, after | 486 MiB | 2 | 233 MiB, 0 |
+
+The export took the same time (33.1 s before, 33.3 s after), and the preview
+drew the same counts of exact, inexact and opening frames (405/74/421 before,
+413/73/414 after). Played in real time, the old build reached only 6.8 s of
+the track in 52 s, holding 19 child processes, most of them poster workers no
+frame ever released.
+
 ## What the generation half needs from this
 
 The seam is a file. Whatever calls a model ends with an MP4 on disk, and
@@ -202,3 +244,5 @@ source restored byte for byte (`cmp` against a saved copy):
 | The hash's look at `stop` removed | `dropping_a_worker_cancels_its_hash`: the drop waited 13.1 s for a 3 GiB hash |
 | ffprobe's group unregistered and its poll blind to `stop` (as before) | `dropping_a_worker_kills_its_probe`: the drop waited 20.0 s, the probe's deadline |
 | The display matrix ignored (the coded size forced again) | `a_turned_clip_decodes_as_ffmpeg_shows_it` (the frames differ from FFmpeg's), and the gate's turned still: 12.4 dB against FFmpeg's frame 25 (inf with the fix), the clip line `of 320x180` |
+| A lease always granted (no recall when the budget is full) | `a_budget_of_two_decoders_runs_two_whatever_the_clips` (three decoders) and `the_budget_bounds_kept_frames_and_idle_workers_give_back` (two leases past the bytes) |
+| `end_frame` keeping every entry | the gate's release check: `resident entries=1 released=0, budget decoders 1/4, frames 42/512 MiB, workers 1` on the Spectrum still after the clip section |
