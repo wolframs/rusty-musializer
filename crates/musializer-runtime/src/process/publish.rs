@@ -16,7 +16,8 @@
 //!
 //! Nothing here hashes anything. Content identity is Agent B's
 //! (`sha256.c` → `musializer-core`), so [`publish_content_addressed`] takes a
-//! verifier callback instead of reaching for a digest implementation. The same
+//! verifier callback and a [`CopyDigest`] instead of reaching for a digest
+//! implementation. The same
 //! boundary keeps this module free of `serde` and of the project model.
 //!
 //! ## Boundary with Agent A and Agent B
@@ -28,7 +29,7 @@
 //! If either agent ports the original, delete the copy rather than keeping two.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -375,6 +376,10 @@ pub enum AssetError {
     Path,
     #[error("source asset is missing or changed identity: {0}")]
     Source(#[source] io::Error),
+    #[error("source asset is not a regular file")]
+    NotAFile,
+    #[error("source asset is larger than the {0}-byte limit for its kind")]
+    TooLarge(u64),
     #[error("asset could not be copied completely: {0}")]
     Copy(#[source] io::Error),
     #[error("asset copy could not be made durable: {0}")]
@@ -387,13 +392,56 @@ pub enum AssetError {
     Publish(#[source] io::Error),
 }
 
+/// What a copy is checked against while it is made: it sees every byte copied,
+/// in order, and then says whether they are the asset's. Hashing lives in
+/// `musializer-core`, so the digest is the caller's; seeing the bytes as they
+/// pass means the staged copy is never read back to verify it, and a source
+/// that changes under the copy cannot pass by changing back.
+pub trait CopyDigest {
+    fn update(&mut self, bytes: &[u8]);
+    /// Whether the bytes seen have the identity the asset claims.
+    fn matches(self) -> bool;
+}
+
+/// `open(2)`'s `O_NONBLOCK` on Linux x86-64 and AArch64, as in `decode` and
+/// `clip`: `libc` is not a dependency of this crate.
+const O_NONBLOCK: i32 = 0o4000;
+
+/// Opens an asset's source once, without blocking, and checks the handle: a
+/// regular file of at most `limit` bytes. A FIFO under the name is refused
+/// rather than waited on, and a device (`/dev/zero`) rather than read without
+/// end (`docs/TRAPS.md`, "A check on a name says nothing about the file you
+/// then open").
+///
+/// # Errors
+///
+/// [`AssetError::Source`] when it cannot be opened, [`AssetError::NotAFile`],
+/// or [`AssetError::TooLarge`].
+pub fn open_source(path: &Path, limit: u64) -> Result<File, AssetError> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NONBLOCK | libc_o_cloexec())
+        .open(path)
+        .map_err(AssetError::Source)?;
+    let metadata = file.metadata().map_err(AssetError::Source)?;
+    if !metadata.is_file() {
+        return Err(AssetError::NotAFile);
+    }
+    if metadata.len() > limit {
+        return Err(AssetError::TooLarge(limit));
+    }
+    Ok(file)
+}
+
 /// Copies `source` into the content-addressed `destination`, verifying the
 /// bytes before they are published and never overwriting a name that already
 /// exists.
 ///
-/// `verify` is called with a path and must answer "do these bytes have the
-/// identity this asset claims?". Hashing lives in `musializer-core`
-/// (`sha256.c`, Agent B), so it is a callback rather than a dependency here.
+/// The source is opened once by [`open_source`] and read through a cap of
+/// `limit` bytes, so a file that grows while it is copied stops at the limit
+/// instead of filling the disk; `digest` sees every byte copied and must
+/// accept them before anything is linked into place. `verify` answers the
+/// same question for a destination that already exists.
 ///
 /// Two deliberate differences from [`atomic_write`], both from the C:
 ///
@@ -406,7 +454,9 @@ pub enum AssetError {
 pub fn publish_content_addressed(
     source: &Path,
     destination: &Path,
+    limit: u64,
     verify: impl Fn(&Path) -> bool,
+    digest: impl CopyDigest,
 ) -> Result<AssetPublication, AssetError> {
     // Fast path: the object is already published. Reused only after
     // verification (src/project_io.c:1344-1347).
@@ -417,21 +467,52 @@ pub fn publish_content_addressed(
             Err(AssetError::Collision)
         };
     }
+    let mut input = open_source(source, limit)?;
+    publish_from(&mut input, destination, limit, verify, digest)
+}
 
+/// [`publish_content_addressed`] from an open reader: the bounded copy, the
+/// digest, the link.
+fn publish_from(
+    input: &mut dyn Read,
+    destination: &Path,
+    limit: u64,
+    verify: impl Fn(&Path) -> bool,
+    mut digest: impl CopyDigest,
+) -> Result<AssetPublication, AssetError> {
     let text = destination.to_str().ok_or(AssetError::Path)?;
     if text.is_empty() || ends_with_separator(text) {
         return Err(AssetError::Path);
     }
 
-    let mut input = File::open(source).map_err(AssetError::Source)?;
     let staged = StagedCopy::create(text)?;
     {
         let mut output = staged.file.try_clone().map_err(AssetError::Copy)?;
-        io::copy(&mut input, &mut output).map_err(AssetError::Copy)?;
+        let mut reader = input.take(limit.saturating_add(1));
+        let mut buffer = vec![0u8; COPY_CHUNK];
+        let mut total = 0u64;
+        loop {
+            let count = match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(AssetError::Copy(error)),
+            };
+            total += count as u64;
+            if total > limit {
+                // Grew past the limit while it was copied; the staged copy
+                // goes with `staged`.
+                return Err(AssetError::TooLarge(limit));
+            }
+            digest.update(&buffer[..count]);
+            output
+                .write_all(&buffer[..count])
+                .map_err(AssetError::Copy)?;
+        }
         output.sync_all().map_err(AssetError::Sync)?;
     }
 
-    if !verify(&staged.path) {
+    if !digest.matches() {
         return Err(AssetError::Identity);
     }
 
@@ -451,6 +532,9 @@ pub fn publish_content_addressed(
     sync_parent_directory(destination).map_err(AssetError::Sync)?;
     Ok(AssetPublication::Published)
 }
+
+/// How much one read of a copy takes.
+const COPY_CHUNK: usize = 1024 * 1024;
 
 /// A staged copy that unlinks itself on drop, including after a successful
 /// `link` (the C's `bundle_posix_cleanup` runs on every path).
@@ -641,6 +725,36 @@ mod tests {
         sync_parent_directory(Path::new("/etc")).expect("root");
     }
 
+    /// The bytes a copy must have, compared whole: what a digest would say.
+    struct Exactly(&'static [u8], Vec<u8>);
+
+    impl Exactly {
+        fn new(bytes: &'static [u8]) -> Self {
+            Exactly(bytes, Vec::new())
+        }
+    }
+
+    impl CopyDigest for Exactly {
+        fn update(&mut self, bytes: &[u8]) {
+            self.1.extend_from_slice(bytes);
+        }
+        fn matches(self) -> bool {
+            self.0 == self.1.as_slice()
+        }
+    }
+
+    fn holds(bytes: &'static [u8]) -> impl Fn(&Path) -> bool {
+        move |path| fs::read(path).map(|got| got == bytes).unwrap_or(false)
+    }
+
+    fn staged_leftovers(scratch: &Scratch) -> Vec<std::ffi::OsString> {
+        fs::read_dir(&scratch.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name.to_string_lossy().starts_with(".musializer"))
+            .collect()
+    }
+
     #[test]
     fn a_content_addressed_asset_is_copied_verified_and_linked() {
         let scratch = Scratch::new("asset");
@@ -648,21 +762,25 @@ mod tests {
         fs::write(&source, b"font bytes").expect("source");
         let destination = scratch.join("published.ttf");
 
-        let outcome = publish_content_addressed(&source, &destination, |path| {
-            fs::read(path)
-                .map(|bytes| bytes == b"font bytes")
-                .unwrap_or(false)
-        })
+        let outcome = publish_content_addressed(
+            &source,
+            &destination,
+            1024,
+            holds(b"font bytes"),
+            Exactly::new(b"font bytes"),
+        )
         .expect("publish");
         assert_eq!(outcome, AssetPublication::Published);
         assert_eq!(fs::read(&destination).unwrap(), b"font bytes");
 
         // Publishing the same object again is a success, not a conflict.
-        let again = publish_content_addressed(&source, &destination, |path| {
-            fs::read(path)
-                .map(|bytes| bytes == b"font bytes")
-                .unwrap_or(false)
-        })
+        let again = publish_content_addressed(
+            &source,
+            &destination,
+            1024,
+            holds(b"font bytes"),
+            Exactly::new(b"font bytes"),
+        )
         .expect("republish");
         assert_eq!(again, AssetPublication::AlreadyPresent);
     }
@@ -675,11 +793,13 @@ mod tests {
         let destination = scratch.join("published.ttf");
         fs::write(&destination, b"someone else's bytes").expect("squatter");
 
-        let error = publish_content_addressed(&source, &destination, |path| {
-            fs::read(path)
-                .map(|bytes| bytes == b"new bytes")
-                .unwrap_or(false)
-        })
+        let error = publish_content_addressed(
+            &source,
+            &destination,
+            1024,
+            holds(b"new bytes"),
+            Exactly::new(b"new bytes"),
+        )
         .expect_err("a digest collision must not overwrite");
         assert!(matches!(error, AssetError::Collision), "{error:?}");
         // The point of using link(2) rather than rename(2).
@@ -693,16 +813,18 @@ mod tests {
         fs::write(&source, b"corrupted in transit").expect("source");
         let destination = scratch.join("published.ttf");
 
-        let error = publish_content_addressed(&source, &destination, |_| false)
-            .expect_err("verification must gate publication");
+        let error = publish_content_addressed(
+            &source,
+            &destination,
+            1024,
+            |_| true,
+            Exactly::new(b"the bytes it should have been"),
+        )
+        .expect_err("verification must gate publication");
         assert!(matches!(error, AssetError::Identity), "{error:?}");
         assert!(!destination.exists());
         // And the staged copy is gone.
-        let staged: Vec<_> = fs::read_dir(&scratch.0)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .filter(|name| name.to_string_lossy().starts_with(".musializer"))
-            .collect();
+        let staged = staged_leftovers(&scratch);
         assert!(staged.is_empty(), "staged copy remained: {staged:?}");
     }
 
@@ -712,9 +834,95 @@ mod tests {
         let error = publish_content_addressed(
             &scratch.join("absent.ttf"),
             &scratch.join("published.ttf"),
+            1024,
             |_| true,
+            Exactly::new(b""),
         )
         .expect_err("a missing source cannot be published");
         assert!(matches!(error, AssetError::Source(_)), "{error:?}");
+    }
+
+    /// F1b defect 1: a source that is not a regular file is refused at once —
+    /// a FIFO is not waited on, a device is not read without end — and one
+    /// past the limit is refused before a byte is copied.
+    #[test]
+    fn a_fifo_a_device_and_an_oversized_file_are_refused_before_copying() {
+        let scratch = Scratch::new("hostile");
+        let fifo = scratch.join("take.mp4");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let destination = scratch.join("published.mp4");
+        let (done, answer) = std::sync::mpsc::channel();
+        let (from, to) = (fifo.clone(), destination.clone());
+        std::thread::spawn(move || {
+            let outcome = publish_content_addressed(&from, &to, 1024, |_| true, Exactly::new(b""));
+            let _ = done.send(outcome.map_err(|error| error.to_string()));
+        });
+        let outcome = answer
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a FIFO source must not block the save");
+        assert_eq!(
+            outcome,
+            Err(AssetError::NotAFile.to_string()),
+            "a FIFO is not an asset"
+        );
+        // Unblock the thread in case the refusal ever regresses into an open.
+        let _ = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(O_NONBLOCK)
+            .open(&fifo);
+
+        let error = publish_content_addressed(
+            Path::new("/dev/zero"),
+            &destination,
+            1024,
+            |_| true,
+            Exactly::new(b""),
+        )
+        .expect_err("a device is not an asset");
+        assert!(matches!(error, AssetError::NotAFile), "{error:?}");
+
+        let big = scratch.join("big.mp4");
+        fs::write(&big, vec![7u8; 2048]).unwrap();
+        let error =
+            publish_content_addressed(&big, &destination, 1024, |_| true, Exactly::new(b""))
+                .expect_err("past the limit");
+        assert!(matches!(error, AssetError::TooLarge(1024)), "{error:?}");
+        assert!(!destination.exists());
+        assert!(staged_leftovers(&scratch).is_empty());
+    }
+
+    /// F1b defect 1: a source that keeps producing bytes (one that grows while
+    /// it is copied passes the size check on its handle) stops at the limit,
+    /// publishes nothing and leaves no staged copy.
+    #[test]
+    fn an_endless_source_stops_at_the_limit_and_publishes_nothing() {
+        let scratch = Scratch::new("endless");
+        let destination = scratch.join("published.mp4");
+        let mut endless = io::repeat(0);
+        let error = publish_from(
+            &mut endless,
+            &destination,
+            4096,
+            |_| true,
+            Exactly::new(b""),
+        )
+        .expect_err("an endless source must stop");
+        assert!(matches!(error, AssetError::TooLarge(4096)), "{error:?}");
+        assert!(!destination.exists());
+        assert!(staged_leftovers(&scratch).is_empty());
+        // Exactly at the limit is allowed.
+        let mut exact: &[u8] = &[1u8; 16];
+        publish_from(
+            &mut exact,
+            &destination,
+            16,
+            |_| true,
+            Exactly::new(&[1u8; 16]),
+        )
+        .expect("a source exactly at the limit publishes");
     }
 }

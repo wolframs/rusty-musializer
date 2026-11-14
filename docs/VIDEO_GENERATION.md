@@ -182,3 +182,14 @@ the build (`git diff --quiet` on the file), 2026-11-14:
 | The missing-clip card not drawn | "the missing-clip card has no ink" (the report line alone still named it) |
 | The drift's clock hurried by loudness whatever `response` says | "response 0: the still over music differs from the still over silence" |
 | Exports drawing in the preview's role (no wait for the exact frame) | every exact still (3.7 dB: the "Opening" card), and the clip line's placeholder count |
+
+### The review fixes' negative controls (F1b, 2026-11-14)
+
+Each new check was run against a perturbed source, watched failing, and the
+source restored byte for byte (`cmp` against a saved copy):
+
+| Perturbation | What failed |
+| --- | --- |
+| Bundling's source opened without `O_NONBLOCK` | both FIFO tests (`publish`, `project_files`): the save parked for the 5 s the test waits |
+| The copy's byte cap ignored | `an_endless_source_stops_at_the_limit_and_publishes_nothing`: the endless source reached the digest instead of stopping at the cap |
+

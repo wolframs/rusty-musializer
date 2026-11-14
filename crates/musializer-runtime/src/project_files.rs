@@ -23,12 +23,11 @@
 //! file by a different route are all refused. Without it, "bundled" would mean
 //! "found", and a project could quietly depend on a file outside itself.
 
-use std::fs::File;
 use std::io::{self, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use musializer_core::project::assets;
+use musializer_core::project::{assets, clip};
 // Re-exported so a caller bundling an asset needs one import, not two from two
 // crates.
 pub use musializer_core::project::assets::AssetCategory;
@@ -206,15 +205,39 @@ pub fn resolve_bundled_asset_path(
 /// Streaming whole-file SHA-256, hex-encoded (`sha256_file_hex`, `sha256.c`).
 ///
 /// Chunked rather than read-to-end because this runs over audio files: a
-/// `Vec<u8>` of a 60 MB WAV to compute 32 bytes is avoidable.
+/// `Vec<u8>` of a 60 MB WAV to compute 32 bytes is avoidable. Opened once
+/// without blocking and refused unless the handle is a regular file, so a FIFO
+/// put under an asset's name answers at once instead of parking the caller.
 pub fn sha256_file_hex(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
+    sha256_file_hex_within(path, u64::MAX)
+}
+
+/// [`sha256_file_hex`] for a file of at most `limit` bytes, read through that
+/// cap; a larger one, or one that grows past it while it is read, is an error.
+pub fn sha256_file_hex_within(path: &Path, limit: u64) -> io::Result<String> {
+    let file = publish::open_source(path, limit).map_err(|error| match error {
+        AssetError::Source(error) => error,
+        other => io::Error::new(io::ErrorKind::InvalidInput, other.to_string()),
+    })?;
+    let mut reader = file.take(limit.saturating_add(1));
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
+    let mut total = 0u64;
     loop {
-        let read = file.read(&mut buffer)?;
+        let read = match reader.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if read == 0 {
             break;
+        }
+        total += read as u64;
+        if total > limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                AssetError::TooLarge(limit).to_string(),
+            ));
         }
         hasher.update(&buffer[..read]);
     }
@@ -223,11 +246,43 @@ pub fn sha256_file_hex(path: &Path) -> io::Result<String> {
 
 /// Whether the file at `path` hashes to `expected`.
 ///
-/// The shape [`publish::publish_content_addressed`] wants for its `verify`
-/// callback, and the check every asset opened from a project goes through.
+/// The check every asset opened from a project goes through.
 #[must_use]
 pub fn file_has_digest(path: &Path, expected: &str) -> bool {
     sha256_file_hex(path).is_ok_and(|actual| actual == expected)
+}
+
+/// The largest file each kind of asset may be, the same bound its importer
+/// holds it to, so a save cannot copy what an import would have refused: a
+/// clip's [`clip::MAX_CLIP_BYTES`], a picture's
+/// [`crate::decode::PICTURE_LARGEST_FILE`], a face's (and its licence's)
+/// [`assets::IMPORTED_FONT_BYTE_LIMIT`]. Audio had no importer bound; 4 GiB is
+/// the WAV format's own ceiling (a 32-bit RIFF size) and days of compressed
+/// audio, recorded in `docs/DIVERGENCES.md`.
+#[must_use]
+pub fn byte_limit(category: AssetCategory) -> u64 {
+    match category {
+        AssetCategory::Audio => 4 * 1024 * 1024 * 1024,
+        AssetCategory::Image => crate::decode::PICTURE_LARGEST_FILE,
+        AssetCategory::Font => assets::IMPORTED_FONT_BYTE_LIMIT,
+        AssetCategory::Clip => clip::MAX_CLIP_BYTES,
+    }
+}
+
+/// A SHA-256 over the bytes a copy passes, compared with the asset's digest.
+struct CopySha256<'a> {
+    hasher: Sha256,
+    expected: &'a str,
+}
+
+impl publish::CopyDigest for CopySha256<'_> {
+    fn update(&mut self, bytes: &[u8]) {
+        self.hasher.update(bytes);
+    }
+
+    fn matches(self) -> bool {
+        musializer_core::project::sha256::hex(&self.hasher.finalize()) == self.expected
+    }
 }
 
 /// Where a bundled asset ended up: the path to record in the file, and the path
@@ -276,8 +331,11 @@ pub fn bundle_asset(
         .ok_or(musializer_core::project::assets::BundleError::Path)?;
     let paths = assets::bundle_paths(project_text, category, source_text, sha256)?;
 
+    let limit = byte_limit(category);
+    let has_digest =
+        |path: &Path| sha256_file_hex_within(path, limit).is_ok_and(|actual| actual == sha256);
     let runtime = PathBuf::from(&paths.runtime);
-    if reuse_published && runtime.is_file() && file_has_digest(&runtime, sha256) {
+    if reuse_published && runtime.is_file() && has_digest(&runtime) {
         return Ok(BundledAsset {
             stored: paths.stored,
             runtime,
@@ -288,9 +346,20 @@ pub fn bundle_asset(
     if let Some(parent) = runtime.parent() {
         std::fs::create_dir_all(parent).map_err(BundleError::Directory)?;
     }
-    let publication = publish::publish_content_addressed(source, &runtime, |candidate| {
-        file_has_digest(candidate, sha256)
-    })?;
+    // The source is opened once without blocking, must be a regular file
+    // within the category's limit, and is hashed as it is copied: a FIFO, a
+    // device or a file that grows without end never reaches the bundle, and
+    // bytes that are not the recorded digest are never published.
+    let publication = publish::publish_content_addressed(
+        source,
+        &runtime,
+        limit,
+        has_digest,
+        CopySha256 {
+            hasher: Sha256::new(),
+            expected: sha256,
+        },
+    )?;
     Ok(BundledAsset {
         stored: paths.stored,
         runtime,
@@ -302,6 +371,7 @@ pub fn bundle_asset(
 mod tests {
     use super::*;
     use std::fs;
+    use std::os::unix::fs::OpenOptionsExt;
 
     /// A private directory under `build/`, which is gitignored. Named per test
     /// so a parallel run cannot collide.
@@ -450,5 +520,79 @@ mod tests {
             bundle_asset(&project, AssetCategory::Audio, &source, &digest, true).expect("reuses");
         assert_eq!(second.publication, AssetPublication::AlreadyPresent);
         assert_eq!(second.stored, first.stored);
+    }
+
+    /// F1b defect 1: the save's bundling opens its source the way the clip
+    /// decoder does. A FIFO under a clip's name answers at once instead of
+    /// parking autosave in `open(2)`, `/dev/zero` is refused instead of copied
+    /// until the disk fills, and bytes that are not the recorded digest are
+    /// never published under it.
+    #[test]
+    fn bundling_refuses_what_is_not_a_bounded_regular_file_with_its_digest() {
+        let directory = scratch("bundle-hostile");
+        let project = directory.join("song.musi");
+        fs::write(&project, b"{}").expect("write");
+        let digest = "ab".repeat(32);
+
+        let fifo = directory.join("take.mp4");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let (done, answer) = std::sync::mpsc::channel();
+        let (from, into, sha) = (fifo.clone(), project.clone(), digest.clone());
+        std::thread::spawn(move || {
+            let outcome = bundle_asset(&into, AssetCategory::Clip, &from, &sha, false);
+            let _ = done.send(outcome.map(|_| ()).map_err(|error| error.to_string()));
+        });
+        let outcome = answer
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("bundling a FIFO must not block");
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|error| error.contains("not a regular file")),
+            "{outcome:?}"
+        );
+        // Release the thread if a regression ever opened the FIFO blocking.
+        let _ = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(0o4000)
+            .open(&fifo);
+
+        let error = bundle_asset(
+            &project,
+            AssetCategory::Clip,
+            Path::new("/dev/zero"),
+            &digest,
+            false,
+        )
+        .expect_err("a device is not an asset");
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+        assert!(
+            sha256_file_hex(Path::new("/dev/zero")).is_err(),
+            "hashing refuses a device too"
+        );
+
+        let wrong = directory.join("wrong.mp4");
+        fs::write(&wrong, b"not the recorded bytes").expect("write");
+        let error = bundle_asset(&project, AssetCategory::Clip, &wrong, &digest, false)
+            .expect_err("a digest mismatch never publishes");
+        assert!(error.to_string().contains("SHA-256"), "{error}");
+        let clips = directory.join("song.assets").join("clips");
+        let published: Vec<_> = fs::read_dir(&clips)
+            .map(|entries| entries.map(|entry| entry.unwrap().file_name()).collect())
+            .unwrap_or_default();
+        assert!(published.is_empty(), "published: {published:?}");
+
+        // Each kind is bounded by its importer's limit.
+        assert_eq!(byte_limit(AssetCategory::Clip), clip::MAX_CLIP_BYTES);
+        assert_eq!(byte_limit(AssetCategory::Font), 32 * 1024 * 1024);
+        assert_eq!(byte_limit(AssetCategory::Image), 64 * 1024 * 1024);
+        assert_eq!(
+            sha256_file_hex_within(&wrong, 4).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 }

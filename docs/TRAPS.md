@@ -329,6 +329,16 @@ A child can also close stdout and stay, so the wait for its exit is under the
 same deadline. Never signal `child.id()` once it has been reaped: the id is free.
 Found by review of `chat_images`, 2026-11-01.
 
+**Every second reader of an asset needs the same opening as the first.** The
+clip decoder opened its file this way and the save's bundling did not: it
+copied the source with a plain `File::open` and an unbounded `io::copy`, then
+verified the copy. A FIFO swapped under an imported clip's name parked
+autosave; a crafted project naming `/dev/zero` filled the disk on Save As
+before verification ran. Bundling now opens through `publish::open_source`
+(non-blocking, regular file, the category's importer limit from
+`project_files::byte_limit`), reads through the cap and hashes while it copies,
+so a mismatch never links. Found by review of the clip scene, 2026-11-14.
+
 ## A small file can claim a huge picture
 
 File size says nothing about decoded size: a PNG of a few hundred KB can
