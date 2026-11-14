@@ -553,7 +553,10 @@ fn draw_card(
         }
         x += hole * 2.2;
     }
-    let size = 30.0 * scale;
+    // The UI face comes from a bank of native sizes; a scaled request would
+    // be drawn from the next size down and counted as a non-native request,
+    // so the card asks for the sizes the bank has.
+    let size = musializer_runtime::font::native_ui_size(30.0 * scale) as f32;
     let width = widgets::measure(font, title, size);
     widgets::draw_text(
         d,
@@ -564,7 +567,7 @@ fn draw_card(
         size,
         Color::new(232, 230, 240, 255),
     );
-    let small = 18.0 * scale;
+    let small = musializer_runtime::font::native_ui_size(18.0 * scale) as f32;
     let width = widgets::measure(font, detail, small);
     widgets::draw_text(
         d,

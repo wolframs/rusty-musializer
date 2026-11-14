@@ -100,7 +100,7 @@ if only in ('all','posters'):
                 'geometry':['orbital','pentagram','knot','metaballs','voronoi','glyphs'],
                 'atmosphere':['constellation','fluid','aurora','tunnel'],
                 'materials':['chrome','iridescent'],'living':['terrarium','clawd'],
-                'type-stage':['ascii','cadence','phosphor','stage','threshold'],
+                'type-stage':['ascii','cadence','phosphor','stage','threshold','clip'],
                 'pixel-cats':['pixel-boot','pixel-shell','pixel-run','pixel-quartet','pixel-chapel','pixel-rave']}
     # The expected scene ids come from the known family contract; remaining
     # families are validated against visible=[...] and dumped scene identities.
