@@ -1589,7 +1589,7 @@ mod tests {
         let first = fresh_voice(&[]);
         assert_eq!(first.name, "voice-1");
         assert_eq!(first.style.hue, Some(33.0));
-        let second = fresh_voice(&[first.clone()]);
+        let second = fresh_voice(std::slice::from_ref(&first));
         assert_eq!(second.name, "voice-2");
         // Opposite on the wheel: 33 + 180.
         assert_eq!(second.style.hue, Some(213.0));
