@@ -203,11 +203,8 @@ impl Shell {
                     true,
                 );
                 if commit {
-                    if let Ok(pixels) = field.edit.text().parse::<u16>() {
-                        next = Some(Some(Pixel {
-                            pixels: pixels.clamp(low, high),
-                            ..look
-                        }));
+                    if let Some(pixels) = typed_pixels(field.edit.text()) {
+                        next = Some(Some(Pixel { pixels, ..look }));
                     }
                 }
                 if commit || cancel || !field.is_focused() {
@@ -282,6 +279,14 @@ impl Shell {
             rect(area), controls.join(";"), self.look_column.appearance_report);
     }
 }
+/// A typed pixel count, clamped to the bounds like a drag. Read wider than
+/// `u16`: the field takes six digits, and a count past 65,535 (a "216" typed
+/// after an unselected "144") was dropped without a word while 1,000 clamped.
+fn typed_pixels(text: &str) -> Option<u16> {
+    let (low, high) = pixel_bounds::PIXELS;
+    let typed: u32 = text.parse().ok()?;
+    Some(typed.clamp(u32::from(low), u32::from(high)) as u16)
+}
 fn rect(r: UiRect) -> String {
     format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height)
 }
@@ -298,5 +303,22 @@ fn pixel_state(pixel: Option<Pixel>) -> String {
             p.shake,
             p.zoom
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_typed_count_clamps_however_large_it_is() {
+        let (low, high) = pixel_bounds::PIXELS;
+        assert_eq!(typed_pixels("216"), Some(216));
+        assert_eq!(typed_pixels("1000"), Some(high));
+        assert_eq!(typed_pixels("144216"), Some(high));
+        assert_eq!(typed_pixels("999999"), Some(high));
+        assert_eq!(typed_pixels("3"), Some(low));
+        assert_eq!(typed_pixels("12a"), None);
+        assert_eq!(typed_pixels(""), None);
     }
 }
