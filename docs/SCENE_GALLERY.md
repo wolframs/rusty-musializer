@@ -104,7 +104,8 @@ A simple rising sweep was insufficient here: by four seconds its bass energy had
 already left, so it could not meaningfully test bass-driven mass at that time.
 The fixture is audible PCM; the headless wrapper mutes only playback output.
 
-For every new scene the gate checks musical influence, motion, opaque stills,
+For every new scene the gate checks musical influence, motion, opaque frames (on
+the `still alpha:` report line; the still file is opaque by construction),
 portrait structure, identical project-reopen pixels, and still/full-video/clip
 agreement. It uses High quality (2× supersampling) and probes NVENC with an actual
 256×256 encode before selecting it. A 64×64 probe is below this encoder's minimum

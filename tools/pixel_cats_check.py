@@ -37,6 +37,8 @@ import numpy as np
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT/'tools'))
+import still_alpha  # noqa: E402
 LINES = {
     'pixel-boot': 'SUDO MEOW',
     'pixel-shell': 'sudo meow',
@@ -74,8 +76,10 @@ def app(out, name, *args):
 
 
 def image(path):
+    # The file: opaque by construction since ST. The frame's own alpha is
+    # checked by `still_alpha.require_opaque` on the report lines instead.
     data = np.asarray(Image.open(path).convert('RGBA'))
-    assert np.all(data[:, :, 3] == 255), f'{path.name}: translucent output'
+    assert np.all(data[:, :, 3] == 255), f'{path.name}: translucent file'
     return data[:, :, :3].astype(float)
 
 
@@ -149,6 +153,10 @@ def check_scene(out, scene, negative):
     assert glyphs >= 8, f'{scene}: drew {glyphs} glyphs'
     assert cats >= 1, f'{scene}: no cat drew'
     assert 'crt=shader' in line, f'{scene}: the CRT pass fell back: {line}'
+    # A staging that eats destination alpha (the BLEND_ALPHA trap): its
+    # frames, counted before the stills were forced opaque.
+    still_alpha.require_opaque([out/f'{scene}-music.log', out/f'{scene}-ambient.log'],
+                               [f'{scene}-early.png', f'{scene}-music.png', f'{scene}-ambient.png'])
     a = image(out/f'{scene}-music.png')
     assert a.std() > 12, f'{scene}: flat frame'
     moved = float(np.mean(np.abs(a-image(out/f'{scene}-early.png'))))
@@ -187,6 +195,7 @@ def check_export(out, encoder):
     assert identical, 'a second process drew a different still'
     portrait = treatment(out, scene, 1, '360x640')
     app(out, 'portrait', '--treatment', portrait, '--still', '4', out/'portrait.png')
+    still_alpha.require_opaque([out/'again.log', out/'portrait.log'], ['again.png', 'portrait.png'])
     tall = image(out/'portrait.png')
     assert tall.shape == (640, 360, 3) and tall.std() > 12, 'portrait lost the scene'
     canvas = re.search(r' canvas=(\d+x\d+)x\d+', report(out/'portrait.log'))[1]

@@ -168,6 +168,18 @@ The full stories, moved out of `AGENTS.md` on 2026-10-29. `AGENTS.md` keeps a on
   the per-plane numbers before blaming the encoder — blurring both images
   changed that PSNR by 0.1 dB, which is what said the difference was not the
   grain it looked like.
+  **Since ST (2026-11-14) the saved PNG cannot see it either.** A still is
+  written opaque — r, g and b exactly, alpha 255 — because it is the video's
+  frame and a translucent one posted on a light page came out washed. So the
+  file's alpha plane is 255 by construction and an assertion on it proves
+  nothing; and an `ffmpeg -lavfi psnr` against a video frame no longer loses
+  decibels to it. The frame's own alpha is counted *before* it is forced and
+  printed per still as `still alpha: translucent=N/M min=A PATH` (per
+  contact-sheet tile as `sheet alpha:`). That line is the detector now: a gate
+  that wants a scene not to eat destination alpha asserts `translucent=0` on
+  it (`tools/still_alpha.py`, `require_opaque`), and a still with no line
+  fails rather than passing. The symptom of reading the wrong one: an alpha
+  check that stays green with `BLEND_ALPHA` put back into a scene.
 - **`--probe-shot` photographs the frame before the last.** It reads the
   framebuffer after the swap. A check that wants the frame in which something
   happened has to run one frame longer than that frame: the poster gate's

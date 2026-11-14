@@ -76,7 +76,9 @@ screen under each tile. `--sheet-at` chooses which frames:
 is the form to reach for when judging a cut or how fast something comes alive.
 
 `--still SECONDS FILE` writes one frame at the project's full output size; it
-repeats, and every still of a run comes out of one pass over the track.
+repeats, and every still of a run comes out of one pass over the track. A still
+is opaque, like the video frame it is, so it posts on a light page as it looks
+here.
 
 **5. Audition before committing.** A treatment is cheap to throw away. To choose
 between looks, write a scratch treatment that gives each candidate a few seconds

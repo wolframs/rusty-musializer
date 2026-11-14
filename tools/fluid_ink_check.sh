@@ -38,10 +38,16 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 out = Path(sys.argv[1])
+sys.path.insert(0, 'tools')
+import still_alpha
+# A still is written opaque (ST), so its file's alpha plane says nothing about
+# the frame; the frame's own alpha is on each still's `still alpha:` line, and
+# a translucent Fluid Ink frame (the BLEND_ALPHA trap) fails there.
+still_alpha.require_opaque(out.glob('*.log'), ['music.png', 'ambient.png', 'reopen.png', 'portrait.png'])
 def read(name):
     im = Image.open(out/name).convert('RGBA')
     a = np.asarray(im)
-    assert np.all(a[:,:,3] == 255), f'{name}: translucent export'
+    assert np.all(a[:,:,3] == 255), f'{name}: translucent file'
     return a[:,:,:3].astype(float)
 def compare(a, b, floor):
     mse = np.mean((read(a)-read(b))**2)

@@ -26,7 +26,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from treatment_check import FAILURES, check, read, report_line, rgb  # noqa: E402
+import still_alpha  # noqa: E402
+from treatment_check import FAILURES, check, png_alpha_extrema, read, report_line, rgb  # noqa: E402
 
 SEPARATOR = "  ·  "
 
@@ -256,6 +257,27 @@ def check_column(out: Path) -> None:
     check(gap.startswith("shout:pickable@"), f"a press beside the chip changed it to {gap!r}")
 
 
+def check_opaque_stills(out: Path) -> None:
+    """Every still is an opaque file whatever its frame's blends left (ST).
+
+    These frames are the case ST was found on: Cadence leaves nearly every
+    pixel below alpha 255, and every caption and title-card glyph edge leaves
+    some. The file must be opaque anyway, and the frame's own count must be on
+    its `still alpha:` line. The counts are printed, not pinned: they are the
+    scenes' and captions' own blending, queued to be fixed at the source.
+    """
+    found = still_alpha.censuses(out.glob("*.log"))
+    for kind in ("styled", "plain"):
+        for moment in ("title", "top", "loud", "cadence"):
+            name = f"{kind}-{moment}.png"
+            low, high = png_alpha_extrema(out / name)
+            check(low == 255 == high, f"{name}: the still file is not opaque ({low}..{high})")
+            census = found.get(name)
+            check(census is not None, f"{name}: no `still alpha:` report line")
+            if census is not None:
+                print(f"{name}: frame alpha {census.describe()}; file opaque")
+
+
 def main() -> int:
     out = Path(sys.argv[1])
     check_vocabulary(out)
@@ -263,6 +285,7 @@ def main() -> int:
     check_reports(out)
     check_pictures(out)
     check_column(out)
+    check_opaque_stills(out)
     if FAILURES:
         print(f"{len(FAILURES)} check(s) failed", file=sys.stderr)
         return 1

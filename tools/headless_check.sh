@@ -1351,6 +1351,29 @@ else
             SWEEP_FAILED=1
             ;;
     esac
+    # ST: the file is opaque whatever the frame's blends left, so the frame's
+    # own alpha is read off the `still alpha:` line, which is what catches a
+    # scene that eats destination alpha (docs/TRAPS.md). Before ST this check
+    # was the PSNR below, through its alpha plane: a full-frame BLEND_ALPHA
+    # wash cost it 11 dB. Pinned, not bounded: Spectrum's own bars leave 4904
+    # pixels below 255 at this moment, the same count on the GPU and on
+    # llvmpipe (2026-11-14) and queued to be fixed at the source; a fix
+    # re-pins this to 0, and any new leak moves it.
+    STILL_ALPHA_LINE="$(sed -n 's/^still alpha: *//p' "$OUT_DIR/still-still-a.txt")"
+    echo "still alpha: ${STILL_ALPHA_LINE:-<absent>}"
+    case "$STILL_ALPHA_LINE" in
+        "translucent=4904/2073600 min=185 "*) : ;;
+        *)
+            echo "FAIL: the still's frame alpha is [$STILL_ALPHA_LINE], pinned at translucent=4904/2073600 min=185" >&2
+            SWEEP_FAILED=1
+            ;;
+    esac
+    STILL_FILE_ALPHA="$(ffmpeg -v error -i "$STILL_A" -vf alphaextract,format=gray \
+        -f rawvideo - | python3 -c 'import sys; d = sys.stdin.buffer.read(); print(f"{min(d)}..{max(d)}" if d else "none")')"
+    if [ "$STILL_FILE_ALPHA" != "255..255" ]; then
+        echo "FAIL: the still file is not opaque (alpha $STILL_FILE_ALPHA)" >&2
+        SWEEP_FAILED=1
+    fi
     STILL_HASH_A="$(md5sum "$STILL_A" | cut -d' ' -f1)"
     STILL_HASH_B="$(md5sum "$STILL_B" | cut -d' ' -f1)"
     echo "still determinism: $STILL_HASH_A / $STILL_HASH_B"
@@ -1362,7 +1385,7 @@ else
     # rendered upside down is deterministic, plausible, and wrong — which is
     # what it was until this comparison existed. So the PNG is measured against
     # a frame decoded out of an MP4 of the same moment, and against the frame
-    # half a second later as the control: 45.5 dB versus 21.5 dB, where the
+    # half a second later as the control: 46.3 dB (45.6 before ST) versus 21.5 dB, where the
     # ceiling is h264 4:2:0 on saturated thin features rather than our error.
     STILL_MP4="$OUT_DIR/still-window.mp4"
     rm -f "$STILL_MP4"
@@ -1400,8 +1423,11 @@ else
         python3 - "${STILL_MATCH:-0}" "${STILL_CONTROL:-0}" <<'PYEOF' || SWEEP_FAILED=1
 import sys
 match, control = float(sys.argv[1]), float(sys.argv[2])
-# 40 dB is far above what a *different* frame can reach and far below the 45.5
+# 40 dB is far above what a *different* frame can reach and far below the 46.3
 # the matched pair measures; the gap between the two is the real assertion.
+# 46.30 since ST (2026-11-14), 45.63 before it: r, g and b are unmoved
+# (44.18/47.15/44.41 dB), and the alpha plane went from 48.05 dB (Spectrum's
+# 4904 translucent pixels against the video's opaque frame) to identical.
 if match < 40.0:
     print(f"FAIL: the still is {match:.2f} dB from its own video frame; it is not that frame", file=sys.stderr)
     sys.exit(1)

@@ -31,6 +31,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import still_alpha  # noqa: E402
+
 FAILURES: list[str] = []
 
 
@@ -486,6 +489,26 @@ def png_alpha_extrema(path: Path) -> tuple[int, int]:
     return min(alpha), max(alpha)
 
 
+def check_frame_alpha(log: Path, names: tuple[str, ...], what: str) -> None:
+    """The BLEND_ALPHA detector (docs/TRAPS.md), read where it now lives.
+
+    Since ST a still is written opaque whatever its frame's alpha was, so the
+    PNG's alpha plane is 255 by construction and says nothing about the scene.
+    The frame's own alpha is counted on the `still alpha:` line before it is
+    forced, and that is what has to say no pixel was left below 255. The PNG
+    is still read, for the other half of the contract: the file is opaque.
+    """
+    try:
+        found = still_alpha.require_opaque([log], (f"{name}.png" for name in names))
+    except AssertionError as error:
+        check(False, f"{what}: {error}")
+        return
+    for name in names:
+        low, high = png_alpha_extrema(log.parent / f"{name}.png")
+        check(low == 255 == high, f"{name}: the still file is not opaque ({low}..{high})")
+        print(f"{name}: frame alpha {found[f'{name}.png'].describe()}; file opaque")
+
+
 def check_look(out: Path) -> None:
     log = read(out / "look.log")
     check("panicked" not in log, "the look treatment panicked")
@@ -497,11 +520,9 @@ def check_look(out: Path) -> None:
     # half there, so the reported distance is 0.45.
     distance = threshold.split("distance=", 1)[1].split(" ", 1)[0] if "distance=" in threshold else "nan"
     check(abs(float(distance) - 0.45) < 0.02, f"the glide is not halfway at its midpoint: {distance}")
-    # A still writes the framebuffer's alpha straight into the PNG: every pass
-    # must leave it opaque (the BLEND_ALPHA trap in AGENTS.md).
-    for name in ("look-far", "look-beyond"):
-        low, high = png_alpha_extrema(out / f"{name}.png")
-        check(low == 255 == high, f"{name}: the finish left the alpha at {low}..{high}")
+    # Every pass must leave the frame opaque (the BLEND_ALPHA trap in
+    # docs/TRAPS.md), read off the report line since ST.
+    check_frame_alpha(out / "look.log", ("look-far", "look-beyond"), "the finish")
 
     beyond = rgb(out / "look-beyond.png")
     plain = rgb(out / "plain-beyond.png")
@@ -659,9 +680,7 @@ def check_pixel(out: Path) -> None:
     check(ragged_cells(twice_image, 2, 2) == 0.0, "a 2x still's cell straddles an output pixel")
     print(f"pixel: the 2x still has {len(twice_colours)} colours")
 
-    for name in ("pixel-handheld", "pixel-levels"):
-        low, high = png_alpha_extrema(out / f"{name}.png")
-        check(low == 255 == high, f"{name}: the pixel pass left the alpha at {low}..{high}")
+    check_frame_alpha(out / "pixel.log", ("pixel-handheld", "pixel-levels"), "the pixel pass")
     check((out / "pixel-handheld.png").read_bytes() == (out / "pixel-handheld-alone.png").read_bytes(),
           "the same pixel moment from a fresh process is not the same bytes")
 

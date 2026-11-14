@@ -466,7 +466,12 @@ times. A sheet holds at most 96 tiles.
 Report lines: `treatment:` (section, scene, route, lyric and event counts,
 caption and output state, seed, path), `contact sheet:` (tile count, first and
 last time, size, achieved supersample factor, path), and one `export still:`
-per still in the Render view's own format.
+per still in the Render view's own format. Before each still's `export still:`
+(the panel's too) comes `still alpha: translucent=N/M min=A PATH`, and per
+contact-sheet tile `sheet alpha: tile=I t=T translucent=N/M min=A`: what the
+frame's blends left in its alpha channel before the file was written opaque
+(ST, `docs/TRAPS.md`). Every still and sheet PNG is opaque, r, g and b exactly
+the frame's.
 
 ---
 

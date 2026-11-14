@@ -20,6 +20,8 @@ import numpy as np
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT/'tools'))
+import still_alpha  # noqa: E402
 NEW = ('chrome', 'aurora', 'metaballs', 'tunnel', 'voronoi', 'iridescent', 'glyphs')
 
 
@@ -47,8 +49,10 @@ def app(out, name, *args):
 
 
 def image(path):
+    # The file: opaque by construction since ST. The frame's own alpha is
+    # checked by `still_alpha.require_opaque` on the report lines instead.
     data = np.asarray(Image.open(path).convert('RGBA'))
-    assert np.all(data[:, :, 3] == 255), f'{path.name}: translucent output'
+    assert np.all(data[:, :, 3] == 255), f'{path.name}: translucent file'
     return data[:, :, :3].astype(float)
 
 
@@ -139,6 +143,10 @@ def check_scene(base, name, encoder, negative):
         '--resolution', '360x640', '--still', '4', out/'portrait.png')
     portrait = image(out/'portrait.png')
     assert portrait.shape == (640, 360, 3) and portrait.std() > 10, f'{name}: portrait lost the scene'
+    # A scene that eats destination alpha (the BLEND_ALPHA trap): its frame,
+    # counted before the still was forced opaque.
+    still_alpha.require_opaque(out.glob('*.log'), ['motion.png', 'music.png', 'ambient.png',
+                                                    'reopen.png', 'portrait.png'])
     frame(out/'full.mp4', out/'video.png', 120)
     frame(out/'clip.mp4', out/'clip.png', 0)
     result = dict(response_mad=round(mad, 3), motion_mad=round(motion, 3),
