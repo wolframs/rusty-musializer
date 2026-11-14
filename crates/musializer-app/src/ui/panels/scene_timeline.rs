@@ -204,8 +204,11 @@ pub struct SceneLaneEditor {
     pub(crate) show_pending: bool,
 }
 
-/// Where a selected section is shown: once it has arrived (its transition
-/// done), or at its middle when the transition is longer than half of it.
+/// Where a selected section is shown: just after it has arrived (its
+/// transition done), or at its middle when the transition is longer than
+/// half of it. Never on the boundary itself: a seek to exactly a section's
+/// start can land a sample before it, in the section before (seen at 4.100
+/// on Door, No Room), so a cut is shown 50 ms in.
 #[must_use]
 pub(crate) fn section_rest_seconds(
     cue: &musializer_core::project::scene_switch::SceneSwitchCue,
@@ -216,8 +219,11 @@ pub(crate) fn section_rest_seconds(
     } else {
         musializer_core::project::transition::fitted_seconds(cue.transition, room)
     };
-    cue.start_seconds + arrival.min(room * 0.5).max(0.0)
+    cue.start_seconds + (arrival + SHOW_PAST_ARRIVAL).min(room * 0.5).max(0.0)
 }
+
+/// How far past a section's arrival it is shown.
+pub(crate) const SHOW_PAST_ARRIVAL: f64 = 0.05;
 
 /// Whether the playhead at `seconds` is in `cue`.
 #[must_use]

@@ -436,6 +436,18 @@ handler exits the driver process, which takes the run with it (exit 1 with
 a full report, nothing typed). `look_cards_check.py`'s driver installs an
 error handler that ignores errors and waits for a child that is viewable and
 window-sized before it focuses. Found 2026-11-14 (D2).
+
+## A seek to exactly a section's start can land in the section before
+
+Selecting a section first sought to its start when it arrives by a cut. On
+Door, No Room section 2 starts at 4.100; the playhead read 4.100 but the
+section under it, by the plan's own `start <= t` test, was section 1, so
+Look's head and the card's "whose picture" line named section 1 while the
+selection was 2. The stream's position comes back quantized a sample under
+the requested time. The synthetic fixture's boundary at 4.000 happened to
+land exactly and hid it. Anything that seeks "into" a span lands strictly
+inside it (`section_rest_seconds` adds 50 ms), the mirror of the stream's
+end reading 0:00. Found 2026-11-14 (D2) in a capture of the real project.
 ## FFmpeg's `-ss` counts from the container's start, and drops what is before it
 
 An input `-ss` is a position measured from the *container's* start time, which
