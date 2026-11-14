@@ -323,10 +323,31 @@ pub fn bundle_asset(
     sha256: &str,
     reuse_published: bool,
 ) -> Result<BundledAsset, BundleError> {
+    bundle_asset_named(
+        project_path,
+        category,
+        source,
+        source,
+        sha256,
+        reuse_published,
+    )
+}
+
+/// [`bundle_asset`] reading `source` and naming the copy's extension after
+/// `named`: a file already held open is read through its handle's
+/// `/proc/self/fd/N`, which has no extension of its own.
+pub fn bundle_asset_named(
+    project_path: &Path,
+    category: AssetCategory,
+    source: &Path,
+    named: &Path,
+    sha256: &str,
+    reuse_published: bool,
+) -> Result<BundledAsset, BundleError> {
     let project_text = project_path
         .to_str()
         .ok_or(musializer_core::project::assets::BundleError::Path)?;
-    let source_text = source
+    let source_text = named
         .to_str()
         .ok_or(musializer_core::project::assets::BundleError::Path)?;
     let paths = assets::bundle_paths(project_text, category, source_text, sha256)?;

@@ -113,7 +113,8 @@ middle frames and a poster of the section's first frame
   `t` are therefore one frame, and the gate finds them bit-identical to the
   frame FFmpeg extracts from the clip.
 - **Bounded before anything allocates**: the file is opened once without
-  blocking and checked by its handle; FFmpeg reads that handle
+  blocking and checked by its handle (a bundled one beneath the project's
+  folder, one recorded name at a time, none of them a symlink); FFmpeg reads that handle
   (`/proc/self/fd/0`); the probe refuses a size past 8K before listing a frame
   (a 53-byte y4m claiming 16000x9000: refused, ffprobe peaking at 53 MB); the
   frame list is read through a cap; a decoder's output is cut at one probed
@@ -254,3 +255,12 @@ source restored byte for byte (`cmp` against a saved copy):
 | The display matrix ignored (the coded size forced again) | `a_turned_clip_decodes_as_ffmpeg_shows_it` (the frames differ from FFmpeg's), and the gate's turned still: 12.4 dB against FFmpeg's frame 25 (inf with the fix), the clip line `of 320x180` |
 | A lease always granted (no recall when the budget is full) | `a_budget_of_two_decoders_runs_two_whatever_the_clips` (three decoders) and `the_budget_bounds_kept_frames_and_idle_workers_give_back` (two leases past the bytes) |
 | `end_frame` keeping every entry | the gate's release check: `resident entries=1 released=0, budget decoders 1/4, frames 42/512 MiB, workers 1` on the Spectrum still after the clip section |
+
+### The last review's negative controls (G, 2026-11-14)
+
+Same procedure (`cmp` against a saved copy after each):
+
+| Perturbation | What failed |
+| --- | --- |
+| A bundled clip opened by its resolved name again (`open_at` calling `open` on the folder joined to the record) | `a_clip_swapped_out_of_its_bundle_after_the_open_is_never_read`: with the bundled file swapped for a symlink to an outside copy, the decoder returned frame 0 instead of "leaves the project's folder" |
+| The save's bundling reading the clip by name again (no opening beneath its folder) | the same test: Save As into another project bundled the outside copy instead of refusing |

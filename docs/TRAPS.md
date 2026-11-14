@@ -339,6 +339,21 @@ before verification ran. Bundling now opens through `publish::open_source`
 `project_files::byte_limit`), reads through the cap and hashes while it copies,
 so a mismatch never links. Found by review of the clip scene, 2026-11-14.
 
+**A containment check on a name is a check on names too.** The open resolved
+a bundled clip's record, canonicalized it, found it inside the project's
+folder, and kept the resolved path; the decoder opened that path later. A file
+or a directory above it swapped for a symlink in between led the decoder to an
+outside copy with the recorded digest, which it decoded. Containment has to
+hold for the handle that is read: `ClipSource::open_beneath` opens the folder,
+then each recorded name inside the directory the last one opened
+(`/proc/self/fd/N/name`, resolved from that handle, not a path) with
+`O_NOFOLLOW`, so a symlink anywhere on the way answers `ELOOP` (`ENOTDIR` for
+a directory, which `O_DIRECTORY` reports first) and nothing outside is opened.
+Every reader of a bundled clip goes through it, including the save, which then
+copies from the handle's `/proc/self/fd/N`. Symptom: a placeholder or a Save
+As refusal at open, and the clip still drawing after a swap. Found by the last
+review of the week's work, 2026-11-14.
+
 ## A drop that joins a thread waits for whatever that thread is doing
 
 `ClipWorker`'s drop raised `stop`, killed the decoder's process group and

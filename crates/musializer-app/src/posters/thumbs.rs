@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use musializer_core::project::clip::ClipRef;
-use musializer_runtime::clip::{ClipPhase, ClipWorker, Expected};
+use musializer_runtime::clip::{ClipPhase, ClipWorker};
 use raylib::prelude::{Color, Image, RaylibHandle, RaylibTexture2D, RaylibThread, Texture2D};
 
 use crate::clips::TrackClip;
@@ -213,15 +213,7 @@ impl ClipThumbs {
             source: entry.source.clone(),
             name: entry.asset.name.clone(),
             frame: thumb_frame(&entry),
-            worker: ClipWorker::spawn(
-                entry.source.clone(),
-                Expected {
-                    sha256: entry.asset.sha256.clone(),
-                    width: entry.asset.width,
-                    height: entry.asset.height,
-                    frames: entry.asset.frames,
-                },
-            ),
+            worker: entry.worker(),
             started: Instant::now(),
         });
         true

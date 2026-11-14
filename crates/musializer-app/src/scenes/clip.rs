@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 use musializer_core::project::clip::{self as model, ClipMoment, ClipRef};
 use musializer_core::scene::SceneFrame;
 use musializer_core::scenes::clip::ClipState;
-use musializer_runtime::clip::{ClipBudget, ClipPhase, ClipWorker, Expected, Frame};
+use musializer_runtime::clip::{ClipBudget, ClipPhase, ClipWorker, Frame};
 use musializer_runtime::font::Faces;
 use raylib::prelude::*;
 
@@ -228,15 +228,7 @@ fn entry<'a>(
             clip: key,
             role,
             source: clip.source.clone(),
-            worker: ClipWorker::spawn(
-                clip.source.clone(),
-                Expected {
-                    sha256: clip.asset.sha256.clone(),
-                    width: clip.asset.width,
-                    height: clip.asset.height,
-                    frames: clip.asset.frames,
-                },
-            ),
+            worker: clip.worker(),
             texture: None,
             uploaded: None,
             last_used: frame,

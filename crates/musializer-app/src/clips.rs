@@ -15,7 +15,7 @@ use musializer_core::project::scene_switch::SceneSwitchTimeline;
 use musializer_core::scene::SceneId;
 use musializer_core::treatment::Treatment;
 use musializer_core::ui::notice::Severity;
-use musializer_runtime::clip::{probe, ClipError, ClipSource};
+use musializer_runtime::clip::{probe, ClipError, ClipLocation, ClipSource, ClipWorker, Expected};
 
 /// One clip a track holds.
 #[derive(Clone, Debug, PartialEq)]
@@ -29,9 +29,41 @@ pub struct TrackClip {
     /// bundled file that is missing, or a path that leaves the project's
     /// folder. Such a clip draws its card and is never opened.
     pub unusable: Option<ClipError>,
+    /// The project folder `source` was bundled into, when it is a bundled
+    /// copy: its decoder then opens `asset.path` beneath that folder, one name
+    /// at a time, so a symlink swapped in after the open's containment check
+    /// leads nowhere ([`ClipSource::open_beneath`]). `None` for a file the
+    /// person chose, which is opened as it is.
+    pub bundle: Option<PathBuf>,
 }
 
 impl TrackClip {
+    /// What a decoder opens for this clip.
+    #[must_use]
+    pub fn location(&self) -> ClipLocation {
+        match &self.bundle {
+            Some(folder) => ClipLocation::Bundled {
+                folder: folder.clone(),
+                relative: self.asset.path.clone(),
+            },
+            None => ClipLocation::File(self.source.clone()),
+        }
+    }
+
+    /// A decoder for this clip, checking the bytes against its record.
+    #[must_use]
+    pub fn worker(&self) -> ClipWorker {
+        ClipWorker::spawn(
+            self.location(),
+            Expected {
+                sha256: self.asset.sha256.clone(),
+                width: self.asset.width,
+                height: self.asset.height,
+                frames: self.asset.frames,
+            },
+        )
+    }
+
     #[must_use]
     pub fn clip_ref(&self) -> Option<ClipRef> {
         self.asset.clip_ref()
@@ -97,6 +129,7 @@ pub fn import(path: &Path) -> Result<TrackClip, ClipError> {
         asset,
         source: path.to_path_buf(),
         unusable: None,
+        bundle: None,
     })
 }
 
@@ -113,6 +146,7 @@ pub fn add(clips: &mut Vec<TrackClip>, entry: TrackClip) -> Option<ClipRef> {
         if existing.unusable.is_some() {
             existing.source = entry.source;
             existing.unusable = None;
+            existing.bundle = entry.bundle;
         }
         return Some(clip);
     }

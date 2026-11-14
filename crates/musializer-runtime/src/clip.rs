@@ -10,7 +10,10 @@
 //! the handle as its standard input and reads `/proc/self/fd/0` — on Linux a
 //! fresh open of the same inode, which a name swapped in afterwards cannot
 //! reach, and which, unlike a pipe, FFmpeg can seek in. `-nostdin` keeps it
-//! from also reading keystrokes off that descriptor.
+//! from also reading keystrokes off that descriptor. A project's bundled clip
+//! is not opened by a name at all: [`ClipSource::open_beneath`] walks its
+//! record from the project's folder, so the open that is read is the open
+//! the containment check was about.
 //!
 //! # Everything a file claims is bounded first
 //!
@@ -59,6 +62,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -74,6 +78,17 @@ use crate::process::process_group::{kill_group_and_reap, signal_group_or_process
 
 /// `open(2)`'s `O_NONBLOCK` on Linux x86-64 and AArch64, as in `decode`.
 const O_NONBLOCK: i32 = 0o4000;
+/// `open(2)`'s `O_NOFOLLOW` and `O_DIRECTORY`, which differ between the two.
+#[cfg(target_arch = "x86_64")]
+const O_NOFOLLOW: i32 = 0o400_000;
+#[cfg(target_arch = "x86_64")]
+const O_DIRECTORY: i32 = 0o200_000;
+#[cfg(target_arch = "aarch64")]
+const O_NOFOLLOW: i32 = 0o100_000;
+#[cfg(target_arch = "aarch64")]
+const O_DIRECTORY: i32 = 0o40_000;
+/// `ELOOP`, what `O_NOFOLLOW` answers for a symlink: 40 on both.
+const ELOOP: i32 = 40;
 /// How long a probe may take. A healthy one takes tens of milliseconds.
 const PROBE_DEADLINE: Duration = Duration::from_secs(20);
 /// The most a probe's frame list may print: one
@@ -145,6 +160,35 @@ pub enum ClipError {
     Stopped,
 }
 
+/// Where a clip's bytes are, and whether they must stay in a project's folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ClipLocation {
+    /// A file the person chose: an import not yet saved, a recovery's
+    /// absolute runtime path, a treatment's clip.
+    File(PathBuf),
+    /// A project's bundled copy: `relative` is the record, walked from the
+    /// project's folder one name at a time, none of them a symlink
+    /// ([`ClipSource::open_beneath`]).
+    Bundled { folder: PathBuf, relative: String },
+}
+
+impl ClipLocation {
+    /// The path a person is shown.
+    #[must_use]
+    pub fn display_path(&self) -> PathBuf {
+        match self {
+            Self::File(path) => path.clone(),
+            Self::Bundled { folder, relative } => folder.join(relative),
+        }
+    }
+}
+
+impl From<PathBuf> for ClipLocation {
+    fn from(path: PathBuf) -> Self {
+        Self::File(path)
+    }
+}
+
 /// A clip file, opened once and checked by its handle.
 #[derive(Debug)]
 pub struct ClipSource {
@@ -154,6 +198,80 @@ pub struct ClipSource {
 }
 
 impl ClipSource {
+    /// Opens `location`: a plain file by [`ClipSource::open`], a bundled one
+    /// by [`ClipSource::open_beneath`].
+    ///
+    /// # Errors
+    ///
+    /// As those two.
+    pub fn open_at(location: &ClipLocation) -> Result<Self, ClipError> {
+        match location {
+            ClipLocation::File(path) => Self::open(path),
+            ClipLocation::Bundled { folder, relative } => Self::open_beneath(folder, relative),
+        }
+    }
+
+    /// Opens the project-relative `relative` inside `folder`, so that what is
+    /// opened is what the containment check was about: the folder is opened
+    /// once, and each recorded name is opened in the directory the one before
+    /// it opened (through `/proc/self/fd/N/name`, which the kernel resolves
+    /// from that directory's handle, never from its path again), with
+    /// `O_NOFOLLOW`. A name swapped for a symlink — the file or any directory
+    /// on the way — answers `ELOOP` and is refused unopened; nothing outside
+    /// the folder is ever opened, let alone read. The folder itself is the
+    /// project's, and is followed like any path the person opened.
+    ///
+    /// # Errors
+    ///
+    /// [`ClipError::OutsideProject`] for a record that is not plainly
+    /// relative or a symlink on the way; otherwise as [`ClipSource::open`].
+    pub fn open_beneath(folder: &Path, relative: &str) -> Result<Self, ClipError> {
+        let names: Vec<&str> = relative.split('/').collect();
+        let plain = |name: &&str| {
+            !name.is_empty() && *name != "." && *name != ".." && !name.contains(['\\', '\0'])
+        };
+        if relative.starts_with('/') || !names.iter().all(plain) {
+            return Err(ClipError::OutsideProject);
+        }
+        let refused = |error: std::io::Error| match error.raw_os_error() {
+            Some(ELOOP) => ClipError::OutsideProject,
+            _ => match error.kind() {
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
+                    ClipError::Missing
+                }
+                _ => ClipError::Read(error.to_string()),
+            },
+        };
+        let mut directory = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(O_DIRECTORY)
+            .open(folder)
+            .map_err(refused)?;
+        let (last, through) = names.split_last().ok_or(ClipError::OutsideProject)?;
+        for name in through {
+            let entry = in_directory(&directory, name);
+            directory = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(O_DIRECTORY | O_NOFOLLOW)
+                .open(&entry)
+                .map_err(|error| {
+                    // `O_DIRECTORY` answers a symlink with `ENOTDIR`, not
+                    // `ELOOP`; it is still a way out, not a missing file.
+                    if entry.symlink_metadata().is_ok_and(|meta| meta.is_symlink()) {
+                        ClipError::OutsideProject
+                    } else {
+                        refused(error)
+                    }
+                })?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NONBLOCK | O_NOFOLLOW)
+            .open(in_directory(&directory, last))
+            .map_err(refused)?;
+        Self::checked(file, folder.join(relative))
+    }
+
     /// Opens `path` without blocking (a FIFO under the name is refused, not
     /// waited on), and checks the handle: a regular file within
     /// [`clip::MAX_CLIP_BYTES`].
@@ -173,6 +291,11 @@ impl ClipSource {
                 }
                 _ => ClipError::Read(error.to_string()),
             })?;
+        Self::checked(file, path.to_path_buf())
+    }
+
+    /// The handle's own answer: a regular file within the cap.
+    fn checked(file: File, path: PathBuf) -> Result<Self, ClipError> {
         let metadata = file
             .metadata()
             .map_err(|error| ClipError::Read(error.to_string()))?;
@@ -184,7 +307,7 @@ impl ClipSource {
         }
         Ok(Self {
             file,
-            path: path.to_path_buf(),
+            path,
             bytes: metadata.len(),
         })
     }
@@ -192,6 +315,14 @@ impl ClipSource {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// A name for this handle's own file while it is held: another reader
+    /// (the save's bundling) opens this and reaches the inode checked here,
+    /// whatever has been put under [`ClipSource::path`] since.
+    #[must_use]
+    pub fn held_path(&self) -> PathBuf {
+        PathBuf::from(format!("/proc/self/fd/{}", self.file.as_raw_fd()))
     }
 
     #[must_use]
@@ -248,6 +379,13 @@ impl ClipSource {
             .map(Stdio::from)
             .map_err(|error| ClipError::Read(error.to_string()))
     }
+}
+
+/// `name` inside the directory `directory` holds open: the magic link
+/// `/proc/self/fd/N` is the directory's inode itself, however its path has
+/// changed since, so only `name` is looked up.
+fn in_directory(directory: &File, name: &str) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd())).join(name)
 }
 
 /// What a probe found: enough to decode exactly and to say what the file is.
@@ -972,21 +1110,30 @@ pub struct ClipWorker {
 }
 
 impl ClipWorker {
-    /// Starts the worker: it opens `path`, checks the digest and the probe
+    /// Starts the worker: it opens `location`, checks the digest and the probe
     /// against `expected`, then waits to be asked for frames.
     #[must_use]
-    pub fn spawn(path: PathBuf, expected: Expected) -> Self {
-        Self::spawn_with(path, expected, Programs::default(), ClipBudget::shared())
+    pub fn spawn(location: impl Into<ClipLocation>, expected: Expected) -> Self {
+        Self::spawn_with(
+            location.into(),
+            expected,
+            Programs::default(),
+            ClipBudget::shared(),
+        )
     }
 
     /// [`ClipWorker::spawn`], drawing on `budget` instead of the process's.
     #[must_use]
-    pub fn spawn_in(path: PathBuf, expected: Expected, budget: Arc<ClipBudget>) -> Self {
-        Self::spawn_with(path, expected, Programs::default(), budget)
+    pub fn spawn_in(
+        location: impl Into<ClipLocation>,
+        expected: Expected,
+        budget: Arc<ClipBudget>,
+    ) -> Self {
+        Self::spawn_with(location.into(), expected, Programs::default(), budget)
     }
 
     fn spawn_with(
-        path: PathBuf,
+        location: ClipLocation,
         expected: Expected,
         programs: Programs,
         budget: Arc<ClipBudget>,
@@ -1011,7 +1158,7 @@ impl ClipWorker {
         let thread_budget = Arc::clone(&budget);
         let thread = std::thread::Builder::new()
             .name("clip-decoder".into())
-            .spawn(move || run(&inner, &path, &expected, &programs, &thread_budget))
+            .spawn(move || run(&inner, &location, &expected, &programs, &thread_budget))
             .ok();
         if thread.is_none() {
             lock(&shared.state).phase = ClipPhase::Failed(ClipError::NoFfmpeg("no thread".into()));
@@ -1113,7 +1260,7 @@ impl Drop for ClipWorker {
 /// The worker thread.
 fn run(
     shared: &Arc<Shared>,
-    path: &Path,
+    location: &ClipLocation,
     expected: &Expected,
     programs: &Programs,
     budget: &ClipBudget,
@@ -1131,7 +1278,7 @@ fn run(
         stopped: &stopped,
         group: &shared.group,
     };
-    let source = match ClipSource::open(path) {
+    let source = match ClipSource::open_at(location) {
         Ok(source) => source,
         Err(error) => return fail(error),
     };
@@ -1421,6 +1568,70 @@ mod tests {
     impl Drop for Scratch {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A bundled clip is opened through its record, never by a name a swap
+    /// can redirect: the file replaced by a symlink out, then the directory
+    /// above it replaced by one, each with an outside copy of the same bytes
+    /// waiting at the other end. Both refuse without opening it; by name
+    /// ([`ClipSource::open`]) both would have read the outside file.
+    #[test]
+    fn a_bundled_clip_is_opened_beneath_its_folder() {
+        let scratch = Scratch::new("beneath");
+        let project = scratch.0.join("project");
+        let clips = project.join("song.assets/clips");
+        std::fs::create_dir_all(&clips).unwrap();
+        let outside = scratch.0.join("outside/clips");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(clips.join("take.mp4"), b"bundled bytes").unwrap();
+        std::fs::write(outside.join("take.mp4"), b"bundled bytes").unwrap();
+        let relative = "song.assets/clips/take.mp4";
+
+        let opened = ClipSource::open_beneath(&project, relative).expect("inside");
+        assert_eq!(opened.bytes(), 13);
+        assert_eq!(opened.path(), project.join(relative));
+
+        // The file itself.
+        std::fs::remove_file(clips.join("take.mp4")).unwrap();
+        std::os::unix::fs::symlink(outside.join("take.mp4"), clips.join("take.mp4")).unwrap();
+        assert!(ClipSource::open(&clips.join("take.mp4")).is_ok(), "by name");
+        assert_eq!(
+            ClipSource::open_beneath(&project, relative).unwrap_err(),
+            ClipError::OutsideProject,
+            "file swapped for a symlink"
+        );
+
+        // A directory above it.
+        std::fs::remove_file(clips.join("take.mp4")).unwrap();
+        std::fs::remove_dir(&clips).unwrap();
+        std::os::unix::fs::symlink(&outside, &clips).unwrap();
+        assert!(ClipSource::open(&clips.join("take.mp4")).is_ok(), "by name");
+        assert_eq!(
+            ClipSource::open_beneath(&project, relative).unwrap_err(),
+            ClipError::OutsideProject,
+            "directory swapped for a symlink"
+        );
+
+        // Missing stays missing, and a record that is not plainly relative is
+        // refused before anything is opened.
+        std::fs::remove_file(&clips).unwrap();
+        assert_eq!(
+            ClipSource::open_beneath(&project, relative).unwrap_err(),
+            ClipError::Missing
+        );
+        for bad in [
+            "../outside/clips/take.mp4",
+            "/etc/hostname",
+            "a//b",
+            "./a",
+            "",
+        ] {
+            assert_eq!(
+                ClipSource::open_beneath(&project, bad).unwrap_err(),
+                ClipError::OutsideProject,
+                "{bad}"
+            );
         }
     }
 
@@ -1848,7 +2059,7 @@ mod tests {
                 .is_ok_and(|status| status.success())
         };
         let worker = ClipWorker::spawn_with(
-            path,
+            path.into(),
             expected(&source, &real),
             Programs {
                 ffprobe: stand_in.into_os_string(),

@@ -42,7 +42,7 @@ use musializer_core::scene::routes;
 use musializer_core::scene::settings::SettingsSnapshot;
 use musializer_core::scene::{SceneId, SCENE_COUNT};
 use musializer_core::timing::render_export::{Quality, RenderExportConfig};
-use musializer_runtime::clip::ClipError;
+use musializer_runtime::clip::{ClipError, ClipSource};
 use musializer_runtime::process::publish;
 use musializer_runtime::project_files::{self, AssetCategory};
 
@@ -440,7 +440,18 @@ pub fn save_to_path(
     let mut adopted = Vec::new();
     for entry in referenced_clips(track) {
         let same_project = track.project_path.as_deref() == Some(path);
-        let unreadable = entry.unusable.is_some() || !entry.source.is_file();
+        // A bundled copy is read the way its decoder reads it, beneath its
+        // folder by its record (G): a symlink swapped in since the open makes
+        // it unreadable, not a way to copy an outside file in.
+        let held = entry
+            .bundle
+            .as_ref()
+            .map(|folder| ClipSource::open_beneath(folder, &entry.asset.path));
+        let unreadable = entry.unusable.is_some()
+            || match &held {
+                Some(opened) => opened.is_err(),
+                None => !entry.source.is_file(),
+            };
         if unreadable && same_project && !entry.asset.path.is_empty() {
             clips.push(entry.asset.clone());
             continue;
@@ -451,9 +462,19 @@ pub fn save_to_path(
                 entry.asset.name
             )));
         }
-        let published = project_files::bundle_asset(
+        let held = held.transpose().map_err(|error| {
+            ProjectError::Build(format!(
+                "the clip {} cannot be bundled: {error}",
+                entry.asset.name
+            ))
+        })?;
+        let read = held
+            .as_ref()
+            .map_or_else(|| entry.source.clone(), ClipSource::held_path);
+        let published = project_files::bundle_asset_named(
             path,
             AssetCategory::Clip,
+            &read,
             &entry.source,
             &entry.asset.sha256,
             reuse_published,
@@ -504,6 +525,7 @@ pub fn save_to_path(
         {
             entry.asset.path = published.stored;
             entry.source = published.runtime;
+            entry.bundle = Some(project_folder(path));
         }
     }
     track.project_path = Some(path.to_path_buf());
@@ -646,9 +668,9 @@ pub fn open_recovery_json(
         .map(|asset| {
             let path = PathBuf::from(&asset.path);
             if path.is_absolute() {
-                (path, None)
+                (path, None, None)
             } else {
-                (PathBuf::new(), Some(ClipError::OutsideProject))
+                (PathBuf::new(), Some(ClipError::OutsideProject), None)
             }
         })
         .collect();
@@ -744,13 +766,21 @@ pub fn open_path(
     // refusal would lose the whole project over one take. A record that does
     // not resolve is never read at all: missing, or a path that leaves the
     // project (`../`, absolute, a symlink out), each its own placeholder.
+    //
+    // Resolving is a check on names, though, and the decoder opens the clip
+    // later, maybe minutes later: a resolved clip keeps its project folder,
+    // and is opened beneath it by its record, never by the resolved name.
+    let folder = project_folder(path);
     let clip_sources = project
         .clips
         .iter()
         .map(
             |asset| match project_files::resolve_bundled_asset_path(path, &asset.path) {
-                Ok(resolved) => (resolved, None),
-                Err(_) => unresolved_clip(path, &asset.path),
+                Ok(resolved) => (resolved, None, Some(folder.clone())),
+                Err(_) => {
+                    let (source, error) = unresolved_clip(path, &asset.path);
+                    (source, error, None)
+                }
             },
         )
         .collect();
@@ -769,6 +799,15 @@ pub fn open_path(
         opened.warning = warning;
         opened
     })
+}
+
+/// The folder a project's bundled paths are relative to: the project file's
+/// own, as `resolve_bundled_asset_path` reads them.
+fn project_folder(project: &Path) -> PathBuf {
+    match project.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    }
 }
 
 /// Why a clip's record did not resolve inside its bundle, and the path it
@@ -802,7 +841,7 @@ fn hydrate_track(
     ascii_path: Option<PathBuf>,
     caption_font_path: Option<PathBuf>,
     caption_licence_path: Option<PathBuf>,
-    clip_sources: Vec<(PathBuf, Option<ClipError>)>,
+    clip_sources: Vec<(PathBuf, Option<ClipError>, Option<PathBuf>)>,
     duration: f64,
     project_path: Option<PathBuf>,
 ) -> Result<OpenedProject, ProjectError> {
@@ -877,11 +916,14 @@ fn hydrate_track(
         .clips
         .iter()
         .zip(clip_sources)
-        .map(|(asset, (source, unusable))| crate::clips::TrackClip {
-            asset: asset.clone(),
-            source,
-            unusable,
-        })
+        .map(
+            |(asset, (source, unusable, bundle))| crate::clips::TrackClip {
+                asset: asset.clone(),
+                source,
+                unusable,
+                bundle,
+            },
+        )
         .collect();
     track.analysis_lanes = project.analysis_lanes;
     // C4: seeded from the file the project recorded, so a track opened into a
@@ -1269,6 +1311,71 @@ mod tests {
         crate::clips::add(&mut opened.clips, again).unwrap();
         assert_eq!(opened.clips[0].unusable, None);
         assert_eq!(opened.clips[0].source, outside);
+    }
+
+    /// G defect 1: the open's containment check and the decoder's open are
+    /// about the same file. Between the two, the bundled file is swapped for
+    /// a symlink to an outside copy with the recorded digest, then the
+    /// directory above it for a symlink to an outside directory holding one:
+    /// the decoder refuses both, where opening the resolved name decoded the
+    /// outside copy.
+    #[test]
+    fn a_clip_swapped_out_of_its_bundle_after_the_open_is_never_read() {
+        use std::time::Duration;
+        let (scratch, project, recorded) = clip_project("swap");
+        let outside = scratch.0.join("take.mp4");
+        let bundled = project.parent().unwrap().join(&recorded);
+        let clip = reopened_clip(&project);
+        assert_eq!(clip.unusable, None);
+        assert_eq!(
+            clip.location(),
+            musializer_runtime::clip::ClipLocation::Bundled {
+                folder: project.parent().unwrap().to_path_buf(),
+                relative: recorded.clone(),
+            }
+        );
+        clip.worker()
+            .wait_for(0, Duration::from_secs(20))
+            .expect("the bundled clip decodes before any swap");
+        // Save As reads it through the same opening, and keeps its extension.
+        let mut track = open_path(&project, |_| Ok(120.0)).unwrap().track;
+        let copy = scratch.0.join("copy.musi");
+        save_to_path(&mut track, &copy, false).expect("a bundled clip saves elsewhere");
+        assert!(track.clips[0].asset.path.starts_with("copy.assets/clips/"));
+        assert!(track.clips[0].asset.path.ends_with(".mp4"));
+        assert!(scratch.0.join(&track.clips[0].asset.path).is_file());
+        let mut track = open_path(&project, |_| Ok(120.0)).unwrap().track;
+
+        std::fs::remove_file(&bundled).unwrap();
+        std::os::unix::fs::symlink(&outside, &bundled).unwrap();
+        assert_eq!(
+            clip.worker()
+                .wait_for(0, Duration::from_secs(20))
+                .unwrap_err(),
+            ClipError::OutsideProject,
+            "file swapped for a symlink"
+        );
+        // Nor does a save copy it: the same project keeps the record, another
+        // refuses, and nothing reaches its bundle.
+        save_to_path(&mut track, &project, true).expect("autosave keeps the record");
+        let other = scratch.0.join("other.musi");
+        let error = save_to_path(&mut track, &other, false).expect_err("not bundled elsewhere");
+        assert!(error.to_string().contains("leaves the project"), "{error}");
+        assert!(!scratch.0.join("other.assets/clips").exists());
+
+        let clips = bundled.parent().unwrap();
+        let elsewhere = scratch.0.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::copy(&outside, elsewhere.join(bundled.file_name().unwrap())).unwrap();
+        std::fs::remove_dir_all(clips).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, clips).unwrap();
+        assert_eq!(
+            clip.worker()
+                .wait_for(0, Duration::from_secs(20))
+                .unwrap_err(),
+            ClipError::OutsideProject,
+            "directory swapped for a symlink"
+        );
     }
 
     use musializer_runtime::project_files::existing_files_alias;

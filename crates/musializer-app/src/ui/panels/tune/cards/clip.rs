@@ -1054,6 +1054,7 @@ pub(crate) mod fixture {
                 },
                 source: format!("{seed}.mp4").into(),
                 unusable: None,
+                bundle: None,
             });
         }
         track
