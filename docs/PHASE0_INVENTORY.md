@@ -434,7 +434,8 @@ is the grammar and the ordering, which are the contract.
 | `--contact-sheet FILE` | 1 | stored; rendered with the stills | warn + error if missing value |
 | `--sheet-at SPEC` | 1 | parsed immediately | warn + error, naming the spec |
 | `--generate-clips` (VG H4) | none | a batch `--treatment` run may ask a video model for its generated clips; resolved before the treatment applies (frames rendered, clips looked for, then asked for) | warn + error without `--max-spend` |
-| `--max-spend USD` (VG H4) | 1, dollars 0..=1000 | the ceiling on the estimates of the jobs `--generate-clips` submits in this run | warn + error when not a number in range, or without `--generate-clips` |
+| `--max-spend USD` (VG H4) | 1, dollars 0..=1000 | the ceiling on the estimates of the jobs `--generate-clips` submits in this run, a job found submitted or in flight and an earlier send that may have been billed counted at their estimates; 0 sends nothing | warn + error when not a number in range, or without `--generate-clips` |
+| `--resend-unconfirmed` (H4b) | none | a request whose earlier send lost its answer (it may have been billed; its job cannot be found) is sent again, both estimates counted against `--max-spend` | warn + error without `--generate-clips` |
 
 Order effects, each observable:
 

@@ -230,9 +230,13 @@ the store and the card are `musializer-app/src/generation/` and
   The key goes to curl on stdin, only to the API's own host.
 - **Nothing paid twice.** A request is identified by a digest of everything
   that determines it (`request_sha256`, including the frames' bytes). A clip
-  the project or the store already has for it is used without a call; a job
+  the project or the store already has for it is used without a call (the
+  window looks in the open project first, as a treatment run does); a job
   submitted and not yet downloaded (a Cancel, a crash, a closed window) is
-  recorded in the store first and polled again by the next press.
+  recorded in the store first and polled again by the next press. From the
+  lookup until the job id is on disk one caller owns the request (a lock per
+  digest in the store), so two windows, or a window and a run, pay once.
+  What happens when the answer to a submit is lost: *Billing safety* below.
 - **Nothing half-imported.** The download goes to scratch, capped (1 GiB, and
   curl's `max-filesize` stops a stream that grows past it), refused when it
   names itself JSON or text, opened by its handle and probed exactly as
@@ -240,8 +244,10 @@ the store and the card are `musializer-app/src/generation/` and
   name, and what OpenRouter reported for it when it did.
 - **The store**: `$XDG_DATA_HOME/musializer/generated-clips/` — paid clips
   with a receipt each (their provenance and their bytes' digest), job records,
-  the price list and `spending.tsv` (one line per job sent). Saving a project
-  bundles a placed clip like any other.
+  intents (a request written down before it is sent), one lock file per
+  request, the price list and `spending.tsv` (one line per job sent). Saving a
+  project bundles a placed clip like any other; a save writes only clips a
+  section plays, so a clip left unplaced lives in the store.
 
 ### The API as found (read 2026-11-14)
 
@@ -268,6 +274,22 @@ Sources, read 2026-11-14: <https://openrouter.ai/docs/api_reference/videos.md>,
   values), 401, 402, 403, 404, 413, 429, 5xx.
 - **There is no cancel call.** Video is not eligible for zero data retention
   (`provider.zdr: true` fails routing).
+
+**Recognising a request it already accepted** (H4b, read 2026-11-14):
+nothing. <https://openrouter.ai/docs/api/api-reference/video-generation/submit-a-video-generation-request.md>
+lists no request header and no idempotency key or client reference for
+`POST /videos`; its body's `session_id`, `user` and `trace` group requests for
+observability and broadcast destinations and are not returned by any video
+endpoint. <https://openrouter.ai/docs/api_reference/videos.md> documents
+four endpoints and no listing ("The Video Generation API consists of four
+endpoints"), tells a client to "record which end user owns each job ID", and
+has an idempotency key only on webhook deliveries
+(`X-OpenRouter-Idempotency-Key: <jobId>-<status>`, which needs a
+`callback_url` reachable from the internet). The activity endpoint
+(<https://openrouter.ai/docs/api/api-reference/analytics/get-user-activity-grouped-by-endpoint.md>)
+gives per-day totals with no job ids and needs a management key. So a job
+whose id never reached this application cannot be found by it; the person can
+see whether it was billed at <https://openrouter.ai/activity>.
 - Not used: `input_references`, `seed`, `callback_url` and webhooks,
   `previous_job_id` (continuation), provider routing.
 
@@ -290,6 +312,117 @@ against a saved copy) and rebuilt, 2026-11-14:
 | The store's lookup and the job record ignored (unit tests) | `a_job_submits_polls_downloads_verifies_and_is_found_again_for_nothing` (submitted again) and `a_stop_after_the_submit_says_it_may_be_billed_and_a_second_press_picks_it_up` |
 | The codec dropping `cost_usd` on read | `tools/differential_project_io.sh` step 20: re-written into different bytes |
 
+### Billing safety (H4b, 2026-11-14)
+
+A review found nine ways the first build could make the person pay twice or
+send a request they had not agreed to. The rule since: **the application never
+sends a paid request the person has not agreed to at a stated price, and never
+sends the same request twice without telling them the first may already have
+been billed.**
+
+- **One owner per request.** `Store::claim` takes `locks/<digest>.lock`
+  (`flock`, given back with `File::unlock`) from the lookup until the job id
+  is on disk; a second caller's stage reads "waiting: another window or run is
+  sending this same request", then it polls the first one's job. A treatment
+  run counts a job found submitted or in flight against `--max-spend` at its
+  estimate; `--max-spend 0` sends nothing ("refused: --max-spend 0 sends
+  nothing").
+- **An intent before the POST.** `intents/<digest>.json` (digest, model,
+  seconds, the time, the estimate) is written before the request leaves,
+  replaced by the job record when the id arrives, and removed when the
+  provider refused it (a 4xx other than 408) or the call never wrote a byte of
+  it (curl's `size_request` is 0: no such host, connection refused). Anything
+  else after the request left — a dropped connection, a cut-short or
+  unreadable answer, a Cancel or a closed window mid-submit, a 5xx or 408 —
+  reads:
+  > The request was sent and its answer never arrived, so it may have been
+  > billed (about $0.12) for a job this application cannot find: OpenRouter
+  > has no way to look one up. Asking for it again would be a second request,
+  > and you are asked first.
+- **A left-over intent holds the request.** Nobody holds its lock, so it is a
+  request that may have been accepted with an unknown job id. The window's
+  next Send for it sends nothing; the notice ("An earlier send may have been
+  billed") and the card read
+  > This exact request was sent on 2026-11-14 21:13:16 UTC and its answer
+  > never arrived, so OpenRouter may have accepted and billed it (about
+  > $0.12). OpenRouter has no way to find a job whose id was lost; your
+  > activity page at openrouter.ai/activity shows whether it was billed. Press
+  > Generate again to send it anew: that is a second request, and it is billed
+  > too.
+
+  The button then reads "Generate again for about $0.12" and, armed, "Send
+  again · $0.12 more"; only that second press sends it again. A treatment run
+  prints the same first sentences, counts the earlier estimate against the
+  ceiling, and refuses: "It counts against the ceiling. To send it again,
+  which is a second request ($0.12 more), add --resend-unconfirmed"; with the
+  flag both estimates must fit under `--max-spend`.
+- **A refused download keeps its paid job.** One ask downloads a finished
+  clip up to three times; then "the finished clip was downloaded 3 times and
+  refused each time (last: …); its job is kept, so Generate again downloads it
+  again without paying again". A job is forgotten only when OpenRouter says it
+  ended without a clip: failed, cancelled, unknown (404), or "the job expired
+  at OpenRouter before its clip was downloaded; Generate again asks (and pays)
+  anew".
+- **Bounded answers.** Submit and poll carry curl's `max-filesize` (1 MiB),
+  and an error body is read through the same cap: "the answer is larger than
+  1 MiB".
+- **The project's own clip.** The window places a clip the open project holds
+  for the request: "… plays in section 2 of 3 (…). The project already holds
+  the clip made for exactly this request, so nothing was sent."
+- **The section it was for.** A job carries its section by identity (project:
+  slot, audio file, project file; audio digest; cue id and span at Send) and
+  whether a treatment was followed at any frame while it ran. Otherwise the
+  clip is not placed: "… is in this project's clip library, not in a section:
+  a treatment was followed while it was made, and the followed file decides
+  what each section plays. Nothing paid for is lost: choose it in a Video Clip
+  section's clip rows (a save keeps only clips a section plays), and it stays
+  in …/clips, where Generate with the same settings finds it without paying
+  again." Generate is refused while a treatment is followed.
+- **No stand-in in a frame sent.** The review's case, a section ending on
+  `"next"` while the next one is generated too, is refused when the treatment
+  is parsed. A frame inside a transition whose showing side is a generated
+  section not made yet (a short section fading in over all of its length
+  after a generated one this run could not make) is refused by name: "its
+  frame at 0:05.979 lies inside the transition at 0:04.000, which shows
+  segments[1] (0:02.000).clip.generate, a generated section not made yet; the
+  frame would be a stand-in, so nothing was sent for it. Make that section
+  first, or give this one an image file for the frame".
+- **The export's frames.** A run renders the frames under `--resolution`,
+  `--fps` and `--quality` as the export applies them (a 24 fps treatment at
+  `--fps 30` sends the picture at 119/30 s, not 95/24 s).
+- **One project's card.** Switching projects forgets the generate block, and
+  an armed Send belongs to the request it was armed for; outcomes, warnings
+  and jobs are kept by project and section.
+
+### The billing-safety checks and their negative controls (H4b)
+
+`tools/generate_check.sh` groups `concurrent`, `lost`, `redownload`, `order`
+and `fps` (`GENERATE_ONLY="…"` runs some), the card check's steps 4b, 5b and
+6b, and unit tests in `generation::{job,client,window}` and the look cards.
+The fake provider's markers: `[slow-submit]`, `[hold]`, `[lost-answer-once]`
+(accepted, the connection dropped without an answer), `[truncate-N]`,
+`[expire]`, `[polls-N]`. Every spending check asserts the provider's submit
+count. Each control was a scratch binary or test run on a perturbed source,
+restored byte for byte (`cmp` against a saved copy), 2026-11-14:
+
+| Perturbation | What failed |
+| --- | --- |
+| `Store::claim` a no-op and `in_flight` always false | `two_callers_for_one_request_pay_once` (2 submits, not 1); gate concurrent: "two runs for one request paid 2 times", the second run generated instead of picking up |
+| A job found submitted or in flight counted at 0 again, no `--max-spend 0` refusal | gate concurrent: `--max-spend 0` picked the in-flight job up (status 0); a $0.10 ceiling admitted the $0.12 job |
+| Every failed submit "nothing" and its intent removed (as before) | gate lost: the lost answer not reported as possibly billed; the next run sent it again (2 submits, status 0) |
+| The window's prepare ignoring a left-over intent | card check 5b: the next Send went out silently |
+| The job forgotten after the refused downloads (as before) | `a_refused_download_keeps_its_job_and_the_next_ask_downloads_it_again` ("the paid job is kept"); gate redownload: the next run paid again (2 submits) |
+| `max-filesize` dropped from the JSON calls | `a_json_answer_is_bounded_on_the_wire_and_in_memory`: 8388610 bytes reached the disk. The in-memory cap on an error body has no observable difference once the wire cap holds and is not pinned separately |
+| The window's lookup in the open project skipped | card 4b by hand: with an empty store the same Send made a submit and read "Estimated $0.12" instead of "nothing was sent" |
+| Placement ignoring a followed treatment | `a_clip_is_placed_only_in_the_section_send_was_pressed_for`; card 6b by hand: the followed file's section 2 (Pulse) became Video Clip with the clip, the review's defect |
+| The stand-in guard absent | gate order: section 3 was sent a first frame inside the fade from section 1's stand-in (2 submits) |
+| The command line's output flags applied after the frames (as before); then only `--quality` left out | gate fps: the frames sent under `--fps 12 --quality high` are not the export's, both times |
+| `CardState::forget` leaving the generate block; the card's view not filtered by project | `another_project_forgets_the_generate_block_and_its_armed_send`; `the_card_reads_only_the_current_projects_sections` |
+
+Not pinned by a check of its own: the armed Send's request key (the card
+already disarms on each control that changes the request; the key is the
+second guard), and the window's Cancel of only the current project's job.
+
 ### What is not built
 
 - **A `generated` transition** (a bridge across a cut as a transition kind).
@@ -304,6 +437,11 @@ against a saved copy) and rebuilt, 2026-11-14:
   its frames are rendered first and the window's follow applies on every
   save.
 - **Cancelling at the provider**: OpenRouter has no call for it.
+- **Finding a job whose id was lost**: OpenRouter has no idempotency key and
+  no job listing (read 2026-11-14, *The API as found*); a left-over intent is
+  said and held, never resolved by the application.
+- **Keeping an unplaced generated clip in a saved project**: a save writes
+  only the clips a section plays; such a clip stays in the store.
 
 ### What a clip cost (H4's real calls)
 
@@ -339,6 +477,24 @@ What it looked like, judged from contact sheets across each section:
   bridges two similar pictures and fills the middle with an invented soft
   planet drifting across: seamless, but the prompt's doorway never shows. A
   bridge earns its price where the two pictures differ.
+
+### The billing-safety fixes' real call (H4b)
+
+One call on 2026-11-14 through the reworked submit, on a fixture treatment
+under the worktree's `build/h4b-real/` (never committed): `google/veo-3.1-lite`,
+4 s, 720p 16:9, no frames, no audio, a text prompt naming nobody. The key was
+read by the application from the operator's credentials file
+(`MUSIALIZER_ASSIST_CREDENTIALS`), never in argv, a log or the store.
+
+| Call | Estimate | Reported | Submit to download |
+| --- | --- | --- | --- |
+| "a slow drift of soft light over calm water at dusk" | $0.12 | $0.12 | 44 s |
+
+The intent was replaced by the job record and both were gone after the
+download; a second run found the clip in the store and sent nothing. Never
+tried for real: a lost answer, a concurrent second caller, a refused or
+cut-short download, an expired job, an oversized answer (the fake provider
+only).
 
 ## What the generation half needed from this (the seam, as planned)
 

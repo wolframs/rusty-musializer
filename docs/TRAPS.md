@@ -663,3 +663,50 @@ sentence instead. A receipt is checked for its schema and audio hash and
 deleted before each attempt, so a stale one cannot explain a new failure.
 Symptom: a toast saying "python3 exited with code 1" for a failure the helper
 had named precisely. Found in the MiMo lane (H3b), 2026-11-14.
+## A failed paid submit is not a free one
+
+A `POST` can reach the provider, be accepted and billed, and still end in an
+error here: the connection drops before the answer (curl 52, "Empty reply"),
+the answer is cut short (18, 56) or unreadable, the window closes or Cancel
+kills curl mid-call, or OpenRouter answers 5xx or 408 after the model's
+provider took the job. Reporting any of those as "nothing was billed" and
+letting the next press submit again pays twice, and OpenRouter has no
+idempotency key or job listing to find the lost job (read 2026-11-14). Write
+an intent before the request leaves; clear it only on an answer that proves
+no job exists (a 4xx other than 408) or when nothing left the machine (curl's
+`--write-out %{size_request}` is 0, which curl prints even when the transfer
+failed; 6 and 7 precede any byte). Symptom: two submits for one request in
+the provider's log after a dropped connection. Pinned by the generation
+gate's `lost` group. Found by review of the generation client (H4b),
+2026-11-14.
+
+## Two launches at once must not share one `MZ_STATE_DIR`
+
+`tools/headless_run.sh` links the tools the application may run into
+`$MZ_STATE_DIR/bin` with `ln -sf` on every launch. Two launches started at
+the same moment race on it, and one fails with "ln: failed to create symbolic
+link …: Already exists" before the application starts — a run that looks
+like the application refused, with nothing in its own output. Give each
+concurrent launch its own state folder (`cp -a` the config into it for a
+shared key), as the generation gate's `concurrent` group does. Found
+building that group (H4b), 2026-11-14.
+
+## A save writes only the clips a section plays
+
+`project::build_project` bundles `clips::referenced`: the base clip and the
+clips a cue's placement names. A clip that is in the library but placed
+nowhere (an import not yet used, a generated clip kept unplaced because a
+treatment took the section) is gone from the file a save writes, and a
+check that reads the saved project's `clips` for it finds nothing whatever
+the application did. A generated one stays in the store
+(`generated-clips/clips/`), which is where to look for it, and what the
+notice names. Found checking H4b's placement fix, 2026-11-14.
+
+## A `--ui-probe` spec longer than 256 bytes is refused whole
+
+The parser warns "--ui-probe spec is longer than the 256-byte limit" and the
+run goes on with no probe at all: no section, no generate block, no drop,
+nothing pressed. A long absolute path in `drop=` (a gate's output folder)
+is the usual cause. Pass a path relative to the repository and short
+prompts. Symptom: a probe run whose report lines show the defaults. Found in
+the generation card check (H4b), 2026-11-14.

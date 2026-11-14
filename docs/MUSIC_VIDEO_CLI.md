@@ -417,6 +417,15 @@ OpenRouter reported for it), a download that is not a video or is too large —
 and nothing of them is imported. Prices, the API and what a clip cost in fact:
 `docs/VIDEO_GENERATION.md`.
 
+A job already submitted for the same request, or being sent by another run or
+window right now, is picked up rather than sent again, and it counts against
+the ceiling at its estimate; `--max-spend 0` sends nothing. A request whose
+earlier send lost its answer (the provider may have accepted and billed it,
+and has no way to find the job) is refused by name, counted against the
+ceiling, until the run also carries `--resend-unconfirmed`; sending it again
+then counts a second estimate. Under `--resolution`, `--fps` and `--quality`
+the frames sent are the export's frames at those cuts.
+
 ### `transition` and `outro`
 
 A section's `transition` is how that section **arrives**. It is a kind's name,
