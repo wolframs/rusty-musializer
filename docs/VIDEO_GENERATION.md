@@ -401,7 +401,8 @@ and `fps` (`GENERATE_ONLY="…"` runs some), the card check's steps 4b, 5b and
 6b, and unit tests in `generation::{job,client,window}` and the look cards.
 The fake provider's markers: `[slow-submit]`, `[hold]`, `[lost-answer-once]`
 (accepted, the connection dropped without an answer), `[truncate-N]`,
-`[expire]`, `[polls-N]`. Every spending check asserts the provider's submit
+`[expire]`, `[polls-N]`, and since H4c `[stale-poller]` (two pollers of one job hear
+it expire at different times; release files `release-stale`, `-2`, `-3`). Every spending check asserts the provider's submit
 count. Each control was a scratch binary or test run on a perturbed source,
 restored byte for byte (`cmp` against a saved copy), 2026-11-14:
 
@@ -439,6 +440,13 @@ it as spent.**
   never syncs them) are synced before the rename; each `spending.tsv` line is
   synced. A power loss right after OpenRouter accepted a request keeps the
   intent or the job that says so.
+- **A record goes only if it is still the one read.** A caller that polled a
+  job and heard it expired, failed, was cancelled or is unknown (404) removes
+  the job record only under the request's lock and only if it still names
+  that job (`Store::forget_job_if`): another caller polling the same job may
+  have forgotten it already and a third submitted and recorded a new, paid
+  one, which a blind removal lost — and the next Generate then paid a third
+  time with no warning. The same after a kept clip (`forget_job_held`).
 - **Maxima round up.** A run prints `--max-spend` as given ("$0.125
   allowed") and what it has committed rounded up to the cent.
 
@@ -449,6 +457,7 @@ byte (`cmp` against a saved copy), 2026-11-14:
 
 | Perturbation | What failed |
 | --- | --- |
+| `forget_job_held` removing whatever record is there (the job id not compared, as before) | gate stale: "the late poller removed job 2's record", and run D submitted again (3 submits, not 2) |
 | `write_private` without the folder's sync after the rename | `every_record_is_synced_with_its_folder`: the intent's folder `store/intents` missing from what was synced. A power loss itself cannot be staged in a test; the test shows the folder is opened and synced, not that the disk keeps it |
 
 ### What is not built

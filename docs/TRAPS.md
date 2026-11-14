@@ -724,3 +724,16 @@ parent, and a file another program wrote (curl's download) needs its own
 `fsync` before it is renamed into a store. Symptom: none until a power loss;
 grep the write path for `rename` without a `sync_dir` after it. Found by the
 second review of the generation store (H4c), 2026-11-14.
+
+## A removal after a wait removes whatever is there now
+
+A job poller read the record, released the lock, polled for minutes, heard
+"expired" and removed `jobs/<digest>.json`. By then another poller of the
+same job had removed it already and a third caller had submitted a new, paid
+job and recorded it under the same name: the late removal lost that job and
+the next press paid again with no warning. A record keyed by something that
+outlives one owner (a request digest) is removed only under its lock and only
+after checking it is still the record that was read (the job id): see
+`Store::forget_job_if`. Symptom: two submits where one was expected, with no
+"may have been billed" in between. Found by the second review of the
+generation job (H4c), 2026-11-14; the gate's `stale` group stages it.

@@ -426,9 +426,31 @@ impl Store {
         }
     }
 
-    pub fn forget_job(&self, request: &str) {
-        if is_digest(request) {
-            let _ = std::fs::remove_file(self.root.join("jobs").join(format!("{request}.json")));
+    /// Removes the job record for `request` only if it is still the record
+    /// of `job_id`, taking the request's lock for the look and the removal
+    /// (H4c). A caller that polled a job and learned it is over may be late:
+    /// another caller may have forgotten that job already and a third
+    /// submitted and recorded a new, paid one under the same request, whose
+    /// record a blind removal would lose. `false` when the record names
+    /// another job, is gone, or `stop` came first.
+    pub fn forget_job_if(&self, request: &str, job_id: &str, stop: &AtomicBool) -> bool {
+        match self.claim(request, stop, || {}) {
+            Ok(Some(claim)) => {
+                let forgotten = self.forget_job_held(&claim, request, job_id);
+                claim.release();
+                forgotten
+            }
+            Ok(None) | Err(_) => false,
+        }
+    }
+
+    /// [`Self::forget_job_if`] for a caller that already holds the request's
+    /// lock (`_held` proves it).
+    pub fn forget_job_held(&self, _held: &Claim, request: &str, job_id: &str) -> bool {
+        if self.job(request).is_some_and(|record| record.job_id == job_id) {
+            std::fs::remove_file(self.root.join("jobs").join(format!("{request}.json"))).is_ok()
+        } else {
+            false
         }
     }
 
@@ -781,7 +803,12 @@ pub(crate) mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600);
-        store.forget_job(&request);
+        // Another job's id removes nothing; its own removes it.
+        let stop = AtomicBool::new(false);
+        assert!(!store.forget_job_if(&request, "gen-vid-0-older", &stop));
+        assert_eq!(store.job(&request).unwrap().job_id, "gen-vid-1-abc");
+        assert!(store.forget_job_if(&request, "gen-vid-1-abc", &stop));
         assert!(store.job(&request).is_none());
+        assert!(!store.forget_job_if(&request, "gen-vid-1-abc", &stop));
     }
 }

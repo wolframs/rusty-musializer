@@ -649,7 +649,9 @@ fn run_with(
             ),
             Err(ClientError::Stopped) => return Outcome::Stopped { billing: possibly },
             Err(ClientError::Http(refusal)) if refusal.status == 404 => {
-                store.forget_job(digest);
+                // Only this job's record: a newer one for the request (a
+                // caller that came after another forgot this job) is paid.
+                store.forget_job_if(digest, &job_id, stop);
                 return Outcome::Failed {
                     reason: "OpenRouter no longer knows the job submitted for this request; \
                              Generate again asks (and pays) anew"
@@ -682,8 +684,10 @@ fn run_with(
     let billing = state.cost_usd.map_or(possibly.clone(), Billing::Reported);
     if state.status != "completed" {
         // The provider says the job is over without a clip: its record goes,
-        // and the next ask is a new request (and a new bill).
-        store.forget_job(digest);
+        // and the next ask is a new request (and a new bill). Only if the
+        // record is still this job's: another caller polling the same job
+        // may have forgotten it already, and a third submitted a new one.
+        store.forget_job_if(digest, &job_id, stop);
         let reason = if state.status == "expired" {
             "the job expired at OpenRouter before its clip was downloaded; Generate again asks \
              (and pays) anew"
@@ -790,7 +794,7 @@ fn run_with(
             }
         }
     };
-    store.forget_job(digest);
+    store.forget_job_held(&claim, digest, &job_id);
     claim.release();
     Outcome::Done(Generated {
         clip: TrackClip {

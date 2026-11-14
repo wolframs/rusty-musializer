@@ -11,7 +11,7 @@
 # GENERATE_BIN names another binary, for a negative control without replacing
 # the build. GENERATE_SKIP_CARD=1 leaves out the window card's half.
 # GENERATE_ONLY="NAME ..." runs only those groups (base, concurrent, lost,
-# redownload, order, fps, card, canary), for a negative control.
+# redownload, order, fps, stale, card, canary), for a negative control.
 #
 # What it asserts:
 #   - the estimate is printed before any request, and without the flag (or with
@@ -48,6 +48,10 @@
 #     submit is in flight pay once (the provider's submit count), a run with
 #     --max-spend 0 sends nothing, and a job found in progress counts against
 #     a ceiling at its estimate;
+#   - stale (H4c): two runs poll one recorded job and learn it expired at
+#     different times; between the two answers a third run submits a new job
+#     for the request. The late poller leaves the new job's record alone, and
+#     a fourth run picks that job up: two submits in all, not three;
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -300,12 +304,6 @@ else
 fi
 fi # base
 
-# --- 8. two callers for one request (H4b) -------------------------------------------
-# The first run's submit takes 8 s at the fake; two more runs start while it is
-# in flight. The lock in the store makes the second wait and pick the job up;
-# --max-spend 0 sends nothing. Then, with the job recorded and held in
-# progress, a ceiling below its estimate refuses it: it counts at $0.12, not 0.
-if only concurrent; then
 # Runs at the same time each get a state folder of their own (with the same
 # key): headless_run.sh links its tools into it and two at once would race.
 own_state() {
@@ -313,6 +311,23 @@ own_state() {
     cp -a "$MZ_STATE_DIR/config" "$OUT/state-$1/"
     echo "$OUT/state-$1"
 }
+# Waits up to $2 tenths of a second for the command in $1 to succeed.
+wait_for() {
+    local tries="$2"
+    while [ "$tries" -gt 0 ]; do
+        eval "$1" && return 0
+        sleep 0.1
+        tries=$((tries - 1))
+    done
+    return 1
+}
+
+# --- 8. two callers for one request (H4b) -------------------------------------------
+# The first run's submit takes 8 s at the fake; two more runs start while it is
+# in flight. The lock in the store makes the second wait and pick the job up;
+# --max-spend 0 sends nothing. Then, with the job recorded and held in
+# progress, a ceiling below its estimate refuses it: it counts at $0.12, not 0.
+if only concurrent; then
 treatment "$OUT/twice.treatment.json" "two callers at once [slow-submit] [hold]" ""
 submits="$(count submit)"
 MZ_STATE_DIR="$(own_state a)" tools/headless_run.sh --treatment "$OUT/twice.treatment.json" \
@@ -497,6 +512,64 @@ else
     fail "the frames sent under --fps 12 --quality high are not the export's (status $(status_of fps)); see $OUT/fps-before.png, $OUT/fake/submit-$number-first.png"
 fi
 fi # fps
+
+# --- 13. a late poller leaves a newer job alone (H4c) ----------------------------
+# Run X submits job 1 and gives up waiting (a 1 s deadline), leaving its record.
+# Runs A and B pick it up; the fake answers the first poll after release-stale
+# "expired" and holds the other one's answer. The first forgets job 1; run C
+# then submits job 2 and records it; then the held poller hears "expired" too.
+# It must not remove job 2's record (it is not the job it polled), or run D
+# would pay a third time without a word.
+if only stale; then
+treatment "$OUT/stale.treatment.json" "a job polled twice [stale-poller]" ""
+submits="$(count submit)"
+job_one="gen-vid-$((1789480000 + submits + 1))-AAAAAAAAAAAAAAAAAAA$(( (submits + 1) % 10 ))"
+job_two="gen-vid-$((1789480000 + submits + 2))-AAAAAAAAAAAAAAAAAAA$(( (submits + 2) % 10 ))"
+recorded() { grep -qF "\"$1\"" "$MUSIALIZER_GENERATED_DIR/jobs/"*.json 2>/dev/null; }
+MUSIALIZER_VIDEO_DEADLINE_S=1 launch stale-x --treatment "$OUT/stale.treatment.json" --generate-clips --max-spend 1.00 \
+    --save-project "$OUT/stale-x.musi"
+if [ "$(status_of stale-x)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] && recorded "$job_one"; then
+    pass "a run that stops waiting keeps its job's record (job 1)"
+else
+    fail "the first stale run did not leave job 1 recorded (status $(status_of stale-x)); see $OUT/stale-x.log"
+fi
+for name in a b; do
+    MZ_STATE_DIR="$(own_state "stale-$name")" launch "stale-$name" --treatment "$OUT/stale.treatment.json" \
+        --generate-clips --max-spend 1.00 --save-project "$OUT/stale-$name.musi" &
+done
+wait_for 'has stale-a "the model is making it" 2>/dev/null && has stale-b "the model is making it" 2>/dev/null' 900 \
+    || fail "the two pollers of job 1 did not both start polling; see $OUT/stale-a.log, $OUT/stale-b.log"
+touch "$OUT/fake/release-stale"
+wait_for '[ -e "$OUT/stale-a.status" ] || [ -e "$OUT/stale-b.status" ]' 300 || fail "neither poller heard the expiry"
+recorded "$job_one" && fail "the first to hear the expiry did not forget job 1"
+MZ_STATE_DIR="$(own_state stale-c)" launch stale-c --treatment "$OUT/stale.treatment.json" \
+    --generate-clips --max-spend 1.00 --save-project "$OUT/stale-c.musi" &
+STALE_C=$!
+wait_for '[ "$(count submit)" = $((submits + 2)) ] && recorded "$job_two" && has stale-c "the model is making it" 2>/dev/null' 900 \
+    || fail "run C did not submit and record job 2; see $OUT/stale-c.log"
+touch "$OUT/fake/release-stale-2"
+wait_for '[ -e "$OUT/stale-a.status" ] && [ -e "$OUT/stale-b.status" ]' 300 || fail "the late poller never ended"
+if [ "$(status_of stale-a)" = 1 ] && [ "$(status_of stale-b)" = 1 ] \
+    && has stale-a 'the job expired at OpenRouter' && has stale-b 'the job expired at OpenRouter' \
+    && recorded "$job_two"; then
+    pass "both pollers of job 1 heard it expire, and the late one left job 2's record alone"
+else
+    fail "the late poller removed job 2's record, or a poller did not end on the expiry (status $(status_of stale-a), $(status_of stale-b)); see $OUT/stale-a.log, $OUT/stale-b.log"
+fi
+MZ_STATE_DIR="$(own_state stale-d)" launch stale-d --treatment "$OUT/stale.treatment.json" \
+    --generate-clips --max-spend 1.00 --save-project "$OUT/stale-d.musi" &
+STALE_D=$!
+wait_for 'has stale-d "the model is making it" 2>/dev/null || [ "$(count submit)" -gt $((submits + 2)) ]' 900 || true
+touch "$OUT/fake/release-stale-3"
+wait "$STALE_C" || true
+wait "$STALE_D" || true
+if [ "$(count submit)" = $((submits + 2)) ] && [ "$(status_of stale-c)" = 0 ] && has stale-c 'clip.generate generated' \
+    && [ "$(status_of stale-d)" = 0 ] && has stale-d 'clip.generate picked up'; then
+    pass "run D picked job 2 up: two submits for the request, not three"
+else
+    fail "run D paid again or failed ($(( $(count submit) - submits )) submits, status $(status_of stale-c), $(status_of stale-d)); see $OUT/stale-d.log"
+fi
+fi # stale
 
 # --- 6. the section card's Generate, pressed (tools/generate_card_check.py) -------
 if [ "${GENERATE_SKIP_CARD:-}" != 1 ] && only card; then

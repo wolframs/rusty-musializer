@@ -27,6 +27,13 @@ What a job does is chosen by a marker in its prompt:
                     honest Content-Length (a cut-short file the importer refuses)
     [expire]        ends `expired`
     [polls-N]       completes after N polls instead of three
+    [stale-poller]  two callers poll one job and learn it expired at different
+                    times (H4c). The prompt's first job stays in_progress until
+                    STATE_DIR/release-stale exists; then its first poll answers
+                    `expired` and every later poll of it waits for
+                    STATE_DIR/release-stale-2 before answering `expired`. Its
+                    later jobs stay in_progress until STATE_DIR/release-stale-3
+                    exists, then complete
     (none)          completes after two polls with usage.cost = the estimate
 
 A completed clip is made by FFmpeg from the request: the first frame image
@@ -56,6 +63,7 @@ LOCK = threading.Lock()
 COUNTS = {"models": 0, "submit": 0, "poll": 0, "content": 0}
 JOBS: dict[str, dict] = {}
 LOST: set[str] = set()
+STALE: dict[str, int] = {}
 DOWNLOADS: dict[str, int] = {}
 
 
@@ -187,6 +195,25 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(200, {**answer, "status": "in_progress"})
         if "[expire]" in prompt:
             return self.json(200, {**answer, "status": "expired"})
+        if "[stale-poller]" in prompt:
+            if job["stale"] == 1:
+                if not os.path.exists(os.path.join(STATE, "release-stale")):
+                    return self.json(200, {**answer, "status": "in_progress"})
+                with LOCK:
+                    first = not job.get("expired_once")
+                    job["expired_once"] = True
+                if not first:
+                    # The late poller: its answer arrives after a new job was
+                    # recorded. Under curl's 60 s poll limit.
+                    for _ in range(900):
+                        if os.path.exists(os.path.join(STATE, "release-stale-2")):
+                            break
+                        time.sleep(0.05)
+                    else:
+                        return self.json(200, {**answer, "status": "in_progress"})
+                return self.json(200, {**answer, "status": "expired"})
+            if not os.path.exists(os.path.join(STATE, "release-stale-3")):
+                return self.json(200, {**answer, "status": "in_progress"})
         if "[slow]" in prompt and not os.path.exists(os.path.join(STATE, "release")):
             # Slow to answer, too, so the client's curl can be seen running.
             time.sleep(0.4)
@@ -226,8 +253,11 @@ class Handler(BaseHTTPRequestHandler):
             with open(path, "wb") as out:
                 out.write(data)
             job[kind] = path
-        JOBS[job_id] = job
         prompt = request.get("prompt", "")
+        with LOCK:
+            STALE[prompt] = STALE.get(prompt, 0) + 1
+            job["stale"] = STALE[prompt]
+        JOBS[job_id] = job
         if "[slow-submit]" in prompt:
             time.sleep(8)
         if "[lost-answer-once]" in prompt and prompt not in LOST:
