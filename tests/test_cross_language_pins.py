@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import codex_model_discovery  # noqa: E402
 import external_analysis  # noqa: E402
+import mimo_openrouter  # noqa: E402
 import musializer_doctor  # noqa: E402
 import provider_catalog  # noqa: E402
 
@@ -49,6 +50,7 @@ BRIDGE_RS = CORE / "project" / "analysis_bridge.rs"
 CANDIDATE_RS = CORE / "project" / "analysis_candidate.rs"
 ASSIST_SETTINGS_RS = APP / "ui" / "assist_settings.rs"
 DIAGNOSIS_RS = CORE / "assist" / "diagnosis.rs"
+COST_RS = CORE / "assist" / "cost.rs"
 
 
 def rust_source(path: Path) -> str:
@@ -69,6 +71,57 @@ def rust_str_const(path: Path, name: str) -> str:
     if match is None:
         raise AssertionError(f"{path.name} no longer declares a `const {name}: &str`")
     return match.group(1).encode("ascii").decode("unicode_escape")
+
+
+def rust_number_const(path: Path, name: str) -> float:
+    """The value of `pub const NAME: u32|f64 = 1_000;`, underscores allowed."""
+    match = re.search(
+        rf'\bconst\s+{re.escape(name)}\s*:\s*(?:u32|f64)\s*=\s*([0-9_.]+)\s*;',
+        rust_source(path))
+    if match is None:
+        raise AssertionError(f"{path.name} no longer declares a numeric `const {name}`")
+    return float(match.group(1).replace("_", ""))
+
+
+class MimoCostEstimate(unittest.TestCase):
+    """The estimate the confirmation shows and the one the helper records."""
+
+    def test_the_cap_is_the_one_the_helper_sends(self) -> None:
+        self.assertEqual(rust_number_const(COST_RS, "SEMANTIC_MAX_COMPLETION_TOKENS"),
+                         mimo_openrouter.MAX_COMPLETION_TOKENS)
+
+    def test_the_token_model_is_the_same_on_both_sides(self) -> None:
+        self.assertEqual(rust_number_const(COST_RS, "AUDIO_TOKENS_PER_SECOND"),
+                         mimo_openrouter.AUDIO_TOKENS_PER_SECOND)
+        self.assertEqual(rust_number_const(COST_RS, "PROMPT_TEXT_TOKENS"),
+                         mimo_openrouter.PROMPT_TEXT_TOKENS)
+        self.assertEqual(
+            (rust_number_const(COST_RS, "TYPICAL_COMPLETION_TOKENS_LOW"),
+             rust_number_const(COST_RS, "TYPICAL_COMPLETION_TOKENS_HIGH")),
+            mimo_openrouter.TYPICAL_COMPLETION_TOKENS)
+        self.assertEqual(rust_str_const(COST_RS, "PRICES_LISTED_ON"),
+                         mimo_openrouter.PRICES_LISTED_ON)
+
+    def test_the_price_table_is_the_same_table(self) -> None:
+        rows = re.findall(
+            r'ModelPrice\s*\{\s*model_id:\s*"([^"]+)",\s*prompt_usd_per_million:\s*([0-9.]+),'
+            r'\s*completion_usd_per_million:\s*([0-9.]+)\s*\}',
+            rust_source(COST_RS))
+        self.assertTrue(rows, "cost.rs no longer declares its PRICES rows")
+        self.assertEqual(
+            {model: (float(prompt), float(completion)) for model, prompt, completion in rows},
+            mimo_openrouter.PRICES_USD_PER_MILLION)
+
+    def test_the_helper_computes_the_number_the_rust_test_pins(self) -> None:
+        # cost.rs pins 200 s at 2 380 input tokens and 0.008952 / 0.022952 /
+        # 0.032952 USD; the helper must record the same figures.
+        estimate = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", 200.0)
+        self.assertEqual(estimate["input_tokens"], 2_380)
+        self.assertEqual(estimate["usd_typical"], [0.008952, 0.022952])
+        self.assertEqual(estimate["usd_max"], 0.032952)
+        source = rust_source(COST_RS)
+        for figure in ("2_380", "0.008_952", "0.022_952", "0.032_952"):
+            self.assertIn(figure, source)
 
 
 class BridgeHeaderConstants(unittest.TestCase):

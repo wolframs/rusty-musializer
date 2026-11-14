@@ -1974,6 +1974,9 @@ def run_assist(
                 if os.environ.get("OPENROUTER_API_KEY", "").strip() else None),
             "execution_snapshot": snapshot,
             "environment_dump": _dump_environment_for_probe(),
+            **({"semantic_cost_estimate": mimo_adapter.estimate_cost(
+                    semantic_route["model"], audio_duration)}
+               if mode in {"mimo", "all"} else {}),
             "resolved_routes": {
                 "semantic_model": semantic_route["model"],
                 "semantic_zdr": zdr,
@@ -2443,6 +2446,19 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
             "semantics": len(semantic.get("segments", [])) if semantic else 0,
         },
     }
+    # The MiMo call's estimate beside what OpenRouter reported for it. From the
+    # artifact's own provenance, so a reused cache shows what *that* call cost;
+    # `cache_status.semantic` says whether this run paid for it.
+    generation = ((semantic or {}).get("provenance") or {}).get("generation") or {}
+    if isinstance(generation, dict) and "estimate" in generation:
+        usage = generation.get("usage") if isinstance(generation.get("usage"), dict) else {}
+        manifest["semantic_cost"] = {
+            "estimate": generation.get("estimate"),
+            "reported_cost_usd": generation.get("reported_cost_usd"),
+            "completion_tokens": usage.get("completion_tokens"),
+            "prompt_tokens": usage.get("prompt_tokens"),
+            "billed_this_run": cache_status.get("semantic") == "generated",
+        }
     # Same rule for the localization block, and the same reason: it is the third
     # LT1 marker, so a run without a lyrics lane must not carry the key at all
     # rather than carry it as null (review LT1-R, R1).

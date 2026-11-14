@@ -13,6 +13,7 @@ import base64
 import email.utils
 import hashlib
 import json
+import math
 import os
 import sys
 import time
@@ -54,11 +55,74 @@ FAILED_RUN_SCHEMA_VERSION = "musializer.mimo-failed-run/v1"
 # this lane sends whole tracks, so the cap leaves half again as much room and
 # still cuts both runaways. docs/MIMO_BENCHMARK_RESULTS.md, "Cost".
 MAX_COMPLETION_TOKENS = 16_000
+# The cost estimate, built from completion tokens rather than audio length: a
+# whole-track MiMo call is nearly all reasoning output (600-9 200 reasoning
+# tokens per benchmark call, billed at the completion rate), while audio is
+# 7.4 tokens per second at the prompt rate. Every number below is pinned
+# against its Rust copy in `crates/musializer-core/src/assist/cost.rs` by
+# tests/test_cross_language_pins.py; change both or neither.
+COST_ESTIMATE_VERSION = "musializer.mimo-cost-estimate/v1"
+# USD per million tokens as OpenRouter listed them on 2026-11-14 (Venice, the
+# only provider for this model that day). No separate audio price is listed;
+# audio bills as prompt tokens. A model not in this table has no estimate.
+PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
+    "xiaomi/mimo-v2.5": (0.40, 2.00),
+}
+PRICES_LISTED_ON = "2026-11-14"
+# Calibrated from the benchmark's recorded `usage.prompt_tokens`.
+AUDIO_TOKENS_PER_SECOND = 7.4
+# This request's text, instruction and schema, as prompt tokens: measured on
+# the 2026-11-14 capped call (`usage.prompt_tokens` less the audio).
+PROMPT_TEXT_TOKENS = 900
+# The span of whole-excerpt answers the benchmark saw (5 110 for this lane's
+# own shape, 10 942 the largest legitimate one). The ceiling is the cap.
+TYPICAL_COMPLETION_TOKENS = (4_000, 11_000)
 # Bytes of a failed answer's text kept in its receipt: enough to see what kind
 # of failure it was (whitespace, prose, half a JSON object), never 65 k tokens.
 FAILED_CONTENT_KEEP = 4096
 
 Transport = Callable[..., Any]
+
+
+def estimate_cost(model: str, audio_duration: float) -> dict[str, Any]:
+    """What one call should cost, before it is sent: a range and a ceiling.
+
+    The range is the measured span of answer lengths; the ceiling is what a
+    call that runs to the completion cap costs, which is the most it can.
+    Prices are a dated table, not a live quote; an unlisted model gets token
+    counts and no dollar figures rather than a guess.
+    """
+    seconds = duration(audio_duration)
+    input_tokens = math.ceil(seconds * AUDIO_TOKENS_PER_SECOND) + PROMPT_TEXT_TOKENS
+    low_tokens, high_tokens = TYPICAL_COMPLETION_TOKENS
+    estimate: dict[str, Any] = {
+        "version": COST_ESTIMATE_VERSION,
+        "model": model,
+        "audio_seconds": seconds,
+        "input_tokens": input_tokens,
+        "completion_tokens_typical": [low_tokens, high_tokens],
+        "completion_tokens_max": MAX_COMPLETION_TOKENS,
+        "prices_usd_per_million": None,
+        "prices_listed_on": None,
+        "usd_typical": None,
+        "usd_max": None,
+    }
+    prices = PRICES_USD_PER_MILLION.get(model)
+    if prices is None:
+        return estimate
+    prompt_price, completion_price = prices
+
+    def usd(completion_tokens: int) -> float:
+        return round((input_tokens * prompt_price
+                      + completion_tokens * completion_price) / 1_000_000.0, 6)
+
+    estimate.update({
+        "prices_usd_per_million": {"prompt": prompt_price, "completion": completion_price},
+        "prices_listed_on": PRICES_LISTED_ON,
+        "usd_typical": [usd(low_tokens), usd(high_tokens)],
+        "usd_max": usd(MAX_COMPLETION_TOKENS),
+    })
+    return estimate
 
 
 class FailedRun(RuntimeError):
@@ -165,6 +229,7 @@ def normalize_semantic_score(
     request_settings: dict[str, Any],
     response_metadata: dict[str, Any] | None = None,
     requested_model: str = MODEL,
+    cost_estimate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     audio_duration = duration(audio_duration)
     audio_sha256 = audio_hash(audio_sha256)
@@ -224,9 +289,14 @@ def normalize_semantic_score(
         "prompt_version": PROMPT_VERSION,
         "request_settings": request_settings,
         "generation": {
-            key: metadata[key]
-            for key in ("id", "created", "usage")
-            if key in metadata
+            **{key: metadata[key]
+               for key in ("id", "created", "usage")
+               if key in metadata},
+            # What was expected before sending, beside what the provider
+            # reported after: the two numbers a user compares.
+            **({"estimate": cost_estimate,
+                "reported_cost_usd": reported_cost_usd(metadata)}
+               if cost_estimate is not None else {}),
         },
     }
     return {
@@ -363,6 +433,8 @@ def redacted_request_dump(payload: dict[str, Any], settings: dict[str, Any], aud
         "timeout_seconds": DEFAULT_TIMEOUT,
         "headers": {"Authorization": "Bearer <redacted>", "Content-Type": "application/json"},
         "settings": settings,
+        "cost_estimate": estimate_cost(
+            str(settings.get("model") or MODEL), settings["audio_duration_seconds"]),
         "payload": redacted,
     }
 
@@ -482,24 +554,29 @@ def reported_cost_usd(response: dict[str, Any]) -> float | None:
     return None
 
 
-def _cost_clause(response: dict[str, Any]) -> str:
+def _cost_clause(response: dict[str, Any], estimate: dict[str, Any] | None = None) -> str:
     cost = reported_cost_usd(response)
-    if cost is None:
-        return "OpenRouter reported no cost for it"
-    return f"OpenRouter billed {cost:.4f} USD for it"
+    if cost is not None:
+        return f"OpenRouter billed {cost:.4f} USD for it"
+    ceiling = (estimate or {}).get("usd_max")
+    if isinstance(ceiling, (int, float)):
+        return f"OpenRouter reported no cost for it (at most {ceiling:.3f} USD)"
+    return "OpenRouter reported no cost for it"
 
 
 def failure_receipt_path(cache_path: Path) -> Path:
     return cache_path.with_name(f"{cache_path.stem}.failed.json")
 
 
-def failure_message(reason: str, response: dict[str, Any] | None) -> str:
-    return f"{reason}. Nothing was saved; {_cost_clause(response or {})}."
+def failure_message(reason: str, response: dict[str, Any] | None,
+                    estimate: dict[str, Any] | None = None) -> str:
+    return f"{reason}. Nothing was saved; {_cost_clause(response or {}, estimate)}."
 
 
 def _write_failure_receipt(
     cache_path: Path, *, reason: str, response: dict[str, Any] | None,
     settings: dict[str, Any], audio_sha256: str, detail: str | None = None,
+    estimate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The record of a failed run, beside (never in) the cache.
 
@@ -512,7 +589,7 @@ def _write_failure_receipt(
     receipt = {
         "schema_version": FAILED_RUN_SCHEMA_VERSION,
         "reason": reason,
-        "message": failure_message(reason, response),
+        "message": failure_message(reason, response, estimate),
         "detail": detail,
         "audio_sha256": audio_sha256,
         "request": settings,
@@ -522,6 +599,7 @@ def _write_failure_receipt(
             for key in ("id", "created", "model", "provider", "usage")
             if key in response
         },
+        "estimate": estimate,
         "reported_cost_usd": reported_cost_usd(response),
         "content_characters": None if content is None else len(content),
         "content_start": None if content is None else content[:FAILED_CONTENT_KEEP],
@@ -581,13 +659,14 @@ def analyze_to_cache(
     receipt_path = failure_receipt_path(cache_path)
     # A receipt from an earlier attempt describes that attempt, not this one.
     receipt_path.unlink(missing_ok=True)
+    estimate = estimate_cost(str(settings.get("model") or model), audio_duration)
     response = submit_request(payload, transport=transport, sleeper=sleeper)
 
     def failed(reason: str, detail: str | None = None) -> FailedRun:
         _write_failure_receipt(
             cache_path, reason=reason, response=response, settings=settings,
-            audio_sha256=audio_hash, detail=detail)
-        return FailedRun(failure_message(reason, response))
+            audio_sha256=audio_hash, detail=detail, estimate=estimate)
+        return FailedRun(failure_message(reason, response, estimate))
 
     reason = completion_failure(response)
     if reason is not None:
@@ -604,6 +683,7 @@ def analyze_to_cache(
             request_settings=settings,
             response_metadata=response,
             requested_model=str(settings.get("model") or model),
+            cost_estimate=estimate,
         )
     except AnalysisValidationError as error:
         detail = str(error)

@@ -225,6 +225,57 @@ class FailedRuns(LaneTestCase):
         self.assertEqual(cached["request"]["max_tokens"], 16_000)
 
 
+class CostEstimate(LaneTestCase):
+    def test_a_whole_track_is_priced_from_its_answer_not_its_audio(self) -> None:
+        estimate = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", 200.0)
+        self.assertEqual(estimate["input_tokens"], 1_480 + 900)
+        self.assertEqual(estimate["completion_tokens_typical"], [4_000, 11_000])
+        self.assertEqual(estimate["completion_tokens_max"], 16_000)
+        self.assertEqual(estimate["usd_typical"], [0.008952, 0.022952])
+        self.assertEqual(estimate["usd_max"], 0.032952)
+        # The audio alone is a twentieth of the low end.
+        self.assertLess(1_480 * 0.40 / 1e6 * 10, estimate["usd_typical"][0])
+
+    def test_the_benchmarks_recorded_call_lands_inside_the_range(self) -> None:
+        # 100 s, 5 110 completion tokens, reported 0.010596 USD.
+        low, high = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", 100.0)["usd_typical"]
+        self.assertLessEqual(low, 0.010596)
+        self.assertLessEqual(0.010596, high)
+
+    def test_an_unlisted_model_gets_tokens_and_no_dollars(self) -> None:
+        estimate = mimo_openrouter.estimate_cost("acme/never-priced", 200.0)
+        self.assertEqual(estimate["input_tokens"], 2_380)
+        self.assertIsNone(estimate["usd_typical"])
+        self.assertIsNone(estimate["usd_max"])
+
+    def test_the_dry_run_shows_the_estimate(self) -> None:
+        payload, settings = mimo_openrouter.build_request(
+            b"\x00", audio_format="wav", audio_duration=200.0)
+        dump = mimo_openrouter.redacted_request_dump(payload, settings, "a" * 64)
+        self.assertEqual(dump["cost_estimate"]["usd_max"], 0.032952)
+
+    def test_the_cached_answer_records_the_estimate_beside_the_reported_cost(self) -> None:
+        _, envelope = self.run_lane(response(answer(), cost=0.010596))
+        generation = envelope["normalized"]["provenance"]["generation"]
+        self.assertEqual(generation["estimate"]["usd_max"],
+                         mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", DURATION)["usd_max"])
+        self.assertEqual(generation["reported_cost_usd"], 0.010596)
+        self.assertEqual(generation["usage"]["completion_tokens"], 5110)
+        manifest = external_analysis.build_assist_manifest(
+            mode="mimo", audio_sha="a" * 64, measured_duration=DURATION,
+            cache_status={"semantic": "generated"}, paths={"manifest": Path("m.json")},
+            plan={"sections": []}, lyrics=None, semantic=envelope["normalized"])
+        self.assertEqual(manifest["semantic_cost"]["reported_cost_usd"], 0.010596)
+        self.assertEqual(manifest["semantic_cost"]["completion_tokens"], 5110)
+        self.assertTrue(manifest["semantic_cost"]["billed_this_run"])
+
+    def test_a_failed_run_without_a_reported_cost_names_the_ceiling(self) -> None:
+        with self.assertRaises(mimo_openrouter.FailedRun) as raised:
+            self.run_lane(response(None, cost=None))
+        ceiling = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", DURATION)["usd_max"]
+        self.assertIn(f"at most {ceiling:.3f} USD", str(raised.exception))
+
+
 class FailedRunReachesTheUser(LaneTestCase):
     """Through `run_assist`, the sentence the job log's last line carries."""
 

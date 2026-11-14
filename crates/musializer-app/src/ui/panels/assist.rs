@@ -1326,6 +1326,11 @@ thread_local! {
     static LAST_ROUTING_REPORT: std::cell::RefCell<String> = const {
         std::cell::RefCell::new(String::new())
     };
+
+    /// The last `assist cost:` line printed.
+    static LAST_COST_REPORT: std::cell::RefCell<String> = const {
+        std::cell::RefCell::new(String::new())
+    };
 }
 
 /// Like the confirmation cache, refresh after the settings dialog changes
@@ -2454,6 +2459,50 @@ fn route_notes(plan: &ExecutionPlan) -> Vec<(String, raylib::prelude::Color)> {
     notes
 }
 
+/// What the semantic call should cost, under its route row, before Start.
+///
+/// Built on completion tokens rather than audio seconds
+/// (`musializer_core::assist::cost`): the benchmark found a whole-track MiMo
+/// call is nearly all reasoning output. The `assist cost:` report line carries
+/// the same numbers, so a capture can check the line it cannot read.
+fn semantic_cost_line(entry: &ContractSnapshot, duration_seconds: Option<f64>) -> Option<String> {
+    use musializer_core::assist::{contracts::ContractId, contracts::RouteType, cost};
+    if entry.contract != ContractId::Semantic || entry.route_type != RouteType::OpenRouter {
+        return None;
+    }
+    let duration = duration_seconds.unwrap_or(f64::NAN);
+    let estimate = cost::semantic_estimate(&entry.model_id, duration);
+    report_cost(&match &estimate {
+        Some(estimate) => format!(
+            "model={} seconds={duration:.3} input-tokens={} usd-typical={:.6}..{:.6} usd-max={:.6} cap={}",
+            entry.model_id,
+            estimate.input_tokens,
+            estimate.usd_typical[0],
+            estimate.usd_typical[1],
+            estimate.usd_max,
+            cost::SEMANTIC_MAX_COMPLETION_TOKENS,
+        ),
+        None => format!(
+            "model={} seconds={duration:.3} unpriced cap={}",
+            entry.model_id,
+            cost::SEMANTIC_MAX_COMPLETION_TOKENS,
+        ),
+    });
+    Some(cost::semantic_line(&entry.model_id, duration))
+}
+
+/// The `assist cost:` report line, printed when it changes.
+fn report_cost(line: &str) {
+    LAST_COST_REPORT.with(|last| {
+        let mut last = last.borrow_mut();
+        if *last != line {
+            println!("assist cost:     {line}");
+            last.clear();
+            last.push_str(line);
+        }
+    });
+}
+
 /// One route row's text, in the grammar the settings dialog's dry-run summary
 /// uses so the two surfaces cannot describe the same route differently.
 fn route_row(entry: &ContractSnapshot) -> String {
@@ -3382,8 +3431,10 @@ impl Shell {
             reference.summary()
         };
         let reference_lines = wrap_to_width(reference_summary, inner, 3, &measure13);
-        let route_lines: Vec<(String, raylib::prelude::Color)> =
-            routes.as_ref().map(column_route_lines).unwrap_or_default();
+        let route_lines: Vec<(String, raylib::prelude::Color)> = routes
+            .as_ref()
+            .map(|plan| column_route_lines(plan, track.map(|track| track.duration_seconds)))
+            .unwrap_or_default();
         let running_text = wrap_to_width(
             "No percentage is reported, so none is drawn. Playback stays available, and nothing changes until you apply a result.",
             inner,
@@ -4389,7 +4440,10 @@ struct AssistOpenTexts<'a> {
 /// The P4 route block's lines for the column: the heading sentence, one row
 /// per composed contract, the boundary invariant, and the notes, each with its
 /// tint — the band's `draw_route_graph`, as a list the card can lay out.
-fn column_route_lines(plan: &ExecutionPlan) -> Vec<(String, raylib::prelude::Color)> {
+fn column_route_lines(
+    plan: &ExecutionPlan,
+    duration_seconds: Option<f64>,
+) -> Vec<(String, raylib::prelude::Color)> {
     let snapshot = &plan.snapshot;
     let leaves = snapshot.sends_audio_off_machine();
     let heading = if leaves {
@@ -4424,6 +4478,9 @@ fn column_route_lines(plan: &ExecutionPlan) -> Vec<(String, raylib::prelude::Col
                 color::ui_ink()
             },
         ));
+        if let Some(line) = semantic_cost_line(entry, duration_seconds) {
+            lines.push((line, color::ui_muted()));
+        }
     }
     let raises = execution::any_fallback_can_raise_boundary(&snapshot.contracts);
     lines.push((
@@ -4552,6 +4609,39 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mimo_route_shows_its_cost_and_no_other_route_does() {
+        use musializer_core::assist::{contracts::ContractId, settings::AssistSettings};
+        let snapshot = execution::resolve(
+            &AssistSettings::default(),
+            execution::WorkflowKind::All,
+            false,
+            &execution::ExecutionFacts::default(),
+        );
+        let mut priced = 0;
+        for entry in &snapshot.contracts {
+            let line = semantic_cost_line(entry, Some(200.0));
+            if entry.contract == ContractId::Semantic {
+                assert_eq!(entry.model_id, "xiaomi/mimo-v2.5");
+                assert_eq!(
+                    line.as_deref(),
+                    Some("Estimated cost: about 0.009\u{2013}0.023 USD, at most 0.033 USD (answer capped at 16000 tokens)")
+                );
+                priced += 1;
+            } else {
+                assert_eq!(line, None, "{} has no cost line", entry.contract.token());
+            }
+        }
+        assert_eq!(priced, 1);
+        // No track loaded yet: the line still says the cap, never a figure.
+        let semantic = snapshot
+            .contract(ContractId::Semantic)
+            .expect("semantic row");
+        let unpriced = semantic_cost_line(semantic, None).expect("a line");
+        assert!(unpriced.contains("needs the track's length"), "{unpriced}");
+        assert!(!unpriced.contains("USD"), "{unpriced}");
+    }
 
     #[test]
     fn the_card_probe_opens_the_named_workflow_on_confirmation() {

@@ -13,6 +13,7 @@
 //! the operator on 2026-08-04.
 
 pub mod contracts;
+pub mod cost;
 pub mod credentials;
 pub mod diagnosis;
 pub mod execution;
