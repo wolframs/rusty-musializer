@@ -63,54 +63,6 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
-**In flight — the 2026-11-13 wave (claimed; lead: the main session).** The
-operator, 2026-11-13, on the next-candidates list: "Let's get these off our
-list!" This block is the wave's plan. Tick a step when it is merged on master
-and verified; delete the block when the wave is done, moving the evidence to
-the archive as usual. Each agent works in its own worktree and branch from the
-commit that adds this block; the lead cherry-picks.
-
-- [x] **A — export.** EX3 gradient banding in exported frames; EX4 the progress
-  screen that stops repainting and polling Cancel while the encoder is backed
-  up; PXF-5 the still that blocks the frame loop.
-- [x] **B — captions.** MV2: named caption styles a lyric line or a section can
-  pick, and a title lane (title, artist, handle) separate from lyrics. Never a
-  card by default.
-- [x] **C — friction.** PXF-7 reopen at the last playhead position; the
-  treatment file picker for native agent sessions (`docs/WORKSTATION.md`, open
-  work); D7 number-row scene selection and tile tooltips.
-- [x] **Integrate A–C**: cherry-pick, one review by GPT-6.1-Sol on the merged
-  diff, one full `tools/verify.sh`, `cargo build --release`.
-- [x] **ST — saved stills are opaque.** Found while integrating (2026-11-14):
-  a still's PNG carries whatever alpha the frame's blends left. In the caption
-  gate's stills, 230,396 of 230,400 pixels of a Cadence frame are below 255
-  (minimum 178), and Pulse Field, Clawd and every caption or title-card glyph
-  edge leave some. A still is the video's frame and the video has no alpha, so
-  the still, contact-sheet and share-frame writers should write alpha 255 and
-  leave r, g, b alone. Deliberate: record it in `docs/DIVERGENCES.md`, and keep
-  a per-plane report line so a scene that eats destination alpha (the
-  `BLEND_ALPHA` trap) stays visible to the gates that used the alpha plane to
-  find one.
-- [ ] **D — the segment inspector** (built, reviewed, fixed and polished, merged 2026-11-14; full verify still to come) (MV9-l, MV3-a), after B and C are merged:
-  edit a section's transition, grade, glide, the finish, voices and B's caption
-  style in the right column. Designer and critic as in WX-5.
-- [ ] **E — MiMo v2.5 benchmark** (row 2). Offline dry run first; the live run
-  waits for the operator's go-ahead on the spend and on sending audio out.
-- [x] **F1 — video clips as material** (VG, first half; merged 2026-11-14):
-  the `clip` scene plays any video file as a section, bundled with the
-  project. Record and seam in `docs/VIDEO_GENERATION.md`.
-- [x] **F1 review**: GPT-6.1-Sol's eight findings fixed and merged
-  (2026-11-14), each with its check.
-- [x] **F1 follow-up**: the Look section card's controls for a clip section
-  (merged 2026-11-14).
-- [ ] **F2 — generating a clip** (VG, second half): provider call, price shown
-  first, consent through the Assist contracts, provenance on the clip asset,
-  a `generated` transition. Waits for the operator's go-ahead on spending.
-- [ ] **Close**: review, full verify, release build, queue and archive updated,
-  worktrees and their branches removed.
-
-Not in this wave: LT2 lyrics timing and WX-6 appearance coverage.
-
 **WX-6 appearance coverage — still open (2026-10-30).** The EX4-c CPU
 failure is diagnosed and fixed: it predates WX-5d (5/5
 quiet failures on both `3ec989e` and `be507e1`), and saturation occurs before
@@ -132,7 +84,7 @@ through this grip remains a layout decision, separate from appearance coverage.
 
 **WX-5 follow-ups.** The remaining layout decision is whether the lyric lane's
 resize grip should grow the whole band. WX-6 appearance coverage is tracked
-above; native agent follow-ups are in [the workstation guide](docs/WORKSTATION.md#open-work).
+above; the rest is in [the workstation guide](docs/WORKSTATION.md#open-work).
 
 **Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
 solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28, Geometry family),
@@ -248,17 +200,17 @@ a CX ruling, not a preference.
 | # | Work | Ids | Size |
 | --- | --- | --- | --- |
 | 1 | **Review SX4, then revisit CX-4.** Track A's original session was rejected; track B is unreviewed. The new design review has four questions per track and a separate cut-quality question in the browser. Original CX-4 files/answers remain intact; do not unblind until both original sessions are complete. Tap-offset and 80/120/200 ms flash comparisons also remain unvalidated | SX4, CX-4 | operator listening |
-| 2 | **MiMo v2.5 capability benchmark** — operator's stated priority. Design and harness exist (`docs/MIMO_BENCHMARK_PLAN.md`, `tools/mimo_bench/`). **Needs an explicit operator go-ahead**: it sends audio to OpenRouter and spends credits | — | one session |
+| 2 | **MiMo v2.5 capability benchmark** (E of the 2026-11-13 wave) — operator's stated priority. Design and harness exist (`docs/MIMO_BENCHMARK_PLAN.md`, `tools/mimo_bench/`); the offline dry run is done (`tools/mimo_bench/run.py plan` prints the calls and the projected cost, on 2026-11-14 159 calls and 0.32–0.36 USD, with both tracks' excerpts prepared). **Waits for the operator** on two things: the go-ahead for the live run, which sends audio to OpenRouter and spends credits; and key, meter and instruments in `tools/mimo_bench/ground_truth/tracks.json`, still unadjudicated for both tracks, so six dimensions would abstain | — | one session |
 | 3 | **The remaining CX rulings, in their stated order.** Review the implemented track-specific CX-5 scene thumbnails, then CX-1 marker rails and the proposal review queue (PXF-8), then CX-2 export variants (PXF-4 first, schema v2 — PXF-9) | CX-1, CX-2, CX-5 | large; four or five agents |
-| 4 | **Workflow friction and product opportunities** left from the user-perspective review | UX0-B06, B07, B10–B19; UX0-C05, C08, C09, C17; PXF-3, PXF-5, PXF-12 | medium |
-| 5 | **Durable-edit remainder, then the missing product surfaces, then honesty and gates** | B3; C2, C3, C5; D6, D7, D8; E2, E3, E4; F1/F2/F3 remainder; G1, G2 | large |
+| 4 | **Workflow friction and product opportunities** left from the user-perspective review | UX0-B06, B07, B10–B19; UX0-C05, C08, C09, C17; PXF-3, PXF-12, PXF-13 | medium |
+| 5 | **Durable-edit remainder, then the missing product surfaces, then honesty and gates** | B3; C2, C3, C5; D6, D8; E2, E3, E4; F1/F2/F3 remainder; G1, G2; GX-3 | large |
 | 6 | **Dev-ex and infrastructure** (DX8 closed 2026-08-29 — E2/E4 unblocked) | DX1–DX7, DX9 | small each |
 | 7 | **Assist provider remainder** | AP5-b/c/d, AP6-e | small each; AP5-c is a feature |
 | 8 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
-| 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11; guide in `docs/MUSIC_VIDEO_CLI.md`). The first two are the ones a director hits within minutes | MV2–MV8 | MV3 landed with three follow-ups; MV2 is a `.musi` extension; the rest small |
-| 10 | **The compositor's work, moved into the renderer** — all of MV9 landed 2026-10-21; editing it in the window is the one follow-up | MV9-l | medium, UI |
-| 11 | **The window as a directing workstation** — a dock with a real terminal and native Claude Code / Codex / Antigravity sessions, the window following a treatment live, and the restyle the mockup proposes. Operator request 2026-10-21; WX-0 to WX-4 landed 2026-10-21, WX-5a (dark look, one accent) and WX-5b (plan lane as runs, poster frames) 2026-10-24; WX-6 appearance coverage and WX-4 follow-ups remain open in [`docs/WORKSTATION.md`](docs/WORKSTATION.md) | WX-6, WX-4 follow-ups | gate runtime cap and small independent follow-ups |
-| 12 | **Generated video as material** — scoping only: five 1080p+ picks from OpenRouter, all with first/last-frame input, prices and image inputs in [`docs/VIDEO_GENERATION.md`](docs/VIDEO_GENERATION.md); `tools/openrouter_video_prices.py --hd` refreshes them. Building it spends money and needs the Assist consent route | VG | not started; operator interest 2026-10-21 |
+| 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11, MV2 2026-11-13; guide in `docs/MUSIC_VIDEO_CLI.md`) | MV2 remainder, MV3–MV8 | small each |
+| 10 | **The look cards' remainder** — MV9-l and MV3-a landed 2026-11-14 as Look's look cards; what they left is listed under MV9 | MV9-l remainder | small each, UI |
+| 11 | **The window as a directing workstation** — a dock with a real terminal and native Claude Code / Codex / Antigravity sessions, the window following a treatment live, and the restyle the mockup proposes. Operator request 2026-10-21; WX-0 to WX-5d landed by 2026-10-30, the treatment picker 2026-11-13; WX-6 appearance coverage and the lyric-lane grip decision remain open in [`docs/WORKSTATION.md`](docs/WORKSTATION.md) | WX-6 | gate runtime cap |
+| 12 | **Generated video as material** — the first half (F1: any video file as a `clip` section, bundled) landed 2026-11-14, record and seam in [`docs/VIDEO_GENERATION.md`](docs/VIDEO_GENERATION.md). **F2, generating a clip** (provider call, price shown first, consent through the Assist contracts, provenance on the clip asset, a `generated` transition) **waits for the operator's go-ahead on spending**; `tools/openrouter_video_prices.py --hd` refreshes the prices. The clip half's own leftovers are listed under VG below | VG (F2), VG remainder | F2 one session once approved |
 
 ### The items, in one line each
 
@@ -282,7 +234,7 @@ prefix.
   `tools/headless_check.sh`'s `last stamp` expectation and two core tests.
 - **CX-5** — track-specific scene thumbnails are implemented through the poster
   service; awaiting operator review. The stable representative moment does
-  not require resume-position persistence (PXF-7 remains its own open item).
+  not require resume-position persistence.
 
 **PXF — PX-wave debrief follow-ups.** PXF-6, PXF-8, PXF-9 and PXF-11 are not
 separate work: they are the *questions* CX-5, CX-1, CX-2 and CX-4 answered, and
@@ -293,10 +245,9 @@ the answers are the rows above. The rest are still open as written.
 - **PXF-4** — the clip is invisible on the timeline. In/Out are set against a
   waveform that shows nothing; drag handles on the strip belong to the timeline
   gesture owner, not the export panel.
-- **PXF-5** — the still blocks the frame loop behind a static "Rendering still
-  frame". The export's own progress screen is the model.
-- **PXF-7** — resume position: `Metadata` has no playhead field, so reopening a
-  recent project starts at 0:00.
+- **PXF-13** — crash recovery does not resume the playhead. PXF-7 (landed
+  2026-11-13) reopens a saved project where it was; a restored recovery
+  snapshot still starts at 0:00.
 - **PXF-12** — the route editor's 104-band stepper still has no typed value or
   wheel nudge. Keyboard nudge conflicts with the transport's arrow keys and needs
   a decision rather than a silent resolution.
@@ -306,7 +257,8 @@ lyric draft state; B10 reviewable Assist reasoning; B11 actionable timing
 uncertainty; B12 selective/reversible Assist apply; B13 meaningful Assist
 progress; B14 actionable Assist failure; B15 remote-mode prerequisite checks;
 B16 recoverable missing-support state; B17 consistent Assist visual semantics;
-B18 a discoverable keymap; B19 useful tall-window layout.
+B18 a discoverable keymap (it now has the number row's ten scenes to list,
+D7); B19 useful tall-window layout.
 
 **UX0-C — product opportunities.** C05 scene thumbnails (= CX-5); C08 a
 project-level palette/look; C09 a cover-art/logo layer; C17 room for the caption
@@ -331,9 +283,6 @@ here.
 - **D6** — `SettingKind::Toggle` drawn as a labelled binary control rather than
   a numeric slider. Inspector scrolling is implemented (2026-09-05), with
   nonvisual reachability/input checks; the operator's visual check is pending.
-- **D7** — **direct 1–0 scene selection and its tile tooltips.** Ctrl+S /
-  Ctrl+Shift+S are bound (UX0-A) and the "text entry suppresses every global
-  shortcut" test exists (UX0-A06); the number row does not.
 - **D8** — an actionable notice tray: call-site-provided specifications, paths and
   tooltips, Dismiss, Copy path, Assist Retry, a `+N more` indicator. UX0-A11
   landed the opaque card, wrapping, `Severity::dwell` and the close box; start
@@ -360,21 +309,23 @@ here.
   fullscreen, launcher startup) that Xvfb cannot stand in for. **Its old
   "open a Rust `.musi` in the C" step is retired** by the 2026-08-03 legacy
   decision; the compatibility contract runs against our own releases.
+  **Never tried for real, from the 2026-11-13 wave, to go with it:** the file
+  dialogs behind the Direct view's treatment picker and Import clip…; the look
+  cards with a real mouse and keyboard; a real agent session beside the
+  picker; a 4K export with a slow preset (EX4); a GPU that refuses the 16-bit
+  export target; a real phone video, a clip from a generation model, and a
+  clip longer than 20 s or above 1080p.
 
-**EX3/EX4 — two export defects named and deliberately not fixed.**
+**EX3/EX4 — the export defects' remainder.** Both defects landed in the
+2026-11-13 wave (the 16-bit export target with one dithered quantise; the
+writer thread that keeps the progress screen painting). Left:
 
-- **Gradient banding in exported frames is real and is not the codec.** A 0→40
-  ramp round-trips through `yuv444p` at 0.41 RMS, so the contours are in the frame
-  handed to FFmpeg: `LoadRenderTexture` is RGBA8, the halo's ping-pong buffers are
-  RGBA8, and every blend is gamma-space with no `GL_FRAMEBUFFER_SRGB` anywhere in
-  `rlgl.h`. The fix is an RGBA16F export target through
-  `rlLoadFramebuffer`/`rlFramebufferAttach` — a new `unsafe` island that must check
-  `rlFramebufferComplete` before trusting the driver.
-- **The export progress screen does its blocking frame write inside its own
-  `begin_drawing`/`EndDrawing` pair**, so while the encoder is backed up neither
-  Escape nor Cancel is polled and the window does not repaint. At 4K `-preset
-  slow` that is a visibly frozen application that reads as "the export hung".
-  Moving the write outside the pair is the fix.
+- **Balanced exports keep most of their banding**: x264 at CRF 20 flattens the
+  dither again. `-aq-mode 3` measured better on the ramp (EX3 row in
+  `docs/DIVERGENCES.md`) but changes encoder settings and file sizes, so it is
+  **the operator's call**.
+- **The finish's bloom and blur buffers are still RGBA8**
+  (`runtime::offscreen::Canvas`).
 - Recorded, not fixed: a **cached** mid-export caption atlas failure would make
   the second half of one MP4 blurrier than the first.
 
@@ -450,6 +401,14 @@ report line carrying the control rectangles so the gate computes the point it
 presses. Until then every coordinate in `tools/headless_check.sh` is a latent
 version of the defect that let three export SIZE buttons sit dead for months.
 
+**GX-3 — the poster gate's frame-budget comparison measures the machine,**
+as GX-2's stall assertion did. On 2026-11-14 it failed the full verify
+("posters stalled more frames (3) than no posters (1)"); run alone three
+times at load 6 to 7 it gave on/off stalls of 1/2, 0/5 and 2/1. It needs a
+comparison that survives a busy machine (repeated runs and medians, or the
+poster service's own step timings) before it can decide anything. Do not
+loosen it without that.
+
 **SX2/SX3 — scene follow-ups.** No HX protocol has been run on Clawd's expression
 thresholds, its petal-show arm thresholds (measured against one track), or any of
 the three depth passes; the blinded A/B machinery exists but none of the three is
@@ -461,22 +420,11 @@ has the same latent defect.
 `--contact-sheet`, `--still`, `tools/headless_run.sh`) is in the archive. Making
 one real video with it found these, each from a contact sheet:
 
-- **MV2 — one caption style per project.** A bottom caption collides with
-  whatever a scene keeps at the bottom (Clawd's cats, Spectrum's bars); a title
-  cannot be set apart from a lyric line, so it is a lyric line shown through
-  Cadence. Wants a per-line or per-section style and probably a title lane.
-  A `.musi` extension: bump deliberately, default never serialized.
-  Operator, 2026-10-12: no title card unless one is asked for, and a card that
-  is asked for carries the artist too (for a Suno track, display name and
-  `@handle`). So the title lane needs an artist line, and nothing may add a
-  card by default.
-- **MV3 — transitions**, landed 2026-10-12: twelve kinds, an intro out of
-  black and an outro into it, authored in a treatment, saved in the `.musi`,
-  drawn by preview and export alike (`docs/MUSIC_VIDEO_CLI.md`). Still open:
-  - **MV3-a — nothing in the window edits them.** Since MV9-k the scene
-    lane shows each segment's transition as a light band across its length
-    and the outro as a dark band; a picker on the boundary is still open
-    (with MV9-l).
+- **MV2's remainder** (named caption styles and the title lane landed
+  2026-11-13): a cue's style is not editable in the Lyrics view beyond the
+  chip that steps it; nothing has exported a 9:16 video with a title card.
+- **MV3 — transitions**, landed 2026-10-12 (edited in the window since
+  2026-11-14, MV3-a). Still open:
   - **MV3-b — the outgoing picture is a held frame.** Invisible under half a
     second, visible in a long dissolve out of a busy scene. Two live scenes
     need a second settings table, a second route evaluation and scene state
@@ -515,19 +463,35 @@ one real video with it found these, each from a contact sheet:
     it wants named buttons.
 
 - **MV9 — the "Door, No Room" compositor's work, moved into the renderer.**
-  Landed 2026-10-21 in full (a–k; the record is in the archive under MV9).
-  One follow-up stays open:
-  - **MV9-l — authoring the look in the window.** Grades, glides, the finish,
-    voices, a threshold's beyond and transitions come from a treatment; the
-    scene lane now *shows* all of them (MV9-k) but nothing edits them. Wants
-    a segment inspector, which is UI the operator called horrible outside the
-    main screen and said they barely use — so lowest priority.
+  Landed 2026-10-21 in full (a–k); MV9-l, editing it in the window, landed
+  2026-11-14 as Look's look cards (`docs/MUSIC_VIDEO_CLI.md`, "Editing the
+  look in the window"). What the look cards left:
+  - No undo for plan edits (the lane has none either).
+  - A window edit is not written back into a followed treatment; the cards
+    are disabled while one is followed.
+  - A caption style's other members (face, box, margins, effects), and
+    clearing a voice's or a style's value back to its own, are a treatment's.
+  - Giving a line a voice from the Lyrics view (Look's Captions card can).
+  - The Pixel group's typed value is keyed by slot and scene only and may
+    need the cards' owner rule (a draft belongs to one project).
+
+- **VG remainder — clips** (F1 landed 2026-11-14; F2 is row 12):
+  - A clip restored from a crash-recovery snapshot is still opened by name,
+    and autosave still checks an existing bundled file by name; the bundled
+    path is walked beneath its folder everywhere else.
+  - Provenance on the clip asset (model, prompt, price) and a `generated`
+    transition, both with F2.
+  - The `punch` setting reads as subtle even at 0.6.
+
+- **The section click while playing — an agent's decision, the operator's to
+  revise.** While the track plays, a click on a section selects it and does
+  not move the playhead; paused, it shows the section. Agent G decided this on
+  2026-11-14 (`docs/DIVERGENCES.md`, "The show belongs to a completed click
+  while paused"); the operator has not ruled on it.
 
 - **WX — the window as a directing workstation** (2026-10-21). Parts, order,
   decisions and status live in [`docs/WORKSTATION.md`](docs/WORKSTATION.md);
-  that file is updated as each part lands. WX-0 to WX-4 landed 2026-10-21;
-  the operator approved the mockup's direction and asked for one session per
-  step from here. The briefs are under "Next sessions" in that file.
+  that file is updated as each part lands, and its "Open work" is the rest.
 
 - **Disk decisions left over from the 2026-11-10 cleanup — the operator's to
   make, in a session here.** Both live in the gitignored `build/`; measure

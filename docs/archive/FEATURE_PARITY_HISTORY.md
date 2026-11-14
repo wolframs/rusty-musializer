@@ -4923,3 +4923,152 @@ CPU poster gate still fails one extra frame (25.6 ms versus off's 16.7 ms),
 39.07 s; the existing assertion is unchanged. The ordinary GPU poster check
 passes in verify. WX-6's both-look conversion remains open on the measured
 +53.57% cap failure. Logs and review PNGs: build/wx5-integrated/.
+
+## The 2026-11-13 wave: export, captions, friction, look cards, clips (2026-11-13 to 2026-11-14)
+
+The operator, 2026-11-13, on a list of next candidates: *"Let's get these off
+our list!"* The plan was claimed in the live queue (`ab17562`) and ran from
+there. Lead: the main session, which cherry-picked; builders: Opus sub agents,
+each in its own worktree; four reviews by GPT-6.1-Sol, every finding fixed.
+Each item's checks and negative controls are recorded where they run, named
+below; this section says what landed and what each review caught.
+
+**A — export.**
+
+- **EX4** (`dbfb2b2`): a writer thread owns FFmpeg's stdin; the progress
+  screen draws a frame only when the encoder has room (three in flight), keeps
+  painting and says the encoder is catching up, and a cancel discards the
+  queue, kills the child and joins the writer within a bounded grace. A Master
+  export is the same MP4 byte for byte as before. `export ticks:`,
+  `encoder=` and `--ui-probe encoder-stall=MS`; gate section and its two
+  negative controls in `tools/headless_check.sh` ("EX4").
+- **PXF-5** (`79352f4`): a still, the window's contact sheet and a share
+  frame's preparation paint the export's progress screen
+  (`Shell::progress_screen`) between ~33 ms slices, and Escape or Cancel backs
+  out with nothing written. CLI stills are byte-identical to before.
+  `replay progress:`, `--ui-probe replay-cancel=N`; negative control in
+  `tools/headless_check.sh` ("PXF-5").
+- **EX3** (`708493a`, `c25d6b9`): export and still render into a `GL_RGBA16`
+  unorm target (`runtime::deep_target`, falling back to RGBA8 by name) and are
+  quantised once, in the resolve, with a static positional dither; exact 8-bit
+  colours pass through. Measured before and after (Constellation's vignetted
+  corner, blur-residual of luma): still 0.117 → 0.043, x264 High 0.156 →
+  0.076, Master 0.156 → 0.061, **Balanced 0.158 → 0.136**, because CRF 20
+  flattens the dither again. The full table, why unorm and not `RGBA16F`, and
+  the dither choice are the EX3 row of `docs/DIVERGENCES.md`; negative control
+  in `tools/headless_check.sh` ("slow dark gradient"); `unsafe` rows in
+  `docs/UNSAFE.md`. Left open: Balanced (`-aq-mode 3` is an encoder decision
+  for the operator) and the finish's RGBA8 bloom and blur buffers.
+
+**B — MV2, named caption styles and the title lane** (`798e20d` to `2adae7a`).
+Named styles a line or a section picks, stacking base → section → line member
+by member; title cards (title, artist, handle) in a lane of their own, drawn
+over every scene and never added by default (operator, 2026-10-12). A `.musi`
+extension, defaults never written; the Lyrics view shows and steps a cue's
+style and lists the cards. Grammar in `docs/MUSIC_VIDEO_CLI.md` ("Named
+caption styles", "Title cards"); gate `tools/caption_styles_check.{sh,py}`,
+run from `tools/treatment_check.sh`, its negative controls in the guide's
+table; `differential_project_io.sh` pins the C's refusal and Rust's byte
+re-write (`docs/DIFFERENTIAL_TESTING.md`). Found while landing it: a NUL byte
+in the codec made it invisible to ugrep (`3b2faf2`, `docs/TRAPS.md`).
+
+**C — friction.**
+
+- **PXF-7** (`31d053b`): `metadata.playhead_seconds` is written at every save
+  and autosave, never at 0:00; an interactive open resumes there paused and
+  says so, batch opens ignore it. `tools/top_bar_check.sh` check 6, negative
+  controls in its header; differential step 13.
+- **D7** (`106bbf7`): keys 1–0 pick the first ten scenes through the tile's own
+  path; their tiles carry a keycap and name the key in the tooltip; text
+  surfaces suppress it. `tools/column_check.sh` check 9; divergence row.
+- **The treatment file picker** (`9354d1e`, the WX-3/WX-4 open item): the
+  Direct view says what the window follows and picks a `*.treatment.json`,
+  followed only if it applies. `tools/column_check.sh` check 10; divergence
+  rows. With it, `Shell::notify` shortens an over-long notice instead of the
+  queue dropping it (`docs/TRAPS.md`).
+
+**Review 1, on A–C merged** (`fd95847`): a project opened beside
+`--treatment` resumed at its saved playhead (now 0:00); a split lyric line lost
+its style and voice on the right half; the deep target's depth renderbuffer
+leaked when the target was refused. Two gate expectations were outdated by D7
+and PXF-7. First full `tools/verify.sh`: 25 of 26, the failure those two
+expectations, fixed.
+
+**ST — saved stills are opaque** (`106897c`, `3c007d6`). Found integrating:
+a still's PNG carried whatever alpha the frame's blends left (230,396 of
+230,400 pixels of a Cadence frame below 255). The one writer now writes alpha
+255 and leaves r, g, b alone, after printing `still alpha:` (and `sheet
+alpha:` per tile), which every gate that used the alpha plane now reads
+through `tools/still_alpha.py`. DIVERGENCES row; TRAPS entry with the
+measurements.
+
+**D — MV9-l and MV3-a, the look cards in Look** (`34bc243` to `b928d26`).
+Three cards above the scene's tuning: *This section* (arrival kind and length,
+glide, grade, caption style, a threshold's door, Play the cut), *Whole video*
+(intro, outro, the finish member by member) and *Captions* (voices, caption
+styles, title cards). Found with it: a threshold's `beyond` glided through
+every scene in between (`577e8bb`, now snaps). Gate `tools/look_cards_check.{sh,py}`
+(column check 11), its negative controls in the `.py` docstring (groups A,
+D2, F1c, G). Guide: `docs/MUSIC_VIDEO_CLI.md` "Editing the look in the window".
+
+**Review 2, of the look cards (D2)** (`664a6c1`, `24c3750`, `4afa8e9`): a
+half-typed title was committed into another project's card after a drop; an
+armed Remove survived a project change and deleted another project's row;
+Play the cut's stop was serviced only while Look was drawn. The polish pass
+after it (`f9a6e66` to `a3286a3`): selecting a section shows it (one section
+at a time), the captions card rests one row per entry, **Add a voice** and a
+voice's lines as toggles, glyphs for the fourteen transition kinds, a gate
+group typing with real XTest keys, and a selected section shown 50 ms past its
+arrival because a seek onto the boundary landed a sample early (`0a64d24`,
+`docs/TRAPS.md`). Also from it: `resume: playing=` was false in every run
+(`95f92d8`).
+
+**F1 — video clips as material, the first half of VG** (`8b07fba` to
+`6081786`). Scene 29 `clip` plays any video file as a section: content-
+addressed and bundled, frame chosen by arithmetic on the probe's packet
+timestamps, `from`/`after`/`fit` as a placement, six music settings at low
+defaults; import by the flyout's footer or a drop, Generate drawn disabled
+with its reason. Record, decoding choice, measurements and the seam for
+generation: `docs/VIDEO_GENERATION.md`. Gate `tools/clip_check.sh` (from
+`tools/treatment_check.sh`) and its five negative controls in that doc; twelve
+DIVERGENCES rows; differential steps 18–20.
+
+**Review 3, of F1 (F1b), eight findings** (`48d4e30`, `3f027f7`, `05a4217`,
+`16af234`, `74e087e`, `57b0b4e`, `5c0dbf4`, `8a5d61d`): bundling opened its
+source by name (a FIFO parked autosave, `/dev/zero` copied without end); the
+last frame's duration was the gap before it; a split restarted the clip; a
+record leaving its bundle was used anyway; an import skipped the selected
+section; dropping a worker did not cancel its hash or probe; a turned phone
+clip was squeezed; thirty clip sections held 6.2 GiB and 31 processes (now one
+budget, 558 MiB and 3). Each fix's negative control is in
+`docs/VIDEO_GENERATION.md`. Found under load beside it: a chat's `flock`
+stayed held by a child mid-spawn (`ffdbef3`, `docs/TRAPS.md`). Then the
+section card's clip rows (`3db68fa` to `c54fcec`; a clip's placement joined
+the poster recipe).
+
+Second full `tools/verify.sh`, after D and F1: 24 of 26 — a font-size request
+in the clip placeholder (`7c13813`) and one outdated expectation — both fixed
+and re-run.
+
+**Review 4, the last round (G)** (`fedc555`, `4e660e0`, `3149105`,
+`3414f0e`): a bundled clip was checked by name and then opened by its resolved
+path (now walked beneath its folder with `O_NOFOLLOW`); a stale recorded clip
+length disagreed with the probe; the section card's Import landed in the
+track's clip with the plan off; a press on a section raised its seek before it
+was known to be a click. Negative controls: `docs/VIDEO_GENERATION.md` ("The
+last review's") and `tools/look_cards_check.py` (G). **The last one carries a
+decision made by the agent, not the operator**: while the track plays, a click
+on a section selects it and the music goes on (`docs/DIVERGENCES.md`, "The
+show belongs to a completed click while paused"); revisable.
+
+**Third full `tools/verify.sh`, on `2578329`:** 25 of 26. The failure was the
+poster gate's frame-budget comparison ("posters stalled more frames (3) than
+no posters (1)"); run alone three times at load 6 to 7 it gave on/off stalls
+of 1/2, 0/5 and 2/1, so it is noise under load, queued as GX-3, not a
+regression of this wave.
+
+**Left open by the wave** (all in the live queue): E, the MiMo live run; F2,
+generating a clip; EX3 for Balanced and the finish's buffers; GX-3; the look
+cards', clips' and MV2's remainders; PXF-13 (recovery and the playhead);
+UX0-B18 now with number keys to list; the things never tried for real, under
+G2.

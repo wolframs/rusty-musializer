@@ -373,10 +373,10 @@ remaining workstation work is:
   [HEADLESS_GPU.md](HEADLESS_GPU.md).
 - **Lyric lane resizing.** Decide whether dragging the lane grip should grow
   the whole band. The current band limits downward growth.
-- **Generated video as material.** The scope is in
-  [VIDEO_GENERATION.md](VIDEO_GENERATION.md). Implementation needs the consent
-  and price display before paid generation, followed by treatment support for
-  clips or generated bridges.
+- **Generating a clip** (VG's second half). Clips as material are built
+  (2026-11-14); generation, with its price shown first and consent through the
+  Assist contracts, waits for the operator's go-ahead on spending. The seam is
+  in [VIDEO_GENERATION.md](VIDEO_GENERATION.md).
 
 ## Decisions recorded along the way
 
@@ -540,8 +540,9 @@ notice cards still in the pre-redesign style.
   `~/Music` would refuse the treatment that made it.
 - Each apply marks the project modified, so autosave writes the `.musi`.
   The treatment is the source; the project follows it.
-- **Not done yet:** a "Follow a treatment…" picker in the dock. For now the
-  ways in are `--treatment` and dropping the file on the window.
+- **Not done then:** a "Follow a treatment…" picker; the ways in were
+  `--treatment` and dropping the file on the window. The Direct view's
+  picker landed 2026-11-13 (above).
 
 **WX-4 (2026-10-21).**
 

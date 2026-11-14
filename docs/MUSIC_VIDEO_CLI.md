@@ -799,9 +799,9 @@ Said here so nobody looks for a flag:
   (see *Editing the look in the window*) edit the `.musi`; while a treatment
   is followed they are drawn disabled and name the file, because its next save
   would undo them.
-- Giving a line a voice, or adding a voice, in the window. A voice's name,
-  hue, ink and glow are edited in Look's Captions card, and a voice can be
-  removed there; which line a voice sings comes from a treatment.
+- Giving a line a voice from the Lyrics view. Look's Captions card adds a
+  voice and gives it the line at the playhead or a section's lines; the cue
+  card in Lyrics only shows a line's style, and steps it.
 - Clearing a voice's or a style's hue, ink or size back to "its own" in the
   window, and the rest of a style's members (face, box, margins, effects):
   a treatment's.
@@ -812,9 +812,8 @@ Said here so nobody looks for a flag:
 - An imported caption face in a treatment. `"face": "imported"` is refused by
   name; import the face in the Lyrics panel after `--save-project`.
 - Per-section routes, and the caption effects' drive-tuning blocks.
-- Generating a clip (a model, its price, consent) and a `generated`
-  transition; editing a clip section's `from`, `after` and `fit` in the window
-  (a treatment's, or "Import clip…" again). See `docs/VIDEO_GENERATION.md`.
+- Generating a clip (a model, its price, consent), its provenance on the
+  clip asset, and a `generated` transition. See `docs/VIDEO_GENERATION.md`.
 
 ## Evidence
 
