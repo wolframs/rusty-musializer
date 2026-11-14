@@ -68,6 +68,8 @@ file):
  captures
   14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
+  21. (in 14) every transition kind's glyph is placed beside its name and
+      has inked pixels against its chip, at 1280 and at the 300 px column.
 
 NEGATIVE CONTROLS (2026-11-14, GPU path), each a binary built from a perturbed
 tree into its own target directory, run as LOOK_CARDS_BIN, then the tree
@@ -116,6 +118,9 @@ and `git status` shown clean:
     give it back.
   20b (1 failure): Add a voice adding a second "alto": the model refused
     it and the table stayed alto, tenor.
+  21 (4 failures on the GPU and 4 on the CPU path, MZ_GL_LAUNCH=""): the
+    glyph drawing made a no-op: 0 inked pixels in each of the 14 squares;
+    the real build passed on both renderers.
   Found on the way: the first sequence ran 120 frames and passed against
   both perturbations, because autosave settles 1.5 s after an edit and the
   file was read before it; the control (no drop, must commit) caught that.
@@ -755,6 +760,24 @@ if only in ('all', 'captures'):
             check(area[1] >= viewport[1] and area[0] >= viewport[0] and area[0] + area[2] <= viewport[0] + viewport[2],
                   f'{scope}/{theme}: the card lies inside the list ({field(b, "area")} in {viewport})')
             check('ui=Space Grotesk' in line(log, 'fonts'), f'{scope}/{theme}: the UI face loaded')
+            if scope in ('section', 'narrow'):
+                # 21. every kind's glyph drew (D2): inked pixels in its square,
+                #     against the chip's own fill beside it. Opaque fills and
+                #     anti-aliased strokes: a count, not exact colours.
+                from PIL import Image
+                image = Image.open(out / f'capture-{scope}-{theme}' / 'shot.png').convert('RGB')
+                px = image.load()
+                weak = []
+                glyphs = re.findall(r'kind-(\w+)-glyph@(\d+),(\d+),(\d+),(\d+)', b)
+                for kind, gx, gy, gw, gh in glyphs:
+                    gx, gy, gw, gh = map(int, (gx, gy, gw, gh))
+                    chip = rect(b, f'kind-{kind}')
+                    ground = px[chip[0] + 4, chip[1] + chip[3] // 2]
+                    inked = sum(1 for yy in range(gy, gy + gh) for xx in range(gx, gx + gw)
+                                if sum(abs(a - c) for a, c in zip(px[xx, yy], ground)) > 60)
+                    if inked < 8:
+                        weak.append(f'{kind}:{inked}')
+                check(len(glyphs) == 14 and not weak, f'{scope}/{theme}: all 14 kind glyphs drew ({len(glyphs)} placed, weak {weak})')
 
 (out / 'result.json').write_text(json.dumps({'failures': failures}, indent=2))
 print(f'{len(failures)} failures; evidence {out}', flush=True)

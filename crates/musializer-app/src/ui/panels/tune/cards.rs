@@ -1103,6 +1103,78 @@ impl Shell {
         }
     }
 
+    /// A kind's chip: [`Self::card_chip`]'s box and states, with the kind's
+    /// glyph left of its name so a kind is recognised before it is read.
+    /// The glyph is dropped, never the name, where the two do not fit.
+    /// Returns the press and where the glyph went.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "card_chip's arguments plus its kind"
+    )]
+    fn kind_chip(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &musializer_runtime::font::UiFonts,
+        id: u64,
+        rect: UiRect,
+        kind: TransitionKind,
+        selected: bool,
+        enabled: bool,
+    ) -> (widgets::ButtonState, Option<UiRect>) {
+        let state = self.widgets.button(d, id, rect);
+        let hovered = enabled && state.hovered;
+        let (fill, edge) = if selected {
+            (color::ui_selected(), color::ui_selected_edge())
+        } else if hovered {
+            (color::ui_hover(), color::ui_control_edge())
+        } else {
+            (color::ui_control(), color::ui_control_edge())
+        };
+        widgets::control_box(d, rect, fill, edge, 1.0);
+        let ink = if !enabled {
+            color::ui_disabled()
+        } else if selected || hovered {
+            color::ui_ink()
+        } else {
+            color::ui_muted()
+        };
+        let label = kind_label(kind);
+        let text = widgets::measure(font, label, metric::UI_FONT_CAPTION);
+        let whole = look_cards::KIND_GLYPH + look_cards::KIND_GLYPH_GAP + text;
+        let glyph = if whole + 8.0 <= rect.width {
+            let left = (rect.x + (rect.width - whole) * 0.5).round();
+            let top = (rect.y + (rect.height - look_cards::KIND_GLYPH) * 0.5).round();
+            let place = UiRect::new(left, top, look_cards::KIND_GLYPH, look_cards::KIND_GLYPH);
+            draw_kind_glyph(
+                d,
+                kind,
+                place,
+                ink,
+                if enabled { color::ui_rule() } else { fill },
+            );
+            widgets::draw_text(
+                d,
+                font,
+                label,
+                left + look_cards::KIND_GLYPH + look_cards::KIND_GLYPH_GAP,
+                rect.y + (rect.height - metric::UI_FONT_CAPTION) * 0.5,
+                metric::UI_FONT_CAPTION,
+                ink,
+            );
+            Some(place)
+        } else {
+            widgets::text_label(d, font, rect, label, metric::UI_FONT_CAPTION, ink);
+            None
+        };
+        (
+            widgets::ButtonState {
+                clicked: enabled && state.clicked,
+                ..state
+            },
+            glyph,
+        )
+    }
+
     /// A slider row that cannot be moved: its label, a flat bar and its value
     /// in the disabled tone, and a hover target for the reason.
     #[allow(clippy::too_many_arguments, reason = "a row's content and its reason")]
@@ -1322,17 +1394,17 @@ impl Shell {
         let mut picked = None;
         for (i, (kind, chip)) in KINDS.iter().zip(chips).enumerate() {
             let id = widgets::widget_id(widgets::id::LOOK_CARDS, first + i as u32);
-            let state = self.card_chip(
-                d,
-                font,
-                id,
-                *chip,
-                kind_label(*kind),
-                current.kind == *kind,
-                enabled,
-            );
+            let (state, glyph) =
+                self.kind_chip(d, font, id, *chip, *kind, current.kind == *kind, enabled);
             self.widgets.hint(d, state, id, *chip, kind.look());
             controls.push(format!("{prefix}-{}@{}", kind.name(), rect_text(*chip)));
+            if let Some(glyph) = glyph {
+                controls.push(format!(
+                    "{prefix}-{}-glyph@{}",
+                    kind.name(),
+                    rect_text(glyph)
+                ));
+            }
             if state.clicked && current.kind != *kind {
                 let seconds = if current.is_cut() {
                     DEFAULT_SECONDS
@@ -2589,6 +2661,133 @@ fn grade_text(grade: Option<Grade>) -> String {
             grade.shift_by,
             grade.shift_width
         ),
+    }
+}
+
+/// A transition kind as a small picture of what it does, from geometry
+/// alone (no font or image): what the picture is leaving in `dim`, what
+/// arrives in `ink`, in a `place` [`look_cards::KIND_GLYPH`] square.
+fn draw_kind_glyph(
+    d: &mut RaylibDrawHandle<'_>,
+    kind: TransitionKind,
+    place: UiRect,
+    ink: raylib::prelude::Color,
+    dim: raylib::prelude::Color,
+) {
+    use raylib::prelude::Vector2;
+    let (x, y, s) = (place.x, place.y, place.width);
+    let cx = x + s * 0.5;
+    let cy = y + s * 0.5;
+    let at = |fx: f32, fy: f32| Vector2::new(x + fx * s, y + fy * s);
+    let block = |d: &mut RaylibDrawHandle<'_>, fx: f32, fy: f32, fw: f32, fh: f32, tint| {
+        widgets::fill(d, UiRect::new(x + fx * s, y + fy * s, fw * s, fh * s), tint);
+    };
+    match kind {
+        // A hard edge: the old picture, then the new, nothing between.
+        TransitionKind::Cut => {
+            block(d, 0.0, 0.0, 0.5, 1.0, dim);
+            block(d, 0.5, 0.0, 0.5, 1.0, ink);
+        }
+        // One into the other.
+        TransitionKind::Fade => {
+            d.draw_rectangle_gradient_h(x as i32, y as i32, s as i32, s as i32, dim, ink);
+        }
+        // A burst: four rays and a core.
+        TransitionKind::Flash => {
+            d.draw_line_ex(at(0.5, 0.0), at(0.5, 1.0), 1.5, ink);
+            d.draw_line_ex(at(0.0, 0.5), at(1.0, 0.5), 1.5, ink);
+            d.draw_line_ex(at(0.18, 0.18), at(0.82, 0.82), 1.0, ink);
+            d.draw_line_ex(at(0.82, 0.18), at(0.18, 0.82), 1.0, ink);
+            d.draw_circle_v(Vector2::new(cx, cy), s * 0.18, ink);
+        }
+        // A diagonal edge sweeping across.
+        TransitionKind::Wipe => {
+            block(d, 0.0, 0.0, 1.0, 1.0, dim);
+            d.draw_triangle(at(0.0, 0.0), at(0.0, 1.0), at(0.85, 1.0), ink);
+            d.draw_triangle(at(0.0, 0.0), at(0.85, 1.0), at(0.35, 0.0), ink);
+        }
+        // A circle opening on the new picture.
+        TransitionKind::Iris => {
+            block(d, 0.0, 0.0, 1.0, 1.0, dim);
+            d.draw_circle_v(Vector2::new(cx, cy), s * 0.32, ink);
+        }
+        // The new picture growing out of the middle.
+        TransitionKind::Zoom => {
+            d.draw_rectangle_lines_ex(raylib::prelude::Rectangle::new(x, y, s, s), 1.0, dim);
+            block(d, 0.3, 0.3, 0.4, 0.4, ink);
+            for (from, to) in [
+                ((0.25, 0.25), (0.05, 0.05)),
+                ((0.75, 0.25), (0.95, 0.05)),
+                ((0.25, 0.75), (0.05, 0.95)),
+                ((0.75, 0.75), (0.95, 0.95)),
+            ] {
+                d.draw_line_ex(at(from.0, from.1), at(to.0, to.1), 1.0, ink);
+            }
+        }
+        // Strips sliding past one another.
+        TransitionKind::Slices => {
+            block(d, 0.0, 0.0, 0.75, 0.28, ink);
+            block(d, 0.25, 0.36, 0.75, 0.28, dim);
+            block(d, 0.0, 0.72, 0.75, 0.28, ink);
+        }
+        // Torn rows, out of register.
+        TransitionKind::Glitch => {
+            block(d, 0.1, 0.0, 0.6, 0.2, ink);
+            block(d, 0.35, 0.27, 0.65, 0.15, dim);
+            block(d, 0.0, 0.48, 0.5, 0.2, ink);
+            block(d, 0.45, 0.75, 0.55, 0.25, ink);
+        }
+        // Holes burning through from below.
+        TransitionKind::Burn => {
+            block(d, 0.0, 0.0, 1.0, 1.0, dim);
+            d.draw_circle_v(at(0.25, 0.85), s * 0.3, ink);
+            d.draw_circle_v(at(0.7, 0.75), s * 0.36, ink);
+            d.draw_circle_v(at(0.45, 0.45), s * 0.18, ink);
+        }
+        // Blocks.
+        TransitionKind::Pixel => {
+            for cell in 0..9 {
+                let (column, row) = ((cell % 3) as f32, (cell / 3) as f32);
+                let tint = if (cell + 1) % 2 == 0 { dim } else { ink };
+                block(d, column / 3.0 + 0.02, row / 3.0 + 0.02, 0.29, 0.29, tint);
+            }
+        }
+        // Down into black, a moment there, and up out of it: a flat-bottomed
+        // valley, symmetric so it never reads as a tick.
+        TransitionKind::Dip => {
+            let points = [at(0.0, 0.1), at(0.3, 0.85), at(0.7, 0.85), at(1.0, 0.1)];
+            for pair in points.windows(2) {
+                d.draw_line_ex(pair[0], pair[1], 1.5, ink);
+            }
+            block(d, 0.3, 0.85, 0.4, 0.15, ink);
+        }
+        // Slats turning.
+        TransitionKind::Blinds => {
+            for row in 0..4 {
+                let fy = row as f32 * 0.26;
+                block(d, 0.0, fy, 1.0, 0.14, ink);
+                block(d, 0.0, fy + 0.14, 1.0, 0.06, dim);
+            }
+        }
+        // Rings spreading.
+        TransitionKind::Ripple => {
+            d.draw_circle_v(Vector2::new(cx, cy), s * 0.1, ink);
+            d.draw_ring(
+                Vector2::new(cx, cy),
+                s * 0.24,
+                s * 0.31,
+                0.0,
+                360.0,
+                24,
+                ink,
+            );
+            d.draw_ring(Vector2::new(cx, cy), s * 0.43, s * 0.5, 0.0, 360.0, 32, dim);
+        }
+        // A doorway: a bright upright ring with the other picture inside.
+        TransitionKind::Portal => {
+            d.draw_ellipse(cx as i32, cy as i32, s * 0.36, s * 0.5, ink);
+            d.draw_ellipse(cx as i32, cy as i32, s * 0.2, s * 0.34, dim);
+        }
     }
 }
 

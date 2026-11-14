@@ -34,6 +34,10 @@ pub const LINE_HEIGHT: f32 = 16.0;
 pub const BUTTON_HEIGHT: f32 = 26.0;
 /// A text field row.
 pub const FIELD_HEIGHT: f32 = 28.0;
+/// A transition kind's glyph, square, left of its name in a chip (D2).
+pub const KIND_GLYPH: f32 = 12.0;
+/// Between a kind's glyph and its name.
+pub const KIND_GLYPH_GAP: f32 = 5.0;
 
 /// One block of a card, top to bottom.
 #[derive(Clone, Copy, Debug, PartialEq)]
