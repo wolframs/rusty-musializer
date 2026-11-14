@@ -402,7 +402,6 @@ enum Part {
     Follow,
     StopFollow,
     Empty,
-    Invite,
     InviteButton,
     Title,
     Sub,
@@ -456,6 +455,10 @@ const HIGHLIGHT_TONES: [u32; 6] = [0xffd9a0, 0xfff0d8, 0xffc0a0, 0xd8f0ff, 0xf0d
 /// The cards this frame: what to draw, in order, before any of it is placed.
 pub(super) struct CardsPlan {
     parts: Vec<(Part, Block)>,
+    /// Drawn in a card's frame. Only the bare invitation is not: with no
+    /// section selected the block stays one row, so the scene's tuning keeps
+    /// its place under it.
+    framed: bool,
 }
 
 /// The kinds a section can arrive by, in the order the grid shows them:
@@ -703,7 +706,10 @@ impl Shell {
             (Part::Space, Block::Gap(8.0)),
         ];
         let Some(track) = input.workspace.current() else {
-            return CardsPlan { parts: Vec::new() };
+            return CardsPlan {
+                parts: Vec::new(),
+                framed: true,
+            };
         };
         let selected = self.scene_lane.selected_id;
         if self.look_column.cards.shown != Some(selected) {
@@ -724,7 +730,10 @@ impl Shell {
             tables::plan(track, &mut parts);
             parts.push((Part::Space, Block::Gap(8.0)));
             parts.push((Part::Status, Block::Line));
-            return CardsPlan { parts };
+            return CardsPlan {
+                parts,
+                framed: true,
+            };
         }
         if self.look_column.cards.scope == CardScope::Video {
             let gap = (Part::Space, Block::Gap(look_cards::GROUP_GAP));
@@ -765,16 +774,22 @@ impl Shell {
                 (Part::Space, Block::Gap(8.0)),
                 (Part::Status, Block::Line),
             ]);
-            return CardsPlan { parts };
+            return CardsPlan {
+                parts,
+                framed: true,
+            };
         }
         if cues.is_empty() {
             parts.push((Part::Empty, Block::Lines(3)));
-            return CardsPlan { parts };
+            return CardsPlan {
+                parts,
+                framed: true,
+            };
         }
         let Some((_, cue, _)) = target(cues, selected) else {
-            parts.push((Part::Invite, Block::Lines(2)));
+            let framed = parts.len() > 2;
             parts.push((Part::InviteButton, Block::Buttons));
-            return CardsPlan { parts };
+            return CardsPlan { parts, framed };
         };
         parts.extend([
             (Part::Title, Block::Buttons),
@@ -821,7 +836,10 @@ impl Shell {
         }
         parts.push((Part::Space, Block::Gap(8.0)));
         parts.push((Part::Status, Block::Line));
-        CardsPlan { parts }
+        CardsPlan {
+            parts,
+            framed: true,
+        }
     }
 
     /// The block's height in a list `width` wide: the scope switch, then the
@@ -830,10 +848,15 @@ impl Shell {
         if plan.parts.is_empty() {
             return 0.0;
         }
-        let inner = (width - look_cards::CARD_PADDING * 2.0).max(0.0);
+        let padding = if plan.framed {
+            look_cards::CARD_PADDING
+        } else {
+            0.0
+        };
+        let inner = (width - padding * 2.0).max(0.0);
         let blocks: Vec<Block> = plan.parts[2..].iter().map(|(_, block)| *block).collect();
         let (_, content) = look_cards::layout(0.0, 0.0, inner, &blocks);
-        SCOPE_BLOCK + look_cards::card_height(content)
+        SCOPE_BLOCK + content + padding * 2.0
     }
 
     fn place_cards(plan: &CardsPlan, area: UiRect) -> (Vec<(Part, Placed)>, UiRect) {
@@ -848,10 +871,15 @@ impl Shell {
             (area.height - SCOPE_BLOCK).max(0.0),
         );
         let blocks: Vec<Block> = plan.parts[2..].iter().map(|(_, block)| *block).collect();
+        let padding = if plan.framed {
+            look_cards::CARD_PADDING
+        } else {
+            0.0
+        };
         let (body, _) = look_cards::layout(
-            frame.x + look_cards::CARD_PADDING,
-            frame.y + look_cards::CARD_PADDING,
-            (frame.width - look_cards::CARD_PADDING * 2.0).max(0.0),
+            frame.x + padding,
+            frame.y + padding,
+            (frame.width - padding * 2.0).max(0.0),
             &blocks,
         );
         placed.extend(plan.parts[2..].iter().map(|(part, _)| *part).zip(body));
@@ -1263,7 +1291,9 @@ impl Shell {
         }
         let font = input.fonts.ui();
         let (placed, frame) = Self::place_cards(plan, area);
-        widgets::rounded_box(d, frame, 4.0, color::ui_raised(), color::ui_rule(), 1.0);
+        if plan.framed {
+            widgets::rounded_box(d, frame, 4.0, color::ui_raised(), color::ui_rule(), 1.0);
+        }
         let followed = self.look_column.cards.followed.clone();
         let enabled = followed.is_none();
         let disabled = (!enabled).then_some(FOLLOWING);
@@ -1355,12 +1385,6 @@ impl Shell {
                     "This video has no sections yet. Split here in the plan lane adds one at the playhead; the whole video's look is under Whole video.",
                     color::ui_muted(),
                 ),
-                Part::Invite => draw_lines(
-                    d,
-                    rect,
-                    "Click a section in the plan lane to shape how it arrives, how it glides and what palette it wears.",
-                    color::ui_muted(),
-                ),
                 Part::InviteButton => {
                     let playing = track
                         .scene_switches
@@ -1371,9 +1395,22 @@ impl Shell {
                                 && input.time_seconds < cue.end_seconds
                         })
                         .unwrap_or(cues.len() - 1);
-                    let label = format!("Section {} (playing now)", playing + 1);
+                    let label = format!("Edit section {}", playing + 1);
                     let width = (measure(&label) + 24.0).min(rect.width);
-                    let button = UiRect::new(rect.x, rect.y, width, rect.height);
+                    let button = UiRect::new(rect.x + rect.width - width, rect.y, width, rect.height);
+                    // The invitation in words, where it fits beside the press.
+                    let words = "Click a section in the lane, or";
+                    if measure(words) + 8.0 <= button.x - rect.x {
+                        widgets::draw_text(
+                            d,
+                            font,
+                            words,
+                            rect.x,
+                            rect.y + (rect.height - metric::UI_FONT_CAPTION) * 0.5,
+                            metric::UI_FONT_CAPTION,
+                            color::ui_muted(),
+                        );
+                    }
                     let id = widgets::widget_id(widgets::id::LOOK_CARDS, slot::INVITE);
                     let state = self.widgets.text_button(
                         d,
