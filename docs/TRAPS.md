@@ -367,6 +367,21 @@ poster) its own judgement so one does not evict the other, and bound the sum
 in one process-wide budget (`runtime::clip::ClipBudget`). Found by review of
 the clip scene, 2026-11-14; numbers in `docs/VIDEO_GENERATION.md`.
 
+## A lock given back by closing its file outlives the close while any thread spawns
+
+`flock` belongs to the open file description, not the descriptor. Between a
+fork and its exec, the child holds a copy of every descriptor, `O_CLOEXEC`
+ones included, so closing the lock file in one thread while another thread
+spawns a process leaves the lock held until that child execs.
+`chat_store::two_windows_cannot_own_one_chat` failed twice under load on
+2026-11-14 this way: its first saver released the chat and the next found it
+still "open in another window", because cargo runs tests as threads of one
+process and many of them spawn FFmpeg. With four threads spawning `true`, 139
+of 400 releases were still locked a moment later. Unlock explicitly
+(`File::unlock`) before dropping the file: that releases the description for
+every copy. Pinned by `a_released_chat_is_free_at_once_while_processes_spawn`
+(80 of 200 still locked with the unlock removed). Found by F1b, 2026-11-14.
+
 ## A small file can claim a huge picture
 
 File size says nothing about decoded size: a PNG of a few hundred KB can

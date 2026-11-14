@@ -175,6 +175,16 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+/// Gives `path`'s lock back. Unlocked before the file closes: a lock belongs
+/// to the open file, which a child another thread is spawning holds a copy of
+/// until it execs, so a close alone can leave the chat locked for a moment
+/// after this window let it go.
+fn release(held: &mut HashMap<PathBuf, File>, path: &Path) {
+    if let Some(lock) = held.remove(path) {
+        let _ = lock.unlock();
+    }
+}
+
 /// Takes `path`'s lock for this thread, or says who has it.
 fn acquire(held: &mut HashMap<PathBuf, File>, path: &Path) -> Result<(), String> {
     if held.contains_key(path) {
@@ -242,7 +252,7 @@ fn work(inbox: &Receiver<Job>, report: &Sender<String>) {
                         .ok_or_else(|| "That chat could not be read.".to_owned())
                 });
                 if chat.is_err() {
-                    held.remove(&path);
+                    release(&mut held, &path);
                 }
                 let _ = reply.send(chat);
             }
@@ -252,13 +262,16 @@ fn work(inbox: &Receiver<Job>, report: &Sender<String>) {
                 if gone.is_ok() {
                     let _ = std::fs::remove_file(path.with_extension("lock"));
                 }
-                held.remove(&path);
+                release(&mut held, &path);
                 let _ = reply.send(gone);
             }
             Job::Release(path) => {
-                held.remove(&path);
+                release(&mut held, &path);
             }
         }
+    }
+    for lock in held.into_values() {
+        let _ = lock.unlock();
     }
 }
 
@@ -536,5 +549,51 @@ mod tests {
 
     fn root_for_test() -> Option<PathBuf> {
         root(true)
+    }
+
+    /// The flake in `two_windows_cannot_own_one_chat` (2026-11-14, twice
+    /// under load): a chat released by one window was still locked when the
+    /// next asked, because the lock was given back by closing its file, and
+    /// a child another thread was spawning held a copy of that file until it
+    /// exec'd. Cargo runs tests on threads of one process, and many spawn
+    /// FFmpeg. Here four threads spawn processes the whole time; before the
+    /// explicit unlock 139 of 400 rounds found the chat still locked.
+    #[test]
+    fn a_released_chat_is_free_at_once_while_processes_spawn() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let stop = Arc::new(AtomicBool::new(false));
+        let spawners: Vec<_> = (0..4)
+            .map(|_| {
+                let stop = Arc::clone(&stop);
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = std::process::Command::new("true").status();
+                    }
+                })
+            })
+            .collect();
+        let dir = folder("spawning");
+        let rounds = 200;
+        let mut still_locked = 0;
+        for round in 0..rounds {
+            let id = format!("r{round}");
+            let path = chat_path(&dir, &id);
+            let mut one = Saver::start();
+            one.save(path.clone(), serde_json::to_vec(&chat(&id, 1)).unwrap());
+            let opened = one.load(path.clone(), id, String::new()).recv().unwrap();
+            assert!(opened.is_ok(), "{opened:?}");
+            one.release(path.clone());
+            one.finish();
+            if Saver::start().forget(path).recv().unwrap().is_err() {
+                still_locked += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        for spawner in spawners {
+            let _ = spawner.join();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(still_locked, 0, "of {rounds} released chats");
     }
 }
