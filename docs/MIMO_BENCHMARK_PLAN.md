@@ -6,19 +6,21 @@ sonic texture, and music-theoretical content (key, tempo, meter, harmony, form).
 And which prompt, chunking and output-shaping choices make that description
 usable by the application.
 
-**Status.** Designed and built; **not yet run**. No live call has been made. The
-harness is dry-run by default and needs two separate gates to send anything.
+**Status.** First live run on 2026-11-14: repeat 1 of every cell plus some
+repeats, cut to fit the spending ceiling. Results, real cost and what the gates
+say: [`MIMO_BENCHMARK_RESULTS.md`](MIMO_BENCHMARK_RESULTS.md). The harness is
+dry-run by default and needs two separate gates to send anything.
 
 | | |
 | --- | --- |
 | harness | `tools/mimo_bench/`, driver `tools/mimo_bench/run.py` |
 | tests | `tests/test_mimo_bench.py` — offline, no socket; run it for the current count |
 | model under test | `xiaomi/mimo-v2.5`, temperature 0.2 |
-| reformatter (arm S3 only) | `openai/gpt-4o-mini`, text only — **confirm slug and price before the live run** |
+| reformatter (arm S3 only) | `openai/gpt-4o-mini`, text only — slug and price confirmed on OpenRouter 2026-11-14 |
 | output schema | `musializer.mimo-bench-description/v1`, sha256 `7837e23afb77fcfb…` |
 | prompts | `musializer.mimo-bench-prompts/v1`, four ids, each hashed |
 | matrix | 13 cells x 3 repeats = 39 resumable units, **159 API calls** |
-| projected cost | **$0.32 – $0.36** (bracketed over the audio token rate) |
+| projected cost | $0.32 – $0.36 — **wrong by 3× or more**: MiMo's reasoning tokens bill as output (see results) |
 | contract | `TC-SEMANTIC`, boundary `audio-leaves-machine` (`docs/ASSIST_PROVIDER_CONTRACTS.md` §1) |
 
 ---
@@ -206,7 +208,9 @@ Feel and texture have no truth. Two things about them *can* be measured.
 Audio bills as input tokens by duration, at a rate OpenRouter does not publish
 per model, so the projection is a **bracket** (25–50 tokens/s) rather than a
 single number nobody can check. After the first live run the recorded `usage`
-gives the real rate.
+gives the real rate. (It did, on 2026-11-14: 7.4 tokens/s, below the bracket; but reasoning
+output, which this projection leaves out, made each call 3–10× dearer. The
+table below is kept as the record of what was projected.)
 
 Prices: MiMo $0.40/M in, $2.00/M out. `gpt-4o-mini` $0.15/M in, $0.60/M out.
 
@@ -289,10 +293,13 @@ tools/mimo_bench/run.py list        # progress
 tools/mimo_bench/run.py score       # offline, re-runnable, writes scores/report.json
 ```
 
-**Before the live run:** fill in `tools/mimo_bench/ground_truth/tracks.json`
-(key, meter, instruments for each 100 s excerpt) or key, meter and instruments
-will abstain and three of the operator's five questions go unanswered. Confirm
-`openai/gpt-4o-mini` is the intended reformatter and its price is current.
+Pass `--budget-usd N` to `all`/`next`/`run`: it stops before any call whose
+worst case would take the recorded spend past N, and leaves the unit pending.
+
+Key, metre and instruments come from the operator's listening session
+(`tools/mimo_bench/truth_session.py` builds it, `truth_convert.py` writes its
+answers into `ground_truth/tracks.json`); the commands are at the end of
+[`MIMO_BENCHMARK_RESULTS.md`](MIMO_BENCHMARK_RESULTS.md).
 
 ---
 

@@ -85,11 +85,14 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
   guide for analysis dependencies, discovery, privacy boundaries and commands.
 - [`../tools/MEASURED_ANALYSIS.md`](../tools/MEASURED_ANALYSIS.md) — the
   deterministic measured-audio artifacts consumed by higher-level analysis.
-- [`MIMO_BENCHMARK_PLAN.md`](MIMO_BENCHMARK_PLAN.md) — **designed, built, and
-  not yet run**: the benchmark of `xiaomi/mimo-v2.5`'s musical description, with
-  its chunking / register / output-shaping axes, scoring rubric, decision gates
-  and cost projection. Running it spends credits and sends audio off the
-  machine, and needs an explicit operator go-ahead.
+- [`MIMO_BENCHMARK_PLAN.md`](MIMO_BENCHMARK_PLAN.md) — the benchmark of
+  `xiaomi/mimo-v2.5`'s musical description, with its chunking / register /
+  output-shaping axes, scoring rubric and decision gates. Running it spends
+  credits and sends audio off the machine, and needs an explicit operator
+  go-ahead.
+- [`MIMO_BENCHMARK_RESULTS.md`](MIMO_BENCHMARK_RESULTS.md) — what the first live
+  run (2026-11-14) said, hypothesis by hypothesis and gate by gate, its real
+  cost, and the listening session that supplies key, metre and instruments.
 
 ### Lyrics timing
 
