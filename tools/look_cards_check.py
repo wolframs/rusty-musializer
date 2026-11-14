@@ -65,6 +65,10 @@ file):
       playhead already inside stays; a boundary press does not move it;
       played on past it, the card says whose picture it is and Show N
       returns (the gap beside it does not).
+ keys (native XTest presses and keys, this file as MZ_BIN)
+  22. a length typed with real keys saves and picks no scene; a title typed
+      with T, space and 4 in it saves and moves neither the column, the
+      playhead nor the scene; the 4 alone, with no field open, picks one.
  captures
   14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
@@ -121,6 +125,9 @@ and `git status` shown clean:
   21 (4 failures on the GPU and 4 on the CPU path, MZ_GL_LAUNCH=""): the
     glyph drawing made a no-op: 0 inked pixels in each of the 14 squares;
     the real build passed on both renderers.
+  22 (2 failures): `card_typing()` made false: "1.25" typed with real keys
+    picked Song Atlas; "To Room 4" never reached the title: its T closed
+    Look and its space played (playhead 3.6).
   Found on the way: the first sequence ran 120 frames and passed against
   both perturbations, because autosave settles 1.5 s after an edit and the
   file was read before it; the control (no drop, must commit) caught that.
@@ -131,7 +138,139 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+
+def drive():
+    """Run ONLY as MZ_BIN under headless_run.sh (LOOK_CARDS_DRIVE set): start
+    the real binary, then press and type into it with native XTest events,
+    the steps the gate wrote into LOOK_CARDS_DRIVE, and close it."""
+    import ctypes as C
+    assert os.environ['WAYLAND_DISPLAY'] == 'musializer-headless-run-no-compositor'
+    assert os.environ['PULSE_SERVER'] == 'unix:/nonexistent/musializer-headless-run-no-audio'
+    process = subprocess.Popen([os.environ['LOOK_CARDS_REAL_BIN'], *sys.argv[1:]])
+    try:
+        x = C.CDLL('libX11.so.6')
+        xt = C.CDLL('libXtst.so.6')
+        x.XOpenDisplay.restype = C.c_void_p
+        d = x.XOpenDisplay(None)
+        assert d
+        x.XDefaultRootWindow.argtypes = [C.c_void_p]
+        x.XDefaultRootWindow.restype = C.c_ulong
+        x.XQueryTree.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(C.c_ulong), C.POINTER(C.c_ulong),
+                                 C.POINTER(C.POINTER(C.c_ulong)), C.POINTER(C.c_uint)]
+        x.XSetInputFocus.argtypes = [C.c_void_p, C.c_ulong, C.c_int, C.c_ulong]
+        x.XKeysymToKeycode.argtypes = [C.c_void_p, C.c_ulong]
+        x.XKeysymToKeycode.restype = C.c_uint
+        x.XFlush.argtypes = [C.c_void_p]
+        xt.XTestFakeKeyEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
+        xt.XTestFakeMotionEvent.argtypes = [C.c_void_p, C.c_int, C.c_int, C.c_int, C.c_ulong]
+        xt.XTestFakeButtonEvent.argtypes = [C.c_void_p, C.c_uint, C.c_int, C.c_ulong]
+        # An X error (a window that went away) must not end the driver.
+        handler_type = C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_void_p)
+        ignore = handler_type(lambda *_: 0)
+        x.XSetErrorHandler.argtypes = [handler_type]
+        x.XSetErrorHandler(ignore)
+
+        class Attributes(C.Structure):
+            _fields_ = [('x', C.c_int), ('y', C.c_int), ('width', C.c_int), ('height', C.c_int),
+                        ('border_width', C.c_int), ('depth', C.c_int), ('visual', C.c_void_p),
+                        ('root', C.c_ulong), ('class_', C.c_int), ('bit_gravity', C.c_int),
+                        ('win_gravity', C.c_int), ('backing_store', C.c_int), ('backing_planes', C.c_ulong),
+                        ('backing_pixel', C.c_ulong), ('save_under', C.c_int), ('colormap', C.c_ulong),
+                        ('map_installed', C.c_int), ('map_state', C.c_int), ('all_event_masks', C.c_long),
+                        ('your_event_mask', C.c_long), ('do_not_propagate_mask', C.c_long),
+                        ('override_redirect', C.c_int), ('screen', C.c_void_p)]
+        x.XGetWindowAttributes.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(Attributes)]
+        root = x.XDefaultRootWindow(d)
+        window = None
+        # The app's own window: mapped (IsViewable) and window-sized.
+        for _ in range(150):
+            assert process.poll() is None, 'app ended before its window'
+            children = C.POINTER(C.c_ulong)()
+            count, parent, returned = C.c_uint(), C.c_ulong(), C.c_ulong()
+            if x.XQueryTree(d, root, C.byref(returned), C.byref(parent), C.byref(children), C.byref(count)):
+                for index in range(count.value):
+                    attributes = Attributes()
+                    if (x.XGetWindowAttributes(d, children[index], C.byref(attributes))
+                            and attributes.map_state == 2 and attributes.width >= 640):
+                        window = children[index]
+            if window:
+                break
+            time.sleep(.1)
+        assert window, 'no mapped window'
+        # The fixture loads in well under this; keys sent while it decodes
+        # would be lost.
+        time.sleep(2.0)
+        x.XSetInputFocus(d, window, 2, 0)
+        x.XFlush(d)
+
+        def key(sym, down):
+            xt.XTestFakeKeyEvent(d, x.XKeysymToKeycode(d, sym), down, 0)
+            x.XFlush(d)
+            time.sleep(.05)
+
+        def press(sym, shift=False):
+            if shift:
+                key(0xffe1, 1)
+            key(sym, 1)
+            key(sym, 0)
+            if shift:
+                key(0xffe1, 0)
+        named = {'enter': 0xff0d, 'escape': 0xff1b, 'space': 0x20}
+        for step in json.loads(os.environ['LOOK_CARDS_DRIVE']):
+            assert process.poll() is None, f'app exited at {step}'
+            if 'click' in step:
+                xt.XTestFakeMotionEvent(d, 0, *step['click'], 0)
+                x.XFlush(d)
+                time.sleep(.1)
+                xt.XTestFakeButtonEvent(d, 1, 1, 0)
+                x.XFlush(d)
+                time.sleep(.1)
+                xt.XTestFakeButtonEvent(d, 1, 0, 0)
+                x.XFlush(d)
+                time.sleep(.25)
+            elif 'chord' in step:
+                key(0xffe3, 1)
+                press(ord(step['chord']))
+                key(0xffe3, 0)
+            elif 'type' in step:
+                for char in step['type']:
+                    if char == ' ':
+                        press(0x20)
+                    else:
+                        press(ord(char.lower()), shift=char.isupper())
+            elif 'key' in step:
+                press(named[step['key']])
+            elif 'wait' in step:
+                time.sleep(step['wait'])
+
+        class ClientMessage(C.Structure):
+            _fields_ = [('type', C.c_int), ('serial', C.c_ulong), ('send_event', C.c_int), ('display', C.c_void_p),
+                        ('window', C.c_ulong), ('message_type', C.c_ulong), ('format', C.c_int), ('data', C.c_long * 5)]
+        x.XInternAtom.argtypes = [C.c_void_p, C.c_char_p, C.c_int]
+        x.XInternAtom.restype = C.c_ulong
+        x.XSendEvent.argtypes = [C.c_void_p, C.c_ulong, C.c_int, C.c_long, C.c_void_p]
+        event = (C.c_long * 24)()
+        message = C.cast(event, C.POINTER(ClientMessage)).contents
+        message.type, message.send_event, message.display = 33, 1, d
+        message.window = window
+        message.message_type = x.XInternAtom(d, b'WM_PROTOCOLS', 0)
+        message.format = 32
+        message.data[0] = x.XInternAtom(d, b'WM_DELETE_WINDOW', 0)
+        x.XSendEvent(d, window, 0, 0, C.byref(event))
+        x.XFlush(d)
+        print('look-cards-input: native steps delivered', flush=True)
+        return process.wait(timeout=60)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+
+
+if os.environ.get('LOOK_CARDS_DRIVE'):
+    sys.exit(drive())
 
 out = Path(sys.argv[1]).resolve()
 out.mkdir(parents=True, exist_ok=True)
@@ -197,7 +336,7 @@ def copy_project(project, work):
         shutil.copytree(assets, work / f'{project}.assets')
 
 
-def run(name, probe, frames=150, project='plain', theme='dark', follow=False, also=()):
+def run(name, probe, frames=150, project='plain', theme='dark', follow=False, also=(), drive=None):
     """One probe run on a fresh copy of a seeded project. Returns (log, saved).
 
     `also` names projects copied beside it, for a `drop=` of a second one."""
@@ -215,8 +354,13 @@ def run(name, probe, frames=150, project='plain', theme='dark', follow=False, al
         source = ['--project', str(work / f'{project}.musi')]
     cmd = ['tools/headless_run.sh', *source, '--ui-scale', '100', '--hud=0', '--ui-theme', theme,
            '--ui-probe', probe, '--probe-frames', str(frames), '--probe-shot', str(work / 'shot.png')]
-    result = subprocess.run(cmd, env=dict(env, MZ_STATE_DIR=str(work / 'state')),
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    run_env = dict(env, MZ_STATE_DIR=str(work / 'state'))
+    if drive is not None:
+        # Native keys and presses (D2): this file, as MZ_BIN, starts the real
+        # binary and drives it with XTest.
+        run_env.update(MZ_BIN=str(Path(__file__).resolve()), LOOK_CARDS_REAL_BIN=binary,
+                       LOOK_CARDS_DRIVE=json.dumps(drive))
+    result = subprocess.run(cmd, env=run_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     (work / 'log.txt').write_text(result.stdout)
     if result.returncode:
         raise AssertionError(f'{name}: exit {result.returncode}: {result.stdout[-1500:]}')
@@ -737,6 +881,37 @@ if only in ('all', 'show'):
     r = rect(cards(base), 'show')
     log, _ = run('show-gap', 'size=1280x720,column=look,time=3,play=1,section=2,click-after=120' + click((r[0] - 3, r[1] + r[3] // 2)), frames=150)
     check(playhead_of(log) > 4.0 and 'show@' in cards(log), f'the gap beside Show changes nothing ({playhead_of(log):.3f})')
+
+if only in ('all', 'keys'):
+    # 22. Real keys (D2): every check above types through the probe's text
+    #     seam; here native XTest presses and keys go through GLFW. The
+    #     length value: a real press, Ctrl+A, "1.25", Enter: saved 1.25, and
+    #     its digits picked no scene. A title card: "To Room 4" (a T that
+    #     opens Look, a space that plays, a 4 that picks a scene, all typed
+    #     into the field instead), Enter: saved, still paused, still Look.
+    #     The control: the same keys with no field open do pick a scene.
+    s2 = cards(run('keys-base', SECTION + ',section=2', frames=30)[0])
+    value = centre(rect(s2, 'length-value'))
+    log, saved = run('keys-length', SECTION + ',section=2', frames=900,
+                     drive=[{'click': value}, {'chord': 'a'}, {'type': '1.25'}, {'key': 'enter'}, {'wait': 2.5}])
+    check('native steps delivered' in log and abs(cue(saved, 1)['transition']['seconds'] - 1.25) < 1e-6
+          and field(line(log, 'tune layout'), 'scene') == 'spectrum',
+          f"real keys: 1.25 typed into the length value is saved and picks no scene ({cue(saved, 1)['transition']}, scene {field(line(log, 'tune layout'), 'scene')})")
+    TITLE0 = 'size=1280x1440,column=look,time=3,play=0,look=captions,look-entry=title-0'
+    bt = cards(run('keys-title-base', TITLE0, frames=30, project='words')[0])
+    log, saved = run('keys-title', TITLE0, frames=900, project='words',
+                     drive=[{'click': centre(rect(bt, 'title-text-0'))}, {'chord': 'a'}, {'type': 'To Room 4'}, {'key': 'enter'}, {'wait': 2.5}])
+    playhead = float(field(line(log, 'transport'), 'playhead'))
+    # Read without raising: a T that reached the shell closes Look, and its
+    # `tune layout:` line with it.
+    scene = re.search(r'^tune layout:\s+scene=(\S+)', log, re.M)
+    scene = scene[1] if scene else 'no Look'
+    check(saved['scene_switches']['titles'][0]['title'] == 'To Room 4' and abs(playhead - 3.0) < 0.001
+          and field(line(log, 'column'), 'view') == 'look' and scene == 'spectrum',
+          f"real keys: 'To Room 4' typed into a title is saved; no key reached play, Look or the scenes (playhead {playhead:.3f}, view {field(line(log, 'column'), 'view')}, scene {scene})")
+    log, _ = run('keys-control', SECTION + ',section=2', frames=900, drive=[{'type': '4'}, {'wait': 0.5}])
+    check(field(line(log, 'tune layout'), 'scene') != 'spectrum',
+          f"control: the same 4 with no field open picks a scene ({field(line(log, 'tune layout'), 'scene')})")
 
 if only in ('all', 'follow'):
     log, _ = run('follow-base', SECTION + ',section=2,follow=1', frames=40, follow=True)
