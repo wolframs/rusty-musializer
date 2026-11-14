@@ -53,6 +53,8 @@ from .bench_io import (  # noqa: E402
     cell_dir,
     cell_state,
     completed_calls,
+    failed_call_path,
+    failed_calls,
     stored_calls,
     repeats_present,
     track_by_slug,
@@ -228,10 +230,25 @@ def execute_unit(
         try:
             payload, identity = build_call(cell, call, repeat, live=True)
             response = submit(payload, transport=transport, sleeper=sleeper)
-            text = request_build.completion_text(response)
-            metadata = request_build.response_metadata(response)
         except (BenchFailure, ValueError, OSError, json.JSONDecodeError) as failure:
             failures.append(f"call {call.index}: {type(failure).__name__}: {failure}")
+            break
+        metadata = request_build.response_metadata(response)
+        try:
+            text = request_build.completion_text(response)
+        except ValueError as failure:
+            # The response came back and was billed; keep it so the spend is
+            # counted and the failure can be read (2026-11-14: MiMo returned
+            # null content twice, and those two calls were invisible).
+            kept = {"cell": cell.id, "repeat": repeat, "call_index": call.index,
+                    "kind": call.kind, "identity": identity,
+                    "request": request_build.redact(payload), "response": response,
+                    "status": "no-text", "error": str(failure), **metadata}
+            atomic_write_json(failed_call_path(cell.id, repeat, call.index), kept)
+            if budget is not None:
+                budget.add(kept)
+            failures.append(f"call {call.index}: ValueError: {failure} "
+                            f"(finish_reason={metadata.get('finish_reason')}; response kept)")
             break
         record = {
             "cell": cell.id,
@@ -273,6 +290,7 @@ def all_stored_records(repeats: int | None = None) -> list[dict[str, Any]]:
         for repeat in repeats_present(cell.id):
             if repeats is None or repeat <= repeats:
                 records.extend(stored_calls(cell.id, repeat))
+                records.extend(failed_calls(cell.id, repeat))
     return records
 
 

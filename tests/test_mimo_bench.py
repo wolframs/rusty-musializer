@@ -1124,6 +1124,30 @@ class ResumeTests(unittest.TestCase):
         self.assertIsNone(bench_io.cell_state(self.cell.id, 1))
         self.assertAlmostEqual(budget.spent_usd, 0.0318)
 
+    def test_a_billed_response_without_text_is_kept_and_counted(self) -> None:
+        def textless_submit(payload, **_kwargs):
+            return {"id": "synthetic", "model": "xiaomi/mimo-v2.5",
+                    "usage": {"prompt_tokens": 900, "completion_tokens": 9000,
+                              "cost": 0.02},
+                    "choices": [{"message": {"content": None},
+                                 "finish_reason": "length"}]}
+
+        budget = cost.Budget(1.0)
+        with mock.patch.object(bench_run, "submit", textless_submit), \
+                mock.patch.object(bench_run, "audio_bytes_for",
+                                  lambda *args, **kwargs: b"synthetic"):
+            result = bench_run.execute_unit(self.cell, 1, budget=budget)
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("finish_reason=length", result["errors"][0])
+        self.assertAlmostEqual(budget.spent_usd, 0.02)
+        kept = bench_io.failed_calls(self.cell.id, 1)
+        self.assertEqual(len(kept), 1)
+        # resume retries it, scoring never sees it, the ceiling always does
+        self.assertEqual(bench_io.completed_calls(self.cell.id, 1), set())
+        self.assertEqual(bench_io.stored_calls(self.cell.id, 1), [])
+        self.assertAlmostEqual(
+            cost.Budget(1.0, bench_run.all_stored_records()).spent_usd, 0.02)
+
     def test_recorded_cost_prices_tokens_when_usage_has_no_cost(self) -> None:
         record = {"identity": {"requested_model": "xiaomi/mimo-v2.5"},
                   "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}}

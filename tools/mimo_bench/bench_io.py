@@ -132,6 +132,31 @@ def call_path(cell_id: str, repeat: int, call_index: int) -> Path:
     return cell_dir(cell_id, repeat) / f"call_{call_index:03d}.json"
 
 
+def failed_call_path(cell_id: str, repeat: int, call_index: int) -> Path:
+    """Where a billed response that could not be used is kept.
+
+    A different prefix from ``call_``, so resume still retries the call and
+    scoring never reads it; the spending ceiling does, because it was paid for.
+    """
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    return cell_dir(cell_id, repeat) / f"failed_{call_index:03d}_{stamp}_{time.monotonic_ns()}.json"
+
+
+def failed_calls(cell_id: str, repeat: int) -> list[dict[str, Any]]:
+    directory = cell_dir(cell_id, repeat)
+    if not directory.is_dir():
+        return []
+    records: list[dict[str, Any]] = []
+    for path in sorted(directory.glob("failed_*.json")):
+        try:
+            record = read_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
 def done_marker(cell_id: str, repeat: int) -> Path:
     return cell_dir(cell_id, repeat) / "done.json"
 
@@ -234,6 +259,8 @@ __all__ = [
     "cell_state",
     "completed_calls",
     "done_marker",
+    "failed_call_path",
+    "failed_calls",
     "iter_result_dirs",
     "primary_track",
     "read_json",
