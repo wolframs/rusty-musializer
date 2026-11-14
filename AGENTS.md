@@ -224,6 +224,10 @@ number disagrees, grep it there before debugging from scratch.
 - **A saved-file check must outlast autosave's 1.5 s settle**: give it the edit frame plus about 150 frames, and pair every "nothing was written" check with a control that writes.
 - **An XTest driver focuses the mapped, window-sized child and ignores X errors**: the last root child can be unmapped, and Xlib's default handler then exits the driver.
 - **Seek strictly inside a span, not onto its boundary**: a seek to a section's start can land a sample early, in the section before.
+- **Bundling, hashing and copying an asset open it like the decoder does**: non-blocking, regular file, the kind's import cap, hashed while copied (`publish::open_source`). See `docs/TRAPS.md`.
+- **A worker's drop must reach its start-up**: the hash and the probe check `stop`, and every child registers its group where the drop can kill it. See `docs/TRAPS.md`.
+- **Release per-clip resources from the hook that runs after every frame, and bound their sum per process**: a count that only one scene advances stops when the video moves on. See `docs/TRAPS.md`.
+- **Give a `flock` back with `File::unlock` before dropping the file**: a child mid-spawn on another thread holds the lock until it execs. See `docs/TRAPS.md`.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe
