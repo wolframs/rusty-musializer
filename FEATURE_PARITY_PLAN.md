@@ -109,10 +109,14 @@ verified; delete the block when done, with the record in the archive.
   prior possible charges against the ceiling was wrong in a new way in each
   review, and a rule about this run's own sends can be enforced at the moment
   of each send. The operator has not ruled on this; he can overrule it.
-- [ ] **A regression to fix before the release**: in Look, a pixel count
-  typed for "This section" no longer commits (`tools/pixel_look_check.sh`,
-  two failures, deterministic since some commit after 2578329). An agent is
-  bisecting.
+- [x] **The pixel-look gate's two failures** (2026-11-15): not a regression
+  in the application. The gate's native-key driver typed on a clock and raced
+  the first frame; it now waits for the window. Found on the way and fixed: a
+  typed pixel count past 65,535 was dropped silently.
+- [ ] **Two more tests that fail under load** (seen once each, 2026-11-15,
+  passing alone): `process::ffmpeg::tests::dropping_an_encoder_without_finishing_it_still_reaps_and_cleans_up`
+  and, as noted above, the clip decoder budget test. `lyric_focus_check.py`
+  still focuses the last root child, not the mapped window.
 - [ ] **Close**: one review by GPT-6.1-Sol per stream before its release
   build, one full `tools/verify.sh`, release build, queue and archive updated,
   worktrees removed.
