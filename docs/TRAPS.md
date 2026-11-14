@@ -595,6 +595,8 @@ not send) before the gesture was known. Anything a click does that a drag must
 not happen on the release, after the drag threshold was never crossed; the
 press may only select. A probe that presses and releases within three frames
 cannot see the difference, so `--ui-probe click-hold=FRAMES` keeps the button
-down and the photograph is taken mid-press. Symptom: a `transport:` playhead or
+down and the photograph is taken mid-press. (Since 2026-11-14 the completed
+click jumps playing or paused, and Shift + click only selects; the seek still
+waits for the release.) Symptom: a `transport:` playhead or
 a `cut=none` that changed during a press nobody released. Pinned by the look
 cards gate's check 39. Found by the last review of the week, 2026-11-14.

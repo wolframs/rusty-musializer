@@ -66,7 +66,7 @@ pub struct LaneHeadWidths {
     pub capture_full: f32,
     pub capture_short: f32,
     pub delete: f32,
-    /// "click a section to edit it", with nothing selected.
+    /// "click a section to jump there", with nothing selected.
     pub hint: f32,
     pub markers_full: [f32; 3],
     pub markers_short: [f32; 3],

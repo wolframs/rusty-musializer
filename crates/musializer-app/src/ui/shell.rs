@@ -665,6 +665,9 @@ pub struct Shell {
     pub probe_wheel_shift: bool,
     /// `--ui-probe wheel-alt=1`: Tune's explicit value-edit modifier.
     pub probe_wheel_alt: bool,
+    /// `--ui-probe click-shift=1`: hold Shift for `click=`'s press, so a
+    /// click on a plan section selects it without the jump (2026-11-14).
+    pub probe_click_shift: bool,
     /// Whether Shift was held when this frame's wheel was read, so a notch over
     /// any timed lane pans rather than zooms.
     ///
@@ -1395,6 +1398,7 @@ impl Shell {
             probe_wheel: None,
             probe_wheel_shift: false,
             probe_wheel_alt: false,
+            probe_click_shift: false,
             probe_middle_drag_frame: None,
             wheel_pan_modifier: false,
             probe_wheel_frame: None,

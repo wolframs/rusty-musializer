@@ -694,10 +694,12 @@ edited in the window, in **Look**, in a card above the scene's tuning with
 three faces:
 
 - **This section** edits the section selected in the plan lane (the lane
-  head's section field, "Look ›", opens it). Selecting a section puts the
-  playhead where it has arrived, so the frame on screen, Look's head and the
-  tuning below are the section the card edits; played on past it, the card
-  says whose picture it is now and **Show N** goes back. It edits how the
+  head's section field, "Look ›", opens it). A click on a section jumps
+  there: the playhead goes to where it has arrived, playing or paused, so
+  the frame on screen, Look's head and the tuning below are the section the
+  card edits. **Shift + click** selects it without moving the playhead;
+  played on past it, or Shift-clicked from elsewhere, the card says whose
+  picture it is now and **Show N** goes there. It edits how the
   section arrives — the fourteen kinds, each a small picture and a name, and
   a length — its glide (drawn disabled, saying why, after another scene), its
   grade (the named palettes, strength, the hue turn), the caption style its

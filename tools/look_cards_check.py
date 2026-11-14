@@ -67,10 +67,14 @@ file):
       playhead already inside stays; a boundary press does not move it;
       played on past it, the card says whose picture it is and Show N
       returns (the gap beside it does not).
-  39. (G) the seek belongs to a completed click while paused: a press held
-      across frames while playing, a click while playing, a drag from a
-      body and a press held during Play the cut never move the transport
-      (a held press is `click-hold=` and a native XTest press).
+  39. (G, H1) a click on a section jumps (operator, 2026-11-14): while
+      playing the playhead lands in the clicked section and the music goes
+      on; paused it jumps from inside the section too; during Play the cut
+      it lets the cut go. Shift + click (`click-shift=1`) selects and leaves
+      the playhead, playing and paused. A press held across frames while
+      playing, a drag from a body and a press held during Play the cut
+      never move the transport (a held press is `click-hold=` and a native
+      XTest press).
  keys (native XTest presses and keys, this file as MZ_BIN)
   22. a length typed with real keys saves and picks no scene; a title typed
       with T, space and 4 in it saves and moves neither the column, the
@@ -209,6 +213,15 @@ compared with `cmp`:
     before anything reports, and no perturbation of the release logic it
     guards was caught (the threshold's clear is redundant with the press
     re-arming it), so it pins behaviour, not this fix.
+
+H1 NEGATIVE CONTROLS (2026-11-14, GPU path, LOOK_CARDS_ONLY=show), two
+perturbed debug builds copied aside, run as LOOK_CARDS_BIN, the file
+restored from a saved copy and compared with `cmp`:
+  39a (2 failures): Shift ignored at the press: Shift + click while playing
+    jumped to 6.61 and while paused to 4.050, both the click's seek.
+  39b (2 failures): the jump kept to a paused track (G's rule): a click on
+    section 4 while playing left the playhead at 1.03 in section 1, and a
+    click during Play the cut left the cut running (cut=1.000..4.100).
 """
 import json
 import os
@@ -1014,23 +1027,37 @@ if only in ('all', 'show'):
     log, _ = run('show-gap', 'size=1280x720,column=look,time=3,play=1,section=2,click-after=120' + click((r[0] - 3, r[1] + r[3] // 2)), frames=150)
     check(playhead_of(log) > 4.0 and 'show@' in cards(log), f'the gap beside Show changes nothing ({playhead_of(log):.3f})')
 
-    # 39. (G) A press on a section's body shows it only once it is a click,
-    #     and only while paused: held across frames during playback the
-    #     transport goes on where it was (section 4's rest would be 5.550);
-    #     released as a click while playing it selects and the music goes on;
-    #     a drag from a body scrubs and never shows the section; a press held
-    #     during Play the cut leaves the cut running. The paused click and
-    #     the boundary press of check 18 are the controls.
+    # 39. (G, H1) A click on a section's body jumps there (operator,
+    #     2026-11-14), playing or paused, once it is a click: held across
+    #     frames during playback the transport goes on where it was
+    #     (section 4's rest would be 5.550); released as a click while
+    #     playing the playhead lands in section 4 and the music goes on;
+    #     Shift + click selects and leaves the playhead, playing and paused;
+    #     a drag from a body scrubs and never jumps; a press held during
+    #     Play the cut leaves the cut running, a click lets it go. The
+    #     boundary press of check 18 is the control.
     body4 = (lane_x(6.0), lane[1] + lane[3] // 2)
     log, _ = run('show-hold-playing', 'size=1280x720,column=look,time=0.5,play=1,click-after=20,click-hold=400'
                  + click(body4), frames=70)
     check(field(line(log, 'scene runs'), 'selected') == '4' and playhead_of(log) < 5.0
           and 'playing=true' in line(log, 'resume'),
           f"a press held on section 4 while playing selects it and moves nothing ({playhead_of(log):.3f}, {line(log, 'resume')})")
-    log, _ = run('show-click-playing', 'size=1280x720,column=look,time=0.5,play=1' + click(body4), frames=70)
+    # Section 4 is 5.5..6.5: 30 frames leave the playhead inside it.
+    log, _ = run('show-click-playing', 'size=1280x720,column=look,time=0.5,play=1' + click(body4), frames=30)
+    now = re.search(r'now=run \S+ section (\d+)', line(log, 'scene runs'))
+    check(field(line(log, 'scene runs'), 'selected') == '4' and 5.55 <= playhead_of(log) < 6.5
+          and now and now[1] == '4' and 'playing=true' in line(log, 'resume'),
+          f"a click on section 4 while playing jumps there and the music goes on ({playhead_of(log):.3f}, from 5.550, {now and now[0]})")
+    log, _ = run('show-shift-playing', 'size=1280x720,column=look,time=0.5,play=1,click-shift=1' + click(body4), frames=70)
     check(field(line(log, 'scene runs'), 'selected') == '4' and playhead_of(log) < 5.0
           and 'playing=true' in line(log, 'resume'),
-          f"a click on section 4 while playing selects it and the music goes on ({playhead_of(log):.3f})")
+          f"Shift + click on section 4 while playing selects it and the music goes on where it was ({playhead_of(log):.3f})")
+    log, _ = run('show-shift-paused', 'size=1280x720,column=look,time=7,play=0,click-shift=1' + click(body), frames=30)
+    check(field(line(log, 'scene runs'), 'selected') == '3' and abs(playhead_of(log) - 7.0) < 0.0005,
+          f"Shift + click on section 3 while paused selects it and leaves the playhead at 7 ({playhead_of(log):.3f})")
+    log, _ = run('show-click-inside', 'size=1280x720,column=look,time=5,play=0' + click(body), frames=30)
+    check(field(line(log, 'scene runs'), 'selected') == '3' and abs(playhead_of(log) - 4.05) < 0.0005,
+          f"a click on section 3 with the playhead already in it (5 s) jumps to its start, 4.050 ({playhead_of(log):.3f})")
     log, _ = run('show-drag', 'size=1280x720,column=look,time=7,play=0,hover=%dx%d' % body4
                  + ',left-drag=%dx%d' % (lane_x(1.0), body4[1]), frames=40)
     # The probe's drag commits where its last moved frame was, half way
@@ -1042,6 +1069,10 @@ if only in ('all', 'show'):
                  drive=[{'click': centre(rect(cut_base, 'play'))}, {'wait': 0.2}, {'down': body4}, {'wait': 0.4}])
     check('native steps delivered' in log and field(cards(log), 'cut') not in (None, 'none') and playhead_of(log) < 4.2,
           f"a press held on section 4 during Play the cut leaves the cut running (cut={field(cards(log), 'cut')}, {playhead_of(log):.3f})")
+    log, _ = run('show-cut-click', 'size=1280x720,column=look,time=7,play=0,section=2', frames=900,
+                 drive=[{'click': centre(rect(cut_base, 'play'))}, {'wait': 0.2}, {'click': body4}, {'wait': 0.4}])
+    check('native steps delivered' in log and field(cards(log), 'cut') == 'none' and playhead_of(log) >= 5.55,
+          f"a click on section 4 during Play the cut jumps there and lets the cut go (cut={field(cards(log), 'cut')}, {playhead_of(log):.3f})")
 
 if only in ('all', 'keys'):
     # 22. Real keys (D2): every check above types through the probe's text

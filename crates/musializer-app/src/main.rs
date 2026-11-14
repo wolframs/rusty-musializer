@@ -1105,6 +1105,7 @@ fn run(
             }
             app.shell.probe_wheel_shift = probe.wheel_shift;
             app.shell.probe_wheel_alt = probe.wheel_alt;
+            app.shell.probe_click_shift = probe.click_shift;
             middle_drag = probe.middle_drag;
             left_drag = probe.left_drag;
             audio_stall_ms = probe.audio_stall_ms;

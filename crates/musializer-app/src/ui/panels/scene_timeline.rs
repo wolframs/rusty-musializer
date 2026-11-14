@@ -11,6 +11,7 @@ use musializer_core::ui::plan_runs::{fold_runs, RunSpan};
 use musializer_core::ui::scene_lane_edit::{self, SceneLaneZone};
 use musializer_core::ui::timed_lane;
 use musializer_core::ui::workspace_layout::UiRect;
+use raylib::consts::KeyboardKey;
 use raylib::prelude::{Color, RaylibDraw, RaylibDrawHandle, Vector2};
 
 use super::super::scene_colors::scene_color;
@@ -206,17 +207,22 @@ pub struct SceneLaneEditor {
     last_frame: RunFrame,
     /// What the lane head drew last frame, for the `lane head:` line.
     head_report: String,
-    /// A section was just selected by a press on its body (or `section=`):
-    /// on the next frame the playhead goes into it when it is elsewhere,
-    /// so the frame on screen, Look's head and the tuning under the cards
-    /// are that section's (D2). Only while paused: a section selected while
-    /// the track plays is selected, and the music goes on (G).
+    /// A section was just selected by `section=` (the probe) or Look's
+    /// invitation: on the next frame the playhead goes into it when it is
+    /// elsewhere, so the frame on screen, Look's head and the tuning under
+    /// the cards are that section's (D2). A playhead already inside stays.
     pub(crate) show_pending: bool,
-    /// A body press that may still become a click: [`Self::show_pending`]
+    /// A section was just clicked: on the next frame the playhead jumps to
+    /// it (its rest, [`section_rest_seconds`]), playing or paused, and from
+    /// inside it too (operator, 2026-11-14: "clicking a section means
+    /// jumping"). A seek the user made, so an active Play the cut lets go.
+    jump_pending: bool,
+    /// A body press that may still become a click: [`Self::jump_pending`]
     /// is raised on its release when it never moved past the drag threshold
-    /// (G, 2026-11-14). A drag, a retime and a scrub never raise it: the seek
-    /// used to go out the frame after the press, before the gesture was known,
-    /// and jumped the transport and let go of Play the cut under a drag.
+    /// (G, 2026-11-14). A drag, a retime, a scrub and a Shift press never
+    /// raise it: the seek used to go out the frame after the press, before
+    /// the gesture was known, and jumped the transport and let go of Play
+    /// the cut under a drag.
     show_on_release: bool,
 }
 
@@ -679,17 +685,20 @@ impl Shell {
         {
             self.scene_lane.selected_id = 0;
         }
-        // A section selected is a section shown (D2): Look's card edits the
+        // A click on a section jumps there (operator, 2026-11-14), and a
+        // section selected another way is shown (D2): Look's card edits the
         // selection while its head, the frame and the tuning below follow
-        // the playhead, so selecting puts the playhead in the section.
-        if std::mem::take(&mut self.scene_lane.show_pending) && !input.playing {
+        // the playhead. Shift + click selects only, and leaves the playhead.
+        let jump = std::mem::take(&mut self.scene_lane.jump_pending);
+        let show = std::mem::take(&mut self.scene_lane.show_pending);
+        if jump || show {
             if let Some(cue) = track
                 .scene_switches
                 .cues()
                 .iter()
                 .find(|cue| cue.id == self.scene_lane.selected_id)
             {
-                if !section_holds(cue, input.time_seconds) {
+                if jump || !section_holds(cue, input.time_seconds) {
                     commands.push(ShellCommand::Seek(section_rest_seconds(cue)));
                 }
             }
@@ -758,17 +767,20 @@ impl Shell {
         let caption = |text: &str| widgets::measure(font, text, metric::UI_FONT_CAPTION);
         let tracked = |text: &str| widgets::measure_tracked(font, text, metric::UI_FONT_MICRO, 1.0);
         let button = |text: &str| (caption(text) + 20.0).ceil();
+        // The click jumps (operator, 2026-11-14), so the hint says how to
+        // select without losing the place in the song.
+        let hint_base = "click a section to jump there \u{00b7} Shift+click selects only";
         let hint_text = if track.scene_switches.finish.pixel.is_on() {
             let look = track.scene_switches.finish.pixel;
             format!(
-                "click a section to edit it \u{00b7} pixel look {} {}",
+                "{hint_base} \u{00b7} pixel look {} {}",
                 look.palette_label(),
                 look.pixels
             )
         } else if track.scene_switches.finish.is_active() {
-            "click a section to edit it \u{00b7} film finish on".to_owned()
+            format!("{hint_base} \u{00b7} film finish on")
         } else {
-            "click a section to edit it".to_owned()
+            hint_base.to_owned()
         };
         let face = track.manual_clear.button();
         let (markers_full, markers_short, clear_full, clear_short) =
@@ -784,7 +796,7 @@ impl Shell {
             capture_full: button("Capture tuning"),
             capture_short: button("Capture"),
             delete: button("Delete"),
-            hint: (caption("click a section to edit it") + 4.0).ceil(),
+            hint: (caption("click a section to jump there") + 4.0).ceil(),
             markers_full,
             markers_short,
             clear_full,
@@ -1511,9 +1523,9 @@ impl Shell {
         if let Some(origin_x) = self.scene_lane.scrub_origin_x {
             if !pointer.down {
                 self.scene_lane.scrub_origin_x = None;
-                // Pressed and released without a drag: a click, which shows
-                // its section (next frame, and only while paused).
-                self.scene_lane.show_pending = std::mem::take(&mut self.scene_lane.show_on_release);
+                // Pressed and released without a drag: a click, which jumps
+                // to its section (next frame), playing or paused.
+                self.scene_lane.jump_pending = std::mem::take(&mut self.scene_lane.show_on_release);
                 return;
             }
             if (mouse.x - origin_x).abs() >= timed_lane::DRAG_THRESHOLD_PIXELS as f32 {
@@ -1553,10 +1565,15 @@ impl Shell {
                 return;
             };
             self.scene_lane.selected_id = hit.id;
-            // A click on a body shows its section once it is released as a
-            // click; a boundary press is the start of a retime, which must
-            // not move the playhead.
-            self.scene_lane.show_on_release = hit.zone != SceneLaneZone::Boundary;
+            // A click on a body jumps to its section once it is released as
+            // a click; a boundary press is the start of a retime, which must
+            // not move the playhead, and Shift held at the press selects
+            // only (operator, 2026-11-14). Shift + wheel pans and Shift +
+            // drag is still a scrub, so the modifier takes no other gesture.
+            let shift = self.probe_click_shift
+                || d.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+                || d.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT);
+            self.scene_lane.show_on_release = hit.zone != SceneLaneZone::Boundary && !shift;
             // A second press on a section body inside the double-click window
             // opens the run under it. Boundaries are excluded: two quick presses
             // on a cut are two drags, not an instruction to zoom.
