@@ -99,8 +99,20 @@ verified; delete the block when done, with the record in the archive.
 - [ ] **A test that fails under load**: `clip::tests::a_budget_of_two_decoders_runs_two_whatever_the_clips`
   (musializer-runtime) failed once on 2026-11-14 while another gate ran and
   passed alone. Find the timing assumption.
-- [ ] **H4 — generating a clip** (F2, second half of VG): provider call, price
-  shown first, consent, provenance, a real test clip (at most 3.50 USD in all).
+- [ ] **H4 — generating a clip** (F2, second half of VG): built and merged
+  2026-11-14, three real clips for 0.36 USD (`build/generated-clips/`), then
+  three review rounds (9, 7 and 9 findings). Held out of the release build
+  until the third round's fixes are in.
+  **The lead's decision, 2026-11-15, after the third review:** `--max-spend N`
+  bounds only what this run itself newly sends; what earlier runs may already
+  have spent is reported on its own line and not counted. Reason: counting
+  prior possible charges against the ceiling was wrong in a new way in each
+  review, and a rule about this run's own sends can be enforced at the moment
+  of each send. The operator has not ruled on this; he can overrule it.
+- [ ] **A regression to fix before the release**: in Look, a pixel count
+  typed for "This section" no longer commits (`tools/pixel_look_check.sh`,
+  two failures, deterministic since some commit after 2578329). An agent is
+  bisecting.
 - [ ] **Close**: one review by GPT-6.1-Sol per stream before its release
   build, one full `tools/verify.sh`, release build, queue and archive updated,
   worktrees removed.
