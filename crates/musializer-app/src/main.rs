@@ -1839,7 +1839,7 @@ fn run(
             rl.get_time(),
             follow.is_some(),
         );
-        app.shell.generation = generations.view();
+        app.shell.generation = generations.view(&app.workspace);
         let audition_gain = app
             .shell
             .protocol
@@ -2437,7 +2437,9 @@ fn run(
                         now,
                     )
                 }
-                ShellCommand::CancelGeneration(cue_id) => generations.cancel(cue_id),
+                ShellCommand::CancelGeneration(cue_id) => {
+                    generations.cancel(cue_id, &app.workspace)
+                }
                 ShellCommand::ReadVideoPrices => generations.refresh_prices(),
                 ShellCommand::OpenGenerate => {
                     generation::window::open_block(&mut app, time_seconds)

@@ -67,6 +67,9 @@ pub(crate) struct GenerateForm {
     pub last: bool,
     /// The first press of the button; the second sends.
     pub armed: bool,
+    /// What was armed: the request as it stood at the first press. A Send
+    /// for anything else is not the one agreed to, and disarms instead.
+    pub armed_for: Option<String>,
     /// `generate=send` (a probe): press Send once it can be pressed.
     pub probe_send: bool,
     /// `generate=send-twice` (a probe): arm and press Send once more after
@@ -87,9 +90,29 @@ impl GenerateForm {
             first: true,
             last: true,
             armed: false,
+            armed_for: None,
             probe_send: false,
             probe_again: false,
         }
+    }
+
+    /// The request the form would send, as one comparable value.
+    pub(crate) fn request_key(&self) -> String {
+        format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            self.cue_id,
+            self.model,
+            self.seconds,
+            self.first,
+            self.last,
+            self.prompt.edit.text()
+        )
+    }
+
+    /// Arms the button for the request as it stands.
+    pub(crate) fn arm(&mut self) {
+        self.armed = true;
+        self.armed_for = Some(self.request_key());
     }
 }
 
@@ -771,6 +794,30 @@ impl Shell {
                     self.widgets.hint(d, state, widget, rect, &reason);
                     cx.controls
                         .push(format!("generate-action@disabled:{}", rect_text(rect)));
+                } else if form.armed
+                    && form.armed_for.as_deref() != Some(form.request_key().as_str())
+                {
+                    // Armed for another request (the prompt, model, length
+                    // or frames changed since): that consent is not this one's.
+                    form.armed = false;
+                    form.armed_for = None;
+                    let state = self.widgets.button(d, widget, rect);
+                    self.widgets.disabled_button(
+                        d,
+                        font,
+                        rect,
+                        &label,
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                    self.widgets.hint(
+                        d,
+                        state,
+                        widget,
+                        rect,
+                        "Changed since it was armed: press again",
+                    );
+                    cx.controls
+                        .push(format!("generate-action@disabled:{}", rect_text(rect)));
                 } else if form.armed {
                     let back_width = 64.0;
                     let send =
@@ -842,7 +889,7 @@ impl Shell {
                         }
                         form.armed = false;
                         if std::mem::take(&mut form.probe_again) {
-                            form.armed = true;
+                            form.arm();
                             form.probe_send = true;
                         }
                     }
@@ -867,7 +914,7 @@ impl Shell {
                     cx.controls
                         .push(format!("generate-action@{}", rect_text(rect)));
                     if state.clicked {
-                        form.armed = true;
+                        form.arm();
                         form.prompt.set_focused(false);
                     }
                 }
@@ -1084,7 +1131,9 @@ impl Shell {
             form.first = first;
             form.last = last;
         }
-        form.armed = matches!(mode, "armed" | "send" | "send-twice");
+        if matches!(mode, "armed" | "send" | "send-twice") {
+            form.arm();
+        }
         form.probe_send = matches!(mode, "send" | "send-twice");
         form.probe_again = mode == "send-twice";
         self.look_column.cards.generate = Some(form);

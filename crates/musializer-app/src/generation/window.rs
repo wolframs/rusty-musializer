@@ -256,8 +256,10 @@ pub struct Generations {
     key: Result<(), String>,
     key_checked: Option<Instant>,
     jobs: Vec<Running>,
-    last: HashMap<u64, LastOutcome>,
-    unconfirmed: HashMap<u64, UnconfirmedView>,
+    /// By project and section: a cue id of one project names an unrelated
+    /// section, or none, in another (the look cards' owner rule).
+    last: HashMap<(Owner, u64), LastOutcome>,
+    unconfirmed: HashMap<(Owner, u64), UnconfirmedView>,
     /// A treatment is followed this frame.
     followed: bool,
 }
@@ -291,8 +293,18 @@ impl Generations {
         }
     }
 
+    /// What the card reads for the current project: its sections' jobs,
+    /// outcomes and warnings, none of another project's.
     #[must_use]
-    pub fn view(&self) -> CardView {
+    pub fn view(&self, workspace: &crate::workspace::Workspace) -> CardView {
+        let owner = workspace
+            .current_index()
+            .and_then(|slot| Owner::of(workspace, slot));
+        self.view_for(owner.as_ref())
+    }
+
+    fn view_for(&self, owner: Option<&Owner>) -> CardView {
+        let mine = |key: &(Owner, u64)| owner == Some(&key.0);
         CardView {
             catalog: self.catalog.clone(),
             prices: self.prices.clone(),
@@ -301,6 +313,7 @@ impl Generations {
             running: self
                 .jobs
                 .iter()
+                .filter(|running| owner == Some(&running.target.owner))
                 .map(|running| {
                     let (stage, elapsed) = running.job.progress();
                     RunningView {
@@ -314,10 +327,20 @@ impl Generations {
                     }
                 })
                 .collect(),
-            last: self.last.clone(),
-            unconfirmed: self.unconfirmed.clone(),
+            last: self
+                .last
+                .iter()
+                .filter(|(key, _)| mine(key))
+                .map(|(key, outcome)| (key.1, outcome.clone()))
+                .collect(),
+            unconfirmed: self
+                .unconfirmed
+                .iter()
+                .filter(|(key, _)| mine(key))
+                .map(|(key, held)| (key.1, held.clone()))
+                .collect(),
             kept_in: self.store.as_ref().ok().map(super::job::kept_at),
-            report: self.describe(),
+            report: self.describe(owner),
         }
     }
 
@@ -336,10 +359,13 @@ impl Generations {
             .ok();
     }
 
-    /// Stops waiting for a section's job.
-    pub fn cancel(&mut self, cue_id: u64) {
+    /// Stops waiting for a section's job, in the current project.
+    pub fn cancel(&mut self, cue_id: u64, workspace: &crate::workspace::Workspace) {
+        let owner = workspace
+            .current_index()
+            .and_then(|slot| Owner::of(workspace, slot));
         for running in &self.jobs {
-            if running.order.cue_id == cue_id {
+            if running.order.cue_id == cue_id && owner.as_ref() == Some(&running.target.owner) {
                 running.job.cancel();
             }
         }
@@ -468,7 +494,11 @@ impl Generations {
                 }
             }
             Outcome::Unconfirmed(intent) => {
-                let words = self.hold(order.cue_id, &running.digest, &intent);
+                let words = self.hold(
+                    (running.target.owner.clone(), order.cue_id),
+                    &running.digest,
+                    &intent,
+                );
                 (Severity::Warning, HELD_TITLE, words)
             }
             Outcome::Failed { reason, billing } => (
@@ -498,9 +528,10 @@ impl Generations {
         };
         // A send whose answer was lost: the card warns, and its next Send
         // is the agreement to send it again.
+        let key = (running.target.owner.clone(), order.cue_id);
         if lost {
             self.unconfirmed.insert(
-                order.cue_id,
+                key.clone(),
                 UnconfirmedView {
                     digest: running.digest.clone(),
                     words: format!("{words} {AGAIN}"),
@@ -508,16 +539,15 @@ impl Generations {
             );
         }
         app.shell.notify(severity, title, &words);
-        self.last
-            .insert(order.cue_id, LastOutcome { severity, words });
+        self.last.insert(key, LastOutcome { severity, words });
     }
 
     /// Holds a request whose earlier send may have been billed: the card
     /// shows why, and its next Send agrees to send it again.
-    fn hold(&mut self, cue_id: u64, digest: &str, intent: &super::store::Intent) -> String {
+    fn hold(&mut self, key: (Owner, u64), digest: &str, intent: &super::store::Intent) -> String {
         let words = format!("{} {AGAIN}", super::job::unconfirmed_words(intent));
         self.unconfirmed.insert(
-            cue_id,
+            key,
             UnconfirmedView {
                 digest: digest.to_owned(),
                 words: words.clone(),
@@ -547,6 +577,10 @@ impl Generations {
         now: f64,
     ) {
         let cue_id = order.cue_id;
+        let Some(owner) = Owner::of(&app.workspace, order.track_slot) else {
+            return;
+        };
+        let key = (owner, cue_id);
         match self.prepare(
             order,
             rl,
@@ -562,14 +596,14 @@ impl Generations {
             now,
         ) {
             Ok(Started::Job) => {
-                self.last.remove(&cue_id);
+                self.last.remove(&key);
             }
             Ok(Started::Found(words)) => {
-                self.unconfirmed.remove(&cue_id);
+                self.unconfirmed.remove(&key);
                 app.shell
                     .notify(Severity::Info, "Clip found in the project", &words);
                 self.last.insert(
-                    cue_id,
+                    key.clone(),
                     LastOutcome {
                         severity: Severity::Info,
                         words,
@@ -579,7 +613,7 @@ impl Generations {
             Err(NotStarted::Held(words)) => {
                 app.shell.notify(Severity::Warning, HELD_TITLE, &words);
                 self.last.insert(
-                    cue_id,
+                    key.clone(),
                     LastOutcome {
                         severity: Severity::Warning,
                         words,
@@ -590,7 +624,7 @@ impl Generations {
                 app.shell
                     .notify(Severity::Warning, "Clip not generated", &reason);
                 self.last.insert(
-                    cue_id,
+                    key.clone(),
                     LastOutcome {
                         severity: Severity::Warning,
                         words: reason,
@@ -616,10 +650,11 @@ impl Generations {
         time_seconds: f64,
         now: f64,
     ) -> Result<Started, NotStarted> {
+        let owner = Owner::of(&app.workspace, order.track_slot).ok_or("no track is open")?;
         if self
             .jobs
             .iter()
-            .any(|running| running.order.cue_id == order.cue_id)
+            .any(|running| running.order.cue_id == order.cue_id && running.target.owner == owner)
         {
             return Err("this section is generating already".into());
         }
@@ -632,7 +667,6 @@ impl Generations {
         if self.followed {
             return Err("a treatment is followed: the file decides what each section plays".into());
         }
-        let owner = Owner::of(&app.workspace, order.track_slot).ok_or("no track is open")?;
         let track = app.workspace.current().ok_or("no track is open")?;
         let cues = track.scene_switches.cues();
         let index = cues
@@ -787,11 +821,16 @@ impl Generations {
                 Some(intent.sent_utc)
             }
             Some(intent) => {
-                return Err(NotStarted::Held(self.hold(order.cue_id, &digest, &intent)))
+                return Err(NotStarted::Held(self.hold(
+                    (target.owner.clone(), order.cue_id),
+                    &digest,
+                    &intent,
+                )))
             }
             None => None,
         };
-        self.unconfirmed.remove(&order.cue_id);
+        self.unconfirmed
+            .remove(&(target.owner.clone(), order.cue_id));
         let (poll, deadline, max_bytes) = JobSpec::timings_from_env();
         let job = GenerationJob::spawn(JobSpec {
             name: super::job::clip_name(&request),
@@ -817,16 +856,17 @@ impl Generations {
         Ok(Started::Job)
     }
 
-    /// The `generate:` report line.
+    /// The `generate:` report line: every job of this process (one of
+    /// another project marked so), the current project's outcomes.
     #[must_use]
-    pub fn describe(&self) -> String {
+    fn describe(&self, owner: Option<&Owner>) -> String {
         let running: Vec<String> = self
             .jobs
             .iter()
             .map(|running| {
                 let (stage, elapsed) = running.job.progress();
                 format!(
-                    "{}:{}:{:.1}s:{}{}",
+                    "{}:{}:{:.1}s:{}{}{}",
                     running.order.cue_id,
                     stage_token(&stage),
                     elapsed.as_secs_f64(),
@@ -835,6 +875,11 @@ impl Generations {
                         ":cancelling"
                     } else {
                         ""
+                    },
+                    if owner == Some(&running.target.owner) {
+                        ""
+                    } else {
+                        ":other-project"
                     }
                 )
             })
@@ -842,7 +887,8 @@ impl Generations {
         let mut last: Vec<String> = self
             .last
             .iter()
-            .map(|(cue, outcome)| format!("{cue}:{:?}:{}", outcome.severity, outcome.words))
+            .filter(|(key, _)| owner == Some(&key.0))
+            .map(|((_, cue), outcome)| format!("{cue}:{:?}:{}", outcome.severity, outcome.words))
             .collect();
         last.sort();
         format!(
@@ -1005,6 +1051,35 @@ mod tests {
             end_seconds: end,
             ..SceneSwitchCue::default()
         }
+    }
+
+    #[test]
+    fn the_card_reads_only_the_current_projects_sections() {
+        let mut generations = Generations::new();
+        let other = Owner {
+            project: Some(PathBuf::from("/music/other.musi")),
+            ..owner()
+        };
+        let outcome = LastOutcome {
+            severity: Severity::Warning,
+            words: "An earlier send may have been billed".into(),
+        };
+        generations.last.insert((owner(), 2), outcome.clone());
+        generations.unconfirmed.insert(
+            (owner(), 2),
+            UnconfirmedView {
+                digest: "d".repeat(64),
+                words: "held".into(),
+            },
+        );
+        let mine = generations.view_for(Some(&owner()));
+        assert_eq!(mine.last.get(&2), Some(&outcome));
+        assert!(mine.unconfirmed.contains_key(&2));
+        assert!(mine.report.contains("last=2:Warning:"));
+        // Project B, section 2: none of A's words, warning or consent.
+        let theirs = generations.view_for(Some(&other));
+        assert!(theirs.last.is_empty() && theirs.unconfirmed.is_empty());
+        assert!(theirs.report.ends_with("last=none"), "{}", theirs.report);
     }
 
     #[test]

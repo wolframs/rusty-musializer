@@ -713,6 +713,9 @@ impl CardState {
         self.probe_text = None;
         self.refused = None;
         self.shown = None;
+        // The generate block is one section of one project: its prompt, its
+        // settings and an armed Send must not appear against another's.
+        self.generate = None;
     }
 }
 
@@ -2974,6 +2977,39 @@ mod tests {
         let picked = turned.with_palette(Palette::Ice);
         assert_eq!(picked.named_palette(), Some(Palette::Ice));
         assert_eq!((picked.map, picked.shift_by), (0.5, 40.0));
+    }
+
+    #[test]
+    fn another_project_forgets_the_generate_block_and_its_armed_send() {
+        let mut cards = CardState::default();
+        let mut form = GenerateForm::new(2);
+        form.prompt.bind("fog over a field");
+        form.armed = true;
+        cards.generate = Some(form);
+        cards.forget();
+        assert!(cards.generate.is_none(), "the block outlived its project");
+    }
+
+    #[test]
+    fn an_armed_send_belongs_to_the_request_it_was_armed_for() {
+        let mut form = GenerateForm::new(2);
+        form.prompt.bind("fog over a field");
+        form.arm();
+        assert_eq!(form.armed_for.as_deref(), Some(form.request_key().as_str()));
+        for change in [
+            |form: &mut GenerateForm| form.seconds = 8,
+            |form: &mut GenerateForm| form.model = 2,
+            |form: &mut GenerateForm| form.last = false,
+            |form: &mut GenerateForm| form.prompt.bind("fog over a lake"),
+            |form: &mut GenerateForm| form.cue_id = 3,
+        ] {
+            let mut changed = form.clone();
+            change(&mut changed);
+            assert_ne!(
+                changed.armed_for.as_deref(),
+                Some(changed.request_key().as_str())
+            );
+        }
     }
 
     #[test]
