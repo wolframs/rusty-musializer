@@ -50,6 +50,7 @@ file):
   13. following a treatment, the cards are drawn disabled and a press
       changes nothing; Stop following stops following and the card is
       editable again.
+  23. following, a kind chip's hover gives the follow's reason (D2).
  sequence (D2: a second project, `drop-at=`, `look-commit-at=`)
   15. a title card half-typed in one project, another project dropped in,
       Enter a frame later: the draft died with its project; Enter in the
@@ -70,7 +71,6 @@ file):
   22. a length typed with real keys saves and picks no scene; a title typed
       with T, space and 4 in it saves and moves neither the column, the
       playhead nor the scene; the 4 alone, with no field open, picks one.
-  23. following, a kind chip's hover gives the follow's reason.
  captures
   14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
