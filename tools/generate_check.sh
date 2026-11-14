@@ -37,6 +37,9 @@
 #   - redownload (H4b): a finished job whose downloads come back cut short is
 #     kept, and the next run downloads it again without a new submit; an
 #     expired job is named and forgotten;
+#   - order (H4b): a frame inside the blend from a generated section this run
+#     could not make (a stand-in) is never sent: the request is refused by
+#     name and the provider gets no submit for it;
 #   - concurrent (H4b): two runs asking for one request while the first one's
 #     submit is in flight pay once (the provider's submit count), a run with
 #     --max-spend 0 sends nothing, and a job found in progress counts against
@@ -440,6 +443,32 @@ else
     fail "the expired job was not named or not forgotten; see $OUT/expire.log"
 fi
 fi # redownload
+
+# --- 11. no stand-in in a frame sent (H4b) ---------------------------------------
+# Section 1 is generated and refused (402), so it stays a stand-in. Section 2
+# is two seconds long and fades in over all of them, so its last frame still
+# shows section 1; section 3 starts on that frame and must not be sent.
+if only order; then
+cat >"$OUT/blend.treatment.json" <<EOF
+{ "schema": "musializer.treatment/v1", "audio": { "path": "fixture.wav" },
+  "output": { "resolution": "640x360", "fps": 24, "quality": "balanced" }, "seed": 7,
+  "segments": [ { "at": 0, "scene": "spectrum" },
+                { "at": 2, "scene": "clip", "clip": { "generate": {
+                    "prompt": "refused first [refuse-402]", "model": "google/veo-3.1-lite", "seconds": 4 } } },
+                { "at": 4, "scene": "pulse", "transition": { "kind": "fade", "seconds": 3 } },
+                { "at": 6, "scene": "clip", "clip": { "generate": {
+                    "prompt": "after the blend", "model": "google/veo-3.1-lite", "seconds": 4, "first": "previous" } } },
+                { "at": 9, "scene": "spectrum" } ] }
+EOF
+submits="$(count submit)"
+launch blend --treatment "$OUT/blend.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/blend.musi"
+if [ "$(status_of blend)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] \
+    && has blend 'segments[3] (0:06.000).clip.generate refused: its frame at 0:05.979 lies inside the transition at 0:04.000, which shows segments[1] (0:02.000).clip.generate, a generated section not made yet; the frame would be a stand-in, so nothing was sent for it'; then
+    pass "a frame that would show a stand-in is refused by name; the provider got only the refused section's submit"
+else
+    fail "a stand-in frame was sent or not named (status $(status_of blend), $(( $(count submit) - submits )) submits); see $OUT/blend.log"
+fi
+fi # order
 
 # --- 6. the section card's Generate, pressed (tools/generate_card_check.py) -------
 if [ "${GENERATE_SKIP_CARD:-}" != 1 ] && only card; then

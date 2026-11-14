@@ -252,6 +252,18 @@ pub fn prepare<'audio>(
             Some(FrameSource::File(name)) => last = Some(resolve(path, name)),
             Some(FrameSource::Previous) | None => {}
         }
+        // A frame inside a transition shows both sides of its cut. A side that
+        // is a generated section not made yet is a stand-in, and a stand-in
+        // is never sent (a section shorter than the blend into it, after a
+        // generated one this run could not make).
+        if let Some(why) = stand_in_in_frame(&stills, app, &treatment) {
+            let estimate =
+                estimate_without_frames(&generation, catalog.as_ref(), app, resolution_override);
+            println!("generate:        {} refused: {why}", generation.place);
+            blocked.push(generation.segment);
+            outcomes.push((generation, Resolution::Missing { estimate, why }));
+            continue;
+        }
         if !stills.is_empty() {
             render_frames(
                 rl, thread, audio, music, app, analysis, renderer, fonts, &stills, shape.size,
@@ -576,6 +588,62 @@ pub fn prepare<'audio>(
             "Nothing was sent. To make them: --generate-clips --max-spend USD."
         }
     ))
+}
+
+/// Why a request may not be sent because a frame it would send shows a
+/// generated section that is not made yet (a stand-in), if one does: the
+/// frame lies inside a transition, and the side of its cut that shows is
+/// such a section. A dip's falling half shows only the section before its
+/// cut; a blend from the held previous picture shows both sides.
+fn stand_in_in_frame(
+    stills: &[(f64, PathBuf)],
+    app: &crate::App,
+    treatment: &Treatment,
+) -> Option<String> {
+    use musializer_core::project::transition::Source;
+    use musializer_core::treatment::format_time;
+    let track = app.workspace.current()?;
+    let pending: Vec<ClipGeneration> = treatment
+        .clip_generations()
+        .into_iter()
+        .filter(|generation| !generation.attached)
+        .collect();
+    let cues = track.scene_switches.cues();
+    for (time, _) in stills {
+        let Some(active) = track
+            .scene_switches
+            .transition_at(*time, track.duration_seconds)
+        else {
+            continue;
+        };
+        let Some(after) = cues
+            .iter()
+            .position(|cue| (cue.start_seconds - active.cut_seconds).abs() < 1.0e-6)
+        else {
+            continue;
+        };
+        let sides: Vec<usize> = if *time < active.cut_seconds {
+            after.checked_sub(1).into_iter().collect()
+        } else if active.source == Source::Previous {
+            after.checked_sub(1).into_iter().chain([after]).collect()
+        } else {
+            vec![after]
+        };
+        if let Some(missing) = pending
+            .iter()
+            .find(|generation| sides.contains(&generation.segment))
+        {
+            return Some(format!(
+                "its frame at {} lies inside the transition at {}, which shows {}, a generated \
+                 section not made yet; the frame would be a stand-in, so nothing was sent for it. \
+                 Make that section first, or give this one an image file for the frame",
+                format_time(*time),
+                format_time(active.cut_seconds),
+                missing.place
+            ));
+        }
+    }
+    None
 }
 
 fn estimate_without_frames(
