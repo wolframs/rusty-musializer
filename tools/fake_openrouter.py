@@ -26,7 +26,6 @@ What a job does is chosen by a marker in its prompt:
     [truncate-N]    the first N downloads are the clip's first half, with an
                     honest Content-Length (a cut-short file the importer refuses)
     [expire]        ends `expired`
-    [huge-poll]     every poll answers 3 MiB of JSON
     [polls-N]       completes after N polls instead of three
     (none)          completes after two polls with usage.cost = the estimate
 
@@ -184,8 +183,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, data, "video/mp4")
         job["polls"] += 1
         answer = {"id": job_id, "polling_url": f"/api/v1/videos/{job_id}"}
-        if "[huge-poll]" in prompt:
-            return self.json(200, {**answer, "status": "in_progress", "padding": "x" * (3 * 1024 * 1024)})
         if "[hold]" in prompt and not os.path.exists(os.path.join(STATE, "release-hold")):
             return self.json(200, {**answer, "status": "in_progress"})
         if "[expire]" in prompt:

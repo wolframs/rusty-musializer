@@ -376,12 +376,36 @@ fn read_json(path: &Path) -> Result<Value, ClientError> {
     serde_json::from_slice(&bytes).map_err(|error| ClientError::Format(error.to_string()))
 }
 
+/// An error answer, read through the cap: its message is a sentence, and an
+/// answer past the cap has none worth reading.
 fn refusal(answer: &Answer, body: &Path) -> ClientError {
-    let bytes = std::fs::read(body).unwrap_or_default();
+    let mut bytes = Vec::new();
+    if let Ok(file) = std::fs::File::open(body) {
+        let _ = file.take(MAX_JSON_BYTES + 1).read_to_end(&mut bytes);
+    }
     ClientError::Http(HttpRefusal {
         status: answer.status,
-        message: error_message(&bytes[..bytes.len().min(MAX_JSON_BYTES as usize)]),
+        message: if bytes.len() as u64 > MAX_JSON_BYTES {
+            String::new()
+        } else {
+            error_message(&bytes)
+        },
     })
+}
+
+/// A JSON call's configuration lines past the URL: the answer is bounded on
+/// the wire (curl's `max-filesize`, which also stops a stream with no
+/// length that grows past it) as well as when it is read.
+fn json_limits() -> String {
+    format!("max-filesize = {MAX_JSON_BYTES}\n")
+}
+
+/// curl's `max-filesize` on a JSON call, in the words of the call.
+fn json_too_large(error: ClientError) -> ClientError {
+    match error {
+        ClientError::TooLarge(_) => ClientError::Format("the answer is larger than 1 MiB".into()),
+        other => other,
+    }
 }
 
 /// A submit that gave no job id.
@@ -496,10 +520,11 @@ impl Client<'_> {
         let answer_path = self.scratch("submit.json");
         let config = format!(
             "url = {}\nrequest = \"POST\"\n{}header = \"Content-Type: application/json\"\n\
-             data-binary = {}\n",
+             data-binary = {}\n{}",
             quoted(&self.endpoint.url("/videos")),
             authorization(self.secret),
             quoted(&format!("@{}", body.to_string_lossy())),
+            json_limits(),
         );
         let answer = run(
             self.endpoint,
@@ -507,7 +532,8 @@ impl Client<'_> {
             &answer_path,
             Duration::from_secs(120),
             self.stop,
-        )?;
+        )
+        .map_err(json_too_large)?;
         if !(200..300).contains(&answer.status) {
             return Err(refusal(&answer, &answer_path));
         }
@@ -522,9 +548,10 @@ impl Client<'_> {
     pub fn poll(&self, id: &str) -> Result<JobState, ClientError> {
         let answer_path = self.scratch("poll.json");
         let config = format!(
-            "url = {}\n{}",
+            "url = {}\n{}{}",
             quoted(&self.endpoint.url(&format!("/videos/{id}"))),
             authorization(self.secret),
+            json_limits(),
         );
         let answer = run(
             self.endpoint,
@@ -532,7 +559,8 @@ impl Client<'_> {
             &answer_path,
             Duration::from_secs(60),
             self.stop,
-        )?;
+        )
+        .map_err(json_too_large)?;
         if !(200..300).contains(&answer.status) {
             return Err(refusal(&answer, &answer_path));
         }
@@ -753,6 +781,80 @@ mod tests {
                 .is_terminal()
         );
         assert!(JobState::from_json(&serde_json::json!({"id":"../x","status":"pending"})).is_err());
+    }
+
+    /// One answer on loopback: `head` then `size` bytes of `fill`, with or
+    /// without a Content-Length.
+    fn answer_once(status: u16, size: usize, with_length: bool) -> String {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!(
+            "http://127.0.0.1:{}/api/v1",
+            listener.local_addr().unwrap().port()
+        );
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = BufReader::new(stream);
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                    break;
+                }
+            }
+            let length = if with_length {
+                format!("Content-Length: {}\r\n", size + 2)
+            } else {
+                String::new()
+            };
+            let _ = write!(
+                writer,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n{length}Connection: close\r\n\r\n\""
+            );
+            let chunk = vec![b'x'; 64 * 1024];
+            let mut sent = 0;
+            while sent < size {
+                let n = chunk.len().min(size - sent);
+                if writer.write_all(&chunk[..n]).is_err() {
+                    return;
+                }
+                sent += n;
+            }
+            let _ = writer.write_all(b"\"");
+        });
+        base
+    }
+
+    #[test]
+    fn a_json_answer_is_bounded_on_the_wire_and_in_memory() {
+        let work = std::env::temp_dir().join(format!("mz-client-bound-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+        let stop = AtomicBool::new(false);
+        let secret = Secret::new("sk-or-v1-test".to_owned());
+        for (status, with_length) in [(200, true), (200, false), (404, true), (404, false)] {
+            let endpoint =
+                Endpoint::new(&answer_once(status, 8 * 1024 * 1024, with_length)).unwrap();
+            let client = Client {
+                endpoint: &endpoint,
+                secret: &secret,
+                work: &work,
+                stop: &stop,
+            };
+            let error = client.poll("gen-vid-1-abc").unwrap_err();
+            let written = std::fs::metadata(work.join("poll.json")).map_or(0, |meta| meta.len());
+            assert!(
+                written <= MAX_JSON_BYTES + 64 * 1024,
+                "{status} {with_length}: {written} bytes reached the disk"
+            );
+            assert!(
+                matches!(&error, ClientError::Format(text) if text.contains("larger than 1 MiB"))
+                    || matches!(&error, ClientError::Http(refusal) if refusal.message.is_empty()),
+                "{status} {with_length}: {error:?}"
+            );
+            let _ = std::fs::remove_file(work.join("poll.json"));
+        }
+        let _ = std::fs::remove_dir_all(&work);
     }
 
     #[test]
