@@ -238,6 +238,10 @@ number disagrees, grep it there before debugging from scratch.
 - **A gate's EXIT trap stops at the first `wait` on a child it killed** under `set -e`: give every `kill`/`wait` in a cleanup its own `|| true`, or the Xvfb outlives the gate. See `docs/TRAPS.md`.
 - **A reasoning model with no `max_tokens` stops at the provider's ceiling** (65,536 for MiMo, all whitespace once): send a cap on every hosted call, and treat `length` as a failure even when the text parses. See `docs/TRAPS.md`.
 - **A helper's own reason dies at `_run`**, which reports only "exited with code N": a child that knows why it failed writes a receipt, checked for schema and audio hash, that the parent reads. See `docs/TRAPS.md`.
+- **A failed paid submit is not a free one**: write an intent before the POST and clear it only on a 4xx or a `size_request` of 0. See `docs/TRAPS.md`.
+- **Two launches at once need their own `MZ_STATE_DIR`**: `headless_run.sh`'s `ln -sf` races and one dies with "Already exists". See `docs/TRAPS.md`.
+- **A save writes only the clips a section plays**: an unplaced clip is not in the saved `.musi`; look in the store. See `docs/TRAPS.md`.
+- **A `--ui-probe` spec over 256 bytes is refused whole**: the run goes on with no probe; use relative paths. See `docs/TRAPS.md`.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe

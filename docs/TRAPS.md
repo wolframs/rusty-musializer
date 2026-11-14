@@ -663,6 +663,7 @@ sentence instead. A receipt is checked for its schema and audio hash and
 deleted before each attempt, so a stale one cannot explain a new failure.
 Symptom: a toast saying "python3 exited with code 1" for a failure the helper
 had named precisely. Found in the MiMo lane (H3b), 2026-11-14.
+
 ## A failed paid submit is not a free one
 
 A `POST` can reach the provider, be accepted and billed, and still end in an
