@@ -29,6 +29,49 @@ export MZ_BIN="${CLIP_BIN:-$(realpath target/debug/musializer)}"
 export MZ_STATE_DIR="$OUT/state"
 RENDERERS="${CLIP_RENDERERS:-gpu cpu}"
 
+# A fixed display (MUSIALIZER_CAPTURE_DISPLAY) gets one gate-owned Xvfb for the
+# whole series, killed and waited for on exit: launch after launch on one
+# fixed display otherwise finds the previous server still exiting and rightly
+# refuses it as foreign (docs/TRAPS.md, "Sequential fixed-display launches").
+# A server already there after two seconds is an ancestor's, which every
+# headless_run checks before it reuses it. As tools/look_cards_check.sh.
+if [ -n "${MUSIALIZER_CAPTURE_DISPLAY:-}" ]; then
+    if [[ ! "$MUSIALIZER_CAPTURE_DISPLAY" =~ ^:([0-9]+)$ ]]; then
+        echo 'clip_check: capture display must be :NUMBER' >&2
+        exit 2
+    fi
+    NUMBER="${BASH_REMATCH[1]}"
+    for _ in {1..40}; do
+        [ -e "/tmp/.X11-unix/X$NUMBER" ] || [ -e "/tmp/.X$NUMBER-lock" ] || break
+        sleep 0.05
+    done
+    if [ ! -e "/tmp/.X11-unix/X$NUMBER" ] && [ ! -e "/tmp/.X$NUMBER-lock" ]; then
+        Xvfb "$MUSIALIZER_CAPTURE_DISPLAY" -screen 0 "${MZ_SCREEN:-2560x1440x24}" -nolisten tcp \
+            >"$OUT/xvfb.log" 2>&1 &
+        XVFB_PID=$!
+        cleanup() {
+            kill "$XVFB_PID" 2>/dev/null || true
+            wait "$XVFB_PID" 2>/dev/null || true
+        }
+        trap cleanup EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM HUP
+        READY=0
+        for _ in {1..100}; do
+            if xdpyinfo -display "$MUSIALIZER_CAPTURE_DISPLAY" >/dev/null 2>&1; then
+                READY=1
+                break
+            fi
+            kill -0 "$XVFB_PID" 2>/dev/null || break
+            sleep 0.05
+        done
+        if [ "$READY" -ne 1 ]; then
+            echo "clip_check: owned Xvfb did not become ready; see $OUT/xvfb.log" >&2
+            exit 2
+        fi
+    fi
+fi
+
 run() {
     tools/headless_run.sh "$@"
 }
