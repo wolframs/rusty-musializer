@@ -199,6 +199,22 @@ def score_unit(cell: matrix.Cell, repeat: int, truth: ground_truth.TrackTruth,
     }
 
 
+def _schema_ok_rate(units: Sequence[dict[str, Any]]) -> float | None:
+    """Valid structured calls over structured calls; free-text S0 has no schema.
+
+    Until 2026-11-14 this averaged the per-unit *count*, so a 20-call cell
+    printed 20.00 in a column read as a rate.
+    """
+    valid = total = 0
+    for unit in units:
+        if unit.get("shaping") == "S0":
+            continue
+        conformance = unit.get("conformance") or {}
+        valid += int(conformance.get("schema_ok") or 0)
+        total += int(conformance.get("calls") or 0)
+    return valid / total if total else None
+
+
 def score_cell(cell: matrix.Cell, repeats: Sequence[int]) -> dict[str, Any]:
     truth = ground_truth.load(track_by_slug(cell.track_slug))
     units: list[dict[str, Any]] = []
@@ -239,7 +255,7 @@ def score_cell(cell: matrix.Cell, repeats: Sequence[int]) -> dict[str, Any]:
             "form_agreement_f1": _mean(("form", "agreement_f1")),
             "concrete_per_100_words": _mean(("concreteness", "concrete_per_100_words")),
             "concrete_share": _mean(("concreteness", "concrete_share")),
-            "schema_ok_rate": _mean(("conformance", "schema_ok")),
+            "schema_ok_rate": _schema_ok_rate(units),
             "determinism_field_disagreement": _mean(
                 ("determinism", "field_disagreement_rate")),
             "determinism_identical_rate": _mean(
