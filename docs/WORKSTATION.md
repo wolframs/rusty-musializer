@@ -350,8 +350,12 @@ under [Open work](#open-work) and tracked in the live queue.
    hover. The decisions and their reasons are the look cards rows in
    [DIVERGENCES.md](DIVERGENCES.md); the gate is `tools/look_cards_check.sh`,
    check 11 of `column_check.sh`. **Left:** writing an edit back into a
-   followed treatment; giving lines a voice; a style's other members; undo for
-   plan edits (none exists for any).
+   followed treatment; a style's other members; undo for plan edits (none
+   exists for any). *D2 review and polish (2026-11-14):* a card's typing, an
+   armed removal and Play the cut belong to one project and die with it;
+   selecting a section shows it; the captions tables rest one row per entry;
+   Add a voice and This line / Section N give lines a voice; the kinds carry
+   glyphs.
 
 The welcome theme gate was repaired in the WX-5a polish after the theme menu's
 rows changed order.

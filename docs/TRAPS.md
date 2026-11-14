@@ -402,6 +402,40 @@ grade did nothing. Mask every card the `notices:` lines of *both* runs name
 before comparing preview pixels. Found by the look cards gate's negative
 control, 2026-11-14.
 
+## `resume: playing=` is false in every run
+
+The report line computes `playing=` from the music stream after the frame
+loop has ended, and `close_audio` has already taken the stream by then
+(`main.rs`, the report block after the loop), so it prints `false` whether or
+not playback was running. A check that reads `playing=false` as "it paused"
+passes on a build that never paused: the look cards' Play-the-cut checks
+did, until the playhead was the evidence. Found 2026-11-14 (D2) when a run
+whose playhead had advanced to 6.21 s in its last frames reported
+`playing=false`. Use the playhead (`transport: playhead=`, a value that has
+to land in a window), or move the line above `close_audio`, which changes
+what `top_bar_check.sh`'s resume cases prove.
+
+## A saved-file check must outlast the autosave's settle
+
+A probe edit dirties the project and autosave writes it 1.5 s after the last
+edit, not at exit. A gate that reads the `.musi` after a short run reads the
+file as it was, so "the other project was not changed" passes even on a build
+that changed it. The look cards' sequences ran 120 frames with the edit at
+frame 60 and passed against both perturbations of their own fix; a control
+that must commit (and so must show up in the file) caught it. Give a
+file-reading check the edit frame plus about 150 frames, and pair every
+"nothing was written" check with a control that writes. Found 2026-11-14
+(D2).
+
+## An XTest driver must pick the mapped window, and survive an X error
+
+The native-key drivers took the last child of the root window and called
+`XSetInputFocus` on it. Under VirtualGL that child can be a window that is
+not mapped yet; the request fails with `BadMatch`, and Xlib's default error
+handler exits the driver process, which takes the run with it (exit 1 with
+a full report, nothing typed). `look_cards_check.py`'s driver installs an
+error handler that ignores errors and waits for a child that is viewable and
+window-sized before it focuses. Found 2026-11-14 (D2).
 ## FFmpeg's `-ss` counts from the container's start, and drops what is before it
 
 An input `-ss` is a position measured from the *container's* start time, which

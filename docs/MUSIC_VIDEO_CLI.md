@@ -690,18 +690,28 @@ edited in the window, in **Look**, in a card above the scene's tuning with
 three faces:
 
 - **This section** edits the section selected in the plan lane (the lane
-  head's section field, "Look ›", opens it): how it arrives — the fourteen
-  kinds by name, and a length — its glide (drawn disabled, saying why, after
-  another scene), its grade (the named palettes, strength, the hue turn), the
-  caption style its lines begin in, and a threshold's door. **Play the cut**
-  plays from 1.5 s before the picture starts to change through the
-  transition and a second past it, and pauses there when it started paused.
+  head's section field, "Look ›", opens it). Selecting a section puts the
+  playhead where it has arrived, so the frame on screen, Look's head and the
+  tuning below are the section the card edits; played on past it, the card
+  says whose picture it is now and **Show N** goes back. It edits how the
+  section arrives — the fourteen kinds, each a small picture and a name, and
+  a length — its glide (drawn disabled, saying why, after another scene), its
+  grade (the named palettes, strength, the hue turn), the caption style its
+  lines begin in, and a threshold's door. **Play the cut** plays from 1.5 s
+  before the picture starts to change through the transition and a second
+  past it, and pauses there when it started paused, whichever view is open;
+  a seek or a play of your own lets it go.
 - **Whole video**: the intro out of black (the first section's arrival), the
   outro into it, Play the intro, Play the end, and the finish — None or Film to
   start from, then every member.
 - **Captions**: the voices, the caption styles (a rename takes every line,
   section and card along) and the title cards (added only on a press, at the
-  playhead, with the project's title and artist).
+  playhead, with the project's title and artist). Each rests as one row — a
+  voice's colours and how many lines it sings, a style's place in the frame,
+  a card's start and title — and a press opens it. **Add a voice** makes a
+  second singer with a colour of its own; an open voice's **This line** and
+  **Section N** give it the line at the playhead or every line of the section
+  under it, and take them back.
 
 Every edit is saved with the project and autosaved like a plan edit, the
 lane's marks follow at once, and a grade or finish changes the frame on screen
