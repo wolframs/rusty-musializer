@@ -2141,6 +2141,13 @@ fn contact_sheet(
             times,
             "Rendering contact sheet",
             &mut |request, frame| {
+                // The sheet is opaque (alpha 255 below); what the frame's
+                // blends left is counted first, as a still's is.
+                println!(
+                    "sheet alpha:     tile={request} t={:.3} {}",
+                    times[request],
+                    AlphaCensus::of(&frame.pixels).describe()
+                );
                 let tile = shrink_bottom_up_rgba(
                     &frame.pixels,
                     frame.config.width as usize,
@@ -2559,8 +2566,62 @@ fn read_resolved(
     })
 }
 
-/// Writes already-resolved bottom-up export pixels as a conventional top-down
-/// PNG. The video encoder performs the same flip while streaming raw frames.
+/// What a frame's blends left in its alpha channel, counted before a writer
+/// forces it opaque (ST).
+///
+/// raylib's `BLEND_ALPHA` blends all four channels, so a translucent wash
+/// over an opaque frame leaves the framebuffer's alpha below 255 where the
+/// colour is exactly right (`docs/TRAPS.md`). The video encoder throws alpha
+/// away, and so, since ST, does every still: the saved file can no longer show
+/// that defect, so this count is where a gate reads it instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AlphaCensus {
+    /// Pixels whose alpha is below 255.
+    translucent: usize,
+    /// Pixels counted.
+    pixels: usize,
+    /// The lowest alpha in the frame; 255 for an opaque or empty one.
+    min: u8,
+}
+
+impl AlphaCensus {
+    /// Counts an RGBA8 buffer; a trailing partial pixel is ignored.
+    fn of(rgba: &[u8]) -> Self {
+        let mut census = Self {
+            translucent: 0,
+            pixels: 0,
+            min: u8::MAX,
+        };
+        for pixel in rgba.chunks_exact(4) {
+            census.pixels += 1;
+            if pixel[3] < u8::MAX {
+                census.translucent += 1;
+                census.min = census.min.min(pixel[3]);
+            }
+        }
+        census
+    }
+
+    /// The report fields: `translucent=N/M min=A`.
+    fn describe(&self) -> String {
+        format!(
+            "translucent={}/{} min={}",
+            self.translucent, self.pixels, self.min
+        )
+    }
+}
+
+/// Writes already-resolved bottom-up export pixels as a conventional top-down,
+/// **opaque** PNG. The video encoder performs the same flip while streaming raw
+/// frames, and drops alpha on the way to YUV.
+///
+/// Opaque because a still is the video's frame (ST, `docs/DIVERGENCES.md`):
+/// r, g and b are copied exactly and alpha is written as 255. Before ST the
+/// PNG carried whatever alpha the frame's blends left — 230,396 of 230,400
+/// pixels of a Cadence frame below 255 — and a still posted on a light page
+/// came out washed and see-through. What the alpha *was* is printed first, on
+/// the `still alpha:` line, because that alpha is how a scene that eats
+/// destination alpha is found.
 fn write_resolved_png(
     pixels: &[u8],
     config: &RenderExportConfig,
@@ -2569,6 +2630,11 @@ fn write_resolved_png(
     let Some(path) = destination.to_str() else {
         return Err("the destination path is not valid text".to_owned());
     };
+    println!(
+        "still alpha:     {} {}",
+        AlphaCensus::of(pixels).describe(),
+        destination.display()
+    );
     // `Image::gen_image_color` allocates through raylib's own allocator in
     // `UNCOMPRESSED_R8G8B8A8`, which is what `ExportImage`'s PNG writer wants
     // and what lets the resolved bytes be blitted in without an `unsafe` island
@@ -2591,6 +2657,7 @@ fn write_resolved_png(
         let source_row = config.height as usize - 1 - y as usize;
         for x in 0..config.width as i32 {
             let offset = (source_row * config.width as usize + x as usize) * 4;
+            // Alpha 255, not `pixels[offset + 3]`: see the doc comment above.
             out.draw_pixel(
                 x,
                 y,
@@ -2598,7 +2665,7 @@ fn write_resolved_png(
                     pixels[offset],
                     pixels[offset + 1],
                     pixels[offset + 2],
-                    pixels[offset + 3],
+                    u8::MAX,
                 ),
             );
         }
@@ -3675,6 +3742,63 @@ fn restore_preview(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alpha_census_counts_what_the_blends_left() {
+        let rgba = [
+            9, 9, 9, 255, //
+            9, 9, 9, 178, //
+            9, 9, 9, 254, //
+            9, 9, 9, 0, //
+            9, 9, // a partial pixel is not a pixel
+        ];
+        let census = AlphaCensus::of(&rgba);
+        assert_eq!(
+            census,
+            AlphaCensus {
+                translucent: 3,
+                pixels: 4,
+                min: 0
+            }
+        );
+        assert_eq!(census.describe(), "translucent=3/4 min=0");
+        assert_eq!(
+            AlphaCensus::of(&[1, 2, 3, 255]).describe(),
+            "translucent=0/1 min=255"
+        );
+        assert_eq!(AlphaCensus::of(&[]).describe(), "translucent=0/0 min=255");
+    }
+
+    /// ST: a still is the video frame, so the file is opaque and its colour is
+    /// the frame's, byte for byte, top row first.
+    #[test]
+    fn a_still_png_is_opaque_and_keeps_every_colour_byte() {
+        let config = RenderExportConfig {
+            width: 3,
+            height: 2,
+            ..RenderExportConfig::default()
+        };
+        // Bottom-up, as the readback hands it over; alphas as a wash leaves them.
+        #[rustfmt::skip]
+        let bottom_up: [u8; 24] = [
+            10, 20, 30, 255,   40, 50, 60, 178,   70, 80, 90, 1,
+            11, 21, 31, 200,   41, 51, 61, 255,   71, 81, 91, 0,
+        ];
+        let path = std::env::temp_dir().join(format!(
+            "musializer-opaque-still-{}.png",
+            std::process::id()
+        ));
+        write_resolved_png(&bottom_up, &config, &path).unwrap();
+        let decoded = musializer_runtime::decode::image_rgba8(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!((decoded.width, decoded.height), (3, 2));
+        #[rustfmt::skip]
+        let expected: [u8; 24] = [
+            11, 21, 31, 255,   41, 51, 61, 255,   71, 81, 91, 255,
+            10, 20, 30, 255,   40, 50, 60, 255,   70, 80, 90, 255,
+        ];
+        assert_eq!(decoded.pixels, expected);
+    }
 
     #[test]
     fn preset_rows_highlight_only_an_exact_match() {
