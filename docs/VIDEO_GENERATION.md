@@ -617,11 +617,21 @@ first control's concurrent group, not a defect of the application).
   window or by a run, with or without --resend-unconfirmed. … remove
   …/intents/<digest>.json to send it anew." Three also keeps the record far
   below its 64 KiB bound.
+- **No send without its ledger line.** `Store::log_spending` ignored a
+  failed open, write or sync of `spending.tsv` and the submit went ahead, so
+  the person's record of what may have cost money could miss a send. Now the
+  line written before a request leaves must reach the disk, or the request is
+  not sent: "the line that records this send in the ledger could not be
+  written (…), so it was not sent"; its attempt is taken off and a run's
+  ceiling gets the estimate back. The line written when a job ends comes after
+  the money left: a failure there is a warning, and the job record or intent
+  still holds the request.
 
 | Perturbation | What failed |
 | --- | --- |
 | An intent that cannot be read taken for none again (`Err(_) => Ok(None)` in `Store::intent`, as before) | gate intent: the oversized record let the agreed resend out (status 0, 1 submit) and so did the unparseable one; `an_unreadable_intent_and_too_many_unanswered_sends_hold_the_request` panicked at the first hold |
 | No bound on unanswered sends | gate intent: the fourth send of a request with three lost answers went out (4 submits); the unit test: "three unanswered sends did not hold the request" |
+| A failed ledger line ignored again before the send (as before) | gate ledger: with `spending.tsv` a folder the request went out (status 0, 1 submit), and the next step found nothing left to send; `an_unwritable_ledger_stops_the_send` |
 FIXES_H4D
 
 ### What is not built

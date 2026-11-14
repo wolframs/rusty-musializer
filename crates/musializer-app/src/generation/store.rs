@@ -769,37 +769,42 @@ impl Store {
     }
 
     /// Appends one line to `spending.tsv`.
-    pub fn log_spending(&self, line: &[&str]) {
-        if self.folder("").is_err() {
-            return;
-        }
+    ///
+    /// # Errors
+    ///
+    /// The folder, the open, the write or a sync failed: the line may not be
+    /// on the disk (H4d). Before a send, that means the send does not go.
+    pub fn log_spending(&self, line: &[&str]) -> Result<(), String> {
+        self.folder("")?;
         let path = self.root.join("spending.tsv");
+        let failed = |error: std::io::Error| format!("{}: {error}", path.display());
         let fresh = !path.exists();
-        let Ok(mut file) = std::fs::OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
             .open(&path)
-        else {
-            return;
-        };
-        if fresh {
-            let _ = writeln!(
-                file,
-                "utc\trequest_sha256\tjob_id\tmodel\tseconds\testimate_usd\tcost_usd\toutcome"
-            );
-        }
+            .map_err(failed)?;
         let cells: Vec<String> = line
             .iter()
             .map(|cell| cell.replace(['\t', '\n', '\r'], " "))
             .collect();
-        let _ = writeln!(file, "{}", cells.join("\t"));
+        let mut text = String::new();
+        if fresh {
+            text.push_str(
+                "utc\trequest_sha256\tjob_id\tmodel\tseconds\testimate_usd\tcost_usd\toutcome\n",
+            );
+        }
+        text.push_str(&cells.join("\t"));
+        text.push('\n');
+        file.write_all(text.as_bytes()).map_err(failed)?;
         // The person's record of what may have cost money: on the disk with
         // the line, and a new file with its folder.
-        let _ = file.sync_data();
+        file.sync_data().map_err(failed)?;
         if fresh {
-            let _ = sync_dir(&self.root);
+            sync_dir(&self.root).map_err(failed)?;
         }
+        Ok(())
     }
 }
 
@@ -1070,7 +1075,7 @@ pub(crate) mod tests {
             vec![root.clone(), download, clips.clone(), clips.clone()],
             "the clip's bytes, then its name, then its receipt's"
         );
-        store.log_spending(&["a", "b"]);
+        store.log_spending(&["a", "b"]).unwrap();
         assert_eq!(synced(), vec![root.clone()], "a new ledger with its folder");
     }
 

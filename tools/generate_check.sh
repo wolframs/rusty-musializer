@@ -11,7 +11,7 @@
 # GENERATE_BIN names another binary, for a negative control without replacing
 # the build. GENERATE_SKIP_CARD=1 leaves out the window card's half.
 # GENERATE_ONLY="NAME ..." runs only those groups (base, concurrent, lost,
-# redownload, order, fps, stale, ceiling, intent, card, canary), for a
+# redownload, order, fps, stale, ceiling, intent, ledger, card, canary), for a
 # negative control.
 #
 # What it asserts:
@@ -61,6 +61,8 @@
 #     64 KiB, or not a record) holds the request, flag or not, and is never
 #     replaced; removing it frees the request; after three unanswered sends a
 #     request is not sent again at all;
+#   - ledger (H4d): when the line recording a send cannot be written to
+#     spending.tsv, the request is not sent (0 submits) and the reason is said;
 #   - stale (H4c): two runs poll one recorded job and learn it expired at
 #     different times; between the two answers a third run submits a new job
 #     for the request. The late poller leaves the new job's record alone, and
@@ -861,6 +863,43 @@ else
     fail "a fourth send of a request with three unanswered went out or was not explained ($(( $(count submit) - submits )) submits); see $OUT/i-three-4.log"
 fi
 fi # intent
+
+# --- 16. a ledger that cannot be written stops the send (H4d) ---------------------
+# In a store of its own whose spending.tsv is a folder: the line that records a
+# send cannot be written, so nothing is sent; the same store with the ledger
+# writable again sends it.
+if only ledger; then
+ledger_store="$OUT/store-ledger"
+mkdir -p "$ledger_store/spending.tsv"
+cat >"$OUT/ledger.treatment.json" <<EOF
+{ "schema": "musializer.treatment/v1", "audio": { "path": "fixture.wav" },
+  "output": { "resolution": "640x360", "fps": 24, "quality": "balanced" }, "seed": 7,
+  "segments": [ { "at": 0, "scene": "spectrum" },
+                { "at": 2, "scene": "clip", "clip": { "generate": {
+                    "prompt": "a ledger that cannot be written", "model": "google/veo-3.1-lite", "seconds": 4 } } },
+                { "at": 7, "scene": "pulse" } ] }
+EOF
+submits="$(count submit)"
+MUSIALIZER_GENERATED_DIR="$ledger_store" launch ledger-1 --treatment "$OUT/ledger.treatment.json" --generate-clips \
+    --max-spend 1.00 --save-project "$OUT/ledger-1.musi"
+if [ "$(status_of ledger-1)" = 1 ] && [ "$(count submit)" = "$submits" ] \
+    && has ledger-1 'the line that records this send in the ledger could not be written' \
+    && has ledger-1 'so it was not sent' && ! ls "$ledger_store/intents/"*.json >/dev/null 2>&1 \
+    && has ledger-1 'this run sent 0 requests'; then
+    pass "an unwritable ledger stops the send: 0 submits, no intent left, the reason named"
+else
+    fail "a send went out without its ledger line, or was not explained (status $(status_of ledger-1), $(( $(count submit) - submits )) submits); see $OUT/ledger-1.log"
+fi
+rmdir "$ledger_store/spending.tsv"
+MUSIALIZER_GENERATED_DIR="$ledger_store" launch ledger-2 --treatment "$OUT/ledger.treatment.json" --generate-clips \
+    --max-spend 1.00 --save-project "$OUT/ledger-2.musi"
+if [ "$(status_of ledger-2)" = 0 ] && [ "$(count submit)" = $((submits + 1)) ] \
+    && grep -qaF 'sending, billed if accepted' "$ledger_store/spending.tsv"; then
+    pass "the ledger writable again: the request is sent, and its line is there"
+else
+    fail "the request was not sent once the ledger could be written (status $(status_of ledger-2)); see $OUT/ledger-2.log"
+fi
+fi # ledger
 
 # --- 6. the section card's Generate, pressed (tools/generate_card_check.py) -------
 if [ "${GENERATE_SKIP_CARD:-}" != 1 ] && only card; then

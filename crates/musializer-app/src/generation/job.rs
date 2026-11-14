@@ -667,7 +667,9 @@ fn run(spec: &JobSpec, stop: &AtomicBool, shared: &Mutex<Shared>) -> Outcome {
             .ok()
             .and_then(|shared| shared.job_id.clone())
             .unwrap_or_else(|| "-".to_owned());
-        store.log_spending(&[
+        // The money has left by now; a ledger that cannot take the line is
+        // said, and the job record or intent still holds the request.
+        if let Err(reason) = store.log_spending(&[
             &now_utc(),
             &digest,
             &job_id,
@@ -676,7 +678,9 @@ fn run(spec: &JobSpec, stop: &AtomicBool, shared: &Mutex<Shared>) -> Outcome {
             &money(spec.estimate_usd),
             &money(cost),
             &verdict,
-        ]);
+        ]) {
+            eprintln!("warning: the outcome of a paid request is not in the ledger: {reason}");
+        }
     }
     outcome
 }
@@ -791,7 +795,9 @@ fn run_with(
         }
         // The person's ledger has the send before it leaves: a crash in the
         // submit leaves this line and no outcome, which reads as what it is.
-        store.log_spending(&[
+        // A line that cannot be written durably stops the send (H4d): the
+        // person's record of what may have cost money would miss it.
+        if let Err(reason) = store.log_spending(&[
             &sent_utc,
             digest,
             "-",
@@ -800,7 +806,19 @@ fn run_with(
             &money(spec.estimate_usd),
             "unknown",
             "sending, billed if accepted",
-        ]);
+        ]) {
+            give_back();
+            if let Err(unrecorded) = store.resolve_attempt(&claim, digest, &sending) {
+                eprintln!("warning: an unsent request stays on the record: {unrecorded}");
+            }
+            return Outcome::Failed {
+                reason: format!(
+                    "the line that records this send in the ledger could not be written ({reason}), \
+                     so it was not sent"
+                ),
+                billing: Billing::Nothing,
+            };
+        }
         let unconfirmed = Billing::Unconfirmed(spec.estimate_usd);
         let state = match client.submit(&body_path) {
             Ok(state) => state,
@@ -1826,6 +1844,34 @@ pub(crate) mod tests {
         agreed.deadline = Duration::from_millis(200);
         let _ = GenerationJob::spawn(agreed).wait(|_, _| {});
         assert_eq!(fake.count("submit"), 1);
+    }
+
+    /// H4d: a ledger that cannot take the line recording a send stops it:
+    /// nothing reaches the provider, nothing is left on the record, and the
+    /// run's ceiling gets the estimate back.
+    #[test]
+    fn an_unwritable_ledger_stops_the_send() {
+        let folder = Scratch::new("job-ledger");
+        let fake = Fake::start(Script::default());
+        let store = folder.path().join("store");
+        std::fs::create_dir_all(store.join("spending.tsv")).unwrap();
+        let ceiling = Arc::new(Ceiling::new(0.12, "0.12"));
+        let mut job = spec(&fake, &store, request());
+        job.ceiling = Some(ceiling.clone());
+        let (reason, billing) = failed(GenerationJob::spawn(job).wait(|_, _| {}));
+        assert!(
+            reason
+                .starts_with("the line that records this send in the ledger could not be written"),
+            "{reason}"
+        );
+        assert!(reason.ends_with("so it was not sent"), "{reason}");
+        assert_eq!(billing, Billing::Nothing);
+        assert_eq!(fake.count("submit"), 0);
+        assert!(Store::at(store)
+            .intent(&request().digest())
+            .unwrap()
+            .is_none());
+        assert_eq!(ceiling.sent(), (0.0, 0));
     }
 
     #[test]
