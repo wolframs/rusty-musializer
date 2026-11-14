@@ -745,11 +745,18 @@ reached it, counting the sends it had made and what it had found so far. A
 held send (an earlier answer lost, possibly billed) in a later section was
 found only after the earlier section had been sent: $0.24 committed or
 possibly billed against a $0.12 ceiling, each check correct when it was made.
-Read every item's state first, add up what is already committed, decide, and
-only then act; re-check each act with what is known at that moment
-(`generation::treatment::prepare`, its plan). Symptom: a refusal for a late
-item that names a committed sum already past the ceiling. Found by the second
-review of the treatment run (H4c), 2026-11-14.
+The first fix (H4c) read every item's state first and added it all up before
+acting; two more reviews found states that sum still missed (a job in flight,
+a job record hiding unanswered sends, a section known only later, a store
+changed by another process after the plan). The rule that held (H4d): keep a
+bound where the act happens — a total checked and increased under the same
+lock as the act it admits (`generation::job::Ceiling::take`, right before the
+intent is written) — and bound only what that check can see: what this run
+sends. A sum other processes can change (what earlier runs may have spent) is
+reported, never counted. Symptom: a refusal for a late item that names a sum
+already past the ceiling, or a review that finds one more state the plan's sum
+left out. Found by the second review of the treatment run (H4c), 2026-11-14;
+the counting replaced 2026-11-15.
 
 ## Replacing a record of possible spending erases a possible charge
 
@@ -757,8 +764,8 @@ The generation store kept one intent per request and each agreed resend wrote
 a new one over it, so two sends whose answers were lost counted as one. Any
 record that stands for money that may have been spent is appended to, not
 replaced, and goes only when the thing paid for is in hand (`Store::add_attempt`,
-`clear_intent_held`). Symptom: a ceiling admits a send that, summed with the
-person's activity page, passes it. Found by the second review (H4c), 2026-11-14.
+`clear_intent_held`). Symptom: the warning names fewer unanswered sends than
+`spending.tsv` and the person's activity page show. Found by the second review (H4c), 2026-11-14.
 
 ## A gateway error is not proof the request was not processed
 

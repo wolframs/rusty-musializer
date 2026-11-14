@@ -408,28 +408,39 @@ tools/headless_run.sh --treatment door.treatment.json --generate-clips --max-spe
 
 With `--generate-clips --max-spend USD` it first looks at every generated
 section — frames rendered, request built, what the project and the store hold
-for it — adds up what is committed or possibly billed already, decides in time
-order what the ceiling still admits, and prints that plan (`generate: plan:
-…`, ending "nothing has been sent yet"); only then does it ask for what the
-plan admits, one job at a time, and it refuses the rest by name (exit 1). A
-section whose frames show a generated section made earlier in the run is
-counted at its estimate and looked at again once that one is made. An unknown price (no price list, one
-older than a week, a model not on it) is refused under a ceiling. The saved
-project bundles the clips like any other, so the next run needs no flag and no
+for it — and prints a forecast (`generate: plan: …`, ending "nothing has been
+sent yet"); then it asks for what is missing, one job at a time, and refuses
+the rest by name (exit 1). **`--max-spend` is the most this run may newly
+send:** the estimates of the requests the run itself submits never add up to
+more, checked as each one leaves. Nothing else counts against it. A job
+already submitted for the same request (by an earlier run, the window, or
+another run sending it right now) is picked up rather than sent again, and
+costs this run nothing — `--max-spend 0` sends nothing new and still fetches
+such a job. What earlier sends of these requests may already have cost is
+printed on its own line and is not part of the ceiling:
+
+```text
+generate:        before this run: about $0.24 may already have been billed for 2 earlier sends of these requests (1 job to pick up, 1 send never answered); this is not part of --max-spend. Every send is in …/generated-clips/spending.tsv
+```
+
+A section whose frames show a generated section made earlier in the run is
+looked at again once that one is made; when what is found then differs from
+the forecast (a request that turns out held, a job another run sent since),
+the run says what changed. An unknown price (no price list, one older than a
+week, a model not on it) is not sent under a ceiling. The saved project
+bundles the clips like any other, so the next run needs no flag and no
 network; a changed prompt, model, length or frame is a new request. Failures
 are named — a refused submit (402: too little credit), a failed job (and what
 OpenRouter reported for it), a download that is not a video or is too large —
 and nothing of them is imported. Prices, the API and what a clip cost in fact:
 `docs/VIDEO_GENERATION.md`.
 
-A job already submitted for the same request, or being sent by another run or
-window right now, is picked up rather than sent again, and it counts against
-the ceiling at its estimate; `--max-spend 0` sends nothing. A request whose
-earlier sends lost their answers (the provider may have accepted and billed
-each, and has no way to find the jobs) is refused by name, every such send
-counted against the ceiling, until the run also carries `--resend-unconfirmed`;
-sending it again then counts one estimate more. Under `--resolution`, `--fps` and `--quality`
-the frames sent are the export's frames at those cuts.
+A request whose earlier sends lost their answers (the provider may have
+accepted and billed each, and has no way to find the jobs) is refused by name
+until the run also carries `--resend-unconfirmed`; the resend is then a new
+send of this run and counts against `--max-spend` at its estimate, once.
+Under `--resolution`, `--fps` and `--quality` the frames sent are the export's
+frames at those cuts.
 
 ### `transition` and `outro`
 

@@ -179,6 +179,104 @@ pub fn unconfirmed_words(intent: &super::store::Intent, store: &Store) -> String
     }
 }
 
+/// A treatment run's `--max-spend` (H4d, 2026-11-15): **the most this run may
+/// newly send.** The sum of the estimates of the requests this run itself
+/// submits never passes it; nothing else counts. A job picked up costs
+/// nothing new, and what earlier runs may have spent is reported, not
+/// counted.
+///
+/// It is enforced where money leaves: [`Ceiling::take`] runs under the
+/// request's lock immediately before the intent is written, so no order of
+/// sections, no section whose request is known only later, and no change
+/// another process makes to the store can make the run send more. A send that
+/// cannot have been billed (refused by the provider, never left, or stopped
+/// before it was written down) gives its estimate back.
+#[derive(Debug)]
+pub struct Ceiling {
+    limit_usd: f64,
+    /// As the person typed it.
+    shown: String,
+    sent: Mutex<(f64, usize)>,
+}
+
+impl Ceiling {
+    #[must_use]
+    pub fn new(limit_usd: f64, shown: &str) -> Self {
+        Self {
+            limit_usd,
+            shown: shown.to_owned(),
+            sent: Mutex::new((0.0, 0)),
+        }
+    }
+
+    /// `$0.1234567`: the ceiling as given, never rounded.
+    #[must_use]
+    pub fn shown(&self) -> String {
+        format!("${}", self.shown)
+    }
+
+    #[must_use]
+    pub fn limit_usd(&self) -> f64 {
+        self.limit_usd
+    }
+
+    /// What this run has sent so far: the sum of the estimates, and how many.
+    #[must_use]
+    pub fn sent(&self) -> (f64, usize) {
+        self.sent.lock().map_or((0.0, 0), |sent| *sent)
+    }
+
+    /// Takes `estimate` from what is left, or says why it may not be sent.
+    ///
+    /// # Errors
+    ///
+    /// The price is unknown, or it would pass the ceiling.
+    pub fn take(&self, estimate: Option<f64>) -> Result<(), String> {
+        let Some(usd) = estimate else {
+            return Err(
+                "its price is unknown, and a run with --max-spend sends only what it can count"
+                    .into(),
+            );
+        };
+        let mut sent = self
+            .sent
+            .lock()
+            .map_err(|_| "the run's count of what it sent is lost".to_owned())?;
+        if sent.0 + usd > self.limit_usd + 1.0e-9 {
+            return Err(self.past(sent.0, usd, false));
+        }
+        sent.0 += usd;
+        sent.1 += 1;
+        Ok(())
+    }
+
+    /// "it would pass the ceiling: …", in one place; `forecast` when it is
+    /// said before anything was sent.
+    #[must_use]
+    pub fn past(&self, sent: f64, more: f64, forecast: bool) -> String {
+        format!(
+            "it would pass the ceiling: {} ${:.2}, this request is ${:.2} more, {} allowed \
+             (--max-spend counts what this run sends)",
+            if forecast {
+                "by then this run would have sent"
+            } else {
+                "this run has sent"
+            },
+            musializer_core::generation::price::ceil_cents(sent),
+            musializer_core::generation::price::ceil_cents(more),
+            self.shown()
+        )
+    }
+
+    /// A taken estimate whose request cannot have been billed.
+    fn give_back(&self, estimate: Option<f64>) {
+        if let (Some(usd), Ok(mut sent)) = (estimate, self.sent.lock()) {
+            sent.0 = (sent.0 - usd).max(0.0);
+            sent.1 = sent.1.saturating_sub(1);
+        }
+    }
+}
+
 /// A fresh attempt's id: its time to the nanosecond and this process, so two
 /// sends of one request never share one.
 fn attempt_id() -> String {
@@ -226,6 +324,9 @@ pub enum Outcome {
     /// billed (its intent is left over), and this ask did not agree to send
     /// it again.
     Unconfirmed(super::store::Intent),
+    /// Nothing was sent, by rule, and the reason: the run's `--max-spend`
+    /// would be passed.
+    Refused(String),
 }
 
 /// Everything a job needs, owned.
@@ -250,6 +351,9 @@ pub struct JobSpec {
     /// state of the request's unconfirmed sends stops the job before anything
     /// is sent.
     pub resend: Option<String>,
+    /// A treatment run's `--max-spend`; the window has none (each Send is
+    /// its own consent at a stated price).
+    pub ceiling: Option<Arc<Ceiling>>,
 }
 
 impl JobSpec {
@@ -498,6 +602,7 @@ fn run(spec: &JobSpec, stop: &AtomicBool, shared: &Mutex<Shared>) -> Outcome {
         ),
         Outcome::Stopped { .. } => ("stopped".to_owned(), None),
         Outcome::Unconfirmed(_) => ("held".to_owned(), None),
+        Outcome::Refused(_) => ("refused".to_owned(), None),
     };
     let verdict = match &outcome {
         Outcome::Failed {
@@ -527,6 +632,7 @@ fn run(spec: &JobSpec, stop: &AtomicBool, shared: &Mutex<Shared>) -> Outcome {
         Outcome::Stopped {
             billing: Billing::Nothing
         } | Outcome::Unconfirmed(_)
+            | Outcome::Refused(_)
     ) {
         let job_id = shared
             .lock()
@@ -613,6 +719,19 @@ fn run_with(
         };
         let sending = attempt.id.clone();
         let sent_utc = attempt.sent_utc.clone();
+        // A run's ceiling, under the request's lock and immediately before
+        // the send is written down: what this run sends never passes it.
+        if let Some(ceiling) = &spec.ceiling {
+            if let Err(reason) = ceiling.take(spec.estimate_usd) {
+                claim.release();
+                return Outcome::Refused(reason);
+            }
+        }
+        let give_back = || {
+            if let Some(ceiling) = &spec.ceiling {
+                ceiling.give_back(spec.estimate_usd);
+            }
+        };
         if let Err(reason) = store.add_attempt(
             &claim,
             digest,
@@ -620,6 +739,7 @@ fn run_with(
             spec.request.seconds,
             attempt,
         ) {
+            give_back();
             return Outcome::Failed {
                 reason: format!(
                     "the request could not be written down before sending ({reason}), so it was \
@@ -645,6 +765,7 @@ fn run_with(
             Ok(state) => state,
             Err(failed) if !failed.may_be_billed => {
                 // Refused by the provider, or never sent: no job exists.
+                give_back();
                 if let Err(reason) = store.resolve_attempt(&claim, digest, &sending) {
                     eprintln!(
                         "warning: a refused send could not be taken off the record: {reason}"
@@ -1159,6 +1280,7 @@ pub(crate) mod tests {
             deadline: Duration::from_secs(20),
             max_bytes: 10 * 1024 * 1024,
             resend: None,
+            ceiling: None,
         }
     }
 
@@ -1503,6 +1625,86 @@ pub(crate) mod tests {
             "{ledger}"
         );
         assert_eq!(ledger.matches("sending, billed if accepted").count(), 3);
+    }
+
+    /// H4d: a run's ceiling counts what this run sends, where it leaves. A
+    /// second request past it is refused with nothing written and nothing
+    /// sent; a job recorded before is picked up under a ceiling of 0; a send
+    /// the provider refused gives its estimate back.
+    #[test]
+    fn a_runs_ceiling_counts_only_what_it_sends() {
+        let folder = Scratch::new("job-ceiling");
+        let video = tiny_mp4(folder.path());
+        let fake = Fake::start(Script {
+            polls: 0,
+            end: completed(0.12),
+            content: ("video/mp4".into(), video),
+            ..Script::default()
+        });
+        let store = folder.path().join("store");
+        let ceiling = Arc::new(Ceiling::new(0.12, "0.12"));
+        let mut first = spec(&fake, &store, request());
+        first.ceiling = Some(ceiling.clone());
+        let outcome = GenerationJob::spawn(first).wait(|_, _| {});
+        assert!(matches!(&outcome, Outcome::Done(_)), "{outcome:?}");
+        assert_eq!(ceiling.sent(), (0.12, 1));
+        let mut other = request();
+        other.prompt.push_str(" again");
+        let mut second = spec(&fake, &store, other.clone());
+        second.ceiling = Some(ceiling.clone());
+        let Outcome::Refused(why) = GenerationJob::spawn(second).wait(|_, _| {}) else {
+            panic!("the second request was not refused")
+        };
+        assert_eq!(
+            why,
+            "it would pass the ceiling: this run has sent $0.12, this request is $0.12 more, \
+             $0.12 allowed (--max-spend counts what this run sends)"
+        );
+        assert_eq!(fake.count("submit"), 1);
+        assert!(Store::at(store.clone()).intent(&other.digest()).is_none());
+        // A job recorded before: picked up under a ceiling of nothing.
+        let mut third = request();
+        third.prompt.push_str(" picked up");
+        Store::at(store.clone())
+            .record_job(&JobRecord {
+                schema: String::new(),
+                request_sha256: third.digest(),
+                job_id: "gen-vid-1-AAAAAAAAAAAAAAAAAAAA".into(),
+                model: third.model.clone(),
+                seconds: 4,
+                submitted_utc: "2026-11-15T10:00:00Z".into(),
+                estimate_usd: Some(0.12),
+            })
+            .unwrap();
+        let none = Arc::new(Ceiling::new(0.0, "0"));
+        let mut pickup = spec(&fake, &store, third);
+        pickup.ceiling = Some(none.clone());
+        let outcome = GenerationJob::spawn(pickup).wait(|_, _| {});
+        assert!(
+            matches!(
+                &outcome,
+                Outcome::Done(Generated {
+                    reused: Reuse::Resumed,
+                    ..
+                })
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!((none.sent(), fake.count("submit")), ((0.0, 0), 1));
+        // Refused by the provider: nothing can be billed, so it is given back.
+        let refusing = Fake::start(Script {
+            submit: Some((
+                402,
+                r#"{"error":{"code":402,"message":"Insufficient credits"}}"#.into(),
+            )),
+            ..Script::default()
+        });
+        let back = Arc::new(Ceiling::new(0.12, "0.12"));
+        let mut refused = spec(&refusing, &folder.path().join("store-402"), request());
+        refused.ceiling = Some(back.clone());
+        let (_, billing) = failed(GenerationJob::spawn(refused).wait(|_, _| {}));
+        assert_eq!(billing, Billing::Nothing);
+        assert_eq!(back.sent(), (0.0, 0));
     }
 
     #[test]

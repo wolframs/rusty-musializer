@@ -61,6 +61,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 STATE = sys.argv[1]
 EXPECT = os.environ.get("FAKE_EXPECT_KEY", "")
 LOCK = threading.Lock()
+MAKING = threading.Lock()
 COUNTS = {"models": 0, "submit": 0, "poll": 0, "content": 0}
 JOBS: dict[str, dict] = {}
 LOST: dict[str, int] = {}
@@ -179,8 +180,14 @@ class Handler(BaseHTTPRequestHandler):
             if "[too-large]" in prompt:
                 return self.send(200, b"\0" * (6 * 1024 * 1024), "video/mp4")
             clip = os.path.join(STATE, f"{job_id}.mp4")
-            if not os.path.exists(clip):
-                make_clip(job, clip)
+            # Two callers downloading one job at once: one makes the clip, the
+            # other waits, and neither reads it half-written (H4d: the
+            # concurrent group's pollers met this as a refused download).
+            with MAKING:
+                if not os.path.exists(clip):
+                    partial = f"{clip}.partial.mp4"
+                    make_clip(job, partial)
+                    os.replace(partial, clip)
             with open(clip, "rb") as handle:
                 data = handle.read()
             truncate = marker(prompt, "truncate")

@@ -504,6 +504,7 @@ impl Generations {
                 );
                 (Severity::Warning, HELD_TITLE, words)
             }
+            Outcome::Refused(reason) => (Severity::Warning, "Clip not sent", format!("{reason}.")),
             Outcome::Failed { reason, billing } => (
                 Severity::Error,
                 "Clip not generated",
@@ -863,6 +864,7 @@ impl Generations {
             deadline,
             max_bytes,
             resend,
+            ceiling: None,
         });
         self.jobs.push(Running {
             estimate: estimate.usd(),

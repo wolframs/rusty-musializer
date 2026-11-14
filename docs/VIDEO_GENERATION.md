@@ -325,10 +325,10 @@ been billed.**
 - **One owner per request.** `Store::claim` takes `locks/<digest>.lock`
   (`flock`, given back with `File::unlock`) from the lookup until the job id
   is on disk; a second caller's stage reads "waiting: another window or run is
-  sending this same request", then it polls the first one's job. A treatment
-  run counts a job found submitted or in flight against `--max-spend` at its
-  estimate; `--max-spend 0` sends nothing ("refused: --max-spend 0 sends
-  nothing").
+  sending this same request", then it polls the first one's job. A job found
+  submitted or in flight is picked up; since H4d that costs a treatment run
+  nothing against `--max-spend`, and `--max-spend 0` picks it up too (*The
+  ceiling, redefined* below).
 - **An intent before the POST.** `intents/<digest>.json` (digest, model,
   seconds, the time, the estimate; since H4c every unanswered send, see
   *The second review's fixes*) is written before the request leaves,
@@ -355,10 +355,10 @@ been billed.**
 
   The button then reads "Generate again for about $0.12" and, armed, "Send
   again · $0.12 more"; only that second press sends it again. A treatment run
-  prints the same first sentences, counts the earlier estimate against the
-  ceiling, and refuses: "It counts against the ceiling. To send it again,
-  which is a second request ($0.12 more), add --resend-unconfirmed"; with the
-  flag both estimates must fit under `--max-spend`.
+  prints the same first sentences and refuses: "This run does not send it
+  again: add --resend-unconfirmed for a new send, which counts against
+  --max-spend at its estimate ($0.12)"; with the flag the resend is a new send
+  of that run, counted once (H4d).
 - **A refused download keeps its paid job.** One ask downloads a finished
   clip up to three times; then "the finished clip was downloaded 3 times and
   refused each time (last: …); its job is kept, so Generate again downloads it
@@ -436,7 +436,9 @@ since: **the application never sends a paid request the person has not
 agreed to at a stated price; a ceiling the person set is never exceeded by
 what the application knowingly commits, counting everything that may already
 have been billed; and where the truth cannot be known, it says so and counts
-it as spent.**
+it as spent.** The middle clause was replaced on 2026-11-15 (H4d, *The
+ceiling, redefined* below): a ceiling bounds what the run itself sends, and
+what may already have been billed is said beside it, not counted in it.
 
 - **Durable records.** Every store record (intent, job, receipt, price list)
   is written through a sibling, synced, renamed and then its folder synced; a
@@ -457,8 +459,8 @@ it as spent.**
   --max-spend 0.24` admitted a third, $0.36 against a count of $0.24. Now a
   send is added beside the earlier ones; it is taken off when its job id
   arrives, the provider refused it or it never left; all go only when the
-  request's clip is in hand. A run counts their sum against the ceiling, and
-  the words name them all:
+  request's clip is in hand. A run counted their sum against the ceiling
+  until H4d (now it reports it on its own line), and the words name them all:
   > This exact request was sent 2 times, first on 2026-11-14 22:29:38 UTC and
   > last on 2026-11-14 22:29:40 UTC, and no answer arrived, so OpenRouter may
   > have accepted and billed each of them (about $0.24 in all). OpenRouter has
@@ -470,7 +472,8 @@ it as spent.**
   …/spending.tsv." — in the window's notice and card and on the command line.
   Agreeing to send again names the newest send by its id: a send lost after
   the warning was shown makes the next press warn again instead of sending.
-- **The plan comes first.** A treatment run discovered a held send only when
+- **The plan comes first** (its accounting replaced by H4d; the forecast
+  stays). A treatment run discovered a held send only when
   it reached its section: with a new $0.12 request in section 1, a held $0.12
   send in section 2 and `--max-spend 0.12`, section 1 went out first — $0.24
   against $0.12. Now a run looks at every generated section before it sends
@@ -510,6 +513,90 @@ byte (`cmp` against a saved copy), 2026-11-14:
 | The plan not counting held sends (`possibly_billed` left at 0, as when a held send was found only on reaching its section) | gate plan: "the plan did not count the held send before sending" — under `--max-spend 0.12` section 1 was submitted beside section 2's held $0.12 (1 submit, the review's defect) |
 | `add_attempt` replacing the earlier sends (as before: one intent per request) | gate lost: "the earlier lost sends were not both counted" — the third send went out under `--max-spend 0.24` (3 submits, status 0); `every_unconfirmed_send_stays_and_counts` and `two_lost_answers_both_stay_until_the_clip_is_in_hand` |
 | `write_private` without the folder's sync after the rename | `every_record_is_synced_with_its_folder`: the intent's folder `store/intents` missing from what was synced. A power loss itself cannot be staged in a test; the test shows the folder is opened and synced, not that the disk keeps it |
+
+### The ceiling, redefined (H4d, 2026-11-15)
+
+Three reviews in a row found the prior-exposure accounting wrong in a new way:
+a job in flight left out of the sum, a job record hiding unanswered sends of
+the same request, a section whose request was known only after earlier sends,
+and store changes another process made after the plan. The lead replaced it
+with a rule simple enough to keep: **`--max-spend N` is the most this run may
+newly send.** The estimates of the requests the run itself submits never add
+up to more than N; nothing else counts.
+
+- **Kept where money leaves.** `generation::job::Ceiling` is a run-local total
+  shared by the run's jobs. `Ceiling::take` adds a request's estimate, or
+  refuses it, inside the job, under the request's lock (`Store::claim`) and
+  immediately before its intent is written; a send that cannot have been
+  billed (the provider refused it, it never left, its record could not be
+  written) gives it back. No order of sections, no section known only later
+  and no other process's change to the store reaches that check. An unknown
+  price is refused there under a ceiling.
+- **A pickup is free.** A job an earlier run, another run or the window sent
+  is picked up for nothing, even under `--max-spend 0`.
+- **A held request** is refused by name without `--resend-unconfirmed`; with
+  it the resend is a new send of this run and counts once, at its estimate.
+- **What may already have been billed is said, not counted**, on a line of its
+  own before anything leaves:
+  > generate:        before this run: about $0.24 may already have been billed
+  > for 2 earlier sends of these requests (1 job to pick up, 1 send never
+  > answered); this is not part of --max-spend. Every send is in
+  > …/generated-clips/spending.tsv
+- **The plan is a forecast.** For a run with a job to pick up, a held request
+  and a new one under `--max-spend 0.12`:
+  > generate:        segments[3] (0:04.000).clip.generate This exact request
+  > was sent on 2026-11-14 23:37:16 UTC and its answer never arrived, … Every
+  > send is in …/spending.tsv.
+  > generate:        segments[3] (0:04.000).clip.generate refused: This run
+  > does not send it again: add --resend-unconfirmed for a new send, which
+  > counts against --max-spend at its estimate ($0.12)
+  > generate:        plan: segments[1] (0:01.000).clip.generate picks up the
+  > job sent before; nothing new is sent
+  > generate:        plan: segments[5] (0:07.000).clip.generate is sent, $0.12
+  > generate:        before this run: about $0.24 may already have been billed …
+  > generate:        plan: this run would send 1 request, about $0.12 of its
+  > $0.12 allowed, and pick up 1 job; nothing has been sent yet
+
+  and at the end "this run sent 1 request, about $0.12 of its $0.12 allowed".
+  A section the forecast does not expect to fit is still tried (what goes
+  before it may come to less), and is refused where it would leave: "it would
+  pass the ceiling: this run has sent $0.24, this request is $0.12 more, $0.24
+  allowed (--max-spend counts what this run sends)". When a later fact moves
+  the forecast the run says so: "the plan counted it as a new send; its
+  request, known now, was sent before and never answered", "now a job to pick
+  up: it was sent since the plan by another window or run, and picking it up
+  costs this run nothing".
+- **Removed:** the plan's `possibly_billed`, `committed` and `reserved_after`
+  sums, the held sends counted into them, the unknown-held refusal of the
+  whole run, the "$X committed or possibly billed" words and the gate's
+  `plan` group (replaced by `ceiling`).
+
+### The ceiling's checks and their negative controls (H4d)
+
+`tools/generate_check.sh` group `ceiling` (a job in flight, a held send and a
+new request under one estimate; the held one again with the flag; `--max-spend
+0` with a job in flight; three new requests under two estimates; a deferred
+section that turns out held), the rewritten `concurrent` checks (a pickup under
+`--max-spend 0` and under a ceiling below the job's estimate; two runs at once
+under their own ceilings), `lost` (a resend counted once), and
+`generation::job::tests::a_runs_ceiling_counts_only_what_it_sends`. Each
+control was run on a perturbed source and the source restored byte for byte
+(`cmp` against a saved copy), 2026-11-15:
+
+| Perturbation | What failed |
+| --- | --- |
+| `Ceiling::take` admitting everything (the ceiling not kept where a request leaves; the forecast alone) | gate ceiling: three new requests under two estimates made 3 submits (status 0); base: the second of two clips went out under $0.15; concurrent: run P of the pair sent 2 requests under its own $0.12 |
+| A pickup counted against the ceiling again (as under H4b/H4c) | gate concurrent: `--max-spend 0` and the $0.10 run refused the job in flight (status 1); the pair made 1 submit while the runs said 1 + 1 |
+| A resend counted with the earlier unanswered send (twice its estimate) | gate lost: `--max-spend 0.12 --resend-unconfirmed` refused (status 1), and so did the third send of the twice-lost request; gate ceiling: the agreed resend refused (0 submits) |
+| What changed not said when a deferred section turns out held | gate ceiling: "a deferred held section was sent or not explained" (the request was refused, silently) |
+| The estimate not given back when the provider refused the send | `a_runs_ceiling_counts_only_what_it_sends`: (0.12, 1) left counted after a 402 |
+
+Not pinned by a check of its own: a forecast-over section that is sent after all
+because what went before it came to less (staged only by a pickup appearing
+between the plan and the send, which no fake marker times reliably). The fake
+provider makes a clip once per job under a lock since H4d: two pollers of one
+job downloaded it while it was being written and refused it (seen in the
+first control's concurrent group, not a defect of the application).
 
 ### What is not built
 

@@ -11,7 +11,7 @@
 # GENERATE_BIN names another binary, for a negative control without replacing
 # the build. GENERATE_SKIP_CARD=1 leaves out the window card's half.
 # GENERATE_ONLY="NAME ..." runs only those groups (base, concurrent, lost,
-# redownload, order, fps, stale, plan, card, canary), for a negative control.
+# redownload, order, fps, stale, ceiling, card, canary), for a negative control.
 #
 # What it asserts:
 #   - the estimate is printed before any request, and without the flag (or with
@@ -22,7 +22,8 @@
 #     the still of the frame before the section;
 #   - a second run, and a run from the saved project with no flag, send
 #     nothing; a changed prompt is a new request;
-#   - the ceiling is honoured mid-run;
+#   - the ceiling is honoured mid-run: the second request is refused by name
+#     where it would leave;
 #   - each failure shape (a failed job with a bill, a refused submit, a
 #     download that is not a video, one too large) is named and nothing is
 #     imported or saved;
@@ -32,8 +33,8 @@
 #   - the canary key is in no output file, log, store file or argv;
 #   - lost (H4b): a submit the provider accepts and never answers is "may have
 #     been billed", never "nothing"; the next run sends nothing and says so,
-#     and --resend-unconfirmed sends it again only when the ceiling holds both
-#     estimates;
+#     and --resend-unconfirmed sends it again as a new send of that run,
+#     counted once at its estimate (H4d);
 #   - redownload (H4b): a finished job whose downloads come back cut short is
 #     kept, and the next run downloads it again without a new submit; an
 #     expired job is named and forgotten;
@@ -45,13 +46,16 @@
 #     byte for byte, the stills at the export's own frames around the cuts
 #     (47/12 s and 96/12 s);
 #   - concurrent (H4b): two runs asking for one request while the first one's
-#     submit is in flight pay once (the provider's submit count), a run with
-#     --max-spend 0 sends nothing, and a job found in progress counts against
-#     a ceiling at its estimate;
-#   - plan (H4c): a run reads every request's state before it sends any: with
-#     a new $0.12 request in section 1 and an earlier lost $0.12 send held for
-#     section 2, --max-spend 0.12 sends nothing (the plan, printed first,
-#     refuses section 1), and --max-spend 0.24 sends section 1 only;
+#     submit is in flight pay once (the provider's submit count); a run under
+#     --max-spend 0, and one whose ceiling is below the job's estimate, pick
+#     the job up for nothing (H4d); two runs at once under their own ceilings
+#     each send no more than their own;
+#   - ceiling (H4d): --max-spend counts only what the run itself sends. A job
+#     picked up and a held send are reported on a line of their own, not
+#     counted; a held request is not sent without --resend-unconfirmed and
+#     counts once with it; three new requests under two estimates send two
+#     and refuse the third by name; a section whose request is known only
+#     later and turns out held is not sent, and the run says what changed;
 #   - stale (H4c): two runs poll one recorded job and learn it expired at
 #     different times; between the two answers a third run submits a new job
 #     for the request. The late poller leaves the new job's record alone, and
@@ -274,7 +278,7 @@ EOF
 launch ceiling --treatment "$OUT/two.treatment.json" --generate-clips --max-spend 0.15 \
     --save-project "$OUT/ceiling.musi"
 if [ "$(status_of ceiling)" = 1 ] && has ceiling 'segments[1] (0:03.000).clip.generate generated' \
-    && has ceiling 'refused: it would pass the ceiling: $0.12 committed or possibly billed, $0.12 more, $0.15 allowed' \
+    && has ceiling 'refused: it would pass the ceiling: this run has sent $0.12, this request is $0.12 more, $0.15 allowed (--max-spend counts what this run sends)' \
     && [ "$(count submit)" = 3 ] && [ ! -e "$OUT/ceiling.musi" ]; then
     pass "the ceiling: the first clip made, the second refused by name, exit 1"
 else
@@ -328,9 +332,10 @@ wait_for() {
 
 # --- 8. two callers for one request (H4b) -------------------------------------------
 # The first run's submit takes 8 s at the fake; two more runs start while it is
-# in flight. The lock in the store makes the second wait and pick the job up;
-# --max-spend 0 sends nothing. Then, with the job recorded and held in
-# progress, a ceiling below its estimate refuses it: it counts at $0.12, not 0.
+# in flight. The lock in the store makes the second wait and pick the job up,
+# and so does a run under --max-spend 0 (H4d: a pickup sends nothing new).
+# Then, with the job recorded and held in progress, a run whose ceiling is
+# below its estimate picks it up too.
 if only concurrent; then
 treatment "$OUT/twice.treatment.json" "two callers at once [slow-submit] [hold]" ""
 submits="$(count submit)"
@@ -356,10 +361,7 @@ done
 MZ_STATE_DIR="$(own_state w)" launch twice-w --treatment "$OUT/twice.treatment.json" --generate-clips --max-spend 0.10 \
     --save-project "$OUT/twice-w.musi" &
 TWICE_W=$!
-for _ in {1..400}; do
-    [ -e "$OUT/twice-w.status" ] && break
-    sleep 0.05
-done
+wait_for 'has twice-w "picks up the job sent before" 2>/dev/null || [ -e "$OUT/twice-w.status" ]' 600 || true
 touch "$OUT/fake/release-hold"
 status_a=0; wait "$TWICE_A" || status_a=$?
 status_b=0; wait "$TWICE_B" || status_b=$?
@@ -378,16 +380,52 @@ if [ "$status_a" = 0 ] && grep -qF 'clip.generate generated' "$OUT/twice-a.log" 
 else
     fail "the two runs did not share the job (status $status_a, $status_b); see $OUT/twice-a.log, $OUT/twice-b.log"
 fi
-if [ "$status_z" = 1 ] && grep -qF 'refused: --max-spend 0 sends nothing' "$OUT/twice-z.log"; then
-    pass "--max-spend 0 sends nothing, even for a request another run is sending"
+if [ "$status_z" = 0 ] && grep -qF 'clip.generate picked up' "$OUT/twice-z.log" \
+    && grep -qF 'this run sent 0 requests, about $0.00 of its $0.00 allowed' "$OUT/twice-z.log"; then
+    pass "--max-spend 0 picks up the job another run is sending, and sends nothing itself"
 else
-    fail "--max-spend 0 did not refuse (status $status_z); see $OUT/twice-z.log"
+    fail "--max-spend 0 did not pick the job up (status $status_z); see $OUT/twice-z.log"
 fi
-if [ "$(status_of twice-w)" = 1 ] \
-    && has twice-w 'refused: it would pass the ceiling: $0.00 committed or possibly billed, $0.12 more, $0.10 allowed'; then
-    pass "a job found in progress counts against a \$0.10 ceiling at its \$0.12 estimate"
+if [ "$(status_of twice-w)" = 0 ] \
+    && has twice-w 'plan: segments[1] (0:04.000).clip.generate picks up the job sent before; nothing new is sent' \
+    && has twice-w 'clip.generate picked up' && has twice-w 'this run sent 0 requests'; then
+    pass "a job found in progress is picked up under a \$0.10 ceiling: it is not this run's send"
 else
-    fail "a job in progress was not counted at its estimate (status $(status_of twice-w)); see $OUT/twice-w.log"
+    fail "a job in progress was not picked up under a ceiling below its estimate (status $(status_of twice-w)); see $OUT/twice-w.log"
+fi
+# Two runs at once, each under its own one-estimate ceiling, for the same two
+# requests: whichever sends a request, the other picks it up or is refused
+# where it would send, so neither sends more than its own $0.12 and the
+# provider gets exactly the submits the runs say they made.
+cat >"$OUT/pair.treatment.json" <<EOF
+{ "schema": "musializer.treatment/v1", "audio": { "path": "fixture.wav" },
+  "output": { "resolution": "640x360", "fps": 24, "quality": "balanced" }, "seed": 7,
+  "segments": [ { "at": 0, "scene": "spectrum" },
+                { "at": 2, "scene": "clip", "clip": { "generate": {
+                    "prompt": "a pair: one [slow-submit]", "model": "google/veo-3.1-lite", "seconds": 4 } } },
+                { "at": 5, "scene": "pulse" },
+                { "at": 7, "scene": "clip", "clip": { "generate": {
+                    "prompt": "a pair: two [slow-submit]", "model": "google/veo-3.1-lite", "seconds": 4 } } },
+                { "at": 10, "scene": "spectrum" } ] }
+EOF
+submits="$(count submit)"
+MZ_STATE_DIR="$(own_state p)" launch pair-p --treatment "$OUT/pair.treatment.json" --generate-clips --max-spend 0.12 \
+    --save-project "$OUT/pair-p.musi" &
+PAIR_P=$!
+wait_for '[ "$(count submit)" -gt "$submits" ]' 600 || true
+MZ_STATE_DIR="$(own_state q)" launch pair-q --treatment "$OUT/pair.treatment.json" --generate-clips --max-spend 0.12 \
+    --save-project "$OUT/pair-q.musi" &
+PAIR_Q=$!
+wait "$PAIR_P" || true
+wait "$PAIR_Q" || true
+sent_by() { sed -n 's/.*this run sent \([0-9]*\) request.*/\1/p' "$OUT/$1.log" | tail -1; }
+sent_p="$(sent_by pair-p)"
+sent_q="$(sent_by pair-q)"
+if [ -n "$sent_p" ] && [ -n "$sent_q" ] && [ "$sent_p" -le 1 ] && [ "$sent_q" -le 1 ] \
+    && [ "$(count submit)" = $((submits + sent_p + sent_q)) ] && [ "$(count submit)" = $((submits + 2)) ]; then
+    pass "two runs at once under \$0.12 each: $sent_p and $sent_q sends, two submits in all, neither past its own ceiling"
+else
+    fail "two runs at once passed their own ceilings (${sent_p:-?} and ${sent_q:-?} sends, $(( $(count submit) - submits )) submits); see $OUT/pair-p.log, $OUT/pair-q.log"
 fi
 fi # concurrent
 
@@ -408,24 +446,26 @@ launch lost-2 --treatment "$OUT/lost.treatment.json" --generate-clips --max-spen
     --save-project "$OUT/lost-2.musi"
 if [ "$(status_of lost-2)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] \
     && has lost-2 'and its answer never arrived, so OpenRouter may have accepted and billed it (about $0.12)' \
-    && has lost-2 'add --resend-unconfirmed'; then
+    && has lost-2 'This run does not send it again: add --resend-unconfirmed for a new send, which counts against --max-spend at its estimate ($0.12)' \
+    && has lost-2 'before this run: about $0.12 may already have been billed for 1 earlier send of these requests (1 send never answered); this is not part of --max-spend'; then
     pass "the next run sends nothing, says the first may have been billed, and names --resend-unconfirmed"
 else
     fail "the next run did not hold the request (status $(status_of lost-2), $(count submit) submits); see $OUT/lost-2.log"
 fi
-launch lost-3 --treatment "$OUT/lost.treatment.json" --generate-clips --max-spend 0.20 --resend-unconfirmed \
+launch lost-3 --treatment "$OUT/lost.treatment.json" --generate-clips --max-spend 0.10 --resend-unconfirmed \
     --save-project "$OUT/lost-3.musi"
 if [ "$(status_of lost-3)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] \
-    && has lost-3 'refused: it would pass the ceiling: $0.12 committed or possibly billed, $0.12 more, $0.20 allowed'; then
-    pass "sending it again counts both estimates: refused under a \$0.20 ceiling"
+    && has lost-3 'refused: it would pass the ceiling: this run has sent $0.00, this request is $0.12 more, $0.10 allowed'; then
+    pass "sending it again is a new send of the run: refused under a \$0.10 ceiling, where it would leave"
 else
-    fail "--resend-unconfirmed did not count the earlier send (status $(status_of lost-3)); see $OUT/lost-3.log"
+    fail "--resend-unconfirmed was not counted at its estimate (status $(status_of lost-3)); see $OUT/lost-3.log"
 fi
-launch lost-4 --treatment "$OUT/lost.treatment.json" --generate-clips --max-spend 0.30 --resend-unconfirmed \
+launch lost-4 --treatment "$OUT/lost.treatment.json" --generate-clips --max-spend 0.12 --resend-unconfirmed \
     --save-project "$OUT/lost-4.musi"
 if [ "$(status_of lost-4)" = 0 ] && [ "$(count submit)" = $((submits + 2)) ] \
-    && has lost-4 'clip.generate generated' && ! ls "$MUSIALIZER_GENERATED_DIR/intents/"*.json >/dev/null 2>&1; then
-    pass "with --resend-unconfirmed and room for both, it is sent once more and generated; no intent is left"
+    && has lost-4 'clip.generate generated' && has lost-4 'this run sent 1 request, about $0.12 of its $0.12 allowed' \
+    && ! ls "$MUSIALIZER_GENERATED_DIR/intents/"*.json >/dev/null 2>&1; then
+    pass "with --resend-unconfirmed under exactly one estimate it is sent once more, counted once, and generated; no intent is left"
 else
     fail "the agreed resend did not generate (status $(status_of lost-4)); see $OUT/lost-4.log"
 fi
@@ -435,9 +475,9 @@ if [ "$(status_of lost-flag)" = 1 ] && has lost-flag '--resend-unconfirmed sends
 else
     fail "--resend-unconfirmed alone was not refused; see $OUT/lost-flag.log"
 fi
-# H4c: a resend whose answer is lost too. Both sends stay on record and count:
-# $0.24 possibly billed, so a $0.24 ceiling admits no third ($0.36), and the
-# words name both sends and their sum.
+# H4c: a resend whose answer is lost too. Both sends stay on record and are
+# named with their sum and the ledger; a third send counts once against the
+# run that sends it (H4d), so one estimate's ceiling admits it.
 treatment "$OUT/lost2.treatment.json" "lost twice [lost-answers-2]" ""
 submits="$(count submit)"
 launch lost2-1 --treatment "$OUT/lost2.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/lost2-1.musi"
@@ -449,23 +489,21 @@ if [ "$(status_of lost2-1)" = 1 ] && [ "$(status_of lost2-2)" = 1 ] && [ "$(coun
 else
     fail "the second lost answer was not reported (status $(status_of lost2-1), $(status_of lost2-2), $(( $(count submit) - submits )) submits); see $OUT/lost2-2.log"
 fi
-launch lost2-3 --treatment "$OUT/lost2.treatment.json" --generate-clips --max-spend 0.24 --resend-unconfirmed \
-    --save-project "$OUT/lost2-3.musi"
-if [ "$(status_of lost2-3)" = 1 ] && [ "$(count submit)" = $((submits + 2)) ] \
-    && has lost2-3 'This exact request was sent 2 times' && has lost2-3 'may have accepted and billed each of them (about $0.24 in all)' \
-    && has lost2-3 'spending.tsv' && has lost2-3 '$0.24 committed'; then
-    pass "both lost sends count: a \$0.24 ceiling admits no third (\$0.36); the words name 2 sends, \$0.24 in all, and the ledger"
-else
-    fail "the earlier lost sends were not both counted (status $(status_of lost2-3), $(( $(count submit) - submits )) submits); see $OUT/lost2-3.log"
-fi
-launch lost2-4 --treatment "$OUT/lost2.treatment.json" --generate-clips --max-spend 0.36 --resend-unconfirmed \
+launch lost2-4 --treatment "$OUT/lost2.treatment.json" --generate-clips --max-spend 0.12 --resend-unconfirmed \
     --save-project "$OUT/lost2-4.musi"
+if has lost2-4 'This exact request was sent 2 times' && has lost2-4 'may have accepted and billed each of them (about $0.24 in all)' \
+    && has lost2-4 'spending.tsv' \
+    && has lost2-4 'before this run: about $0.24 may already have been billed for 2 earlier sends of these requests (2 sends never answered); this is not part of --max-spend'; then
+    pass "both lost sends are named with their sum and the ledger, on a line of their own that is not part of --max-spend"
+else
+    fail "the earlier lost sends were not both named; see $OUT/lost2-4.log"
+fi
 digest2="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["clips"][0]["generated"]["request_sha256"])' "$OUT/lost2-4.musi" 2>/dev/null || true)"
 if [ "$(status_of lost2-4)" = 0 ] && [ "$(count submit)" = $((submits + 3)) ] && [ -n "$digest2" ] \
     && [ ! -e "$MUSIALIZER_GENERATED_DIR/intents/$digest2.json" ] \
     && [ "$(grep -aF "$digest2" "$MUSIALIZER_GENERATED_DIR/spending.tsv" | grep -cF 'answer lost, possibly billed')" = 2 ] \
     && [ "$(grep -aF "$digest2" "$MUSIALIZER_GENERATED_DIR/spending.tsv" | grep -cF 'sending, billed if accepted')" = 3 ]; then
-    pass "with room for all three it is sent and made; the intent is cleared and the ledger keeps both lost sends"
+    pass "the third send fits one estimate's ceiling and is made; the intent is cleared and the ledger keeps both lost sends"
 else
     fail "the third send did not generate, or the record is wrong (status $(status_of lost2-4)); see $OUT/lost2-4.log and the store's spending.tsv"
 fi
@@ -609,58 +647,139 @@ else
 fi
 fi # stale
 
-# --- 14. the plan comes first (H4c) ----------------------------------------------
-# Section 2's request (no frames, so its digest does not depend on section 1)
-# is sent once by a treatment of its own and its answer is lost: a held send,
-# possibly billed $0.12. A treatment with a new section 1 before it, under a
-# $0.12 ceiling, must find that before sending section 1: $0.24 against $0.12.
-if only plan; then
-plan_treatment() {
-    # $1 file, $2 the first generated section (or nothing)
-    cat >"$1" <<EOF
+# --- 14. --max-spend counts only what this run sends (H4d) ------------------------
+# Sections without frames, so each request is the same in every treatment it
+# is in. `sections FILE PROMPT ...` puts one generated section per prompt at
+# 1, 4 and 7 s, a Pulse section between them.
+if only ceiling; then
+sections() {
+    local file="$1"
+    shift
+    local body='{ "at": 0, "scene": "spectrum" }'
+    local at=1
+    for prompt in "$@"; do
+        body="$body,
+                { \"at\": $at, \"scene\": \"clip\", \"clip\": { \"generate\": {
+                    \"prompt\": \"$prompt\", \"model\": \"google/veo-3.1-lite\", \"seconds\": 4 } } },
+                { \"at\": $((at + 2)), \"scene\": \"pulse\" }"
+        at=$((at + 3))
+    done
+    cat >"$file" <<EOF
 { "schema": "musializer.treatment/v1", "audio": { "path": "fixture.wav" },
   "output": { "resolution": "640x360", "fps": 24, "quality": "balanced" }, "seed": 7,
-  "segments": [ { "at": 0, "scene": "spectrum" },$2
-                { "at": 6, "scene": "pulse" },
-                { "at": 9, "scene": "clip", "clip": { "generate": {
-                    "prompt": "the plan: held [lost-answer-once]", "model": "google/veo-3.1-lite",
-                    "seconds": 4 } } } ] }
+  "segments": [ $body ] }
 EOF
 }
-plan_treatment "$OUT/plan-held.treatment.json" ""
-plan_treatment "$OUT/plan.treatment.json" '
-                { "at": 3, "scene": "clip", "clip": { "generate": {
-                    "prompt": "the plan: new", "model": "google/veo-3.1-lite", "seconds": 4,
-                    "first": "previous" } } },'
+# A job in flight: a run that stops waiting (a 1 s deadline) keeps its record,
+# and the fake finishes the job after 80 polls. A held send: an answer lost.
+sections "$OUT/c-flight.treatment.json" "the ceiling: in flight [polls-80]"
+sections "$OUT/c-held.treatment.json" "the ceiling: held [lost-answer-once]"
+sections "$OUT/c-mixed.treatment.json" "the ceiling: in flight [polls-80]" "the ceiling: held [lost-answer-once]" \
+    "the ceiling: new"
 submits="$(count submit)"
-launch plan-0 --treatment "$OUT/plan-held.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/plan-0.musi"
-if [ "$(status_of plan-0)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] && has plan-0 'may have been billed (about $0.12)'; then
-    pass "the held section's request was sent once and its answer lost"
+MUSIALIZER_VIDEO_DEADLINE_S=1 launch c-flight --treatment "$OUT/c-flight.treatment.json" --generate-clips --max-spend 1.00 \
+    --save-project "$OUT/c-flight.musi"
+launch c-held --treatment "$OUT/c-held.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/c-held.musi"
+if [ "$(status_of c-flight)" = 1 ] && [ "$(status_of c-held)" = 1 ] && [ "$(count submit)" = $((submits + 2)) ] \
+    && has c-held 'may have been billed (about $0.12)'; then
+    pass "staged: a job left in flight and a send whose answer was lost"
 else
-    fail "the held send was not made (status $(status_of plan-0)); see $OUT/plan-0.log"
+    fail "the job in flight or the held send was not staged; see $OUT/c-flight.log, $OUT/c-held.log"
 fi
-launch plan-1 --treatment "$OUT/plan.treatment.json" --generate-clips --max-spend 0.12 --save-project "$OUT/plan-1.musi"
-refusal='segments[1] (0:03.000).clip.generate refused: it would pass the ceiling: $0.12 committed or possibly billed, $0.12 more, $0.12 allowed'
-summary='plan: $0.12 possibly billed already, $0.00 to send or pick up, $0.12 of $0.12 allowed; nothing has been sent yet'
-if [ "$(status_of plan-1)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] && has plan-1 "$refusal" \
-    && has plan-1 "$summary" && has plan-1 'segments[3] (0:09.000).clip.generate refused: This exact request was sent on'; then
-    pass "under \$0.12 with \$0.12 held: nothing sent, section 1 refused by the plan before any request"
-else
-    fail "the plan did not count the held send before sending (status $(status_of plan-1), $(( $(count submit) - submits - 1 )) submits); see $OUT/plan-1.log"
-fi
-launch plan-2 --treatment "$OUT/plan.treatment.json" --generate-clips --max-spend 0.24 --save-project "$OUT/plan-2.musi"
-first_plan="$(grep -n 'plan: \$' "$OUT/plan-2.log" | head -1 | cut -d: -f1)"
-first_send="$(grep -n 'sending the request' "$OUT/plan-2.log" | head -1 | cut -d: -f1)"
-if [ "$(status_of plan-2)" = 1 ] && [ "$(count submit)" = $((submits + 2)) ] \
-    && has plan-2 'plan: segments[1] (0:03.000).clip.generate is sent, $0.12' \
-    && has plan-2 'plan: $0.12 possibly billed already, $0.12 to send or pick up, $0.24 of $0.24 allowed' \
-    && has plan-2 'segments[1] (0:03.000).clip.generate generated' \
+# A job in flight, a held send and a new request, under exactly one estimate.
+submits="$(count submit)"
+launch c-mixed --treatment "$OUT/c-mixed.treatment.json" --generate-clips --max-spend 0.12 --save-project "$OUT/c-mixed.musi"
+first_plan="$(grep -n 'plan: this run would send' "$OUT/c-mixed.log" | head -1 | cut -d: -f1)"
+first_send="$(grep -n 'sending the request' "$OUT/c-mixed.log" | head -1 | cut -d: -f1)"
+if [ "$(status_of c-mixed)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] \
+    && has c-mixed 'plan: segments[1] (0:01.000).clip.generate picks up the job sent before; nothing new is sent' \
+    && has c-mixed 'segments[3] (0:04.000).clip.generate This exact request was sent on' \
+    && has c-mixed 'segments[3] (0:04.000).clip.generate refused: This run does not send it again: add --resend-unconfirmed for a new send, which counts against --max-spend at its estimate ($0.12)' \
+    && has c-mixed 'plan: segments[5] (0:07.000).clip.generate is sent, $0.12' \
+    && has c-mixed 'before this run: about $0.24 may already have been billed for 2 earlier sends of these requests (1 job to pick up, 1 send never answered); this is not part of --max-spend. Every send is in' \
+    && has c-mixed 'plan: this run would send 1 request, about $0.12 of its $0.12 allowed, and pick up 1 job; nothing has been sent yet' \
+    && has c-mixed 'segments[1] (0:01.000).clip.generate picked up' && has c-mixed 'segments[5] (0:07.000).clip.generate generated' \
+    && has c-mixed 'this run sent 1 request, about $0.12 of its $0.12 allowed' \
     && [ -n "$first_plan" ] && [ -n "$first_send" ] && [ "$first_plan" -lt "$first_send" ]; then
-    pass "under \$0.24: the plan, printed before the first request, sends section 1 only (\$0.12 held + \$0.12)"
+    pass "under one estimate: the job in flight picked up, the held send refused without the flag, the new request sent (1 submit); the earlier sends reported, not counted, before anything left"
 else
-    fail "the \$0.24 plan was not kept or not printed first (status $(status_of plan-2)); see $OUT/plan-2.log"
+    fail "a pickup or a held send was counted against the ceiling (status $(status_of c-mixed), $(( $(count submit) - submits )) submits); see $OUT/c-mixed.log"
 fi
-fi # plan
+# The held send with --resend-unconfirmed: a new send of this run, counted once.
+submits="$(count submit)"
+launch c-again --treatment "$OUT/c-mixed.treatment.json" --generate-clips --max-spend 0.12 --resend-unconfirmed \
+    --save-project "$OUT/c-again.musi"
+if [ "$(status_of c-again)" = 0 ] && [ "$(count submit)" = $((submits + 1)) ] \
+    && has c-again 'plan: segments[3] (0:04.000).clip.generate is sent again after 1 unanswered send: a new send of this run, $0.12' \
+    && has c-again 'segments[3] (0:04.000).clip.generate generated' && has c-again 'this run sent 1 request, about $0.12 of its $0.12 allowed'; then
+    pass "with --resend-unconfirmed the held request is sent under one estimate: counted once, at its estimate"
+else
+    fail "the agreed resend was counted twice or not sent (status $(status_of c-again), $(( $(count submit) - submits )) submits); see $OUT/c-again.log"
+fi
+# --max-spend 0 with a job in flight: it is picked up, nothing is sent.
+sections "$OUT/c-zero.treatment.json" "the ceiling: in flight under zero [polls-80]"
+MUSIALIZER_VIDEO_DEADLINE_S=1 launch c-zero-0 --treatment "$OUT/c-zero.treatment.json" --generate-clips --max-spend 1.00 \
+    --save-project "$OUT/c-zero-0.musi"
+submits="$(count submit)"
+launch c-zero --treatment "$OUT/c-zero.treatment.json" --generate-clips --max-spend 0 --save-project "$OUT/c-zero.musi"
+if [ "$(status_of c-zero)" = 0 ] && [ "$(count submit)" = "$submits" ] && has c-zero 'clip.generate picked up' \
+    && has c-zero 'this run sent 0 requests, about $0.00 of its $0.00 allowed' && [ -e "$OUT/c-zero.musi" ]; then
+    pass "--max-spend 0 picks up a job in flight and sends nothing (0 submits)"
+else
+    fail "--max-spend 0 did not pick the job up, or sent (status $(status_of c-zero)); see $OUT/c-zero.log"
+fi
+# Three new requests under two estimates: two sent, the third refused by name.
+sections "$OUT/c-three.treatment.json" "the ceiling: one of three" "the ceiling: two of three" "the ceiling: three of three"
+submits="$(count submit)"
+launch c-three --treatment "$OUT/c-three.treatment.json" --generate-clips --max-spend 0.24 --save-project "$OUT/c-three.musi"
+if [ "$(status_of c-three)" = 1 ] && [ "$(count submit)" = $((submits + 2)) ] \
+    && has c-three 'plan: segments[5] (0:07.000).clip.generate would not be sent: it would pass the ceiling: by then this run would have sent $0.24, this request is $0.12 more, $0.24 allowed' \
+    && has c-three 'segments[5] (0:07.000).clip.generate refused: it would pass the ceiling: this run has sent $0.24, this request is $0.12 more, $0.24 allowed' \
+    && has c-three 'this run sent 2 requests, about $0.24 of its $0.24 allowed' && [ ! -e "$OUT/c-three.musi" ]; then
+    pass "three new requests under two estimates: two submits, the third refused by name, exit 1"
+else
+    fail "three requests under two estimates were not held to two (status $(status_of c-three), $(( $(count submit) - submits )) submits); see $OUT/c-three.log"
+fi
+# A section whose request is known only once the section before it is made,
+# and which then turns out held. Run 1 makes section 1 and loses section 2's
+# answer; section 1's clip is then taken out of the store, so run 2 must make
+# it again (the fake's clip is the same bytes) before it knows section 2's
+# request: held, not sent, and the run says what changed.
+cat >"$OUT/c-deferred.treatment.json" <<EOF
+{ "schema": "musializer.treatment/v1", "audio": { "path": "fixture.wav" },
+  "output": { "resolution": "640x360", "fps": 24, "quality": "balanced" }, "seed": 7,
+  "segments": [ { "at": 0, "scene": "spectrum" },
+                { "at": 2, "scene": "clip", "clip": { "generate": {
+                    "prompt": "the ceiling: made first", "model": "google/veo-3.1-lite", "seconds": 4 } } },
+                { "at": 5, "scene": "clip", "clip": { "generate": {
+                    "prompt": "the ceiling: deferred [lost-answer-once]", "model": "google/veo-3.1-lite", "seconds": 4,
+                    "first": "previous" } } },
+                { "at": 9, "scene": "pulse" } ] }
+EOF
+submits="$(count submit)"
+launch c-deferred-1 --treatment "$OUT/c-deferred.treatment.json" --generate-clips --max-spend 1.00 \
+    --save-project "$OUT/c-deferred-1.musi"
+python3 -I - "$MUSIALIZER_GENERATED_DIR/clips" <<'PY'
+import json, pathlib, sys
+for receipt in pathlib.Path(sys.argv[1]).glob("*.json"):
+    if json.loads(receipt.read_text()).get("prompt") == "the ceiling: made first":
+        receipt.with_suffix(".mp4").unlink()
+        receipt.unlink()
+PY
+launch c-deferred-2 --treatment "$OUT/c-deferred.treatment.json" --generate-clips --max-spend 1.00 \
+    --save-project "$OUT/c-deferred-2.musi"
+if [ "$(status_of c-deferred-1)" = 1 ] && [ "$(status_of c-deferred-2)" = 1 ] && [ "$(count submit)" = $((submits + 3)) ] \
+    && has c-deferred-2 'plan: segments[2] (0:05.000).clip.generate waits for segments[1] (0:02.000).clip.generate to be made; its request is known then, counted at $0.12 until it is' \
+    && has c-deferred-2 'segments[1] (0:02.000).clip.generate generated' \
+    && has c-deferred-2 'segments[2] (0:05.000).clip.generate: the plan counted it as a new send; its request, known now, was sent before and never answered' \
+    && has c-deferred-2 'segments[2] (0:05.000).clip.generate This exact request was sent on' \
+    && has c-deferred-2 'segments[2] (0:05.000).clip.generate refused: This run does not send it again' \
+    && has c-deferred-2 'this run sent 1 request, about $0.12'; then
+    pass "a deferred section that turns out held is not sent, and the run says the plan changed (1 submit by that run)"
+else
+    fail "a deferred held section was sent or not explained (status $(status_of c-deferred-1), $(status_of c-deferred-2), $(( $(count submit) - submits )) submits); see $OUT/c-deferred-2.log"
+fi
+fi # ceiling
 
 # --- 6. the section card's Generate, pressed (tools/generate_card_check.py) -------
 if [ "${GENERATE_SKIP_CARD:-}" != 1 ] && only card; then

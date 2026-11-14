@@ -12,23 +12,29 @@
 //! its estimate and the total, and the run exits 1, unless it carries
 //! `--generate-clips --max-spend USD`.
 //!
-//! **The plan comes before the first request** (H4c). Every section's state
-//! is read first (found, a job to pick up, sends never answered, new); what
-//! is already committed or possibly billed is added up; the ceiling decides,
-//! in time order, what may still be sent; and the plan is printed. Only then
-//! is anything sent. A section whose frames show a generated section this run
-//! makes first is counted at its estimate and looked at again once that one
-//! is made, and so is one a clip attached since may show in; each send is
-//! checked against the ceiling again with what is known then. An unknown
-//! price is refused under a ceiling, since no ceiling can be kept with it.
+//! **`--max-spend` is the most this run may newly send** (H4d, 2026-11-15):
+//! the sum of the estimates of the requests this run itself submits never
+//! passes it, and nothing else counts. A job an earlier run or the window
+//! sent is picked up for nothing new, even under `--max-spend 0`. The ceiling
+//! is kept where each request leaves ([`Ceiling::take`], under the request's
+//! lock, right before its intent is written), so no order of sections and no
+//! change another process makes to the store can make the run send more.
+//!
+//! **The forecast comes before the first request.** Every section is looked
+//! at first (found, a job to pick up, sends never answered, new), and the
+//! forecast is printed: what each section is expected to do, what earlier
+//! runs may already have spent on these requests (reported, never counted),
+//! and what this run expects to send. A section whose frames show a generated
+//! section this run makes first is looked at again once that one is made;
+//! when a fact learnt then changes the forecast, the run says what changed.
 //!
 //! **A request whose earlier sends lost their answers** (an intent left in
-//! the store, H4b) may have been billed for each of them. Every one counts
-//! against the ceiling at its estimate (H4c), and the request is refused by
-//! name unless the run also carries `--resend-unconfirmed`; then sending it
-//! again counts one estimate more.
+//! the store, H4b) may have been billed for each of them. It is refused by
+//! name unless the run also carries `--resend-unconfirmed`; then the resend
+//! is a new send of this run and counts at its estimate, once.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use musializer_core::generation::catalog::Catalog;
 use musializer_core::generation::price::{self, Price};
@@ -38,7 +44,7 @@ use musializer_core::treatment::{ClipGeneration, FrameSource, Treatment};
 use musializer_runtime::font::Faces;
 use raylib::prelude::{RaylibAudio, RaylibHandle, RaylibThread};
 
-use super::job::{GenerationJob, JobSpec, Outcome, Reuse};
+use super::job::{Ceiling, GenerationJob, JobSpec, Outcome, Reuse};
 use super::store::Store;
 use crate::clips::TrackClip;
 use crate::scene_host::SceneRenderer;
@@ -138,8 +144,9 @@ enum State {
     /// Nothing of it was sent before.
     New,
     /// A job submitted before and not downloaded, or one another window or
-    /// run is sending now: picked up, and counted at its estimate.
-    PickUp,
+    /// run is sending now: picked up, which costs this run nothing. Its
+    /// estimate, when known, is what an earlier send may have spent.
+    PickUp(Option<f64>),
     /// Sent before and never answered: each send may have been billed.
     Held(super::store::Intent),
 }
@@ -161,14 +168,32 @@ enum Look {
     },
 }
 
-/// What the plan does with a section.
-enum Step {
-    /// Found, or refused: nothing to send.
-    Settled(Option<String>),
-    /// Send it, pick it up or send it again, counting `cost`.
+/// What the forecast expects of a section the run will try (H4d). The
+/// ceiling itself is kept where each request leaves ([`Ceiling::take`]); this
+/// is what the person reads before the first one does.
+enum Forecast {
+    /// A job sent before, picked up: nothing new is sent.
+    PickUp,
+    /// A new send of this run, at its estimate.
     Send(f64),
-    /// Counted at `cost` until its request is known.
-    Reserve(f64),
+    /// Sent again after this many unanswered sends (`--resend-unconfirmed`):
+    /// a new send of this run, at its estimate.
+    Again(f64, usize),
+    /// Its request is known only once the named section is made; counted at
+    /// its estimate meanwhile.
+    Waits(f64, String),
+    /// Expected not to be sent, and why. It is tried all the same: what is
+    /// sent before it may come to less than forecast (a request another run
+    /// sent meanwhile is picked up for nothing).
+    Over(String),
+}
+
+/// What the run does with a section.
+enum Step {
+    /// Found, or refused before anything is tried.
+    Settled(Option<String>),
+    /// Tried in time order, as forecast.
+    Try(Forecast),
 }
 
 /// One section in the plan.
@@ -441,11 +466,13 @@ impl Frames<'_, '_> {
             return Ok(Look::Found(Box::new(entry)));
         }
         // What the store says of it, read before anything is sent: a job
-        // submitted before or in flight now is picked up and counts at its
-        // estimate (the money is this request's); sends never answered count
-        // at theirs, whether or not this run sends again.
-        let state = if self.store.job(&digest).is_some() || self.store.in_flight(&digest) {
-            State::PickUp
+        // submitted before or in flight now is picked up, for nothing new;
+        // sends never answered are held. Both are said, neither is counted
+        // against this run's ceiling (H4d).
+        let state = if let Some(record) = self.store.job(&digest) {
+            State::PickUp(record.estimate_usd)
+        } else if self.store.in_flight(&digest) {
+            State::PickUp(estimate.usd())
         } else if let Some(intent) = self.store.leftover_intent(&digest) {
             State::Held(intent)
         } else {
@@ -459,9 +486,9 @@ impl Frames<'_, '_> {
             shape.resolution,
             shape.aspect_ratio,
             estimate.short(),
-            if matches!(state, State::PickUp) {
+            if matches!(state, State::PickUp(_)) {
                 " (submitted before, or being sent by another window or run: it is picked up, \
-                 not sent again, and counts against the ceiling at its estimate)"
+                 not sent again, which costs this run nothing)"
             } else {
                 ""
             },
@@ -487,38 +514,42 @@ impl Frames<'_, '_> {
     }
 }
 
-/// "it would pass the ceiling: …", in one place.
-fn past_the_ceiling(committed: f64, more: f64, ceiling: f64) -> String {
+/// "$0.12", rounded up to the cent.
+fn cents(usd: f64) -> String {
+    format!("${:.2}", price::ceil_cents(usd))
+}
+
+/// What a held request's refusal adds after the warning: how to send it
+/// again, and what that costs this run.
+fn resend_words(estimate: &Price) -> String {
     format!(
-        "it would pass the ceiling: ${:.2} committed or possibly billed, ${:.2} more, {} allowed",
-        price::ceil_cents(committed),
-        price::ceil_cents(more),
-        ceiling_words(ceiling)
+        "This run does not send it again: add --resend-unconfirmed for a new send, which counts \
+         against --max-spend at its estimate ({})",
+        estimate.short()
     )
 }
 
 /// Resolves every generated section of the treatment at `path`.
 ///
-/// Returns `None` when it has none. **Plans before it sends** (H4c): every
-/// section is looked at first — its frames rendered, its request built, and
-/// what the project and the store hold for it read (found, picked up, sent
-/// before and never answered, new). What is already committed or possibly
-/// billed is added up, the ceiling decides what may still be sent, and the
-/// plan is printed; only then does anything leave. A section whose frames
-/// show a generated section this run makes first is counted at its estimate
-/// and looked at again once that one is made, as is any section a clip made
-/// in between may show in.
+/// Returns `None` when it has none. Every section is looked at first — its
+/// frames rendered, its request built, and what the project and the store
+/// hold for it read — and, under `--max-spend`, the forecast is printed
+/// before anything leaves (H4d): what each section is expected to do, what
+/// earlier runs may already have spent on these requests (reported, not
+/// counted), and what this run expects to send. Then the sections are tried
+/// in time order; the ceiling is kept by [`Ceiling::take`] as each request
+/// leaves, and when a fact learnt later changes the forecast the run says so.
 ///
 /// # Errors
 ///
 /// A section that cannot be resolved, or missing clips the run may not (or
-/// could not) pay for — after every section has been looked at, so the
-/// refusal lists them all with the total.
+/// could not) pay for — after every section has been tried, so the refusal
+/// lists them all with the total.
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "the composition root's resources one offline frame needs, as `export_stills`; \
-              the plan's three passes read best in one place"
+              the look, the forecast and the sends read best in one place"
 )]
 pub fn prepare<'audio>(
     path: &Path,
@@ -546,6 +577,12 @@ pub fn prepare<'audio>(
         "generate:        {prices_line}; clips kept in {}",
         store.root().display()
     );
+    let ceiling = spending.ceiling_usd.map(|usd| {
+        Arc::new(Ceiling::new(
+            usd,
+            ceiling_words(usd).trim_start_matches('$'),
+        ))
+    });
     let (frames_name, frames_dir) = store.private_work("frames")?;
     let mut frames = Frames {
         path,
@@ -581,162 +618,203 @@ pub fn prepare<'audio>(
         });
     }
 
-    // 2. What is committed or possibly billed already, and what may still
-    // be sent under the ceiling, in time order.
-    let mut possibly_billed = 0.0f64;
-    let mut unknown_held: Option<String> = None;
-    let mut counted_held: Vec<String> = Vec::new();
-    for entry in &plan {
-        if let Some(Look::Ready(ready, State::Held(intent))) = &entry.look {
-            counted_held.push(ready.digest.clone());
-            match intent.total_usd() {
-                Some(usd) => possibly_billed += usd,
-                None => unknown_held = Some(entry.generation.place.clone()),
-            }
-        }
-    }
-    let mut running = possibly_billed;
-    let mut wont_make: Vec<usize> = Vec::new();
+    // 2. The forecast, in time order. What earlier runs may have spent on
+    // these requests is added up only to be said: it is not this run's.
+    let mut before = (0.0f64, 0usize, 0usize, 0usize);
+    let mut forecast_sent = 0.0f64;
+    let mut refused: Vec<usize> = Vec::new();
     for entry in &mut plan {
-        let segment = entry.generation.segment;
-        let (estimate, held, waits_on) = match &entry.look {
+        let place = entry.generation.place.clone();
+        let (estimate, state, waits_on) = match &entry.look {
             Some(Look::Found(..)) | None => continue,
             Some(Look::Refused { why, .. }) => {
-                println!("generate:        {} refused: {why}", entry.generation.place);
-                wont_make.push(segment);
+                println!("generate:        {place} refused: {why}");
+                refused.push(entry.generation.segment);
                 entry.step = Step::Settled(Some(why.clone()));
                 continue;
             }
-            Some(Look::Ready(ready, state)) => (
-                ready.estimate.clone(),
-                match state {
-                    State::Held(intent) => Some(intent),
-                    _ => None,
-                },
-                None,
-            ),
+            Some(Look::Ready(ready, state)) => (ready.estimate.clone(), Some(state), None),
             Some(Look::Waits {
                 on,
                 on_place,
                 estimate,
-                ..
             }) => (estimate.clone(), None, Some((*on, on_place.clone()))),
         };
-        let words = held.map(|intent| super::job::unconfirmed_words(intent, &store));
-        let refusal = match spending.ceiling_usd {
-            None => Some(match &words {
-                Some(words) => format!("the run has no --generate-clips --max-spend. {words}"),
-                None => "the run has no --generate-clips --max-spend".into(),
-            }),
-            Some(ceiling) if ceiling <= 0.0 => Some("--max-spend 0 sends nothing".to_owned()),
-            Some(_) if unknown_held.is_some() => Some(match &words {
-                Some(words) if unknown_held.as_deref() == Some(entry.generation.place.as_str()) => {
-                    format!("{words} Its price is unknown, so no ceiling can count it")
-                }
-                _ => format!(
-                    "an earlier send of {} may have been billed at an unknown price, so no \
-                     ceiling can count what is spent; nothing was sent",
-                    unknown_held.as_deref().unwrap_or("a section")
-                ),
-            }),
-            Some(_)
-                if waits_on
-                    .as_ref()
-                    .is_some_and(|(on, _)| wont_make.contains(on)) =>
-            {
-                Some(format!(
-                    "it waits for {}, which this run will not make",
-                    waits_on.as_ref().map_or("", |(_, place)| place.as_str())
-                ))
+        match state {
+            Some(State::PickUp(usd)) => {
+                before.0 += usd.unwrap_or(0.0);
+                before.1 += 1;
+                before.2 += 1;
             }
-            Some(_) if words.is_some() && !spending.resend_unconfirmed => Some(format!(
-                "{} It counts against the ceiling. To send it again, which is a second request \
-                 ({} more), add --resend-unconfirmed",
-                words.as_deref().unwrap_or_default(),
-                estimate.short()
-            )),
-            Some(ceiling) => match estimate.usd() {
-                None => Some(format!(
-                    "{}; a run with a ceiling cannot pay an unknown price",
-                    match &estimate {
-                        Price::Unknown(reason) => reason.reason(),
-                        Price::Known(_) => String::new(),
-                    }
-                )),
-                Some(usd) if running + usd > ceiling + 1.0e-9 => {
-                    Some(past_the_ceiling(running, usd, ceiling))
-                }
-                Some(usd) => {
-                    running += usd;
-                    entry.step = if waits_on.is_some() {
-                        Step::Reserve(usd)
-                    } else {
-                        Step::Send(usd)
-                    };
-                    None
-                }
-            },
-        };
-        if let Some(why) = refusal {
-            if spending.ceiling_usd.is_some() {
-                println!("generate:        {} refused: {why}", entry.generation.place);
+            Some(State::Held(intent)) => {
+                before.0 += intent.total_usd().unwrap_or(0.0);
+                before.1 += intent.attempts.len();
+                before.3 += intent.attempts.len();
             }
-            wont_make.push(segment);
-            entry.step = Step::Settled(Some(why));
+            _ => {}
         }
+        let words = match state {
+            Some(State::Held(intent)) => Some(super::job::unconfirmed_words(intent, &store)),
+            _ => None,
+        };
+        let Some(ceiling) = &ceiling else {
+            // No flag: nothing is sent, and nothing is fetched either.
+            let why = match (state, &words) {
+                (Some(State::PickUp(_)), _) => {
+                    "the run has no --generate-clips --max-spend; a job \
+                    sent before for it is waiting, and --generate-clips --max-spend 0 fetches it \
+                    without sending anything new"
+                        .to_owned()
+                }
+                (_, Some(words)) => format!("the run has no --generate-clips --max-spend. {words}"),
+                _ => "the run has no --generate-clips --max-spend".to_owned(),
+            };
+            entry.step = Step::Settled(Some(why));
+            continue;
+        };
+        if let Some((on, on_place)) = &waits_on {
+            if refused.contains(on) {
+                let why = format!("it waits for {on_place}, which this run will not make");
+                println!("generate:        {place} refused: {why}");
+                refused.push(entry.generation.segment);
+                entry.step = Step::Settled(Some(why));
+                continue;
+            }
+        }
+        let attempts = match state {
+            Some(State::PickUp(_)) => {
+                entry.step = Step::Try(Forecast::PickUp);
+                continue;
+            }
+            Some(State::Held(_)) if !spending.resend_unconfirmed => {
+                let why = format!(
+                    "{} {}",
+                    words.as_deref().unwrap_or_default(),
+                    resend_words(&estimate)
+                );
+                // The warning itself was printed when the section was looked at.
+                println!(
+                    "generate:        {place} refused: {}",
+                    resend_words(&estimate)
+                );
+                refused.push(entry.generation.segment);
+                entry.step = Step::Settled(Some(why));
+                continue;
+            }
+            Some(State::Held(intent)) => Some(intent.attempts.len()),
+            _ => None,
+        };
+        entry.step = Step::Try(match estimate.usd() {
+            None => Forecast::Over(format!(
+                "{}; a run with --max-spend sends only what it can count",
+                match &estimate {
+                    Price::Unknown(reason) => reason.reason(),
+                    Price::Known(_) => String::new(),
+                }
+            )),
+            Some(usd) if forecast_sent + usd > ceiling.limit_usd() + 1.0e-9 => {
+                Forecast::Over(ceiling.past(forecast_sent, usd, true))
+            }
+            Some(usd) => {
+                forecast_sent += usd;
+                match (attempts, waits_on) {
+                    (Some(attempts), _) => Forecast::Again(usd, attempts),
+                    (None, Some((_, on_place))) => Forecast::Waits(usd, on_place),
+                    (None, None) => Forecast::Send(usd),
+                }
+            }
+        });
     }
-    if let Some(ceiling) = spending.ceiling_usd {
+    if let Some(ceiling) = &ceiling {
+        let (mut sends, mut pickups) = (0usize, 0usize);
         for entry in &plan {
             let place = &entry.generation.place;
-            match (&entry.step, &entry.look) {
-                (Step::Send(usd), Some(Look::Ready(_, State::PickUp))) => println!(
-                    "generate:        plan: {place} picks up the job sent before, counting ${:.2}",
-                    price::ceil_cents(*usd)
-                ),
-                (Step::Send(usd), Some(Look::Ready(_, State::Held(intent)))) => println!(
-                    "generate:        plan: {place} is sent again after {} unanswered send{}, \
-                     ${:.2} more",
-                    intent.attempts.len(),
-                    if intent.attempts.len() == 1 { "" } else { "s" },
-                    price::ceil_cents(*usd)
-                ),
-                (Step::Send(usd), _) => println!(
-                    "generate:        plan: {place} is sent, ${:.2}",
-                    price::ceil_cents(*usd)
-                ),
-                (Step::Reserve(usd), Some(Look::Waits { on_place, .. })) => println!(
-                    "generate:        plan: {place} waits for {on_place} to be made, counting \
-                     ${:.2}",
-                    price::ceil_cents(*usd)
-                ),
-                _ => {}
+            match &entry.step {
+                Step::Try(Forecast::PickUp) => {
+                    pickups += 1;
+                    println!(
+                        "generate:        plan: {place} picks up the job sent before; nothing new is sent"
+                    );
+                }
+                Step::Try(Forecast::Send(usd)) => {
+                    sends += 1;
+                    println!("generate:        plan: {place} is sent, {}", cents(*usd));
+                }
+                Step::Try(Forecast::Again(usd, attempts)) => {
+                    sends += 1;
+                    println!(
+                        "generate:        plan: {place} is sent again after {attempts} unanswered \
+                         send{}: a new send of this run, {}",
+                        if *attempts == 1 { "" } else { "s" },
+                        cents(*usd)
+                    );
+                }
+                Step::Try(Forecast::Waits(usd, on_place)) => {
+                    sends += 1;
+                    println!(
+                        "generate:        plan: {place} waits for {on_place} to be made; its \
+                         request is known then, counted at {} until it is",
+                        cents(*usd)
+                    );
+                }
+                Step::Try(Forecast::Over(why)) => {
+                    println!("generate:        plan: {place} would not be sent: {why}");
+                }
+                Step::Settled(_) => {}
             }
         }
+        if before.1 > 0 {
+            let mut what = Vec::new();
+            if before.2 > 0 {
+                what.push(format!(
+                    "{} job{} to pick up",
+                    before.2,
+                    if before.2 == 1 { "" } else { "s" }
+                ));
+            }
+            if before.3 > 0 {
+                what.push(format!(
+                    "{} send{} never answered",
+                    before.3,
+                    if before.3 == 1 { "" } else { "s" }
+                ));
+            }
+            println!(
+                "generate:        before this run: about {} may already have been billed for {} \
+                 earlier send{} of these requests ({}); this is not part of --max-spend. Every send \
+                 is in {}",
+                cents(before.0),
+                before.1,
+                if before.1 == 1 { "" } else { "s" },
+                what.join(", "),
+                store.root().join("spending.tsv").display()
+            );
+        }
         println!(
-            "generate:        plan: ${:.2} possibly billed already, ${:.2} to send or pick up, \
-             ${:.2} of {} allowed; nothing has been sent yet",
-            price::ceil_cents(possibly_billed),
-            price::ceil_cents(running - possibly_billed),
-            price::ceil_cents(running),
-            ceiling_words(ceiling)
+            "generate:        plan: this run would send {sends} request{}, about {} of its {} \
+             allowed{}; nothing has been sent yet",
+            if sends == 1 { "" } else { "s" },
+            cents(forecast_sent),
+            ceiling.shown(),
+            if pickups > 0 {
+                format!(
+                    ", and pick up {pickups} job{}",
+                    if pickups == 1 { "" } else { "s" }
+                )
+            } else {
+                String::new()
+            }
         );
     }
 
-    // 3. Send, in time order, what the plan admits.
-    let mut committed = possibly_billed;
+    // 3. Try, in time order, what the forecast did not settle. Each send is
+    // counted against the ceiling where it leaves, under its request's lock.
     let mut outcomes: Vec<(ClipGeneration, Resolution)> = Vec::new();
-    let mut blocked: Vec<usize> = wont_make.clone();
+    let mut blocked: Vec<usize> = refused.clone();
     for index in 0..plan.len() {
-        let reserved_after: f64 = plan[index + 1..]
-            .iter()
-            .map(|entry| match entry.step {
-                Step::Send(usd) | Step::Reserve(usd) => usd,
-                Step::Settled(_) => 0.0,
-            })
-            .sum();
         let entry = &mut plan[index];
         let generation = entry.generation.clone();
-        match &entry.step {
+        let forecast = match std::mem::replace(&mut entry.step, Step::Settled(None)) {
             Step::Settled(None) => {
                 outcomes.push((generation, Resolution::Found));
                 continue;
@@ -750,24 +828,22 @@ pub fn prepare<'audio>(
                     _ => Price::Unknown(price::UnknownPrice::NotListed),
                 };
                 blocked.push(generation.segment);
-                outcomes.push((
-                    generation,
-                    Resolution::Missing {
-                        estimate,
-                        why: why.clone(),
-                    },
-                ));
+                outcomes.push((generation, Resolution::Missing { estimate, why }));
                 continue;
             }
-            Step::Send(_) | Step::Reserve(_) => {}
-        }
-        let ceiling = spending.ceiling_usd.unwrap_or(0.0);
+            Step::Try(forecast) => forecast,
+        };
+        let place = generation.place.clone();
         // Looked at again when a clip attached since may show in its frames,
         // or when it waited for one.
         let stale = entry.seen != entries.len() || matches!(entry.look, Some(Look::Waits { .. }));
-        let planned_digest = match &entry.look {
-            Some(Look::Ready(ready, _)) => Some(ready.digest.clone()),
-            _ => None,
+        let (planned_digest, planned_pickup, planned_held) = match &entry.look {
+            Some(Look::Ready(ready, state)) => (
+                Some(ready.digest.clone()),
+                matches!(state, State::PickUp(_)),
+                matches!(state, State::Held(_)),
+            ),
+            _ => (None, false, false),
         };
         let look = if stale {
             frames.look(&generation, &treatment, &entries, &blocked)?
@@ -776,12 +852,13 @@ pub fn prepare<'audio>(
         };
         let (ready, state) = match look {
             Look::Found(found) => {
+                println!("generate:        {place}: found now, made since the plan; nothing sent");
                 attach(&mut treatment, &mut entries, &generation, *found)?;
                 outcomes.push((generation, Resolution::Found));
                 continue;
             }
             Look::Refused { estimate, why } => {
-                println!("generate:        {} refused: {why}", generation.place);
+                println!("generate:        {place} refused: {why}");
                 blocked.push(generation.segment);
                 outcomes.push((generation, Resolution::Missing { estimate, why }));
                 continue;
@@ -790,79 +867,66 @@ pub fn prepare<'audio>(
                 on_place, estimate, ..
             } => {
                 let why = format!("it waits for {on_place}, which was not made");
-                println!("generate:        {} refused: {why}", generation.place);
+                println!("generate:        {place} refused: {why}");
                 blocked.push(generation.segment);
                 outcomes.push((generation, Resolution::Missing { estimate, why }));
                 continue;
             }
             Look::Ready(ready, state) => (ready, state),
         };
-        // Sends found unanswered only now (its request was not known at the
-        // plan) are money possibly spent: counted, and the request refused
-        // unless the run agreed to send such a request again.
-        let mut refusal = None;
-        if let State::Held(intent) = &state {
-            if !counted_held.contains(&ready.digest) {
-                counted_held.push(ready.digest.clone());
-                match intent.total_usd() {
-                    Some(usd) => committed += usd,
-                    None => {
-                        refusal = Some(format!(
-                            "{} Its price is unknown, so no ceiling can count it",
-                            super::job::unconfirmed_words(intent, &store)
-                        ));
-                    }
-                }
-            }
-            if refusal.is_none() && !spending.resend_unconfirmed {
-                refusal = Some(format!(
-                    "{} It counts against the ceiling. To send it again, which is a second \
-                     request ({} more), add --resend-unconfirmed",
-                    super::job::unconfirmed_words(intent, &store),
-                    ready.estimate.short()
-                ));
-            }
-        }
         if stale && planned_digest.as_deref() != Some(ready.digest.as_str()) {
             println!(
-                "generate:        {} looked at again now that the sections before it are made",
-                generation.place
+                "generate:        {place} looked at again now that the sections before it are made"
             );
         }
-        let cost_now = ready.estimate.usd();
-        if refusal.is_none() {
-            refusal = match cost_now {
-                None => Some(format!(
-                    "{}; a run with a ceiling cannot pay an unknown price",
-                    match &ready.estimate {
-                        Price::Unknown(reason) => reason.reason(),
-                        Price::Known(_) => String::new(),
-                    }
-                )),
-                Some(usd) if committed + usd + reserved_after > ceiling + 1.0e-9 => {
-                    Some(past_the_ceiling(committed + reserved_after, usd, ceiling))
-                }
-                Some(_) => None,
-            };
+        // What the store says now, where it differs from the forecast.
+        let changed = match (&state, planned_pickup, planned_held) {
+            (State::PickUp(_), true, _) | (State::Held(_), _, true) => None,
+            (State::PickUp(_), false, _) => Some(
+                "now a job to pick up: it was sent since the plan by another window or run, and \
+                 picking it up costs this run nothing"
+                    .to_owned(),
+            ),
+            (_, true, _) => Some(
+                "the job the plan was to pick up is no longer there (it ended without a clip), so \
+                 this is a new send of this run"
+                    .to_owned(),
+            ),
+            (State::Held(_), _, false) => Some(
+                "the plan counted it as a new send; its request, known now, was sent before and \
+                 never answered"
+                    .to_owned(),
+            ),
+            _ => None,
+        };
+        if let Some(changed) = &changed {
+            println!("generate:        {place}: {changed}");
         }
-        if let Some(why) = refusal {
-            println!("generate:        {} refused: {why}", generation.place);
-            blocked.push(generation.segment);
-            outcomes.push((
-                generation,
-                Resolution::Missing {
-                    estimate: ready.estimate.clone(),
-                    why,
-                },
-            ));
-            continue;
+        if let State::Held(intent) = &state {
+            if !spending.resend_unconfirmed {
+                let why = format!(
+                    "{} {}",
+                    super::job::unconfirmed_words(intent, &store),
+                    resend_words(&ready.estimate)
+                );
+                println!(
+                    "generate:        {place} refused: {}",
+                    resend_words(&ready.estimate)
+                );
+                blocked.push(generation.segment);
+                outcomes.push((
+                    generation,
+                    Resolution::Missing {
+                        estimate: ready.estimate.clone(),
+                        why,
+                    },
+                ));
+                continue;
+            }
         }
-        let cost_now = cost_now.unwrap_or(0.0);
-        let secret = super::credential(session_key)
-            .map_err(|error| format!("{}: {error}", generation.place))?;
+        let secret = super::credential(session_key).map_err(|error| format!("{place}: {error}"))?;
         let endpoint = super::client::Endpoint::from_env()?;
         let (poll, deadline, max_bytes) = JobSpec::timings_from_env();
-        committed += cost_now;
         let Ready {
             request,
             estimate,
@@ -886,8 +950,8 @@ pub fn prepare<'audio>(
                 State::Held(intent) => Some(intent.latest().id.clone()),
                 _ => None,
             },
+            ceiling: ceiling.clone(),
         });
-        let place = generation.place.clone();
         let outcome = job.wait(|stage, elapsed| {
             println!(
                 "generate:        {place} {} ({:.0} s)",
@@ -900,8 +964,7 @@ pub fn prepare<'audio>(
                 let record = generated.clip.asset.generated.clone();
                 let cost = record.as_ref().and_then(|record| record.cost_usd);
                 println!(
-                    "generate:        {} {}: {} ({}x{}, {:.2} s), estimate {}, reported {}",
-                    generation.place,
+                    "generate:        {place} {}: {} ({}x{}, {:.2} s), estimate {}, reported {}",
                     match generated.reused {
                         Reuse::New => "generated",
                         Reuse::Resumed => "picked up",
@@ -914,6 +977,12 @@ pub fn prepare<'audio>(
                     estimate.short(),
                     cost.map_or_else(|| "nothing".to_owned(), |usd| format!("${usd:.4}")),
                 );
+                if let Forecast::Over(why) = &forecast {
+                    println!(
+                        "generate:        {place}: the plan expected it not to be sent ({why}); \
+                         what this run sent before it came to less than forecast"
+                    );
+                }
                 let resumed = generated.reused != Reuse::New;
                 attach(&mut treatment, &mut entries, &generation, generated.clip)?;
                 outcomes.push((
@@ -925,38 +994,32 @@ pub fn prepare<'audio>(
                     },
                 ));
             }
+            Outcome::Refused(why) => {
+                println!("generate:        {place} refused: {why}");
+                blocked.push(generation.segment);
+                outcomes.push((generation, Resolution::Missing { estimate, why }));
+            }
             Outcome::Failed { reason, billing } => {
-                if billing == super::job::Billing::Nothing {
-                    // Refused or never sent: nothing was spent.
-                    committed -= cost_now;
-                }
                 let why = match billing.sentence() {
                     Some(text) => format!("{}. {text}", reason.trim_end_matches('.')),
                     None => reason,
                 };
-                println!("generate:        {} failed: {why}", generation.place);
+                println!("generate:        {place} failed: {why}");
                 blocked.push(generation.segment);
                 outcomes.push((generation, Resolution::Missing { estimate, why }));
             }
             Outcome::Unconfirmed(intent) => {
-                // Another caller's send was lost since the plan: nothing was
-                // sent now, and its sends count as possibly billed.
-                committed -= cost_now;
-                if !counted_held.contains(&intent.request_sha256) {
-                    committed += intent.total_usd().unwrap_or(0.0);
-                }
+                // Another caller's send was lost since this run looked:
+                // nothing was sent now.
                 let why = format!(
                     "{} Nothing was sent now; add --resend-unconfirmed to send it again",
                     super::job::unconfirmed_words(&intent, &store)
                 );
-                println!("generate:        {} refused: {why}", generation.place);
+                println!("generate:        {place} refused: {why}");
                 blocked.push(generation.segment);
                 outcomes.push((generation, Resolution::Missing { estimate, why }));
             }
             Outcome::Stopped { billing } => {
-                if billing == super::job::Billing::Nothing {
-                    committed -= cost_now;
-                }
                 let why = format!(
                     "stopped{}",
                     billing
@@ -970,6 +1033,15 @@ pub fn prepare<'audio>(
         }
     }
     store.clear_work(&frames_name);
+    if let Some(ceiling) = &ceiling {
+        let (usd, count) = ceiling.sent();
+        println!(
+            "generate:        this run sent {count} request{}, about {} of its {} allowed",
+            if count == 1 { "" } else { "s" },
+            cents(usd),
+            ceiling.shown()
+        );
+    }
 
     // The summary, and the refusal when anything is missing.
     let missing: Vec<&(ClipGeneration, Resolution)> = outcomes

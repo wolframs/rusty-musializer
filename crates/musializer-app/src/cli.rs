@@ -726,12 +726,14 @@ pub struct Cli {
     /// video model for the clips its sections say to generate. Never alone:
     /// it needs `--max-spend`, and without both a run refuses by name.
     pub generate_clips: bool,
-    /// `--max-spend USD`: the ceiling on what `--generate-clips` submits, in
-    /// dollars by the estimates shown before each request.
+    /// `--max-spend USD`: the most a `--generate-clips` run may newly send, in
+    /// dollars by the estimates of the requests it submits itself (H4d). A
+    /// job picked up, and what earlier runs may have spent, are not counted.
     pub max_spend: Option<f64>,
     /// `--resend-unconfirmed` (H4b, additive): a request sent before whose
     /// answer never arrived (it may have been billed, and its job cannot be
-    /// found) may be sent again, counted twice against `--max-spend`.
+    /// found) may be sent again; the new send counts against `--max-spend`
+    /// at its estimate, once.
     pub resend_unconfirmed: bool,
     /// `--still SECONDS FILE`, repeatable: frames rendered through the export's
     /// own offline path and written as PNGs. All of them come out of one pass
@@ -1838,13 +1840,15 @@ Directing (no window needed to author; see docs/MUSIC_VIDEO_CLI.md):
                           and out-of-range values are refused, not ignored.
                           --save-project after it writes an ordinary .musi
   --generate-clips        With --max-spend: ask a video model for the clips
-  --max-spend USD         the treatment's sections say to generate, up to
-                          USD by the estimates. Without both, a run with a
-                          missing generated clip prints each estimate and
-                          the total and exits 1; nothing is sent
+  --max-spend USD         the treatment's sections say to generate; the
+                          estimates of what this run sends stay within USD.
+                          A job sent before is picked up for nothing new.
+                          Without both, a run with a missing generated clip
+                          prints each estimate and the total and exits 1;
+                          nothing is sent
   --resend-unconfirmed    Send again a request whose earlier send lost its
                           answer (it may have been billed, and its job cannot
-                          be found); both count against --max-spend
+                          be found); the new send counts against --max-spend
   --vocabulary            Print every scene, setting (with bounds and
                           default), route source, curve and caption option a
                           treatment may name, as JSON, and exit. Opens no
