@@ -633,6 +633,43 @@ class LyricScoringTests(unittest.TestCase):
         scored = scorers.score_lyric_moments(claims, synthetic_truth())
         self.assertAlmostEqual(scored["coverage"], 0.5)
 
+    def test_a_repeated_line_is_measured_against_its_nearest_occurrence(self) -> None:
+        # v1 took the last occurrence: a correct first-chorus quote at 38.5 s
+        # scored 84 s of error against the final chorus.
+        chorus = [
+            ground_truth.LyricTruth(1, "Shut up Cat I already know", 38.0, 40.0, "aligned"),
+            ground_truth.LyricTruth(2, "The queen of the sky just came through", 58.6, 62.0, "aligned"),
+            ground_truth.LyricTruth(3, "Shut up Cat I already know", 63.5, 66.0, "aligned"),
+            ground_truth.LyricTruth(4, "Shut up Cat I already know", 122.3, 124.0, "aligned"),
+        ]
+        truth = synthetic_truth(lyrics=chorus)
+        claims = scorers.Claims(source="s", lyric_moments=[
+            (38.5, "Shut up cat, I already know"),
+            (121.0, "Shut up cat, I already know"),
+        ])
+        scored = scorers.score_lyric_moments(claims, truth)
+        self.assertEqual([detail["truth_seconds"] for detail in scored["details"]],
+                         [38.0, 122.3])
+        self.assertAlmostEqual(scored["median_error_seconds"], 0.9, places=6)
+        # Nearest is not a free pass: a quote placed between occurrences is
+        # still measured, against the closer one.
+        far = scorers.score_lyric_moments(
+            scorers.Claims(source="s", lyric_moments=[(95.0, "Shut up cat, I already know")]),
+            truth)
+        self.assertAlmostEqual(far["median_error_seconds"], 27.3, places=6)
+
+    def test_a_quote_may_straddle_two_aligned_lines(self) -> None:
+        split = [
+            ground_truth.LyricTruth(1, "Shut up Cat", 38.0, 39.0, "aligned"),
+            ground_truth.LyricTruth(2, "I already know", 39.2, 40.5, "aligned"),
+            ground_truth.LyricTruth(3, "Shut up Cat I already know", 63.5, 66.0, "aligned"),
+        ]
+        scored = scorers.score_lyric_moments(
+            scorers.Claims(source="s", lyric_moments=[(37.5, "Shut up cat, I already know")]),
+            synthetic_truth(lyrics=split))
+        self.assertEqual(scored["details"][0]["truth_seconds"], 38.0)
+        self.assertEqual(scored["fabricated"], 0)
+
     def test_containment_similarity_ignores_the_truth_line_being_longer(self) -> None:
         self.assertAlmostEqual(
             scorers.phrase_similarity("queen of the sky",

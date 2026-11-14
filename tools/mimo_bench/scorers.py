@@ -32,7 +32,11 @@ from typing import Any, Iterable, Sequence
 from .bench_io import canonical_sha256
 from .ground_truth import LyricTruth, TrackTruth
 
-SCORER_VERSION = "musializer.mimo-bench-scorers/v1"
+# v2 (2026-11-14, first live run): a quoted phrase is matched to the nearest
+# occurrence of an equally good line, and may straddle two adjacent aligned
+# lines. v1 took the LAST occurrence of a repeated chorus line, which put a
+# correct first-chorus quotation 80 s off and dominated every median.
+SCORER_VERSION = "musializer.mimo-bench-scorers/v2"
 
 # ---------------------------------------------------------------------------
 # Lexicons. These are the judgement calls in this file; they are hashed into
@@ -465,6 +469,9 @@ OCTAVE_FACTORS = (0.25, 0.5, 1.0, 2.0, 4.0)
 SECTION_TOLERANCE_SECONDS = 3.0
 LYRIC_MATCH_THRESHOLD = 0.7
 LYRIC_MIN_TOKENS = 3
+# Lines within this much similarity of the best are "equally good"; among
+# them, the occurrence nearest the claimed second is the one scored.
+LYRIC_TIE_MARGIN = 0.15
 
 
 def _tempo_verdict(claim: float, truth: float) -> str | None:
@@ -718,13 +725,26 @@ def score_lyric_moments(
     matched_lines: set[int] = set()
     fabricated = untimed = too_short = 0
     details: list[dict[str, Any]] = []
+    # Every single line, and every pair of adjacent lines joined, because the
+    # aligner sometimes splits one sung phrase ("Shut up Cat" / "I already
+    # know") that a model quotes whole. A joined pair starts at its first line.
+    windows = [(index, line.text) for index, line in enumerate(lyrics)]
+    windows += [(index, f"{lyrics[index].text} {lyrics[index + 1].text}")
+                for index in range(len(lyrics) - 1)]
     for seconds, phrase in claims.lyric_moments:
         if len(tokens(phrase)) < LYRIC_MIN_TOKENS:
             too_short += 1
             continue
-        scored = [(phrase_similarity(phrase, line.text), index)
-                  for index, line in enumerate(lyrics)]
-        best_similarity, best_index = max(scored) if scored else (0.0, -1)
+        scored = [(phrase_similarity(phrase, text), index) for index, text in windows]
+        best_similarity = max((similarity for similarity, _ in scored), default=0.0)
+        tied = sorted({index for similarity, index in scored
+                       if similarity >= best_similarity - LYRIC_TIE_MARGIN
+                       and similarity >= LYRIC_MATCH_THRESHOLD})
+        if tied and not math.isnan(seconds):
+            best_index = min(tied, key=lambda index: (
+                abs((seconds + time_offset) - lyrics[index].start_seconds), index))
+        else:
+            best_index = tied[0] if tied else -1
         if best_similarity < LYRIC_MATCH_THRESHOLD:
             fabricated += 1
             details.append({"phrase": phrase, "seconds": seconds,
