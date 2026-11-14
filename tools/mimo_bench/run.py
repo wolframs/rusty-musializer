@@ -54,6 +54,7 @@ from .bench_io import (  # noqa: E402
     cell_state,
     completed_calls,
     stored_calls,
+    repeats_present,
     track_by_slug,
     write_done,
 )
@@ -206,6 +207,7 @@ def execute_unit(
     transport: Transport = urllib.request.urlopen,
     sleeper: Callable[[float], None] = time.sleep,
     force: bool = False,
+    budget: cost.Budget | None = None,
 ) -> dict[str, Any]:
     track = track_by_slug(cell.track_slug)
     calls = matrix.calls_for(cell, track)
@@ -217,6 +219,12 @@ def execute_unit(
     for call in calls:
         if call.index in already:
             continue
+        refusal = budget.refusal(cell, call) if budget is not None else None
+        if refusal:
+            # No done marker: the unit stays pending and resumes at this call
+            # once the ceiling is raised.
+            return {"cell": cell.id, "repeat": repeat, "status": "budget",
+                    "calls_sent": sent, "errors": [refusal]}
         try:
             payload, identity = build_call(cell, call, repeat, live=True)
             response = submit(payload, transport=transport, sleeper=sleeper)
@@ -246,6 +254,8 @@ def execute_unit(
             **metadata,
         }
         atomic_write_json(call_path(cell.id, repeat, call.index), record)
+        if budget is not None:
+            budget.add(record)
         sent += 1
     runtime = time.monotonic() - started
     status = "failed" if failures else "ok"
@@ -254,6 +264,22 @@ def execute_unit(
                errors=failures or None)
     return {"cell": cell.id, "repeat": repeat, "status": status,
             "calls_sent": sent, "errors": failures}
+
+
+def all_stored_records(repeats: int | None = None) -> list[dict[str, Any]]:
+    """Every stored call of every cell, in every repeat on disk."""
+    records: list[dict[str, Any]] = []
+    for cell in matrix.cells():
+        for repeat in repeats_present(cell.id):
+            if repeats is None or repeat <= repeats:
+                records.extend(stored_calls(cell.id, repeat))
+    return records
+
+
+def budget_from(options: argparse.Namespace) -> cost.Budget | None:
+    if options.budget_usd is None:
+        return None
+    return cost.Budget(options.budget_usd, all_stored_records())
 
 
 def pending(repeats: int, *, only_cell: str | None = None,
@@ -424,6 +450,9 @@ def command_list(options: argparse.Namespace) -> int:
         print("  ".join(row[column].ljust(widths[column]) for column in range(4)).rstrip())
     remaining = len(pending(options.repeats, retry_failed=options.retry_failed))
     print(f"\n{remaining} unit(s) pending of {len(rows)}.")
+    spent = cost.Budget(float("inf"), all_stored_records())
+    print(f"spent so far: {spent.spent_usd:.4f} USD over {spent.calls} recorded call(s) "
+          f"(usage.cost as OpenRouter reported it)")
     return 0
 
 
@@ -444,7 +473,7 @@ def command_next(options: argparse.Namespace) -> int:
         print("No pending units.")
         return 0
     cell, repeat = queue[0]
-    result = execute_unit(cell, repeat)
+    result = execute_unit(cell, repeat, budget=budget_from(options))
     print(f"[{cell.id} r{repeat:02d}] {result['status']} "
           f"({result['calls_sent']} call(s) sent)")
     for error in result["errors"]:
@@ -461,12 +490,16 @@ def command_all(options: argparse.Namespace) -> int:
         print("No pending units.")
         return 0
     failures = 0
+    budget = budget_from(options)
     for cell, repeat in queue:
-        result = execute_unit(cell, repeat)
+        result = execute_unit(cell, repeat, budget=budget)
         print(f"[{cell.id} r{repeat:02d}] {result['status']} "
               f"({result['calls_sent']} call(s) sent)", flush=True)
         for error in result["errors"]:
-            print(f"  {error}", file=sys.stderr)
+            print(f"  {error}", file=sys.stderr, flush=True)
+        if result["status"] == "budget":
+            print("stopped at the spending ceiling; the rest stays pending.", flush=True)
+            return 3
         if result["status"] != "ok":
             failures += 1
     print(f"{len(queue) - failures}/{len(queue)} units completed.")
@@ -485,7 +518,10 @@ def command_run(options: argparse.Namespace) -> int:
         print(f"[{cell.id} r{options.repeat:02d}] already done "
               f"({state.get('status')}); pass --force to repeat it.")
         return 0
-    result = execute_unit(cell, options.repeat, force=options.force)
+    result = execute_unit(cell, options.repeat, force=options.force,
+                          budget=budget_from(options))
+    for error in result["errors"]:
+        print(f"  {error}", file=sys.stderr)
     print(f"[{cell.id} r{options.repeat:02d}] {result['status']} "
           f"({result['calls_sent']} call(s) sent)")
     return 0 if result["status"] == "ok" else 1
@@ -516,6 +552,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeat", type=int)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--retry-failed", action="store_true")
+    parser.add_argument(
+        "--budget-usd", type=float,
+        help="stop before any call that could take the recorded spend "
+             "(usage.cost of every stored call) past this many USD")
     parser.add_argument("--all-requests", action="store_true",
                         help="print every request body, not one per cell")
     parser.add_argument("--request-dump", type=Path,

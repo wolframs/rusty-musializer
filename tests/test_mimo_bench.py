@@ -1056,6 +1056,42 @@ class ResumeTests(unittest.TestCase):
         self.assertEqual(bench_io.completed_calls(self.cell.id, 1), {0, 1})
         self.assertTrue(bench_io.cell_state(self.cell.id, 1)["errors"])
 
+    def test_the_budget_stops_before_the_call_that_would_pass_it(self) -> None:
+        sent: list[int] = []
+
+        def costly_submit(payload, **_kwargs):
+            sent.append(1)
+            return {
+                "id": "synthetic", "model": "xiaomi/mimo-v2.5",
+                "usage": {"prompt_tokens": 900, "completion_tokens": 5000,
+                          "cost": 0.0106},
+                "choices": [{"message": {"content": json.dumps(synthetic_document())},
+                             "finish_reason": "stop"}],
+            }
+
+        # 0.0106 already spent elsewhere; a ceiling of 0.04 leaves room for
+        # two more calls at the worst cost seen (0.0106 + 2 x 0.0106 = 0.0318,
+        # a third would make 0.0424).
+        prior = synthetic_record(cell=self.cell.id, call_index=0)
+        prior["usage"] = {"cost": 0.0106}
+        prior["identity"] = {"requested_model": "xiaomi/mimo-v2.5"}
+        budget = cost.Budget(0.04, [prior])
+        with mock.patch.object(bench_run, "submit", costly_submit), \
+                mock.patch.object(bench_run, "audio_bytes_for",
+                                  lambda *args, **kwargs: b"synthetic"):
+            result = bench_run.execute_unit(self.cell, 1, budget=budget)
+        self.assertEqual(result["status"], "budget")
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(bench_io.completed_calls(self.cell.id, 1), {0, 1})
+        # No done marker: the unit resumes once the ceiling is raised.
+        self.assertIsNone(bench_io.cell_state(self.cell.id, 1))
+        self.assertAlmostEqual(budget.spent_usd, 0.0318)
+
+    def test_recorded_cost_prices_tokens_when_usage_has_no_cost(self) -> None:
+        record = {"identity": {"requested_model": "xiaomi/mimo-v2.5"},
+                  "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 1_000_000}}
+        self.assertAlmostEqual(cost.recorded_cost(record), 2.40)
+
     def test_a_dependent_arm_reads_the_stored_description(self) -> None:
         dependent = matrix.cell_by_id("shut-up-cat/c01x100/strict-checklist/S3")
         bench_io.atomic_write_json(

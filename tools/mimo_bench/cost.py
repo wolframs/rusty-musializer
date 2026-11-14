@@ -202,6 +202,65 @@ def calibrate_from_usage(records: Iterable[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def recorded_cost(record: dict[str, Any]) -> float:
+    """What one stored call actually cost, in USD.
+
+    OpenRouter reports ``usage.cost``; that number is preferred. When it is
+    missing the tokens are priced with ``MODEL_PRICES``, which on the first
+    live call (2026-11-14) agreed with ``usage.cost`` to the cent. Reasoning
+    tokens are inside ``completion_tokens`` and bill at the output rate, which
+    is the reason the token-only projection above undershoots.
+    """
+    usage = record.get("usage") or {}
+    reported = usage.get("cost")
+    if isinstance(reported, (int, float)) and not isinstance(reported, bool):
+        return float(reported)
+    identity = record.get("identity") or {}
+    model = identity.get("requested_model") or record.get("model_served") or ""
+    prompt_price, completion_price = MODEL_PRICES.get(str(model), (0.0, 0.0))
+    prompt_tokens = usage.get("prompt_tokens") or 0
+    completion_tokens = usage.get("completion_tokens") or 0
+    return (float(prompt_tokens) * prompt_price
+            + float(completion_tokens) * completion_price) / 1_000_000.0
+
+
+class Budget:
+    """A hard spending ceiling checked before every call, from recorded usage.
+
+    ``reserve`` is what the next call is allowed to cost in the worst case seen
+    so far for its model (never less than its projection), so a call is only
+    sent while ``spent + reserve`` stays inside the ceiling.
+    """
+
+    def __init__(self, ceiling_usd: float, records: Iterable[dict[str, Any]] = ()):
+        self.ceiling_usd = float(ceiling_usd)
+        self.spent_usd = 0.0
+        self.calls = 0
+        self.worst_by_model: dict[str, float] = {}
+        for record in records:
+            self.add(record)
+
+    def add(self, record: dict[str, Any]) -> None:
+        spent = recorded_cost(record)
+        self.spent_usd += spent
+        self.calls += 1
+        model = str((record.get("identity") or {}).get("requested_model") or "")
+        self.worst_by_model[model] = max(self.worst_by_model.get(model, 0.0), spent)
+
+    def reserve_for(self, cell: matrix.Cell, call: matrix.Call) -> float:
+        projected = call_cost(cell, call).dollars(high=True)
+        return max(projected, self.worst_by_model.get(call.model, 0.0))
+
+    def refusal(self, cell: matrix.Cell, call: matrix.Call) -> str | None:
+        reserve = self.reserve_for(cell, call)
+        if self.spent_usd + reserve > self.ceiling_usd:
+            return (f"budget: {self.spent_usd:.4f} USD spent over {self.calls} "
+                    f"recorded call(s); the next call may cost up to "
+                    f"{reserve:.4f} USD, which would pass the "
+                    f"{self.ceiling_usd:.2f} USD ceiling")
+        return None
+
+
 def format_projection(projection: dict[str, Any]) -> str:
     lines: list[str] = []
     totals = projection["totals"]
@@ -233,6 +292,7 @@ def price_table(models: Sequence[str] | None = None) -> dict[str, tuple[float, f
 __all__ = [
     "AUDIO_TOKENS_PER_SECOND_HIGH",
     "AUDIO_TOKENS_PER_SECOND_LOW",
+    "Budget",
     "CHARACTERS_PER_TOKEN",
     "COST_MODEL_VERSION",
     "CallCost",
@@ -245,4 +305,5 @@ __all__ = [
     "format_projection",
     "price_table",
     "project",
+    "recorded_cost",
 ]

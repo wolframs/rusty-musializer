@@ -8,6 +8,7 @@ the only audio work is an ffmpeg decode into a excerpt file.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -27,7 +28,13 @@ from analysis_io import (  # noqa: E402  (path shim must precede the import)
     sha256_file,
 )
 
-BENCH_ROOT = ROOT / "build" / "mimo-bench"
+# The checkout whose gitignored build/ holds the excerpts, results and the
+# lyric workspace. Normally this checkout; MIMO_BENCH_DATA_ROOT points a
+# worktree's copy of the tool at another checkout's data instead of cutting
+# and paying for everything again.
+DATA_ROOT = Path(os.environ.get("MIMO_BENCH_DATA_ROOT") or ROOT).resolve()
+
+BENCH_ROOT = DATA_ROOT / "build" / "mimo-bench"
 AUDIO_ROOT = BENCH_ROOT / "audio"
 RESULTS_ROOT = BENCH_ROOT / "results"
 SCORES_ROOT = BENCH_ROOT / "scores"
@@ -35,7 +42,7 @@ SCORES_ROOT = BENCH_ROOT / "scores"
 # The lyric-timing benchmark's workspace is where the adjudicated tracks'
 # measured analysis and aligned lyric lanes already live. Reusing it is the
 # whole reason those two tracks were chosen.
-LYRICS_RESEARCH_ROOT = ROOT / "build" / "lyrics-research-v2"
+LYRICS_RESEARCH_ROOT = DATA_ROOT / "build" / "lyrics-research-v2"
 ADJUDICATION_PATH = LYRICS_RESEARCH_ROOT / "ground_truth_adjudication.json"
 GROUND_TRUTH_PATH = Path(__file__).resolve().parent / "ground_truth" / "tracks.json"
 
@@ -209,6 +216,7 @@ __all__ = [
     "AUDIO_ROOT",
     "AnalysisValidationError",
     "BENCH_ROOT",
+    "DATA_ROOT",
     "EXCERPT_SECONDS",
     "GROUND_TRUTH_PATH",
     "LYRICS_RESEARCH_ROOT",
