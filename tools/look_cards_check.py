@@ -93,8 +93,8 @@ file):
   28. Hold / Loop / Bounce and Cover / Contain by name, saved (a default not
       written), each with its glyph; the gaps between chips change nothing.
   29. Import clip (`clip-pick=`) adds the file and the section plays it; the
-      gap beside it changes nothing; Generate is drawn disabled and a press
-      on it imports nothing.
+      gap beside it changes nothing; Generate... is offered and a press on it
+      opens the generate block (VG H4) and imports nothing.
   30. a clip whose bundled file is gone says so in the placeholder's words
       (`clip-words=` equals the `clip:` PLACEHOLDER title); Import is offered.
   31. Play the cut over a clip section plays through its fade and pauses.
@@ -1224,8 +1224,8 @@ if only in ('all', 'clip'):
     glyphs = re.findall(r'(?:after|fit)-\w+-glyph@', b4)
     check(len(glyphs) == 5, f'every end and fit chip has its glyph beside its name ({len(glyphs)})')
 
-    # 29. Import clip (the flyout's import, landing here), and Generate drawn
-    #     disabled with nothing behind it.
+    # 29. Import clip (the flyout's import, landing here), and Generate...
+    #     opening the generate block without importing anything (VG H4).
     log, saved = run('clip-import', CLIP + ',section=2' + click(centre(rect(b3, 'clip-import'))) + f",clip-pick={out / 'c.mp4'}",
                      project='clip', frames=200)
     names = [entry['name'] for entry in saved.get('clips', [])]
@@ -1238,8 +1238,9 @@ if only in ('all', 'clip'):
                      project='clip')
     check(clip_unchanged(saved) and claimed_nothing(log), 'the gap between Import and Generate changes nothing')
     log, saved = run('clip-generate', CLIP + ',section=2' + click(centre(gen)) + f",clip-pick={out / 'c.mp4'}", project='clip')
-    check('clip-generate@disabled:' in b3 and clip_unchanged(saved) and field(cards(log), 'clip-library') == '2',
-          'Generate is drawn disabled and a press on it changes nothing')
+    check('clip-generate@disabled:' not in b3 and clip_unchanged(saved) and field(cards(log), 'clip-library') == '2'
+          and field(cards(log), 'generate') == 'open',
+          'Generate... opens the generate block and imports nothing (VG H4; tools/generate_card_check.py presses the block)')
 
     # 30. a clip whose file is gone says so, in the placeholder's words.
     def lose_a(work):
