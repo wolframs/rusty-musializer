@@ -1117,6 +1117,117 @@ mod tests {
         );
     }
 
+    /// G defect 2: a project saved before the last frame's own duration was
+    /// read records a three-frame clip held a second at its end as 0.12 s;
+    /// it lasts 1.08. Section 3 goes on from section 2 and loops, its clock
+    /// at 10 s: playback folds that to 0.28 (frame 2, the held one), the
+    /// record to 0.04 (frame 1). Own start must pin with playback's length,
+    /// so the frame stays; once the probe has run, the record is that
+    /// length, and the pin is accepted against it.
+    #[test]
+    fn own_start_pins_with_the_length_playback_folds_against() {
+        use musializer_core::project::clip::{ClipOverrun, ClipTiming};
+        let mut track = track();
+        track.clips[0].asset.duration_seconds = 0.12;
+        track.clips[0].asset.frames = 3;
+        let looping = ClipPlacement {
+            after: ClipOverrun::Loop,
+            ..ClipPlacement::new(clip("aa"))
+        };
+        track.scene_switches.set_clip(2, Some(looping));
+        track.scene_switches.set_clip(3, Some(looping));
+        let timing = ClipTiming::from_packets(
+            &[(0, None), (512, None), (1024, Some(12_800))],
+            (1, 12_800),
+            1.0,
+        )
+        .unwrap();
+        assert!((timing.duration() - 1.08).abs() < 1.0e-9);
+        let shown = |track: &Track| {
+            track
+                .scene_switches
+                .section_clip(2, track.base_clip)
+                .unwrap()
+                .frame(&timing, 20.01)
+        };
+        let before = shown(&track);
+        assert_eq!(before, 2, "the held last frame");
+        let pin = |track: &Track| {
+            let section = track
+                .scene_switches
+                .clip_section(2, track.base_clip)
+                .unwrap();
+            let length = track.clips[0].asset.duration_seconds;
+            section.starting_at(section.pinned_start(length))
+        };
+
+        // The stale record: the pin lands on another frame.
+        let mut stale = track.clone();
+        let stale_pin = pin(&stale);
+        assert!(apply_clip_edit(&mut stale, 3, stale_pin));
+        assert_ne!(
+            shown(&stale),
+            before,
+            "the control: a stale length moves the picture"
+        );
+
+        assert!(crate::clips::confirm_lengths_with(&mut track, |_| Some(
+            1.08
+        )));
+        assert!((track.clips[0].asset.duration_seconds - 1.08).abs() < 1.0e-9);
+        assert!(
+            !crate::clips::confirm_lengths_with(&mut track, |_| Some(1.08)),
+            "once"
+        );
+        let pinned = pin(&track);
+        assert!((pinned.from_seconds.unwrap() - 10.0f64.rem_euclid(1.08)).abs() < 1.0e-9);
+        assert!(
+            apply_clip_edit(&mut track, 3, pinned),
+            "inside the true length"
+        );
+        assert_eq!(shown(&track), before, "Own start keeps the frame");
+        let words = report(&track, 2, &CardState::default());
+        assert!(words.contains("clip-at=0.2800"), "{words}");
+    }
+
+    /// A record longer than the clip: a `from` the true length leaves past
+    /// the end is pulled in to where playback shows it, so a save writes a
+    /// project an open accepts.
+    #[test]
+    fn a_shorter_true_length_pulls_a_from_inside() {
+        use musializer_core::project::clip::ClipOverrun;
+        let mut track = track();
+        let holding = ClipPlacement {
+            from_seconds: Some(5.5),
+            ..ClipPlacement::new(clip("aa"))
+        };
+        let looping = ClipPlacement {
+            after: ClipOverrun::Loop,
+            ..holding
+        };
+        track.scene_switches.set_clip(2, Some(holding));
+        track.base_clip = Some(looping);
+        assert!(crate::clips::confirm_lengths_with(&mut track, |seed| {
+            seed.starts_with("aa").then_some(5.0)
+        }));
+        let own = track.scene_switches.cues()[1].clip.unwrap();
+        assert!(
+            (own.from_seconds.unwrap() - 4.999).abs() < 1.0e-9,
+            "{own:?}"
+        );
+        assert!((track.base_clip.unwrap().from_seconds.unwrap() - 0.5).abs() < 1.0e-9);
+        assert!(
+            (track.clips[1].asset.duration_seconds - 4.0).abs() < 1.0e-9,
+            "bb untouched"
+        );
+        let assets: Vec<_> = track
+            .clips
+            .iter()
+            .map(|entry| entry.asset.clone())
+            .collect();
+        assert!(clip_model::placement_fits(&assets, &own));
+    }
+
     #[test]
     fn every_end_and_fit_has_a_name_and_words() {
         let names: std::collections::BTreeSet<_> = ClipOverrun::ALL

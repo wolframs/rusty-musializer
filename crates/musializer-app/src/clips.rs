@@ -157,6 +157,77 @@ pub fn add(clips: &mut Vec<TrackClip>, entry: TrackClip) -> Option<ClipRef> {
     Some(clip)
 }
 
+/// Brings every clip's recorded length in line with its probe, the length
+/// playback folds against: the one place a stale record is corrected (G,
+/// 2026-11-14). A project saved before the last frame's own duration was
+/// read records a held-last-frame clip as the gap before it (0.12 s for a
+/// clip that lasts 1.08), and everything that times a clip from the record —
+/// Own start's pin, the From track's end, the "Starts at" readout, the check
+/// that a `from` lies inside the clip — would disagree with the picture.
+/// Called each frame for every open track; a clip no worker has probed yet
+/// keeps its record until one has.
+///
+/// A placement whose `from` the true length leaves at or past the end (a
+/// shorter clip than recorded) is pulled in to where playback already shows
+/// it (folded by its end, kept a millisecond inside), so the project stays
+/// one a save can write and an open accept. Neither marks the project
+/// edited: the picture does not change, and the next save writes the truth.
+/// Returns whether anything changed.
+pub fn confirm_lengths(track: &mut crate::workspace::Track) -> bool {
+    confirm_lengths_with(track, musializer_runtime::clip::probed_duration)
+}
+
+pub(crate) fn confirm_lengths_with(
+    track: &mut crate::workspace::Track,
+    probed: impl Fn(&str) -> Option<f64>,
+) -> bool {
+    let mut changed = false;
+    for index in 0..track.clips.len() {
+        let entry = &track.clips[index];
+        let Some(length) = probed(&entry.asset.sha256) else {
+            continue;
+        };
+        let Some(clip) = entry.clip_ref() else {
+            continue;
+        };
+        let corrected = ClipAsset {
+            duration_seconds: length,
+            ..entry.asset.clone()
+        };
+        if (entry.asset.duration_seconds - length).abs() <= 1.0e-9 || !corrected.is_valid() {
+            continue;
+        }
+        track.clips[index].asset = corrected;
+        let inside = |placement: ClipPlacement| match placement.from_seconds {
+            Some(from) if placement.clip == clip && from >= length => ClipPlacement {
+                from_seconds: Some(
+                    clip::fold_seconds(from, length, placement.after)
+                        .min(length - 0.001)
+                        .max(0.0),
+                ),
+                ..placement
+            },
+            _ => placement,
+        };
+        track.base_clip = track.base_clip.map(inside);
+        let pulled: Vec<(u64, ClipPlacement)> = track
+            .scene_switches
+            .cues()
+            .iter()
+            .filter_map(|cue| {
+                let placement = cue.clip?;
+                let moved = inside(placement);
+                (moved != placement).then_some((cue.id, moved))
+            })
+            .collect();
+        for (cue_id, placement) in pulled {
+            track.scene_switches.set_clip(cue_id, Some(placement));
+        }
+        changed = true;
+    }
+    changed
+}
+
 /// The clips a track's placements name, in library order: what a save writes.
 #[must_use]
 pub fn referenced(

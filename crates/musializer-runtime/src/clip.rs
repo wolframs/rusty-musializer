@@ -1048,6 +1048,19 @@ fn recall_verified(key: FileKey, sha256: &str) -> Option<Probe> {
         .map(|(_, _, probe)| probe.clone())
 }
 
+/// How long the clip with digest `sha256` lasts by its probe, once a worker
+/// in this process has verified and probed a file with those bytes: the
+/// length playback folds against. A length is a function of the bytes, so
+/// any file with the digest answers for all.
+#[must_use]
+pub fn probed_duration(sha256: &str) -> Option<f64> {
+    lock(verified())
+        .iter()
+        .rev()
+        .find(|(_, digest, _)| digest == sha256)
+        .map(|(_, _, probe)| probe.timing.duration())
+}
+
 /// What a clip worker is doing.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ClipPhase {

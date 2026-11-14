@@ -1766,6 +1766,10 @@ fn run(
         if let (Some(track), Some(_)) = (app.workspace.current_mut(), music.as_ref()) {
             track.playhead_seconds = time_seconds;
         }
+        // G: a clip's recorded length follows its probe once one has run.
+        for track in app.workspace.tracks_mut() {
+            clips::confirm_lengths(track);
+        }
         let audition_gain = app
             .shell
             .protocol

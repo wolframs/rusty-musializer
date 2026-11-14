@@ -572,3 +572,15 @@ a number the user drags or types is rounded. Symptom: the `clip:` line's
 `drew frame` index differs before and after Continue / Own start. Pinned by
 `continuing_and_pinning_an_own_start_move_no_frame` and the look cards gate.
 Found building the card's start row (F1c), 2026-11-14.
+
+**The pin folds against a length, and it must be playback's.** Playback folds
+a section's clock against the probe's length; the card folded against the
+length the project recorded. Those differ for a project saved before the last
+frame's own duration was read (a clip held a second at its end: recorded
+0.12 s, probed 1.08), so a continuing Loop section at 0.5 s pinned at 0.02 and
+the picture jumped from the held frame to an early one. A recorded number that
+playback recomputes is corrected in one place (`clips::confirm_lengths`, once
+probed), not read beside it. Symptom: `clip-at=` on `look cards:` disagrees
+with the `clip:` line's frame. Pinned by
+`own_start_pins_with_the_length_playback_folds_against` and the look cards
+gate's check 37. Found by the last review of the week, 2026-11-14.

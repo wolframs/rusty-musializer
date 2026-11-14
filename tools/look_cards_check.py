@@ -93,6 +93,10 @@ file):
   32. following a treatment the clip rows are drawn disabled: a press on
       Bounce changes nothing and a press on Import imports nothing.
   33. a Spectrum section shows no clip rows.
+  37. (G) a project that recorded a held-last-frame clip's old length
+      (0.12 s; it lasts 1.08): once probed the card reads playback's clock
+      (0.5, not 0.02), Own start pins 0.5 and keeps frame 2, the saved
+      record is 1.08, and opening alone writes nothing.
  captures
   14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
@@ -182,6 +186,13 @@ with `git checkout` and `git diff --quiet` shown clean:
     into its well (36: thumbs pending, the poster 1 colour).
   Found on the way: the import check read the file after 90 frames, before
   autosave's settle, and failed on a binary whose import worked; 200 frames.
+
+G NEGATIVE CONTROLS (2026-11-14, GPU path), each a perturbed debug build
+copied aside, run as LOOK_CARDS_BIN, the file restored from a saved copy and
+compared with `cmp`:
+  37 (2 failures): the recorded length never corrected from the probe: the
+    card read clip-at 0.0200 against playback's 0.5; Own start pinned 0.02
+    and drew frame 1 where frame 2 had been, the record still 0.12.
 """
 import json
 import os
@@ -377,8 +388,23 @@ if only in ('all', 'clip', 'captures'):
         {'at': 4, 'scene': 'clip', 'clip': 'a.mp4', 'transition': {'kind': 'fade', 'seconds': 0.6}},
         {'at': 6, 'scene': 'clip', 'clip': {'path': 'b.mp4', 'after': 'loop', 'fit': 'contain'}},
     ]
+    # held.mp4 (G): three frames 0.04 s apart, the last held a second, so it
+    # lasts 1.08 s; a project saved before the last frame's own duration was
+    # read recorded 0.12 (the gate writes that into its copy).
+    short = out / 'held-short.mp4'
+    subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=25',
+                    '-frames:v', '3', '-c:v', 'libx264', '-bf', '0', '-pix_fmt', 'yuv420p',
+                    '-video_track_timescale', '12800', str(short)], check=True)
+    subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-y', '-i', str(short), '-c', 'copy',
+                    '-bsf:v', "setts=duration='if(eq(N,2),12800,DURATION)'", str(out / 'held.mp4')], check=True)
+    short.unlink()
     films['clip'] = dict({key: value for key, value in base_show.items() if key != 'outro'},
                          title='Clip fixture', segments=clip_segments)
+    films['cliphold'] = dict(films['clip'], title='Held clip fixture', segments=[
+        {'at': 0, 'scene': 'spectrum'},
+        {'at': 2, 'scene': 'clip', 'clip': {'path': 'held.mp4', 'after': 'loop'}},
+        {'at': 2.5, 'scene': 'clip', 'clip': {'path': 'held.mp4', 'after': 'loop'}},
+    ])
     # Section 3 with an own start where the clock already is (1 + 2 s).
     films['clipown'] = dict(films['clip'], segments=[dict(segment) for segment in clip_segments])
     films['clipown']['segments'][2]['clip'] = {'path': 'a.mp4', 'from': 3}
@@ -1161,6 +1187,34 @@ if only in ('all', 'clip'):
                  + f",clip-pick={out / 'c.mp4'}", project='clip', follow=True, frames=200)
     check(field(cards(log), 'clip-library') == '2' and 'Clip imported' not in log,
           f"following, a press on Import clip imports nothing ({field(cards(log), 'clip-library')} clips)")
+
+    # 37. (G) Own start in a project that recorded a held-last-frame clip's
+    #     old length (0.12 s; it lasts 1.08): section 3 goes on from section 2
+    #     and loops, its clock at 0.5 s where it starts; the playhead 0.05 s in
+    #     shows frame 2, the held one. The card reads playback's length once
+    #     the clip is probed (clip-at 0.5, not 0.02); Own start pins 0.5 and
+    #     the frame stays; the saved record says 1.08. Opening alone writes
+    #     nothing.
+    def stale_length(work):
+        path = work / 'cliphold.musi'
+        project = json.loads(path.read_text())
+        assert abs(project['clips'][0]['duration_seconds'] - 1.08) < 1e-6, project['clips'][0]
+        project['clips'][0]['duration_seconds'] = 0.12
+        path.write_text(json.dumps(project, indent=2))
+    HOLD = 'size=1280x720,column=look,time=2.55,play=0,section=3'
+    h3, held_saved = run('cliphold-s3', HOLD, project='cliphold', frames=150, prepare=stale_length)
+    held_before = clip_frame(h3)
+    check(field(cards(h3), 'clip-from') == 'continues-2' and field(cards(h3), 'clip-at') == '0.5000'
+          and held_before == (2, True) and abs(held_saved['clips'][0]['duration_seconds'] - 0.12) < 1e-9,
+          f"a stale 0.12 s record: the card reads playback's clock (clip-at {field(cards(h3), 'clip-at')}), "
+          f"frame {held_before}, and opening wrote nothing ({held_saved['clips'][0]['duration_seconds']})")
+    log, saved = run('cliphold-own', HOLD + click(centre(rect(cards(h3), 'start-own'))), project='cliphold',
+                     frames=200, prepare=stale_length)
+    start = cue(saved, 2).get('clip', {}).get('from')
+    check(start is not None and abs(start - 0.5) < 1e-9 and clip_frame(log) == held_before
+          and abs(saved['clips'][0]['duration_seconds'] - 1.08) < 1e-9,
+          f"Own start pins 0.5 with the probed length and keeps frame {held_before}: from {start}, "
+          f"frame {clip_frame(log)}, recorded {saved['clips'][0]['duration_seconds']}")
 
 if only in ('all', 'captures'):
     for theme in ['dark', 'light']:
