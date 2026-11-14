@@ -15,7 +15,6 @@ use musializer_core::project::scene_switch::SceneSwitchCue;
 use musializer_core::project::transition::{Transition, TransitionKind, DEFAULT_SECONDS};
 use musializer_core::ui::tune_groups::look_cards::{self, Block, Placed};
 
-#[path = "tables.rs"]
 mod tables;
 pub(crate) use tables::apply_table_edit;
 
