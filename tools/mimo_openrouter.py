@@ -47,7 +47,13 @@ MODEL = "xiaomi/mimo-v2.5"
 PROMPT_VERSION = "musializer-semantic-score/v2"
 SCORE_SCHEMA_VERSION = "musializer.semantic-score/v1"
 CACHE_SCHEMA_VERSION = "musializer.analysis-cache/v1"
-TRANSIENT_STATUSES = frozenset((429, 502, 503))
+# Retried, because OpenRouter says the request was not processed: 429 is a
+# rate limit applied before routing. A 502, 503, 504 or 408 comes after the
+# request was sent, possibly after the model ran, and may have been billed: it
+# is a failed run the person decides about, never a silent second call (H4c;
+# the confirmation they accepted budgets one call).
+TRANSIENT_STATUSES = frozenset((429,))
+MAY_BE_BILLED_STATUSES = frozenset((408, 500, 502, 503, 504))
 DEFAULT_TIMEOUT = 600.0
 DEFAULT_MAX_ATTEMPTS = 3
 COVERAGE_TOLERANCE_SECONDS = 0.001
@@ -525,6 +531,16 @@ def _content(response: dict[str, Any]) -> str:
     raise AnalysisValidationError("OpenRouter completion content is not text")
 
 
+class SentUnanswered(RuntimeError):
+    """The request left and no usable answer came back: it may have been billed.
+
+    A 5xx or 408 from the gateway, a timeout or a dropped connection while
+    waiting for the answer, an answer that does not read. Nothing tells this
+    helper whether the model ran, so the run fails, says it may have been
+    billed up to the cap, and is not sent again by itself (H4c).
+    """
+
+
 def submit_request(
     payload: dict[str, Any],
     *,
@@ -534,6 +550,13 @@ def submit_request(
     timeout: float = DEFAULT_TIMEOUT,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
 ) -> dict[str, Any]:
+    """Sends the request once, and again only where it was not processed.
+
+    Retried: a 429 (OpenRouter's rate limit, before routing) and a failure
+    before the request was sent whole (``urllib`` raises ``URLError`` only
+    from connecting and sending; anything after that comes as the bare
+    error). Everything else that follows the send is ``SentUnanswered``.
+    """
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY is not set in the process environment")
@@ -551,15 +574,43 @@ def submit_request(
                 # An empty or cut-off answer is returned, not retried: it was
                 # billed, and a silent retry triples a failure's cost before
                 # anyone sees it. `completion_failure` names it instead.
-                return json.loads(response.read().decode("utf-8"))
+                body = response.read()
         except urllib.error.HTTPError as error:
             last_error = error
-            if error.code not in TRANSIENT_STATUSES or attempt == max_attempts:
-                error.close()
-                raise RuntimeError(f"OpenRouter request failed with HTTP {error.code}") from error
-            delay = _retry_delay(error.headers, attempt, now)
+            code = error.code
+            headers = error.headers
             error.close()
-            sleeper(delay)
+            if code in MAY_BE_BILLED_STATUSES:
+                raise SentUnanswered(
+                    f"OpenRouter answered HTTP {code} after the request was sent") from error
+            if code not in TRANSIENT_STATUSES or attempt == max_attempts:
+                raise RuntimeError(f"OpenRouter request failed with HTTP {code}") from error
+            sleeper(_retry_delay(headers, attempt, now))
+            continue
+        except urllib.error.URLError as error:
+            # Connecting or sending failed: the request never reached
+            # OpenRouter whole, so nothing can have been processed.
+            last_error = error
+            if attempt == max_attempts:
+                raise RuntimeError(
+                    f"could not reach OpenRouter ({error.reason}); nothing was sent") from error
+            sleeper(_retry_delay(None, attempt, now))
+            continue
+        except TimeoutError as error:
+            raise SentUnanswered(
+                f"OpenRouter's answer did not arrive within {timeout:g} s") from error
+        except OSError as error:
+            # http.client's RemoteDisconnected, a reset or a cut-short read:
+            # the request had left.
+            raise SentUnanswered(
+                f"the connection dropped before OpenRouter answered ({type(error).__name__})") from error
+        except Exception as error:  # noqa: BLE001 - http.client.IncompleteRead and kin
+            raise SentUnanswered(
+                f"OpenRouter's answer was cut short ({type(error).__name__})") from error
+        try:
+            return json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise SentUnanswered("OpenRouter's answer could not be read") from error
     raise RuntimeError("OpenRouter request failed") from last_error
 
 
@@ -647,10 +698,22 @@ def failure_message(reason: str, response: dict[str, Any] | None,
     return f"{reason}. Nothing was saved; {_cost_clause(response or {}, estimate)}."
 
 
+def unanswered_message(reason: str, estimate: dict[str, Any] | None = None) -> str:
+    """What the person reads when the request left and no answer came back.
+
+    Under the 160 bytes the application's diagnosis keeps, reason first.
+    """
+    ceiling = (estimate or {}).get("usd_max")
+    bound = (f" (at most {ceil_usd(ceiling, 3):.3f} USD)"
+             if isinstance(ceiling, (int, float)) else "")
+    return f"{reason}; it may have been billed{bound}. Nothing was saved or sent again."
+
+
 def _write_failure_receipt(
     cache_path: Path, *, reason: str, response: dict[str, Any] | None,
     settings: dict[str, Any], audio_sha256: str, detail: str | None = None,
-    estimate: dict[str, Any] | None = None,
+    estimate: dict[str, Any] | None = None, message: str | None = None,
+    may_be_billed: bool = False,
 ) -> dict[str, Any]:
     """The record of a failed run, beside (never in) the cache.
 
@@ -663,7 +726,10 @@ def _write_failure_receipt(
     receipt = {
         "schema_version": FAILED_RUN_SCHEMA_VERSION,
         "reason": reason,
-        "message": failure_message(reason, response, estimate),
+        "message": message or failure_message(reason, response, estimate),
+        # The request left and nothing says whether the model ran: counted as
+        # possibly billed, up to the estimate's maximum.
+        "may_be_billed": may_be_billed,
         "detail": detail,
         "audio_sha256": audio_sha256,
         "request": settings,
@@ -734,7 +800,15 @@ def analyze_to_cache(
     # A receipt from an earlier attempt describes that attempt, not this one.
     receipt_path.unlink(missing_ok=True)
     estimate = estimate_cost(str(settings.get("model") or model), audio_duration)
-    response = submit_request(payload, transport=transport, sleeper=sleeper)
+    try:
+        response = submit_request(payload, transport=transport, sleeper=sleeper)
+    except SentUnanswered as error:
+        message = unanswered_message(str(error), estimate)
+        _write_failure_receipt(
+            cache_path, reason=str(error), response=None, settings=settings,
+            audio_sha256=audio_hash, estimate=estimate, message=message,
+            may_be_billed=True)
+        raise FailedRun(message) from error
 
     def failed(reason: str, detail: str | None = None) -> FailedRun:
         _write_failure_receipt(

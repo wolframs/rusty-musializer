@@ -264,6 +264,14 @@ and three guards it found missing:
   (`semantic.cache.failed.json`), and the job fails with one sentence naming the
   reason and what OpenRouter billed for it (or, unreported, the most it can
   have cost). A billed empty answer is not retried.
+- **One call, as confirmed** (H4c). The request is sent again only where
+  OpenRouter says it was not processed: a 429, or a failure in connecting or
+  sending. A 408 or 5xx from the gateway, a timeout or a dropped connection
+  while waiting, or an answer that does not read may have been billed: a
+  failed run with a receipt (`may_be_billed: true`) and the sentence
+  "OpenRouter answered HTTP 502 after the request was sent; it may have been
+  billed (at most 0.033 USD). Nothing was saved or sent again." Whether to run
+  it again is the person's call, so the displayed maximum stays one call's.
 - **Stated scales.** The prompt and the model's schema give energy, tension
   (0–1), valence (−1–1) and confidence (0–1) a range and a meaning. A value
   outside its range fails the run, naming the field, rather than being clamped
@@ -278,6 +286,15 @@ route (the ceiling rounded up at the thousandth shown, so a capped call on
 100 s, 0.032376 USD, reads "at most 0.033 USD", in the confirmation and in a
 failure sentence alike), and the artifact's `provenance.generation` and the manifest's
 `semantic_cost` keep that estimate beside the provider's `usage` and cost.
+
+**Negative controls (H4c, 2026-11-14)**, each run on a perturbed source and
+the source restored byte for byte (`cmp` against a saved copy):
+
+| Perturbation | What failed |
+| --- | --- |
+| The confirmation's maximum formatted unrounded again (`{:.3}` of `usd_max`) | `at_most_is_rounded_up_never_down`: "at most 0.032 USD" for 100 s |
+| The helper's failure clause without `ceil_usd` | `test_a_failed_run_without_a_reported_cost_names_the_ceiling` and `test_at_most_is_rounded_up_as_the_rust_side_rounds_it` |
+| 502 and 503 retried again, and no status counted as possibly billed | `test_a_gateway_failure_after_sending_is_one_call_that_may_be_billed`, every status: two sends where one was confirmed, or "request failed with HTTP 504" with no word on cost |
 
 ### Local performed-phrase recovery (2026-09-08)
 
@@ -513,6 +530,9 @@ Failure should remain visible at the narrowest boundary that can explain it:
 - A MiMo answer cut off at its cap, empty, unparseable, off-schema or off-scale:
   a failed run before any bridge exists; the job's failure line names the
   reason and the billed cost, and the receipt keeps the provider's `usage`.
+- A MiMo request answered by a gateway error, a timeout or a dropped
+  connection after it left: a failed run that says it may have been billed up
+  to the cap; never sent again by itself.
 - Authorized mode producing no changes: a truthful terminal no-change result,
   not an empty candidate.
 - Weak boundary evidence within one occurrence: retain timing as uncertain.

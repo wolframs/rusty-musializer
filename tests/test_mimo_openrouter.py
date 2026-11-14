@@ -208,12 +208,77 @@ class FailedRuns(LaneTestCase):
                 transport=fake, sleeper=lambda _seconds: None)
         self.assertEqual(len(fake.sent), 1)
 
-    def test_a_transient_refusal_is_still_retried(self) -> None:
-        busy = urllib.error.HTTPError(
-            mimo_openrouter.OPENROUTER_URL, 503, "busy", {}, io.BytesIO(b""))
-        fake, _ = self.run_lane(busy, response(answer()))
+    def test_a_rate_limit_is_retried_because_it_was_not_processed(self) -> None:
+        limited = urllib.error.HTTPError(
+            mimo_openrouter.OPENROUTER_URL, 429, "slow down", {"Retry-After": "0"},
+            io.BytesIO(b""))
+        fake, _ = self.run_lane(limited, response(answer()))
         self.assertEqual(len(fake.sent), 2)
         self.assertTrue(self.ws.cache.exists())
+
+    def test_a_request_that_never_left_is_retried(self) -> None:
+        refused = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        fake, _ = self.run_lane(refused, response(answer()))
+        self.assertEqual(len(fake.sent), 2)
+        self.assertTrue(self.ws.cache.exists())
+
+    def test_a_gateway_failure_after_sending_is_one_call_that_may_be_billed(self) -> None:
+        # H4c: a 502 or 503 was retried up to three times, while the
+        # confirmation budgets one call; three capped calls on 100 s are
+        # about 0.097 USD against "at most 0.033".
+        for status in (502, 503, 504, 408):
+            with self.subTest(status=status):
+                gateway = urllib.error.HTTPError(
+                    mimo_openrouter.OPENROUTER_URL, status, "gateway", {}, io.BytesIO(b""))
+                fake = FakeOpenRouter(gateway, response(answer()), response(answer()))
+                with self.assertRaises(mimo_openrouter.FailedRun) as raised:
+                    mimo_openrouter.analyze_to_cache(
+                        self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                        transport=fake, sleeper=lambda _seconds: None)
+                self.assertEqual(len(fake.sent), 1, "sent once, never again by itself")
+                message = str(raised.exception)
+                self.assertEqual(
+                    message,
+                    f"OpenRouter answered HTTP {status} after the request was sent; it may "
+                    "have been billed (at most 0.033 USD). Nothing was saved or sent again.")
+                self.assertLess(len(message.encode()), 160)
+                self.assertFalse(self.ws.cache.exists())
+                receipt = json.loads(self.ws.receipt.read_text())
+                self.assertTrue(receipt["may_be_billed"])
+                self.assertEqual(receipt["message"], message)
+                self.assertIsNone(receipt["reported_cost_usd"])
+
+    def test_a_timeout_or_a_dropped_answer_may_be_billed_and_is_not_resent(self) -> None:
+        import http.client
+        for error, reason in (
+                (TimeoutError("timed out"), "OpenRouter's answer did not arrive within 600 s"),
+                (http.client.RemoteDisconnected("closed"),
+                 "the connection dropped before OpenRouter answered (RemoteDisconnected)"),
+                (http.client.IncompleteRead(b"{"),
+                 "OpenRouter's answer was cut short (IncompleteRead)")):
+            with self.subTest(error=type(error).__name__):
+                fake = FakeOpenRouter(error, response(answer()))
+                with self.assertRaises(mimo_openrouter.FailedRun) as raised:
+                    mimo_openrouter.analyze_to_cache(
+                        self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                        transport=fake, sleeper=lambda _seconds: None)
+                self.assertEqual(len(fake.sent), 1)
+                self.assertTrue(str(raised.exception).startswith(reason), str(raised.exception))
+                self.assertIn("it may have been billed (at most 0.033 USD)", str(raised.exception))
+                self.assertTrue(json.loads(self.ws.receipt.read_text())["may_be_billed"])
+
+    def test_an_unreadable_answer_may_be_billed(self) -> None:
+        class Garbled(FakeOpenRouter):
+            def __call__(self, request, timeout: float):  # noqa: ANN001
+                self.sent.append(json.loads(request.data.decode("utf-8")))
+                return FakeHTTPResponse(b"<html>bad gateway</html>")
+        fake = Garbled()
+        with self.assertRaises(mimo_openrouter.FailedRun) as raised:
+            mimo_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                transport=fake, sleeper=lambda _seconds: None)
+        self.assertEqual(len(fake.sent), 1)
+        self.assertTrue(str(raised.exception).startswith("OpenRouter's answer could not be read"))
 
     def test_a_well_formed_answer_is_cached_and_clears_an_old_receipt(self) -> None:
         self.ws.receipt.write_text("{}")
