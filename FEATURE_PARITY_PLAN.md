@@ -63,6 +63,30 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
+**In flight — the 2026-11-14 follow-up (claimed; lead: the main session).** The
+operator, 2026-11-14, on what the last wave left with him: "I say yes to
+spending + balanced exports + clicking a section means jumping (modifier +
+click could select, like shift mby?)" and, on the benchmark's missing truth,
+"that can be set up in the listening tooling i used in the past to give coding
+agents here feedback". The spending cap he agreed to is 5 USD for the benchmark
+and the generation test clips together. Tick a step when it is merged and
+verified; delete the block when done, with the record in the archive.
+
+- [ ] **H1 — a click on a section jumps**, playing or paused; Shift+click
+  selects without moving the playhead.
+- [ ] **H2 — Balanced exports keep their gradients** (EX3 remainder): measure
+  `-aq-mode 3` and its neighbours for size and banding on real videos, adopt
+  what earns it, record the numbers.
+- [ ] **H3 — MiMo v2.5 benchmark** (row 2): the live run (at most 0.60 USD),
+  and a listening session in the operator's own tooling that collects key,
+  meter and instruments for the two excerpts and writes them into the
+  benchmark's ground truth. Scoring of those three waits for his answers.
+- [ ] **H4 — generating a clip** (F2, second half of VG): provider call, price
+  shown first, consent, provenance, a real test clip (at most 3.50 USD in all).
+- [ ] **Close**: one review by GPT-6.1-Sol per stream before its release
+  build, one full `tools/verify.sh`, release build, queue and archive updated,
+  worktrees removed.
+
 **WX-6 appearance coverage — still open (2026-10-30).** The EX4-c CPU
 failure is diagnosed and fixed: it predates WX-5d (5/5
 quiet failures on both `3ec989e` and `be507e1`), and saturation occurs before
