@@ -49,6 +49,43 @@ const INTENT_SCHEMA_V1: &str = "musializer.video-intent/v1";
 const RECEIPT_SCHEMA: &str = "musializer.video-clip/v1";
 const MAX_RECORD_BYTES: u64 = 64 * 1024;
 
+/// How many unanswered sends one request may have before it is not sent
+/// again at all (H4d), in the window or in a run, with or without the
+/// person's agreement. One lost answer is a dropped connection; a second
+/// after the person agreed to send again is a coincidence worth a look; a
+/// third in a row on the same request is something systematic between this
+/// machine and the provider (a proxy or firewall that cuts the connection
+/// once the body has left, a gateway timeout shorter than the provider's
+/// accept), and every further send may be billed and lost the same way. It
+/// also bounds the record: three attempts are far below `MAX_RECORD_BYTES`.
+pub const MAX_UNANSWERED_SENDS: usize = 3;
+
+/// An intent record that is there and cannot be read (H4d). It is not "no
+/// intent": it holds the request, since how many sends it records, and
+/// whether any was billed, is unknown, until the person repairs or removes
+/// the file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Unreadable {
+    pub path: PathBuf,
+    pub why: String,
+}
+
+impl Unreadable {
+    /// What the person reads, and what to do.
+    #[must_use]
+    pub fn words(&self) -> String {
+        format!(
+            "The record of this request's earlier sends, {}, cannot be read ({}), so this \
+             application cannot tell how many were sent or whether one was billed. Nothing is sent \
+             for it while that file is there: look at your activity page at \
+             openrouter.ai/activity, then remove the file (or put back a readable copy) to send \
+             the request anew",
+            self.path.display(),
+            self.why
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Store {
     root: PathBuf,
@@ -216,6 +253,40 @@ struct Receipt {
 
 fn is_digest(text: &str) -> bool {
     sha256::is_hex_digest(text)
+}
+
+/// A record's bytes: `Ok(None)` when there is no file, an error when one is
+/// there and cannot be read whole within `MAX_RECORD_BYTES`.
+fn read_record(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Read;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let metadata = file.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("not a regular file".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_RECORD_BYTES {
+        return Err(format!("larger than {MAX_RECORD_BYTES} bytes"));
+    }
+    Ok(Some(bytes))
+}
+
+/// The `schema` a record names, for the words, bounded.
+fn file_schema(bytes: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|value| value.get("schema")?.as_str().map(str::to_owned))
+        .map_or_else(
+            || "unknown".to_owned(),
+            |schema| schema.chars().take(64).collect(),
+        )
 }
 
 fn read_bounded(path: &Path) -> Option<Vec<u8>> {
@@ -452,29 +523,53 @@ impl Store {
     }
 
     /// The unconfirmed sends of a request, if any.
-    #[must_use]
-    pub fn intent(&self, request: &str) -> Option<Intent> {
+    ///
+    /// # Errors
+    ///
+    /// A record is there and cannot be read (too large, not a regular file,
+    /// not a record of sends of this request): it holds the request (H4d).
+    pub fn intent(&self, request: &str) -> Result<Option<Intent>, Unreadable> {
         if !is_digest(request) {
-            return None;
+            return Ok(None);
         }
-        let file: IntentFile =
-            serde_json::from_slice(&read_bounded(&self.intent_path(request))?).ok()?;
+        let path = self.intent_path(request);
+        let unreadable = |why: String| Unreadable {
+            path: path.clone(),
+            why,
+        };
+        let bytes = match read_record(&path) {
+            Ok(None) => return Ok(None),
+            Ok(Some(bytes)) => bytes,
+            Err(why) => return Err(unreadable(why)),
+        };
+        let file: IntentFile = serde_json::from_slice(&bytes)
+            .map_err(|error| unreadable(format!("not a record of sends: {error}")))?;
         if file.request_sha256 != request {
-            return None;
+            return Err(unreadable("it names another request".into()));
         }
-        file.read()
+        file.read().map(Some).ok_or_else(|| {
+            unreadable(format!(
+                "schema {} with no sends it can read",
+                file_schema(&bytes)
+            ))
+        })
     }
 
-    fn intent_path(&self, request: &str) -> PathBuf {
+    /// Where a request's unanswered sends are recorded.
+    #[must_use]
+    pub fn intent_path(&self, request: &str) -> PathBuf {
         self.root.join("intents").join(format!("{request}.json"))
     }
 
     /// Unconfirmed sends nobody is sending now: requests that may have been
     /// accepted and whose job ids are unknown.
-    #[must_use]
-    pub fn leftover_intent(&self, request: &str) -> Option<Intent> {
+    ///
+    /// # Errors
+    ///
+    /// The record cannot be read; it holds the request.
+    pub fn leftover_intent(&self, request: &str) -> Result<Option<Intent>, Unreadable> {
         if self.in_flight(request) {
-            return None;
+            return Ok(None);
         }
         self.intent(request)
     }
@@ -512,12 +607,17 @@ impl Store {
         seconds: u32,
         attempt: Attempt,
     ) -> Result<Intent, String> {
-        let mut intent = self.intent(request).unwrap_or_else(|| Intent {
-            request_sha256: request.to_owned(),
-            model: model.to_owned(),
-            seconds,
-            attempts: Vec::new(),
-        });
+        // An unreadable record is never replaced: it may be the only word
+        // of sends that were billed.
+        let mut intent = self
+            .intent(request)
+            .map_err(|unreadable| unreadable.words())?
+            .unwrap_or_else(|| Intent {
+                request_sha256: request.to_owned(),
+                model: model.to_owned(),
+                seconds,
+                attempts: Vec::new(),
+            });
         intent.attempts.push(attempt);
         self.write_intent(&intent)?;
         Ok(intent)
@@ -530,7 +630,10 @@ impl Store {
     ///
     /// The file cannot be rewritten or removed.
     pub fn resolve_attempt(&self, _held: &Claim, request: &str, id: &str) -> Result<(), String> {
-        let Some(mut intent) = self.intent(request) else {
+        let Some(mut intent) = self
+            .intent(request)
+            .map_err(|unreadable| unreadable.words())?
+        else {
             return Ok(());
         };
         intent.attempts.retain(|attempt| attempt.id != id);
@@ -861,22 +964,25 @@ pub(crate) mod tests {
             .add_attempt(&claim, &request, "m/x", 4, attempt("second", 0.12))
             .unwrap();
         assert_eq!(both.attempts.len(), 2);
-        assert_eq!(store.intent(&request), Some(both.clone()));
-        assert_eq!(store.intent(&request).unwrap().latest().id, "second");
+        assert_eq!(store.intent(&request).unwrap(), Some(both.clone()));
+        assert_eq!(
+            store.intent(&request).unwrap().unwrap().latest().id,
+            "second"
+        );
         assert!((both.total_usd().unwrap() - 0.24).abs() < 1e-12);
         // A third whose job id arrived goes; the two lost ones stay.
         store
             .add_attempt(&claim, &request, "m/x", 4, attempt("third", 0.12))
             .unwrap();
         store.resolve_attempt(&claim, &request, "third").unwrap();
-        assert_eq!(store.intent(&request), Some(both));
+        assert_eq!(store.intent(&request).unwrap(), Some(both));
         // An unknown price makes the sum unknown.
-        let mut unknown = store.intent(&request).unwrap();
+        let mut unknown = store.intent(&request).unwrap().unwrap();
         unknown.attempts[0].estimate_usd = None;
         assert_eq!(unknown.total_usd(), None);
         // The clip in hand clears them all.
         store.clear_intent_held(&claim, &request);
-        assert!(store.intent(&request).is_none());
+        assert!(store.intent(&request).unwrap().is_none());
         drop(claim);
         // H4b's file: one send, read as one attempt named by its time.
         std::fs::write(
@@ -886,7 +992,7 @@ pub(crate) mod tests {
             ),
         )
         .unwrap();
-        let old = store.intent(&request).unwrap();
+        let old = store.intent(&request).unwrap().unwrap();
         assert_eq!(
             old.attempts,
             vec![Attempt {

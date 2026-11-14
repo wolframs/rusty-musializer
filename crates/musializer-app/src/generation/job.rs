@@ -277,6 +277,34 @@ impl Ceiling {
     }
 }
 
+/// What a person reads when a request has reached
+/// [`super::store::MAX_UNANSWERED_SENDS`] unanswered sends: it is not sent
+/// again at all, by the window or a run, until the cause is found and the
+/// record removed. `None` below the bound.
+#[must_use]
+pub fn too_many_words(intent: &super::store::Intent, store: &Store) -> Option<String> {
+    (intent.attempts.len() >= super::store::MAX_UNANSWERED_SENDS).then(|| {
+        format!(
+            "This exact request was sent {} times and no answer ever arrived ({}, each possibly \
+             billed). Something is wrong between this machine and OpenRouter (a proxy, a firewall \
+             or the network cutting the connection after the request leaves, or the provider \
+             failing), so it is not sent again, by the window or by a run, with or without \
+             --resend-unconfirmed. Your activity page at openrouter.ai/activity shows what was \
+             billed; once the cause is found, remove {} to send it anew. Every send is in {}",
+            intent.attempts.len(),
+            intent.total_usd().map_or_else(
+                || "price unknown".to_owned(),
+                |usd| format!(
+                    "about ${:.2} in all",
+                    musializer_core::generation::price::ceil_cents(usd)
+                )
+            ),
+            store.intent_path(&intent.request_sha256).display(),
+            store.root().join("spending.tsv").display()
+        )
+    })
+}
+
 /// A fresh attempt's id: its time to the nanosecond and this process, so two
 /// sends of one request never share one.
 fn attempt_id() -> String {
@@ -671,10 +699,23 @@ fn run_with(
     } else {
         // Earlier sends whose answers never arrived: nothing goes out unless
         // the person agreed to send it again, told of every one of them.
-        if let Some(intent) = store.intent(digest) {
-            if spec.resend.as_deref() != Some(intent.latest().id.as_str()) {
+        match store.intent(digest) {
+            Ok(None) => {}
+            Ok(Some(intent)) => {
+                if let Some(words) = too_many_words(&intent, store) {
+                    claim.release();
+                    return Outcome::Refused(words);
+                }
+                if spec.resend.as_deref() != Some(intent.latest().id.as_str()) {
+                    claim.release();
+                    return Outcome::Unconfirmed(intent);
+                }
+            }
+            // A record that cannot be read is not "no record": it holds
+            // the request until the person repairs or removes it.
+            Err(unreadable) => {
                 claim.release();
-                return Outcome::Unconfirmed(intent);
+                return Outcome::Refused(unreadable.words());
             }
         }
         if stop.load(Ordering::Relaxed) {
@@ -1539,6 +1580,7 @@ pub(crate) mod tests {
             .contains("may have been billed (about $0.12)"));
         let intent = Store::at(store.clone())
             .intent(&digest)
+            .unwrap()
             .expect("the intent stays");
         assert_eq!(fake.count("submit"), 1);
         // Asked again without agreeing: nothing is sent, and why is said.
@@ -1565,7 +1607,7 @@ pub(crate) mod tests {
             "{outcome:?}"
         );
         assert_eq!(fake.count("submit"), 2);
-        assert!(Store::at(store).intent(&digest).is_none());
+        assert!(Store::at(store).intent(&digest).unwrap().is_none());
     }
 
     /// H4c: a send agreed after a lost one is lost too. Both stay on record,
@@ -1586,12 +1628,12 @@ pub(crate) mod tests {
         let (_, billing) =
             failed(GenerationJob::spawn(spec(&fake, &store, request())).wait(|_, _| {}));
         assert_eq!(billing, Billing::Unconfirmed(Some(0.12)));
-        let first = Store::at(store.clone()).intent(&digest).unwrap();
+        let first = Store::at(store.clone()).intent(&digest).unwrap().unwrap();
         let mut again = spec(&fake, &store, request());
         again.resend = Some(first.latest().id.clone());
         let (_, billing) = failed(GenerationJob::spawn(again).wait(|_, _| {}));
         assert_eq!(billing, Billing::Unconfirmed(Some(0.12)));
-        let both = Store::at(store.clone()).intent(&digest).unwrap();
+        let both = Store::at(store.clone()).intent(&digest).unwrap().unwrap();
         assert_eq!(
             both.attempts.len(),
             2,
@@ -1615,7 +1657,7 @@ pub(crate) mod tests {
         let outcome = GenerationJob::spawn(agreed).wait(|_, _| {});
         assert!(matches!(&outcome, Outcome::Done(_)), "{outcome:?}");
         assert_eq!(fake.count("submit"), 3);
-        assert!(Store::at(store.clone()).intent(&digest).is_none());
+        assert!(Store::at(store.clone()).intent(&digest).unwrap().is_none());
         let ledger = std::fs::read_to_string(store.join("spending.tsv")).unwrap();
         assert_eq!(
             ledger
@@ -1661,7 +1703,10 @@ pub(crate) mod tests {
              $0.12 allowed (--max-spend counts what this run sends)"
         );
         assert_eq!(fake.count("submit"), 1);
-        assert!(Store::at(store.clone()).intent(&other.digest()).is_none());
+        assert!(Store::at(store.clone())
+            .intent(&other.digest())
+            .unwrap()
+            .is_none());
         // A job recorded before: picked up under a ceiling of nothing.
         let mut third = request();
         third.prompt.push_str(" picked up");
@@ -1707,6 +1752,82 @@ pub(crate) mod tests {
         assert_eq!(back.sent(), (0.0, 0));
     }
 
+    /// H4d: an intent record that cannot be read (grown past 64 KiB, or not
+    /// a record) holds the request instead of reading as "no intent" and being
+    /// replaced; three unanswered sends stop the request even when the person
+    /// agreed to send it again.
+    #[test]
+    fn an_unreadable_intent_and_too_many_unanswered_sends_hold_the_request() {
+        let folder = Scratch::new("job-held-hard");
+        let fake = Fake::start(Script::default());
+        let store = folder.path().join("store");
+        let digest = request().digest();
+        let intents = store.join("intents");
+        std::fs::create_dir_all(&intents).unwrap();
+        let path = intents.join(format!("{digest}.json"));
+        let attempt = |id: &str| super::super::store::Attempt {
+            id: id.into(),
+            sent_utc: "2026-11-15T10:00:00Z".into(),
+            estimate_usd: Some(0.12),
+        };
+        let record = |attempts: Vec<super::super::store::Attempt>| {
+            serde_json::json!({
+                "schema": "musializer.video-intent/v2", "request_sha256": digest,
+                "model": "google/veo-3.1-lite", "seconds": 4, "attempts": attempts,
+            })
+            .to_string()
+        };
+        let mut oversized = record(vec![attempt("a1")]);
+        oversized.push_str(&" ".repeat(70 * 1024));
+        for (bytes, why) in [
+            (oversized, "larger than 65536 bytes"),
+            ("{not json".to_owned(), "not a record of sends"),
+        ] {
+            std::fs::write(&path, &bytes).unwrap();
+            let mut agreed = spec(&fake, &store, request());
+            agreed.resend = Some("a1".into());
+            let Outcome::Refused(words) = GenerationJob::spawn(agreed).wait(|_, _| {}) else {
+                panic!("an unreadable intent did not hold the request")
+            };
+            assert!(words.contains("cannot be read"), "{words}");
+            assert!(words.contains(why), "{words}");
+            assert!(words.contains("remove the file"), "{words}");
+            assert_eq!(fake.count("submit"), 0);
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                bytes,
+                "never replaced"
+            );
+        }
+        // Three unanswered sends: held, whatever the person agreed to.
+        std::fs::write(
+            &path,
+            record(vec![attempt("a1"), attempt("a2"), attempt("a3")]),
+        )
+        .unwrap();
+        let mut agreed = spec(&fake, &store, request());
+        agreed.resend = Some("a3".into());
+        let Outcome::Refused(words) = GenerationJob::spawn(agreed).wait(|_, _| {}) else {
+            panic!("three unanswered sends did not hold the request")
+        };
+        assert!(
+            words.starts_with(
+                "This exact request was sent 3 times and no answer ever arrived (about $0.36 in \
+                 all, each possibly billed). Something is wrong between this machine and \
+                 OpenRouter"
+            ),
+            "{words}"
+        );
+        assert_eq!(fake.count("submit"), 0);
+        // Two are below the bound: the agreed resend goes.
+        std::fs::write(&path, record(vec![attempt("a1"), attempt("a2")])).unwrap();
+        let mut agreed = spec(&fake, &store, request());
+        agreed.resend = Some("a2".into());
+        agreed.deadline = Duration::from_millis(200);
+        let _ = GenerationJob::spawn(agreed).wait(|_, _| {});
+        assert_eq!(fake.count("submit"), 1);
+    }
+
     #[test]
     fn a_submit_that_never_left_bills_nothing_and_leaves_no_intent() {
         let folder = Scratch::new("job-unsent");
@@ -1722,7 +1843,10 @@ pub(crate) mod tests {
         job.deadline = Duration::from_secs(2);
         let (reason, billing) = failed(GenerationJob::spawn(job).wait(|_, _| {}));
         assert_eq!(billing, Billing::Nothing, "{reason}");
-        assert!(Store::at(store).intent(&request().digest()).is_none());
+        assert!(Store::at(store)
+            .intent(&request().digest())
+            .unwrap()
+            .is_none());
     }
 
     #[test]

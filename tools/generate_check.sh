@@ -11,7 +11,8 @@
 # GENERATE_BIN names another binary, for a negative control without replacing
 # the build. GENERATE_SKIP_CARD=1 leaves out the window card's half.
 # GENERATE_ONLY="NAME ..." runs only those groups (base, concurrent, lost,
-# redownload, order, fps, stale, ceiling, card, canary), for a negative control.
+# redownload, order, fps, stale, ceiling, intent, card, canary), for a
+# negative control.
 #
 # What it asserts:
 #   - the estimate is printed before any request, and without the flag (or with
@@ -56,6 +57,10 @@
 #     counts once with it; three new requests under two estimates send two
 #     and refuse the third by name; a section whose request is known only
 #     later and turns out held is not sent, and the run says what changed;
+#   - intent (H4d): a record of unanswered sends that cannot be read (past
+#     64 KiB, or not a record) holds the request, flag or not, and is never
+#     replaced; removing it frees the request; after three unanswered sends a
+#     request is not sent again at all;
 #   - stale (H4c): two runs poll one recorded job and learn it expired at
 #     different times; between the two answers a third run submits a new job
 #     for the request. The late poller leaves the new job's record alone, and
@@ -780,6 +785,82 @@ else
     fail "a deferred held section was sent or not explained (status $(status_of c-deferred-1), $(status_of c-deferred-2), $(( $(count submit) - submits )) submits); see $OUT/c-deferred-2.log"
 fi
 fi # ceiling
+
+# --- 15. an intent that cannot be read, and too many unanswered sends (H4d) -------
+# A record of unanswered sends grown past 64 KiB, or not a record at all, used
+# to read as "no intent": the request went out with no warning and the record
+# was replaced. It holds the request until the file is removed. And after three
+# unanswered sends of one request nothing sends it again, flag or not.
+if only intent; then
+new_intent() {
+    # The intent file a launch added: $1 the list before.
+    comm -13 "$1" <({ ls "$MUSIALIZER_GENERATED_DIR/intents/" 2>/dev/null || true; } | sort) | head -1
+}
+sections_one() {
+    cat >"$1" <<EOF
+{ "schema": "musializer.treatment/v1", "audio": { "path": "fixture.wav" },
+  "output": { "resolution": "640x360", "fps": 24, "quality": "balanced" }, "seed": 7,
+  "segments": [ { "at": 0, "scene": "spectrum" },
+                { "at": 2, "scene": "clip", "clip": { "generate": {
+                    "prompt": "$2", "model": "google/veo-3.1-lite", "seconds": 4 } } },
+                { "at": 7, "scene": "pulse" } ] }
+EOF
+}
+sections_one "$OUT/i-record.treatment.json" "an intent record [lost-answer-once]"
+{ ls "$MUSIALIZER_GENERATED_DIR/intents/" 2>/dev/null || true; } | sort >"$OUT/intents-before.txt"
+launch i-lost --treatment "$OUT/i-record.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/i-lost.musi"
+record="$MUSIALIZER_GENERATED_DIR/intents/$(new_intent "$OUT/intents-before.txt")"
+submits="$(count submit)"
+python3 -I - "$record" <<'PY'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+open(path, "w").write(text + " " * (70 * 1024))
+PY
+cp "$record" "$OUT/i-oversized.json"
+launch i-big --treatment "$OUT/i-record.treatment.json" --generate-clips --max-spend 1.00 --resend-unconfirmed \
+    --save-project "$OUT/i-big.musi"
+if [ "$(status_of i-big)" = 1 ] && [ "$(count submit)" = "$submits" ] && cmp -s "$record" "$OUT/i-oversized.json" \
+    && has i-big "cannot be read (larger than 65536 bytes), so this application cannot tell how many were sent" \
+    && has i-big 'remove the file (or put back a readable copy) to send the request anew'; then
+    pass "an intent grown past 64 KiB holds the request, even with --resend-unconfirmed: 0 submits, the record untouched, how to free it said"
+else
+    fail "an oversized intent did not hold the request (status $(status_of i-big), $(( $(count submit) - submits )) submits); see $OUT/i-big.log"
+fi
+printf '{not json' >"$record"
+launch i-bad --treatment "$OUT/i-record.treatment.json" --generate-clips --max-spend 1.00 --resend-unconfirmed \
+    --save-project "$OUT/i-bad.musi"
+if [ "$(status_of i-bad)" = 1 ] && [ "$(count submit)" = "$submits" ] && [ "$(cat "$record")" = '{not json' ] \
+    && has i-bad 'cannot be read (not a record of sends'; then
+    pass "an intent that is not a record holds the request: 0 submits, the file untouched"
+else
+    fail "an unreadable intent did not hold the request (status $(status_of i-bad)); see $OUT/i-bad.log"
+fi
+rm -f "$record"
+launch i-freed --treatment "$OUT/i-record.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/i-freed.musi"
+if [ "$(status_of i-freed)" = 0 ] && [ "$(count submit)" = $((submits + 1)) ] && has i-freed 'clip.generate generated'; then
+    pass "with the record removed, as the words say, the request is sent anew"
+else
+    fail "removing the record did not free the request (status $(status_of i-freed)); see $OUT/i-freed.log"
+fi
+# Three answers lost in a row: the fourth send is refused at all.
+sections_one "$OUT/i-three.treatment.json" "three lost answers [lost-answers-3]"
+submits="$(count submit)"
+launch i-three-1 --treatment "$OUT/i-three.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/i-three-1.musi"
+for n in 2 3; do
+    launch "i-three-$n" --treatment "$OUT/i-three.treatment.json" --generate-clips --max-spend 1.00 --resend-unconfirmed \
+        --save-project "$OUT/i-three-$n.musi"
+done
+launch i-three-4 --treatment "$OUT/i-three.treatment.json" --generate-clips --max-spend 1.00 --resend-unconfirmed \
+    --save-project "$OUT/i-three-4.musi"
+if [ "$(count submit)" = $((submits + 3)) ] && [ "$(status_of i-three-4)" = 1 ] \
+    && has i-three-4 'This exact request was sent 3 times and no answer ever arrived (about $0.36 in all, each possibly billed). Something is wrong between this machine and OpenRouter' \
+    && has i-three-4 'with or without --resend-unconfirmed'; then
+    pass "after three unanswered sends the request is not sent again, even with --resend-unconfirmed (3 submits, not 4)"
+else
+    fail "a fourth send of a request with three unanswered went out or was not explained ($(( $(count submit) - submits )) submits); see $OUT/i-three-4.log"
+fi
+fi # intent
 
 # --- 6. the section card's Generate, pressed (tools/generate_card_check.py) -------
 if [ "${GENERATE_SKIP_CARD:-}" != 1 ] && only card; then

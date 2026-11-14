@@ -598,6 +598,32 @@ provider makes a clip once per job under a lock since H4d: two pollers of one
 job downloaded it while it was being written and refused it (seen in the
 first control's concurrent group, not a defect of the application).
 
+### The same review's smaller fixes (H4d, 2026-11-15)
+
+- **An intent that cannot be read holds the request.** `Store::intent` read a
+  record past 64 KiB (or one that did not parse) as no intent: the next
+  Generate sent with no warning and `add_attempt` replaced the whole history.
+  Now such a record is `Unreadable`, holds the request in the window and in a
+  run, with or without `--resend-unconfirmed`, and is never written over; the
+  words name the file and say to look at openrouter.ai/activity and then
+  remove it (or put back a readable copy) to send anew.
+- **Three unanswered sends stop a request** (`MAX_UNANSWERED_SENDS`). A third
+  lost answer in a row on one request is no coincidence (a proxy or firewall
+  cutting the connection once the body has left, a gateway timeout shorter
+  than the provider's accept), and every further send may be billed and lost
+  the same way: "This exact request was sent 3 times and no answer ever
+  arrived (about $0.36 in all, each possibly billed). Something is wrong
+  between this machine and OpenRouter (…), so it is not sent again, by the
+  window or by a run, with or without --resend-unconfirmed. … remove
+  …/intents/<digest>.json to send it anew." Three also keeps the record far
+  below its 64 KiB bound.
+
+| Perturbation | What failed |
+| --- | --- |
+| An intent that cannot be read taken for none again (`Err(_) => Ok(None)` in `Store::intent`, as before) | gate intent: the oversized record let the agreed resend out (status 0, 1 submit) and so did the unparseable one; `an_unreadable_intent_and_too_many_unanswered_sends_hold_the_request` panicked at the first hold |
+| No bound on unanswered sends | gate intent: the fourth send of a request with three lost answers went out (4 submits); the unit test: "three unanswered sends did not hold the request" |
+FIXES_H4D
+
 ### What is not built
 
 - **A `generated` transition** (a bridge across a cut as a transition kind).

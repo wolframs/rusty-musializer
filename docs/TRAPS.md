@@ -767,6 +767,20 @@ replaced, and goes only when the thing paid for is in hand (`Store::add_attempt`
 `clear_intent_held`). Symptom: the warning names fewer unanswered sends than
 `spending.tsv` and the person's activity page show. Found by the second review (H4c), 2026-11-14.
 
+## A record that cannot be read is not an empty record
+
+`Store::intent` read its file through `read_bounded`, which gives `None` for a
+file past 64 KiB as for a missing one, and the caller took `None` for "no
+unanswered sends": the next Generate sent with no warning, and `add_attempt`
+then wrote a one-send history over the record of every earlier one. A reader
+of a record that stands for money or a promise distinguishes three answers:
+absent, read, and there-but-unreadable, and the third holds whatever the
+record guards until a person looks (`store::Unreadable`). Bound the record
+from the other side too, so it never grows into the unreadable case by use
+(`MAX_UNANSWERED_SENDS`). Symptom: a request sent without the warning its
+history should have raised, and a shorter history afterwards. Found by the
+third review of the generation store (H4d), 2026-11-15.
+
 ## A gateway error is not proof the request was not processed
 
 The MiMo helper retried 502 and 503 as "transient (unbilled)". A gateway

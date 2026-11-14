@@ -473,10 +473,21 @@ impl Frames<'_, '_> {
             State::PickUp(record.estimate_usd)
         } else if self.store.in_flight(&digest) {
             State::PickUp(estimate.usd())
-        } else if let Some(intent) = self.store.leftover_intent(&digest) {
-            State::Held(intent)
         } else {
-            State::New
+            match self.store.leftover_intent(&digest) {
+                Ok(Some(intent)) => match super::job::too_many_words(&intent, self.store) {
+                    Some(why) => return Ok(Look::Refused { estimate, why }),
+                    None => State::Held(intent),
+                },
+                Ok(None) => State::New,
+                // A record that cannot be read holds the request (H4d).
+                Err(unreadable) => {
+                    return Ok(Look::Refused {
+                        estimate,
+                        why: unreadable.words(),
+                    })
+                }
+            }
         };
         println!(
             "generate:        {} missing: {} s of {} at {} {}, {}{} — {}",

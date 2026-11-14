@@ -540,7 +540,7 @@ impl Generations {
                 .store
                 .as_ref()
                 .ok()
-                .and_then(|store| store.intent(&running.digest))
+                .and_then(|store| store.intent(&running.digest).ok().flatten())
                 .map(|intent| intent.latest().id.clone())
                 .unwrap_or_default();
             self.unconfirmed.insert(
@@ -836,17 +836,23 @@ impl Generations {
         // Sent before and never answered: held until the person, told it may
         // have been billed, presses Send again for this very request.
         let resend = match store.leftover_intent(&digest) {
-            Some(intent) if order.resend.as_deref() == Some(intent.latest().id.as_str()) => {
+            Err(unreadable) => return Err(NotStarted::Refused(unreadable.words())),
+            Ok(Some(intent)) if super::job::too_many_words(&intent, &store).is_some() => {
+                return Err(NotStarted::Refused(
+                    super::job::too_many_words(&intent, &store).unwrap_or_default(),
+                ))
+            }
+            Ok(Some(intent)) if order.resend.as_deref() == Some(intent.latest().id.as_str()) => {
                 Some(intent.latest().id.clone())
             }
-            Some(intent) => {
+            Ok(Some(intent)) => {
                 return Err(NotStarted::Held(self.hold(
                     (target.owner.clone(), order.cue_id),
                     &digest,
                     &intent,
                 )))
             }
-            None => None,
+            Ok(None) => None,
         };
         self.unconfirmed
             .remove(&(target.owner.clone(), order.cue_id));
