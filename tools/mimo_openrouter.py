@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import calendar
 import email.utils
 import hashlib
 import json
@@ -702,6 +703,77 @@ def failure_receipt_path(cache_path: Path) -> Path:
     return cache_path.with_name(f"{cache_path.stem}.failed.json")
 
 
+def receipt_time_ns(receipt: dict[str, Any]) -> int | None:
+    """When a failure receipt's attempt failed, in nanoseconds since the epoch.
+
+    ``failed_ns`` since H4d; an older receipt has only ``failed_utc``, to the
+    second, and is placed at the end of that second, so a tie reads as "the
+    failure came after", which keeps its warning (the safe side).
+    """
+    value = receipt.get("failed_ns")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    text = receipt.get("failed_utc")
+    if isinstance(text, str):
+        try:
+            seconds = calendar.timegm(time.strptime(text, "%Y-%m-%dT%H:%M:%SZ"))
+        except ValueError:
+            return None
+        return seconds * 1_000_000_000 + 999_999_999
+    return None
+
+
+def answer_time_ns(envelope: dict[str, Any]) -> int | None:
+    """When a cached answer was written (``answered_ns``, H4d), or None for a
+    cache written before that."""
+    value = envelope.get("answered_ns") if isinstance(envelope, dict) else None
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def receipt_applies(receipt: dict[str, Any], envelope: dict[str, Any]) -> bool:
+    """Whether a failure receipt describes an attempt that failed **after**
+    the cached answer was made (H4d). Two helpers on one cache: one fails and
+    writes its receipt, the other then succeeds; the receipt is older than the
+    answer and does not describe it. A cache or a receipt with no time keeps
+    the warning."""
+    answered = answer_time_ns(envelope)
+    failed = receipt_time_ns(receipt)
+    return answered is None or failed is None or failed > answered
+
+
+def _drop_older_receipt(cache_path: Path, answered_ns: int) -> None:
+    """Removes the failure receipt beside a cache just written, if it failed
+    before this answer was made; a receipt of a later failure stays.
+
+    Read by its handle and removed only while the name still points at the
+    file read (a newer receipt is written by a rename, so it is another
+    inode): a failure that lands between the read and the removal keeps its
+    receipt.
+    """
+    path = failure_receipt_path(cache_path)
+    try:
+        with path.open("rb") as handle:
+            seen = os.fstat(handle.fileno())
+            if seen.st_size > 1 << 20:
+                return
+            receipt = json.loads(handle.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(receipt, dict):
+        return
+    failed = receipt_time_ns(receipt)
+    if failed is None or failed >= answered_ns:
+        return
+    try:
+        now = os.stat(path)
+    except OSError:
+        return
+    if (now.st_ino, now.st_dev) == (seen.st_ino, seen.st_dev):
+        path.unlink(missing_ok=True)
+
+
 def failure_message(reason: str, response: dict[str, Any] | None,
                     estimate: dict[str, Any] | None = None) -> str:
     return f"{reason}. Nothing was saved; {_cost_clause(response or {}, estimate)}."
@@ -737,6 +809,9 @@ def _write_failure_receipt(
         # When it failed: an earlier answer still in the cache is staged with
         # this receipt named beside it (H4c), and "when" is half of that.
         "failed_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        # The same, to the nanosecond: a receipt applies only to a cached
+        # answer older than it (H4d), and two helpers can end in one second.
+        "failed_ns": time.time_ns(),
         "reason": reason,
         "message": message or failure_message(reason, response, estimate),
         # The request left and nothing says whether the model ran: counted as
@@ -850,14 +925,19 @@ def analyze_to_cache(
         raise failed(f"MiMo's answer does not fit the schema ({detail[:60]})",
                      detail) from error
     cache_key = canonical_sha256({"audio_sha256": audio_hash, **settings})
+    answered_ns = time.time_ns()
     envelope = {
         "schema_version": CACHE_SCHEMA_VERSION,
         "cache_key": cache_key,
         "request": {"audio_sha256": audio_hash, **settings},
         "raw_response": response,
         "normalized": normalized,
+        # When this answer was made: a failure receipt older than it (another
+        # helper's, on the same cache) does not describe it (H4d).
+        "answered_ns": answered_ns,
     }
     atomic_write_json(cache_path, envelope)
+    _drop_older_receipt(cache_path, answered_ns)
     return envelope
 
 

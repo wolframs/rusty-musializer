@@ -1665,8 +1665,10 @@ def _mimo_latest_failure(cache_path: Path, audio_sha: str,
     """The failed attempt recorded beside a cache this run is reusing (H4c).
 
     The helper removes the receipt as an attempt starts and writes one only
-    when it fails, so a receipt beside an accepted cache means the latest
-    attempt failed after the answer in the cache was made: a regeneration that
+    when it fails, and a success removes a receipt older than itself; a
+    receipt beside an accepted cache, failed after the answer in it was made
+    (`mimo_openrouter.receipt_applies`, H4d), means the latest attempt failed:
+    a regeneration that
     cost money (or may have) and produced nothing. The earlier answer is still
     this request's answer — same audio, same identity, validated when it was
     made — so it is staged; the person reads, beside it, that the latest
@@ -1684,6 +1686,10 @@ def _mimo_latest_failure(cache_path: Path, audio_sha: str,
             or receipt.get("schema_version") != mimo_adapter.FAILED_RUN_SCHEMA_VERSION
             or receipt.get("audio_sha256") != audio_sha
             or not isinstance(receipt.get("message"), str)):
+        return None
+    # Only a failure after the answer in use describes it (H4d): another
+    # helper's failure that ended before this answer was made is older news.
+    if not mimo_adapter.receipt_applies(receipt, envelope):
         return None
     message = " ".join(receipt["message"].split())[:300]
     failed = _utc_words(receipt.get("failed_utc"))

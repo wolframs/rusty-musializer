@@ -519,6 +519,49 @@ class AFailedRegenerationIsSaid(LaneTestCase):
         self.assertTrue(failure["may_be_billed"])
         self.assertIn("it may have been billed (at most 0.033 USD)", failure["words"])
 
+    def test_a_failure_older_than_the_answer_is_not_its_word(self) -> None:
+        # H4d: two helpers on one cache. Helper B starts (its start removes
+        # any receipt), helper A then fails and writes its receipt, and B
+        # succeeds after it. The answer is newer than the failure: B's success
+        # removes the receipt, and a receipt left by anyone older than the
+        # answer is never read as "the latest attempt failed".
+        failing = FakeOpenRouter(CUT_OFF)
+
+        class FailsAnotherFirst(FakeOpenRouter):
+            def __call__(inner, request, timeout: float):  # noqa: ANN001, N805
+                with self.assertRaises(mimo_openrouter.FailedRun):
+                    mimo_openrouter.analyze_to_cache(
+                        self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                        transport=failing, sleeper=lambda _s: None)
+                self.assertTrue(self.ws.receipt.exists(), "helper A's receipt")
+                return super().__call__(request, timeout)
+
+        mimo_openrouter.analyze_to_cache(
+            self.ws.audio, self.ws.cache, audio_duration=DURATION,
+            transport=FailsAnotherFirst(response(answer())), sleeper=lambda _s: None)
+        self.assertFalse(self.ws.receipt.exists(), "B's success removed A's older receipt")
+        manifest = self.run_assist_to_manifest(self.never)
+        self.assertNotIn("semantic_latest_failure", manifest)
+        # A receipt older than the answer that is still there (written by a
+        # helper of before H4d, say) is not the answer's word either.
+        envelope = json.loads(self.ws.cache.read_text())
+        stale = {"schema_version": mimo_openrouter.FAILED_RUN_SCHEMA_VERSION,
+                 "failed_utc": "2026-11-14T18:00:00Z",
+                 "failed_ns": envelope["answered_ns"] - 1,
+                 "audio_sha256": envelope["request"]["audio_sha256"],
+                 "message": "an older failure"}
+        self.ws.receipt.write_text(json.dumps(stale))
+        self.assertNotIn("semantic_latest_failure", self.run_assist_to_manifest(self.never))
+        # One that failed after the answer is.
+        stale["failed_ns"] = envelope["answered_ns"] + 1
+        self.ws.receipt.write_text(json.dumps(stale))
+        failure = self.run_assist_to_manifest(self.never)["semantic_latest_failure"]
+        self.assertEqual(failure["message"], "an older failure")
+        # A success removes only a receipt older than itself.
+        self.assertTrue(self.ws.receipt.exists())
+        mimo_openrouter._drop_older_receipt(self.ws.cache, envelope["answered_ns"])
+        self.assertTrue(self.ws.receipt.exists(), "a later failure's receipt stays")
+
     def test_no_receipt_no_word(self) -> None:
         self.run_assist_to_manifest(self.helper(response(answer())))
         manifest = self.run_assist_to_manifest(self.never)

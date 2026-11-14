@@ -276,7 +276,11 @@ and three guards it found missing:
   it again is the person's call, so the displayed maximum stays one call's.
 - **A failed regeneration beside a kept answer** (H4c). A receipt beside an
   accepted cache means the latest attempt failed after that answer was made
-  (the helper removes the receipt as an attempt starts). Decided by the trust
+  (the helper removes the receipt as an attempt starts). Since H4d only a
+  receipt that failed after the answer (`failed_ns` against the cache's
+  `answered_ns`) is read so, and a success removes a receipt older than
+  itself: two helpers on one cache, one failing and the other then
+  succeeding, labelled the new answer "the earlier answer … which was kept". Decided by the trust
   policy above: the earlier answer is still this request's answer — the same
   audio, the same request identity and route, validated when it was made —
   so it is staged, and discarding it would only make the person pay again.
@@ -312,6 +316,8 @@ the source restored byte for byte (`cmp` against a saved copy):
 | The helper's failure clause without `ceil_usd` | `test_a_failed_run_without_a_reported_cost_names_the_ceiling` and `test_at_most_is_rounded_up_as_the_rust_side_rounds_it` |
 | The reuse path not reading the receipt (`semantic_failure = None`) | `test_the_earlier_answer_is_staged_with_the_failure_named` and `test_a_gateway_failure_on_regeneration_says_it_may_have_been_billed`: no `semantic_latest_failure` in the manifest. The panel's reader is pinned by `an_earlier_semantic_answer_staged_after_a_failure_says_so`; that `stage_finished_job` chains its notice is not pinned by a test of its own |
 | 502 and 503 retried again, and no status counted as possibly billed | `test_a_gateway_failure_after_sending_is_one_call_that_may_be_billed`, every status: two sends where one was confirmed, or "request failed with HTTP 504" with no word on cost |
+| (H4d, 2026-11-15) A success no longer removing an older receipt | `test_a_failure_older_than_the_answer_is_not_its_word`: "B's success removed A's older receipt" |
+| (H4d) The reuse path reading a receipt older than the answer (`receipt_applies` skipped) | the same test: `semantic_latest_failure` named "an older failure" beside a newer answer |
 | (H4d, 2026-11-15) Only H4c's five statuses (408, 500, 502, 503, 504) counted as possibly billed again | `test_a_gateway_failure_after_sending_is_one_call_that_may_be_billed`: 524, 520, 418 and 409 ended as "OpenRouter request failed with HTTP …", no receipt, no word on billing |
 
 ### Local performed-phrase recovery (2026-09-08)
