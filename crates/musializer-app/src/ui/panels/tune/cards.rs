@@ -41,6 +41,17 @@ pub(crate) enum CardField {
     ShiftFrom,
     ShiftBy,
     ShiftWidth,
+    IntroLength,
+    OutroLength,
+    Bloom,
+    BloomThreshold,
+    BloomRadius,
+    Shoulder,
+    Tone,
+    Vignette,
+    Grain,
+    Shadow,
+    Highlight,
 }
 
 impl CardField {
@@ -52,7 +63,170 @@ impl CardField {
             Self::ShiftFrom => "shift-from",
             Self::ShiftBy => "shift-by",
             Self::ShiftWidth => "shift-width",
+            Self::IntroLength => "intro-length",
+            Self::OutroLength => "outro-length",
+            Self::Bloom => "bloom",
+            Self::BloomThreshold => "bloom-threshold",
+            Self::BloomRadius => "bloom-radius",
+            Self::Shoulder => "shoulder",
+            Self::Tone => "tone",
+            Self::Vignette => "vignette",
+            Self::Grain => "grain",
+            Self::Shadow => "shadow",
+            Self::Highlight => "highlight",
         }
+    }
+}
+
+/// How a knob prints its value, and reads one typed back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unit {
+    /// `0.45 s`; zero is `none` (a glide).
+    Seconds,
+    /// A `0..=1` amount as `82%`.
+    Percent,
+    Degrees,
+    SignedDegrees,
+    /// Two decimals (bloom, `0..=2`).
+    Plain,
+    /// A share of the frame's short edge, as `1.6%`.
+    ShortEdge,
+}
+
+impl Unit {
+    fn show(self, value: f32) -> String {
+        match self {
+            Self::Seconds if value <= 0.0 => "none".to_owned(),
+            Self::Seconds => format!("{value:.2} s"),
+            Self::Percent => format!("{:.0}%", value * 100.0),
+            Self::Degrees => format!("{value:.0}\u{00b0}"),
+            Self::SignedDegrees => format!("{value:+.0}\u{00b0}"),
+            Self::Plain => format!("{value:.2}"),
+            Self::ShortEdge => format!("{:.1}%", value * 100.0),
+        }
+    }
+
+    /// What the field holds when typing opens: the number, no unit.
+    fn edit_text(self, value: f32) -> String {
+        match self {
+            Self::Seconds => format!("{value:.2}"),
+            Self::Percent => format!("{:.0}", value * 100.0),
+            Self::Degrees | Self::SignedDegrees => format!("{value:.0}"),
+            Self::Plain => format!("{value:.2}"),
+            Self::ShortEdge => format!("{:.1}", value * 100.0),
+        }
+    }
+
+    /// A typed value in this unit, as the model's number; `None` when it is
+    /// not a number. Bounds are the knob's.
+    fn parse(self, text: &str) -> Option<f32> {
+        let text = text.trim();
+        if self == Self::Seconds && text.eq_ignore_ascii_case("none") {
+            return Some(0.0);
+        }
+        let text = text.trim_end_matches(['%', '\u{00b0}']).trim();
+        let number = if self == Self::Seconds {
+            look_cards::parse_seconds(text)?
+        } else {
+            let number: f32 = text.parse().ok()?;
+            number.is_finite().then_some(number)?
+        };
+        Some(match self {
+            Self::Percent | Self::ShortEdge => number / 100.0,
+            _ => number,
+        })
+    }
+
+    /// The model's value at the readout's resolution, so what is stored is
+    /// what the row prints.
+    fn snap(self, value: f32) -> f32 {
+        let step = match self {
+            Self::Seconds | Self::Percent | Self::Plain => 0.01,
+            Self::Degrees | Self::SignedDegrees => 1.0,
+            Self::ShortEdge => 0.001,
+        };
+        (value / step).round() * step
+    }
+}
+
+/// How a knob's track maps to its value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scale {
+    Linear,
+    /// [`look_cards::transition_unit`]'s logarithmic track.
+    Transition,
+    /// [`look_cards::glide_unit`]'s quadratic one.
+    Glide,
+}
+
+/// One slider row of a card.
+#[derive(Clone, Copy, Debug)]
+struct Knob {
+    label: &'static str,
+    field: CardField,
+    first: u32,
+    value: f32,
+    low: f32,
+    high: f32,
+    default: f32,
+    unit: Unit,
+    scale: Scale,
+}
+
+impl Knob {
+    fn unit_of(&self, value: f32) -> f32 {
+        match self.scale {
+            Scale::Linear => ((value - self.low) / (self.high - self.low)).clamp(0.0, 1.0),
+            Scale::Transition => look_cards::transition_unit(value),
+            Scale::Glide => look_cards::glide_unit(value),
+        }
+    }
+
+    fn value_at(&self, unit: f32) -> f32 {
+        match self.scale {
+            Scale::Linear => self
+                .unit
+                .snap(self.low + unit.clamp(0.0, 1.0) * (self.high - self.low))
+                .clamp(self.low, self.high),
+            Scale::Transition => look_cards::transition_seconds(unit),
+            Scale::Glide => look_cards::glide_seconds(unit),
+        }
+    }
+
+    fn typed(&self, text: &str) -> Option<f32> {
+        let value = self.unit.parse(text)?;
+        Some(
+            self.unit
+                .snap(value.clamp(self.low, self.high))
+                .clamp(self.low, self.high),
+        )
+    }
+}
+
+/// A finish member's knob.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a knob's whole description, at its one call site"
+)]
+fn finish_knob(
+    label: &'static str,
+    field: CardField,
+    first: u32,
+    value: f32,
+    (low, high): (f32, f32),
+    default: f32,
+    unit: Unit,
+) -> Knob {
+    Knob {
+        label,
+        field,
+        first,
+        value,
+        low,
+        high,
+        default,
+        unit,
+        scale: Scale::Linear,
     }
 }
 
@@ -108,8 +282,25 @@ mod slot {
     pub const SHIFT_BY: u32 = 78;
     pub const SHIFT_WIDTH: u32 = 82;
     pub const STYLE: u32 = 100;
-    /// Hover targets for rows drawn disabled, so their reason can be read.
-    pub const DISABLED: u32 = 150;
+    pub const PLAY_END: u32 = 14;
+    pub const INTRO_KIND: u32 = 160;
+    pub const INTRO_LENGTH: u32 = 180;
+    pub const OUTRO_KIND: u32 = 190;
+    pub const OUTRO_LENGTH: u32 = 210;
+    pub const FINISH: u32 = 220;
+    pub const BLOOM: u32 = 230;
+    pub const BLOOM_THRESHOLD: u32 = 234;
+    pub const BLOOM_RADIUS: u32 = 238;
+    pub const SHOULDER: u32 = 242;
+    pub const TONE: u32 = 246;
+    pub const VIGNETTE: u32 = 250;
+    pub const GRAIN: u32 = 254;
+    /// Six swatches and the hex chip at `+ 8`.
+    pub const SHADOW: u32 = 260;
+    pub const HIGHLIGHT: u32 = 270;
+    /// Hover targets for rows drawn disabled, so their reason can be read:
+    /// `+ CardField as u32`.
+    pub const DISABLED: u32 = 900;
 }
 
 /// One drawn part of a card, in drawing order.
@@ -137,9 +328,34 @@ enum Part {
     Styles,
     StyleNone,
     Status,
-    VideoNotBuilt,
+    VideoTitle,
+    IntroLabel,
+    IntroKinds,
+    IntroNone,
+    IntroLength,
+    OutroLabel,
+    OutroKinds,
+    OutroLength,
+    FinishLabel,
+    FinishPresets,
+    Bloom,
+    BloomThreshold,
+    BloomRadius,
+    Shoulder,
+    Tone,
+    Shadow,
+    Highlight,
+    Vignette,
+    Grain,
     Space,
 }
+
+/// The finish's two starting points, by name.
+const FINISH_PRESETS: [&str; 2] = ["None", "Film"];
+/// Shadow and highlight tones a toning can lean toward: the film finish's
+/// own first, then a few that hold over most palettes.
+const SHADOW_TONES: [u32; 6] = [0x0b2a30, 0x101a3a, 0x2a1030, 0x10261a, 0x2a1a10, 0x000000];
+const HIGHLIGHT_TONES: [u32; 6] = [0xffd9a0, 0xfff0d8, 0xffc0a0, 0xd8f0ff, 0xf0d8ff, 0xffffff];
 
 /// The cards this frame: what to draw, in order, before any of it is placed.
 pub(super) struct CardsPlan {
@@ -254,6 +470,35 @@ fn rect_text(r: UiRect) -> String {
     format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height)
 }
 
+/// A disabled row's reason while a treatment is followed.
+const FOLLOWING: &str = "Following a treatment: the file decides. Stop following to edit here.";
+/// The length row's reason on a cut.
+const CUT_HAS_NO_LENGTH: &str = "A cut has no length: pick how the section arrives first.";
+
+/// A transition length's knob.
+fn transition_knob(
+    label: &'static str,
+    field: CardField,
+    first: u32,
+    transition: Transition,
+) -> Knob {
+    Knob {
+        label,
+        field,
+        first,
+        value: if transition.is_cut() {
+            DEFAULT_SECONDS
+        } else {
+            transition.seconds
+        },
+        low: musializer_core::project::transition::MIN_SECONDS,
+        high: musializer_core::project::transition::MAX_SECONDS,
+        default: DEFAULT_SECONDS,
+        unit: Unit::Seconds,
+        scale: Scale::Transition,
+    }
+}
+
 /// The scope switch and the gap under it, above the card's frame.
 const SCOPE_BLOCK: f32 = look_cards::BUTTON_HEIGHT + 8.0;
 
@@ -333,6 +578,28 @@ impl Shell {
         self.look_column.cards.cut = Some(cut);
     }
 
+    /// Plays `from..until` and stops there when playback was paused: play the
+    /// cut, the intro and the end all go through it.
+    fn play_span(
+        &mut self,
+        input: &ShellInput<'_>,
+        from: f64,
+        until: f64,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        commands.push(ShellCommand::Seek(from));
+        if !input.playing {
+            commands.push(ShellCommand::TogglePlay);
+        }
+        self.look_column.cards.cut = Some(CutPreview {
+            from,
+            until,
+            pause: !input.playing,
+            started: false,
+            frames: 0,
+        });
+    }
+
     /// What the cards will draw this frame. Built before the list is laid
     /// out, so the Look list reserves exactly the height they take.
     pub(super) fn plan_look_cards(&mut self, input: &ShellInput<'_>) -> CardsPlan {
@@ -357,11 +624,48 @@ impl Shell {
             parts.push((Part::StopFollow, Block::Buttons));
             parts.push((Part::Space, Block::Gap(look_cards::GROUP_GAP)));
         }
+        let cues = track.scene_switches.cues();
         if self.look_column.cards.scope == CardScope::Video {
-            parts.push((Part::VideoNotBuilt, Block::Lines(3)));
+            let gap = (Part::Space, Block::Gap(look_cards::GROUP_GAP));
+            let small = (Part::Space, Block::Gap(6.0));
+            parts.extend([
+                (Part::VideoTitle, Block::Buttons),
+                gap,
+                (Part::IntroLabel, Block::Label),
+            ]);
+            if cues.is_empty() {
+                parts.push((Part::IntroNone, Block::Lines(2)));
+            } else {
+                parts.extend([
+                    (Part::IntroKinds, Block::Grid(KINDS.len())),
+                    small,
+                    (Part::IntroLength, Block::Slider),
+                ]);
+            }
+            parts.extend([
+                gap,
+                (Part::OutroLabel, Block::Label),
+                (Part::OutroKinds, Block::Grid(KINDS.len())),
+                small,
+                (Part::OutroLength, Block::Slider),
+                gap,
+                (Part::FinishLabel, Block::Label),
+                (Part::FinishPresets, Block::Grid(FINISH_PRESETS.len())),
+                small,
+                (Part::Bloom, Block::Slider),
+                (Part::BloomThreshold, Block::Slider),
+                (Part::BloomRadius, Block::Slider),
+                (Part::Shoulder, Block::Slider),
+                (Part::Tone, Block::Slider),
+                (Part::Shadow, Block::Slider),
+                (Part::Highlight, Block::Slider),
+                (Part::Vignette, Block::Slider),
+                (Part::Grain, Block::Slider),
+                (Part::Space, Block::Gap(8.0)),
+                (Part::Status, Block::Line),
+            ]);
             return CardsPlan { parts };
         }
-        let cues = track.scene_switches.cues();
         if cues.is_empty() {
             parts.push((Part::Empty, Block::Lines(3)));
             return CardsPlan { parts };
@@ -558,78 +862,264 @@ impl Shell {
         );
     }
 
-    /// One slider row of a card, with a value chip that opens typed entry.
-    /// Returns the asked-for normalized value while dragged, the committed
-    /// typed text, and the row's rects for the report.
+    /// The typed-entry field over a value chip, once it is open: draws it,
+    /// takes a probe's text, and returns the text on Enter. Escape, or a
+    /// press elsewhere, closes it.
+    fn card_field(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &musializer_runtime::font::UiFonts,
+        field: CardField,
+        rect: UiRect,
+    ) -> Option<String> {
+        let (typing, text) = self.look_column.cards.typing.as_mut()?;
+        if *typing != field {
+            return None;
+        }
+        let probe = self.look_column.cards.probe_text.take();
+        if let Some((Some(value), _)) = &probe {
+            text.bind(value);
+            text.set_focused(true);
+        }
+        let commit = d.is_key_pressed(KeyboardKey::KEY_ENTER)
+            || d.is_key_pressed(KeyboardKey::KEY_KP_ENTER)
+            || matches!(probe, Some((_, CardProbeAction::Commit)));
+        let cancel = d.is_key_pressed(KeyboardKey::KEY_ESCAPE)
+            || matches!(probe, Some((_, CardProbeAction::Cancel)));
+        widgets::fill(d, rect, color::ui_surface());
+        text.draw_with_face(
+            d,
+            AuthoredText::from_ui(font),
+            rect,
+            metric::UI_FONT_VALUE,
+            "",
+            true,
+        );
+        let typed = commit.then(|| text.edit.text().to_owned());
+        if commit || cancel || !text.is_focused() {
+            self.look_column.cards.typing = None;
+        }
+        typed
+    }
+
+    /// Opens typed entry on `field`, holding `text`.
+    fn open_card_field(&mut self, field: CardField, text: &str) {
+        let mut entry = TextField::new(TextRules::ascii_query(10));
+        entry.bind(text);
+        entry.set_focused(true);
+        self.look_column.cards.typing = Some((field, entry));
+    }
+
+    /// One slider row: a drag moves the value along the knob's scale, a press
+    /// on the value types one. Drawn disabled with `disabled` as its reason
+    /// when there is one. Returns the new value when it differs from the
+    /// knob's, and adds the row's rects to `controls`.
     #[allow(
         clippy::too_many_arguments,
-        reason = "one row: its id, place, content and field"
+        reason = "one row: its knob, place, state and report"
     )]
-    fn card_slider(
+    fn knob(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &musializer_runtime::font::UiFonts,
+        row: UiRect,
+        knob: &Knob,
+        disabled: Option<&str>,
+        label_width: f32,
+        controls: &mut Vec<String>,
+    ) -> Option<f32> {
+        let shown = ascii_fallback(font.all_loaded(), &knob.unit.show(knob.value));
+        if let Some(reason) = disabled {
+            let rect = self.disabled_card_row(
+                d,
+                font,
+                knob.field as u32,
+                row,
+                knob.label,
+                &shown,
+                reason,
+                label_width,
+            );
+            controls.push(format!(
+                "{}@disabled:{}",
+                knob.field.name(),
+                rect_text(rect)
+            ));
+            return None;
+        }
+        let result = self.widgets.slider_row(
+            d,
+            font,
+            widgets::id::LOOK_CARDS,
+            knob.first,
+            row,
+            &widgets::SliderRow {
+                label: knob.label,
+                value_text: &shown,
+                normalized: knob.unit_of(knob.value),
+                default: Some(knob.unit_of(knob.default)),
+                changed: (knob.value - knob.default).abs() > 0.0005,
+                route: None,
+                label_width,
+            },
+        );
+        if result.value.clicked {
+            self.open_card_field(knob.field, &knob.unit.edit_text(knob.value));
+        }
+        let typed = self
+            .card_field(d, font, knob.field, result.layout.value)
+            .and_then(|text| knob.typed(&text));
+        controls.push(format!(
+            "{}@{};{}-value@{}",
+            knob.field.name(),
+            rect_text(result.layout.bar),
+            knob.field.name(),
+            rect_text(result.layout.value)
+        ));
+        result
+            .drag
+            .map(|unit| knob.value_at(unit))
+            .or(typed)
+            .filter(|value| (*value - knob.value).abs() > f32::EPSILON)
+    }
+
+    /// The fourteen kinds as a grid of named chips; the press's choice, as a
+    /// transition that keeps the length (or takes the default from a cut).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a grid: its ids, chips, value and report"
+    )]
+    fn kind_grid(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
         font: &musializer_runtime::font::UiFonts,
         first: u32,
-        row: UiRect,
-        spec: &widgets::SliderRow<'_>,
-        field: CardField,
+        prefix: &str,
+        chips: &[UiRect],
+        current: Transition,
         enabled: bool,
-    ) -> (Option<f32>, Option<String>, String) {
-        let result = self
-            .widgets
-            .slider_row(d, font, widgets::id::LOOK_CARDS, first, row, spec);
-        let mut typed = None;
-        if !enabled {
-            return (None, None, String::new());
-        }
-        if result.value.clicked {
-            let mut text = TextField::new(TextRules::ascii_query(8));
-            text.bind(
-                spec.value_text
-                    .trim_end_matches(" s")
-                    .trim_end_matches('°')
-                    .trim_end_matches('%'),
+        controls: &mut Vec<String>,
+    ) -> Option<Transition> {
+        let mut picked = None;
+        for (i, (kind, chip)) in KINDS.iter().zip(chips).enumerate() {
+            let id = widgets::widget_id(widgets::id::LOOK_CARDS, first + i as u32);
+            let state = self.card_chip(
+                d,
+                font,
+                id,
+                *chip,
+                kind_label(*kind),
+                current.kind == *kind,
+                enabled,
             );
-            text.set_focused(true);
-            self.look_column.cards.typing = Some((field, text));
+            self.widgets.hint(d, state, id, *chip, kind.look());
+            controls.push(format!("{prefix}-{}@{}", kind.name(), rect_text(*chip)));
+            if state.clicked && current.kind != *kind {
+                let seconds = if current.is_cut() {
+                    DEFAULT_SECONDS
+                } else {
+                    current.seconds
+                };
+                picked = Some(Transition::new(*kind, seconds));
+            }
         }
-        if let Some((typing, text)) = self.look_column.cards.typing.as_mut() {
-            if *typing == field {
-                let probe = self.look_column.cards.probe_text.take();
-                if let Some((Some(value), _)) = &probe {
-                    text.bind(value);
-                    text.set_focused(true);
-                }
-                let commit = d.is_key_pressed(KeyboardKey::KEY_ENTER)
-                    || d.is_key_pressed(KeyboardKey::KEY_KP_ENTER)
-                    || matches!(probe, Some((_, CardProbeAction::Commit)));
-                let cancel = d.is_key_pressed(KeyboardKey::KEY_ESCAPE)
-                    || matches!(probe, Some((_, CardProbeAction::Cancel)));
-                widgets::fill(d, result.layout.value, color::ui_surface());
-                text.draw_with_face(
-                    d,
-                    AuthoredText::from_ui(font),
-                    result.layout.value,
-                    metric::UI_FONT_VALUE,
-                    "",
-                    true,
-                );
-                if commit {
-                    typed = Some(text.edit.text().to_owned());
-                }
-                if commit || cancel || !text.is_focused() {
-                    self.look_column.cards.typing = None;
+        picked
+    }
+
+    /// A colour row: the label, a few swatches to pick from, and the colour
+    /// as `#rrggbb`, which a press types into.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one row: its ids, place, value and report"
+    )]
+    fn colour_row(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &musializer_runtime::font::UiFonts,
+        row: UiRect,
+        label: &str,
+        field: CardField,
+        first: u32,
+        value: u32,
+        presets: &[u32],
+        enabled: bool,
+        label_width: f32,
+        controls: &mut Vec<String>,
+    ) -> Option<u32> {
+        let layout = widgets::slider_row_layout(row, label_width, false);
+        widgets::draw_text(
+            d,
+            font,
+            label,
+            layout.label.x + 10.0,
+            layout.row.y + (layout.row.height - metric::UI_FONT_CAPTION) * 0.5,
+            metric::UI_FONT_CAPTION,
+            if enabled {
+                color::ui_muted()
+            } else {
+                color::ui_disabled()
+            },
+        );
+        let size = widgets::SWATCH_SIZE;
+        let room = layout.track.width.max(0.0);
+        let fit = (((room + 4.0) / (size + 4.0)).floor() as usize).min(presets.len());
+        let mut picked = None;
+        let top = (layout.row.y + (layout.row.height - size) * 0.5).round();
+        let rgba = |rgb: u32| {
+            let [r, g, b] = musializer_core::project::look::rgb(rgb);
+            let channel = |value: f32| (value * 255.0).round() as u8;
+            raylib::prelude::Color::new(channel(r), channel(g), channel(b), 255)
+        };
+        for (i, preset) in presets.iter().take(fit).enumerate() {
+            let id = widgets::widget_id(widgets::id::LOOK_CARDS, first + i as u32);
+            let place = UiRect::new(layout.track.x + i as f32 * (size + 4.0), top, size, size);
+            let swatch = self
+                .widgets
+                .swatch(d, id, place, rgba(*preset), *preset == value);
+            controls.push(format!("{}-{i}@{}", field.name(), rect_text(swatch.rect)));
+            if enabled && swatch.state.clicked && *preset != value {
+                picked = Some(*preset);
+            }
+        }
+        // The value: its colour as a small square and its hex, a press types.
+        let chip = layout.value;
+        let id = widgets::widget_id(widgets::id::LOOK_CARDS, first + 8);
+        let state = self.widgets.button(d, id, chip);
+        if enabled && state.hovered {
+            widgets::control_box(d, chip, color::ui_hover(), color::ui_hover(), 1.0);
+        }
+        let hex = format!("#{value:06x}");
+        let ink = if enabled {
+            color::ui_ink()
+        } else {
+            color::ui_disabled()
+        };
+        let width = widgets::measure_tabular(font, &hex, metric::UI_FONT_CAPTION);
+        widgets::draw_text_tabular(
+            d,
+            font,
+            &hex,
+            chip.x + chip.width - width,
+            chip.y + (chip.height - metric::UI_FONT_CAPTION) * 0.5,
+            metric::UI_FONT_CAPTION,
+            ink,
+        );
+        controls.push(format!("{}-value@{}", field.name(), rect_text(chip)));
+        if enabled && state.clicked {
+            self.open_card_field(field, &hex);
+        }
+        if let Some(text) = self.card_field(d, font, field, chip) {
+            let digits = text.trim().trim_start_matches('#');
+            if digits.len() == 6 {
+                if let Ok(typed) = u32::from_str_radix(digits, 16) {
+                    picked = Some(typed).filter(|typed| *typed != value);
                 }
             }
         }
-        let report = format!(
-            "{}@{};{}-value@{}",
-            field.name(),
-            rect_text(result.layout.bar),
-            field.name(),
-            rect_text(result.layout.value)
-        );
-        (result.drag, typed, report)
+        if !enabled {
+            return None;
+        }
+        picked
     }
 
     /// The cards, drawn into `area` (the rect the Look list reserved).
@@ -659,6 +1149,7 @@ impl Shell {
         widgets::rounded_box(d, frame, 4.0, color::ui_raised(), color::ui_rule(), 1.0);
         let followed = self.look_column.cards.followed.clone();
         let enabled = followed.is_none();
+        let disabled = (!enabled).then_some(FOLLOWING);
         let cues = track.scene_switches.cues();
         let selected = target(cues, self.scene_lane.selected_id);
         let label_width = look_label_width(frame.width - look_cards::CARD_PADDING * 2.0).min(96.0);
@@ -738,12 +1229,6 @@ impl Shell {
                     d,
                     rect,
                     "This video has no sections yet. Split here in the plan lane adds one at the playhead; the whole video's look is under Whole video.",
-                    color::ui_muted(),
-                ),
-                Part::VideoNotBuilt => draw_lines(
-                    d,
-                    rect,
-                    "Not built yet: the intro, the outro and the finish come from a treatment until this card lands.",
                     color::ui_muted(),
                 ),
                 Part::Invite => draw_lines(
@@ -847,18 +1332,7 @@ impl Shell {
                             cue.transition.kind == TransitionKind::Dip,
                             index == 0,
                         );
-                        let until = until.min(input.duration_seconds);
-                        commands.push(ShellCommand::Seek(from));
-                        if !input.playing {
-                            commands.push(ShellCommand::TogglePlay);
-                        }
-                        self.look_column.cards.cut = Some(CutPreview {
-                            from,
-                            until,
-                            pause: !input.playing,
-                            started: false,
-                            frames: 0,
-                        });
+                        self.play_span(input, from, until.min(input.duration_seconds), commands);
                     }
                 }
                 Part::Sub => {
@@ -900,79 +1374,33 @@ impl Shell {
                 }
                 Part::Kinds => {
                     let Some((_, cue, _)) = selected else { continue };
-                    for (i, (kind, chip)) in KINDS.iter().zip(&place.chips).enumerate() {
-                        let id = widgets::widget_id(widgets::id::LOOK_CARDS, slot::KIND + i as u32);
-                        let state = self.card_chip(
-                            d,
-                            font,
-                            id,
-                            *chip,
-                            kind_label(*kind),
-                            cue.transition.kind == *kind,
-                            enabled,
-                        );
-                        self.widgets.hint(d, state, id, *chip, kind.look());
-                        controls.push(format!("kind-{}@{}", kind.name(), rect_text(*chip)));
-                        if state.clicked && cue.transition.kind != *kind {
-                            let seconds = if cue.transition.is_cut() {
-                                DEFAULT_SECONDS
-                            } else {
-                                cue.transition.seconds
-                            };
-                            edits.push(ScenePlanEdit::SetTransition {
-                                cue_id: cue.id,
-                                transition: Transition::new(*kind, seconds),
-                            });
-                        }
+                    if let Some(transition) = self.kind_grid(
+                        d,
+                        font,
+                        slot::KIND,
+                        "kind",
+                        &place.chips,
+                        cue.transition,
+                        enabled,
+                        &mut controls,
+                    ) {
+                        edits.push(ScenePlanEdit::SetTransition {
+                            cue_id: cue.id,
+                            transition,
+                        });
                     }
                 }
                 Part::Length => {
                     let Some((_, cue, _)) = selected else { continue };
-                    if cue.transition.is_cut() || !enabled {
-                        let reason = if enabled {
-                            "A cut has no length: pick how the section arrives first."
-                        } else {
-                            "Following a treatment: stop following to edit here."
-                        };
-                        let value = if cue.transition.is_cut() {
-                            "\u{2014}".to_owned()
-                        } else {
-                            format!("{:.2} s", cue.transition.seconds)
-                        };
-                        let row = self.disabled_card_row(d, font, 0, rect, "Length", &ascii_fallback(font.all_loaded(), &value), reason, label_width);
-                        controls.push(format!("length@disabled:{}", rect_text(row)));
-                        continue;
-                    }
-                    let value = format!("{:.2} s", cue.transition.seconds);
-                    let (drag, typed, report) = self.card_slider(
-                        d,
-                        font,
-                        slot::LENGTH,
-                        rect,
-                        &widgets::SliderRow {
-                            label: "Length",
-                            value_text: &value,
-                            normalized: look_cards::transition_unit(cue.transition.seconds),
-                            default: Some(look_cards::transition_unit(DEFAULT_SECONDS)),
-                            changed: (cue.transition.seconds - DEFAULT_SECONDS).abs() > 0.004,
-                            route: None,
-                            label_width,
-                        },
-                        CardField::Length,
-                        enabled,
-                    );
-                    controls.push(report);
-                    let seconds = drag
-                        .map(look_cards::transition_seconds)
-                        .or_else(|| {
-                            typed.as_deref().and_then(look_cards::parse_seconds).map(|s| {
-                                s.clamp(
-                                    musializer_core::project::transition::MIN_SECONDS,
-                                    musializer_core::project::transition::MAX_SECONDS,
-                                )
-                            })
-                        });
-                    if let Some(seconds) = seconds.filter(|s| *s != cue.transition.seconds) {
+                    let knob = transition_knob("Length", CardField::Length, slot::LENGTH, cue.transition);
+                    let reason = if cue.transition.is_cut() {
+                        Some(CUT_HAS_NO_LENGTH)
+                    } else {
+                        disabled
+                    };
+                    if let Some(seconds) =
+                        self.knob(d, font, rect, &knob, reason, label_width, &mut controls)
+                    {
                         edits.push(ScenePlanEdit::SetTransition {
                             cue_id: cue.id,
                             transition: Transition::new(cue.transition.kind, seconds),
@@ -982,45 +1410,30 @@ impl Shell {
                 Part::Glide => {
                     let Some((index, cue, previous)) = selected else { continue };
                     let refusal = glide_refusal(index, cue, previous);
-                    let value = if cue.glide > 0.0 {
-                        format!("{:.2} s", cue.glide)
-                    } else {
-                        "none".to_owned()
+                    let knob = Knob {
+                        label: "Glide",
+                        field: CardField::Glide,
+                        first: slot::GLIDE,
+                        value: cue.glide,
+                        low: 0.0,
+                        high: musializer_core::project::scene_switch::MAX_GLIDE_SECONDS,
+                        default: 0.0,
+                        unit: Unit::Seconds,
+                        scale: Scale::Glide,
                     };
-                    if refusal.is_some() || !enabled {
-                        let reason = refusal.unwrap_or_else(|| {
-                            "Following a treatment: stop following to edit here.".to_owned()
-                        });
-                        let row = self.disabled_card_row(d, font, 1, rect, "Glide", &value, &reason, label_width);
-                        controls.push(format!("glide@disabled:{}", rect_text(row)));
-                        continue;
-                    }
-                    let (drag, typed, report) = self.card_slider(
+                    if let Some(seconds) = self.knob(
                         d,
                         font,
-                        slot::GLIDE,
                         rect,
-                        &widgets::SliderRow {
-                            label: "Glide",
-                            value_text: &value,
-                            normalized: look_cards::glide_unit(cue.glide),
-                            default: Some(0.0),
-                            changed: cue.glide > 0.0,
-                            route: None,
-                            label_width,
-                        },
-                        CardField::Glide,
-                        enabled,
-                    );
-                    controls.push(report);
-                    let seconds = drag.map(look_cards::glide_seconds).or_else(|| {
-                        typed
-                            .as_deref()
-                            .and_then(|text| if text.trim() == "none" { Some(0.0) } else { look_cards::parse_seconds(text) })
-                            .map(|s| s.clamp(0.0, musializer_core::project::scene_switch::MAX_GLIDE_SECONDS))
-                    });
-                    if let Some(seconds) = seconds.filter(|s| *s != cue.glide) {
-                        edits.push(ScenePlanEdit::SetGlide { cue_id: cue.id, seconds });
+                        &knob,
+                        refusal.as_deref().or(disabled),
+                        label_width,
+                        &mut controls,
+                    ) {
+                        edits.push(ScenePlanEdit::SetGlide {
+                            cue_id: cue.id,
+                            seconds,
+                        });
                     }
                 }
                 Part::GradeLabel => {
@@ -1097,91 +1510,58 @@ impl Shell {
                 Part::Map | Part::ShiftBy | Part::ShiftFrom | Part::ShiftWidth => {
                     let Some((_, cue, _)) = selected else { continue };
                     let Some(grade) = cue.grade else { continue };
-                    let (label, field, first, value, (low, high), default, text) = match part {
-                        Part::Map => (
+                    let knob = match part {
+                        Part::Map => finish_knob(
                             "Strength",
                             CardField::Map,
                             slot::MAP,
                             grade.map,
                             grade_bounds::MAP,
                             musializer_core::treatment::DEFAULT_GRADE_MAP,
-                            format!("{:.0}%", grade.map * 100.0),
+                            Unit::Percent,
                         ),
-                        Part::ShiftBy => (
+                        Part::ShiftBy => finish_knob(
                             "Hue turn",
                             CardField::ShiftBy,
                             slot::SHIFT_BY,
                             grade.shift_by,
                             grade_bounds::SHIFT_BY,
                             0.0,
-                            format!("{:+.0}\u{00b0}", grade.shift_by),
+                            Unit::SignedDegrees,
                         ),
-                        Part::ShiftFrom => (
+                        Part::ShiftFrom => finish_knob(
                             "Turns hues at",
                             CardField::ShiftFrom,
                             slot::SHIFT_FROM,
                             grade.shift_from,
                             grade_bounds::SHIFT_FROM,
                             125.0,
-                            format!("{:.0}\u{00b0}", grade.shift_from),
+                            Unit::Degrees,
                         ),
-                        _ => (
+                        _ => finish_knob(
                             "Turn width",
                             CardField::ShiftWidth,
                             slot::SHIFT_WIDTH,
                             grade.shift_width,
                             grade_bounds::SHIFT_WIDTH,
                             32.0,
-                            format!("{:.0}\u{00b0}", grade.shift_width),
+                            Unit::Degrees,
                         ),
                     };
-                    let text = ascii_fallback(font.all_loaded(), &text);
-                    let (drag, typed, report) = self.card_slider(
-                        d,
-                        font,
-                        first,
-                        rect,
-                        &widgets::SliderRow {
-                            label,
-                            value_text: &text,
-                            normalized: (value - low) / (high - low),
-                            default: Some((default - low) / (high - low)),
-                            changed: (value - default).abs() > 0.004,
-                            route: None,
-                            label_width,
-                        },
-                        field,
-                        enabled,
-                    );
-                    controls.push(report);
-                    let asked = drag.map(|unit| low + unit * (high - low)).or_else(|| {
-                        typed.as_deref().and_then(|text| {
-                            let text = text.trim().trim_end_matches(['%', '\u{00b0}']).trim();
-                            let number: f32 = text.parse().ok()?;
-                            number.is_finite().then(|| if field == CardField::Map { number / 100.0 } else { number })
-                        })
-                    });
-                    if let Some(asked) = asked {
-                        // Whole degrees and whole percent, as the readout prints.
-                        let snapped = if field == CardField::Map {
-                            (asked * 100.0).round() / 100.0
-                        } else {
-                            asked.round()
-                        }
-                        .clamp(low, high);
+                    if let Some(value) =
+                        self.knob(d, font, rect, &knob, disabled, label_width, &mut controls)
+                    {
                         let mut next = grade;
-                        match field {
-                            CardField::Map => next.map = snapped,
-                            CardField::ShiftBy => next.shift_by = snapped,
-                            CardField::ShiftFrom => next.shift_from = snapped,
-                            _ => next.shift_width = snapped,
+                        match part {
+                            Part::Map => next.map = value,
+                            Part::ShiftBy => next.shift_by = value,
+                            Part::ShiftFrom => next.shift_from = value,
+                            _ => next.shift_width = value,
                         }
-                        if next != grade {
-                            edits.push(ScenePlanEdit::SetGrade {
-                                cue_id: cue.id,
-                                grade: Some(next),
-                            });
-                        }
+                        edits.push(ScenePlanEdit::SetGrade {
+                            cue_id: cue.id,
+                            grade: Some(next),
+                        });
                     }
                 }
                 Part::StyleLabel => {
@@ -1223,7 +1603,13 @@ impl Shell {
                     }
                 }
                 Part::Status => {
-                    let (text, tint) = if !track.scene_switches.enabled {
+                    let video = self.look_column.cards.scope == CardScope::Video;
+                    let (text, tint) = if !track.scene_switches.enabled && video {
+                        (
+                            "The plan is off: the intro waits for Auto on; the outro and finish play.",
+                            color::ui_warning(),
+                        )
+                    } else if !track.scene_switches.enabled {
                         (
                             "The plan is off: Auto on in the plan lane plays these.",
                             color::ui_warning(),
@@ -1244,6 +1630,232 @@ impl Shell {
                         metric::UI_FONT_MICRO,
                         tint,
                     );
+                }
+                Part::VideoTitle => {
+                    widgets::draw_text(
+                        d,
+                        font,
+                        "The whole video",
+                        rect.x,
+                        rect.y + (rect.height - metric::UI_FONT_LABEL) * 0.5,
+                        metric::UI_FONT_LABEL,
+                        color::ui_ink(),
+                    );
+                    // Play the end, then Play the intro, from the right.
+                    let mut right = rect.x + rect.width;
+                    for (label, which) in [("Play the end", slot::PLAY_END), ("Play the intro", slot::PLAY)] {
+                        let width = (measure(label) + 20.0).ceil();
+                        right -= width;
+                        let button = UiRect::new(right, rect.y, width, rect.height);
+                        right -= 6.0;
+                        let id = widgets::widget_id(widgets::id::LOOK_CARDS, which);
+                        let state = self.widgets.text_button(
+                            d,
+                            font,
+                            id,
+                            button,
+                            label,
+                            false,
+                            widgets::ButtonStyle::Neutral,
+                            Some(metric::UI_FONT_CAPTION),
+                        );
+                        controls.push(format!(
+                            "{}@{}",
+                            if which == slot::PLAY { "play-intro" } else { "play-end" },
+                            rect_text(button)
+                        ));
+                        if state.clicked {
+                            let (from, until) = if which == slot::PLAY {
+                                let seconds = cues.first().map_or(0.0, |cue| {
+                                    if cue.transition.is_cut() {
+                                        0.0
+                                    } else {
+                                        musializer_core::project::transition::fitted_seconds(
+                                            cue.transition,
+                                            cue.end_seconds - cue.start_seconds,
+                                        )
+                                    }
+                                });
+                                look_cards::cut_span(0.0, seconds, false, true)
+                            } else {
+                                let outro = track.scene_switches.outro;
+                                let seconds = if outro.is_cut() { 0.0 } else { f64::from(outro.seconds) };
+                                (
+                                    (input.duration_seconds - seconds - look_cards::CUT_LEAD_SECONDS).max(0.0),
+                                    input.duration_seconds,
+                                )
+                            };
+                            self.play_span(input, from, until, commands);
+                        }
+                    }
+                }
+                Part::IntroLabel => {
+                    let value = cues.first().map_or_else(
+                        || "needs a section".to_owned(),
+                        |cue| transition_text(cue.transition, "starts on the picture"),
+                    );
+                    Self::card_label(d, font, rect, "Opens out of black", &ascii_fallback(font.all_loaded(), &value));
+                }
+                Part::IntroNone => draw_lines(
+                    d,
+                    rect,
+                    "The intro is how the first section arrives: Split here in the plan lane makes one.",
+                    color::ui_muted(),
+                ),
+                Part::IntroKinds => {
+                    let Some(first) = cues.first() else { continue };
+                    if let Some(transition) = self.kind_grid(
+                        d,
+                        font,
+                        slot::INTRO_KIND,
+                        "intro",
+                        &place.chips,
+                        first.transition,
+                        enabled,
+                        &mut controls,
+                    ) {
+                        edits.push(ScenePlanEdit::SetTransition { cue_id: first.id, transition });
+                    }
+                }
+                Part::IntroLength => {
+                    let Some(first) = cues.first() else { continue };
+                    let knob = transition_knob("Length", CardField::IntroLength, slot::INTRO_LENGTH, first.transition);
+                    let reason = if first.transition.is_cut() { Some(CUT_HAS_NO_LENGTH) } else { disabled };
+                    if let Some(seconds) = self.knob(d, font, rect, &knob, reason, label_width, &mut controls) {
+                        edits.push(ScenePlanEdit::SetTransition {
+                            cue_id: first.id,
+                            transition: Transition::new(first.transition.kind, seconds),
+                        });
+                    }
+                }
+                Part::OutroLabel => {
+                    let value = transition_text(track.scene_switches.outro, "stops on the picture");
+                    Self::card_label(d, font, rect, "Ends into black", &ascii_fallback(font.all_loaded(), &value));
+                }
+                Part::OutroKinds => {
+                    if let Some(transition) = self.kind_grid(
+                        d,
+                        font,
+                        slot::OUTRO_KIND,
+                        "outro",
+                        &place.chips,
+                        track.scene_switches.outro,
+                        enabled,
+                        &mut controls,
+                    ) {
+                        edits.push(ScenePlanEdit::SetOutro(transition));
+                    }
+                }
+                Part::OutroLength => {
+                    let outro = track.scene_switches.outro;
+                    let knob = transition_knob("Length", CardField::OutroLength, slot::OUTRO_LENGTH, outro);
+                    let reason = if outro.is_cut() {
+                        Some("A video that stops on the picture has no length: pick how it ends first.")
+                    } else {
+                        disabled
+                    };
+                    if let Some(seconds) = self.knob(d, font, rect, &knob, reason, label_width, &mut controls) {
+                        edits.push(ScenePlanEdit::SetOutro(Transition::new(outro.kind, seconds)));
+                    }
+                }
+                Part::FinishLabel => {
+                    let finish = track.scene_switches.finish;
+                    let value = match finish_preset(&finish) {
+                        Some(0) => "none",
+                        Some(_) => "film",
+                        None => "your own",
+                    };
+                    Self::card_label(d, font, rect, "Finish over every frame", value);
+                }
+                Part::FinishPresets => {
+                    let finish = track.scene_switches.finish;
+                    let shown = finish_preset(&finish);
+                    for (i, (label, chip)) in FINISH_PRESETS.iter().zip(&place.chips).enumerate() {
+                        let id = widgets::widget_id(widgets::id::LOOK_CARDS, slot::FINISH + i as u32);
+                        let state = self.card_chip(d, font, id, *chip, label, shown == Some(i), enabled);
+                        self.widgets.hint(
+                            d,
+                            state,
+                            id,
+                            *chip,
+                            if i == 0 {
+                                "No finish: the frames as the scenes draw them (the pixel look stays)"
+                            } else {
+                                "Film: bloom, a highlight shoulder, split toning, a vignette and grain"
+                            },
+                        );
+                        controls.push(format!("finish-{}@{}", label.to_ascii_lowercase(), rect_text(*chip)));
+                        if state.clicked && shown != Some(i) {
+                            let base = if i == 0 {
+                                musializer_core::project::look::Finish::NONE
+                            } else {
+                                musializer_core::project::look::Finish::FILM
+                            };
+                            edits.push(ScenePlanEdit::SetFinish(musializer_core::project::look::Finish {
+                                pixel: finish.pixel,
+                                ..base
+                            }));
+                        }
+                    }
+                }
+                Part::Bloom
+                | Part::BloomThreshold
+                | Part::BloomRadius
+                | Part::Shoulder
+                | Part::Tone
+                | Part::Vignette
+                | Part::Grain => {
+                    use musializer_core::project::look::{finish_bounds, Finish};
+                    let finish = track.scene_switches.finish;
+                    let none = Finish::NONE;
+                    let knob = match part {
+                        Part::Bloom => finish_knob("Bloom", CardField::Bloom, slot::BLOOM, finish.bloom, finish_bounds::BLOOM, none.bloom, Unit::Plain),
+                        Part::BloomThreshold => finish_knob("Bloom from", CardField::BloomThreshold, slot::BLOOM_THRESHOLD, finish.bloom_threshold, finish_bounds::BLOOM_THRESHOLD, none.bloom_threshold, Unit::Percent),
+                        Part::BloomRadius => finish_knob("Bloom spread", CardField::BloomRadius, slot::BLOOM_RADIUS, finish.bloom_radius, finish_bounds::BLOOM_RADIUS, none.bloom_radius, Unit::ShortEdge),
+                        Part::Shoulder => finish_knob("Highlights", CardField::Shoulder, slot::SHOULDER, finish.shoulder, finish_bounds::UNIT, none.shoulder, Unit::Percent),
+                        Part::Tone => finish_knob("Toning", CardField::Tone, slot::TONE, finish.tone, finish_bounds::UNIT, none.tone, Unit::Percent),
+                        Part::Vignette => finish_knob("Vignette", CardField::Vignette, slot::VIGNETTE, finish.vignette, finish_bounds::UNIT, none.vignette, Unit::Percent),
+                        _ => finish_knob("Grain", CardField::Grain, slot::GRAIN, finish.grain, finish_bounds::UNIT, none.grain, Unit::Percent),
+                    };
+                    if let Some(value) = self.knob(d, font, rect, &knob, disabled, label_width, &mut controls) {
+                        let mut next = finish;
+                        match part {
+                            Part::Bloom => next.bloom = value,
+                            Part::BloomThreshold => next.bloom_threshold = value,
+                            Part::BloomRadius => next.bloom_radius = value,
+                            Part::Shoulder => next.shoulder = value,
+                            Part::Tone => next.tone = value,
+                            Part::Vignette => next.vignette = value,
+                            _ => next.grain = value,
+                        }
+                        edits.push(ScenePlanEdit::SetFinish(next));
+                    }
+                }
+                Part::Shadow | Part::Highlight => {
+                    let finish = track.scene_switches.finish;
+                    let shadow = *part == Part::Shadow;
+                    let picked = self.colour_row(
+                        d,
+                        font,
+                        rect,
+                        if shadow { "Shadow tone" } else { "Highlight tone" },
+                        if shadow { CardField::Shadow } else { CardField::Highlight },
+                        if shadow { slot::SHADOW } else { slot::HIGHLIGHT },
+                        if shadow { finish.shadow_rgb } else { finish.highlight_rgb },
+                        if shadow { &SHADOW_TONES } else { &HIGHLIGHT_TONES },
+                        enabled,
+                        label_width,
+                        &mut controls,
+                    );
+                    if let Some(rgb) = picked {
+                        let mut next = finish;
+                        if shadow {
+                            next.shadow_rgb = rgb;
+                        } else {
+                            next.highlight_rgb = rgb;
+                        }
+                        edits.push(ScenePlanEdit::SetFinish(next));
+                    }
                 }
                 Part::Space => {}
             }
@@ -1296,8 +1908,28 @@ impl Shell {
         } else {
             ""
         };
+        let plan = &track.scene_switches;
+        let finish = plan.finish;
+        let video_text =
+            format!(
+            "intro={} outro={} finish={:.2},{:.2},{:.3},{:.2},{:.2},{:.2},{:.2},#{:06x},#{:06x}",
+            cues.first().map_or_else(
+                || "none".to_owned(),
+                |cue| format!("{}:{:.2}", cue.transition.kind.name(), cue.transition.seconds)
+            ),
+            format_args!("{}:{:.2}", plan.outro.kind.name(), plan.outro.seconds),
+            finish.bloom,
+            finish.bloom_threshold,
+            finish.bloom_radius,
+            finish.shoulder,
+            finish.tone,
+            finish.vignette,
+            finish.grain,
+            finish.shadow_rgb,
+            finish.highlight_rgb,
+        );
         self.look_column.cards.report = format!(
-            "scope={} target={target_text} follow={} editable={} cut={cut} typing={typing} area={} frame={} controls={}{probe}",
+            "scope={} target={target_text} {video_text} follow={} editable={} cut={cut} typing={typing} area={} frame={} controls={}{probe}",
             self.look_column.cards.scope.name(),
             followed.as_deref().unwrap_or("none"),
             u8::from(enabled),
@@ -1305,6 +1937,35 @@ impl Shell {
             rect_text(frame),
             controls.join(";"),
         );
+    }
+}
+
+/// Which of [`FINISH_PRESETS`] a finish is, ignoring its pixel look.
+fn finish_preset(finish: &musializer_core::project::look::Finish) -> Option<usize> {
+    use musializer_core::project::look::Finish;
+    let bare = Finish {
+        pixel: Finish::NONE.pixel,
+        ..*finish
+    };
+    if !bare.shades() {
+        Some(0)
+    } else if bare == Finish::FILM {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// How a transition reads in a label: `Fade · 0.60 s`, or `cut` in words.
+fn transition_text(transition: Transition, cut: &str) -> String {
+    if transition.is_cut() {
+        cut.to_owned()
+    } else {
+        format!(
+            "{} \u{00b7} {:.2} s",
+            kind_label(transition.kind),
+            transition.seconds
+        )
     }
 }
 
