@@ -69,6 +69,9 @@ pub(crate) struct GenerateForm {
     pub armed: bool,
     /// `generate=send` (a probe): press Send once it can be pressed.
     pub probe_send: bool,
+    /// `generate=send-twice` (a probe): arm and press Send once more after
+    /// the first, as a person does after reading a warning.
+    pub probe_again: bool,
 }
 
 impl GenerateForm {
@@ -85,6 +88,7 @@ impl GenerateForm {
             last: true,
             armed: false,
             probe_send: false,
+            probe_again: false,
         }
     }
 }
@@ -212,7 +216,7 @@ pub(super) fn report(
         |(_, _, estimate)| estimate.short().replace(' ', "-"),
     );
     format!(
-        "generate=open generate-price={price} generate-key={} generate-model={} generate-seconds={} generate-first={} generate-last={} generate-armed={} generate-prompt-bytes={} generate-running={}",
+        "generate=open generate-price={price} generate-key={} generate-model={} generate-seconds={} generate-first={} generate-last={} generate-armed={} generate-prompt-bytes={} generate-running={} generate-unconfirmed={}",
         if view.key.is_ok() { "stored" } else { "none" },
         PICKS[form.model].id,
         form.seconds,
@@ -221,6 +225,7 @@ pub(super) fn report(
         form.armed,
         form.prompt.edit.text().len(),
         view.running_for(cue_id).map_or("no".to_owned(), |running| running.stage.replace(' ', "-")),
+        if view.unconfirmed.contains_key(&cue_id) { "yes" } else { "no" },
     )
 }
 
@@ -277,6 +282,9 @@ impl Shell {
                 .clip_section(cx.index, track.base_clip)
                 .is_some();
         let running = view.running_for(cx.cue.id).cloned();
+        // An earlier send of this section's request may have been billed:
+        // the button says the next one is a second request.
+        let unconfirmed = view.unconfirmed.get(&cx.cue.id).cloned();
         let line = |n: f32| rect.y + n * look_cards::LINE_HEIGHT + 1.0;
         match part {
             GeneratePart::Label => {
@@ -742,11 +750,12 @@ impl Shell {
                     || "price unknown".to_owned(),
                     |(_, _, estimate)| estimate.short(),
                 );
+                let again = if unconfirmed.is_some() { " again" } else { "" };
                 let label = match drafted.as_ref().map(|(_, _, estimate)| estimate) {
                     Some(Price::Known(estimate)) => {
-                        format!("Generate for about {}", estimate.dollars())
+                        format!("Generate{again} for about {}", estimate.dollars())
                     }
-                    _ => "Generate (price unknown)".to_owned(),
+                    _ => format!("Generate{again} (price unknown)"),
                 };
                 let widget = id(generate_slot::ACTION);
                 if let Some(reason) = blocked {
@@ -777,7 +786,11 @@ impl Shell {
                         font,
                         widget,
                         send,
-                        &format!("Send to OpenRouter \u{00b7} {price_text}"),
+                        &if unconfirmed.is_some() {
+                            format!("Send again \u{00b7} {price_text} more")
+                        } else {
+                            format!("Send to OpenRouter \u{00b7} {price_text}")
+                        },
                         false,
                         widgets::ButtonStyle::Primary,
                         Some(metric::UI_FONT_CAPTION),
@@ -787,7 +800,11 @@ impl Shell {
                         state,
                         widget,
                         send,
-                        "Sends the request now and spends about the price shown. OpenRouter cannot cancel a job once sent",
+                        if unconfirmed.is_some() {
+                            "Sends it a second time and spends about the price shown again. The first send may already be billed; OpenRouter cannot find it"
+                        } else {
+                            "Sends the request now and spends about the price shown. OpenRouter cannot cancel a job once sent"
+                        },
                     );
                     let back_state = self.widgets.text_button(
                         d,
@@ -820,9 +837,14 @@ impl Shell {
                                 first: form.first && takes_first && own_picture,
                                 last: form.last && takes_last && next.is_some(),
                                 shown: estimate.usd(),
+                                resend: unconfirmed.as_ref().map(|held| held.digest.clone()),
                             }));
                         }
                         form.armed = false;
+                        if std::mem::take(&mut form.probe_again) {
+                            form.armed = true;
+                            form.probe_send = true;
+                        }
                     }
                 } else {
                     let state = self.widgets.text_button(
@@ -916,6 +938,22 @@ impl Shell {
                             line(1.0) + 4.0,
                             metric::UI_FONT_CAPTION,
                             color::ui_muted(),
+                        );
+                    }
+                } else if let Some(held) = &unconfirmed {
+                    for (n, words) in wrap(&held.words, rect.width, &measure)
+                        .iter()
+                        .take(3)
+                        .enumerate()
+                    {
+                        widgets::draw_text(
+                            d,
+                            font,
+                            &ascii_fallback(font.all_loaded(), words),
+                            rect.x,
+                            line(n as f32),
+                            metric::UI_FONT_CAPTION,
+                            color::ui_warning(),
                         );
                     }
                 } else if let Some(last) = view.last.get(&cx.cue.id) {
@@ -1037,8 +1075,9 @@ impl Shell {
         if let Some(prompt) = prompt {
             form.prompt.bind(prompt);
         }
-        form.armed = matches!(mode, "armed" | "send");
-        form.probe_send = mode == "send";
+        form.armed = matches!(mode, "armed" | "send" | "send-twice");
+        form.probe_send = matches!(mode, "send" | "send-twice");
+        form.probe_again = mode == "send-twice";
         self.look_column.cards.generate = Some(form);
     }
 }

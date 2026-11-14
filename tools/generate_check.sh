@@ -30,6 +30,10 @@
 #     Cancel, no key, a followed treatment, the flyout, captures (see
 #     tools/generate_card_check.py);
 #   - the canary key is in no output file, log, store file or argv;
+#   - lost (H4b): a submit the provider accepts and never answers is "may have
+#     been billed", never "nothing"; the next run sends nothing and says so,
+#     and --resend-unconfirmed sends it again only when the ceiling holds both
+#     estimates;
 #   - concurrent (H4b): two runs asking for one request while the first one's
 #     submit is in flight pay once (the provider's submit count), a run with
 #     --max-spend 0 sends nothing, and a job found in progress counts against
@@ -357,6 +361,52 @@ else
     fail "a job in progress was not counted at its estimate (status $(status_of twice-w)); see $OUT/twice-w.log"
 fi
 fi # concurrent
+
+# --- 9. an accepted submit whose answer never arrives (H4b) ----------------------
+if only lost; then
+treatment "$OUT/lost.treatment.json" "a lost answer [lost-answer-once]" ""
+submits="$(count submit)"
+launch lost-1 --treatment "$OUT/lost.treatment.json" --generate-clips --max-spend 1.00 \
+    --save-project "$OUT/lost-1.musi"
+if [ "$(status_of lost-1)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] \
+    && has lost-1 'The request was sent and its answer never arrived, so it may have been billed (about $0.12)' \
+    && ! has lost-1 'Nothing was sent'; then
+    pass "a submit accepted and never answered: one submit, \"may have been billed (about \$0.12)\", never \"nothing\""
+else
+    fail "the lost answer was not reported as possibly billed (status $(status_of lost-1)); see $OUT/lost-1.log"
+fi
+launch lost-2 --treatment "$OUT/lost.treatment.json" --generate-clips --max-spend 1.00 \
+    --save-project "$OUT/lost-2.musi"
+if [ "$(status_of lost-2)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] \
+    && has lost-2 'and its answer never arrived, so OpenRouter may have accepted and billed it (about $0.12)' \
+    && has lost-2 'add --resend-unconfirmed'; then
+    pass "the next run sends nothing, says the first may have been billed, and names --resend-unconfirmed"
+else
+    fail "the next run did not hold the request (status $(status_of lost-2), $(count submit) submits); see $OUT/lost-2.log"
+fi
+launch lost-3 --treatment "$OUT/lost.treatment.json" --generate-clips --max-spend 0.20 --resend-unconfirmed \
+    --save-project "$OUT/lost-3.musi"
+if [ "$(status_of lost-3)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] \
+    && has lost-3 'refused: it would pass the ceiling: $0.12 committed this run, $0.12 more, $0.20 allowed'; then
+    pass "sending it again counts both estimates: refused under a \$0.20 ceiling"
+else
+    fail "--resend-unconfirmed did not count the earlier send (status $(status_of lost-3)); see $OUT/lost-3.log"
+fi
+launch lost-4 --treatment "$OUT/lost.treatment.json" --generate-clips --max-spend 0.30 --resend-unconfirmed \
+    --save-project "$OUT/lost-4.musi"
+if [ "$(status_of lost-4)" = 0 ] && [ "$(count submit)" = $((submits + 2)) ] \
+    && has lost-4 'clip.generate generated' && ! ls "$MUSIALIZER_GENERATED_DIR/intents/"*.json >/dev/null 2>&1; then
+    pass "with --resend-unconfirmed and room for both, it is sent once more and generated; no intent is left"
+else
+    fail "the agreed resend did not generate (status $(status_of lost-4)); see $OUT/lost-4.log"
+fi
+launch lost-flag --treatment "$OUT/lost.treatment.json" --resend-unconfirmed --save-project "$OUT/lost-flag.musi"
+if [ "$(status_of lost-flag)" = 1 ] && has lost-flag '--resend-unconfirmed sends again only with --generate-clips'; then
+    pass "--resend-unconfirmed alone is refused"
+else
+    fail "--resend-unconfirmed alone was not refused; see $OUT/lost-flag.log"
+fi
+fi # lost
 
 # --- 6. the section card's Generate, pressed (tools/generate_card_check.py) -------
 if [ "${GENERATE_SKIP_CARD:-}" != 1 ] && only card; then

@@ -11,6 +11,8 @@
 //! clips/<request sha256>.mp4    the verified download
 //! clips/<request sha256>.json   its provenance (model, prompt, cost, …)
 //! jobs/<request sha256>.json    a job submitted and not yet downloaded
+//! intents/<request sha256>.json a request about to be sent, or sent and
+//!                               never answered: it may have been billed
 //! locks/<request sha256>.lock   held by the one caller asking for a request
 //! work/<name>/                  one caller's scratch (body, answers, partial)
 //! prices.json                   the price list, with when it was read
@@ -41,6 +43,7 @@ use musializer_core::project::sha256;
 use serde::{Deserialize, Serialize};
 
 const JOB_SCHEMA: &str = "musializer.video-job/v1";
+const INTENT_SCHEMA: &str = "musializer.video-intent/v1";
 const RECEIPT_SCHEMA: &str = "musializer.video-clip/v1";
 const MAX_RECORD_BYTES: u64 = 64 * 1024;
 
@@ -91,6 +94,25 @@ pub struct JobRecord {
     pub model: String,
     pub seconds: u32,
     pub submitted_utc: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate_usd: Option<f64>,
+}
+
+/// A request written down before it is sent (H4b). It becomes the job's
+/// record when the job id arrives, and goes when the provider refused it or
+/// it never left. One that is still here with nobody sending it means: a
+/// request may have been accepted, and its job id is unknown. OpenRouter has
+/// no way to find such a job (`docs/VIDEO_GENERATION.md`, read 2026-11-14), so
+/// the next ask for it says so and waits for the person's agreement.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Intent {
+    pub schema: String,
+    pub request_sha256: String,
+    pub model: String,
+    pub seconds: u32,
+    /// When it was sent, UTC.
+    pub sent_utc: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimate_usd: Option<f64>,
 }
@@ -336,6 +358,52 @@ impl Store {
                 .map_err(|error| error.to_string())?
                 .as_bytes(),
         )
+    }
+
+    /// The intent written for a request, if any.
+    #[must_use]
+    pub fn intent(&self, request: &str) -> Option<Intent> {
+        if !is_digest(request) {
+            return None;
+        }
+        let intent: Intent = serde_json::from_slice(&read_bounded(
+            &self.root.join("intents").join(format!("{request}.json")),
+        )?)
+        .ok()?;
+        (intent.schema == INTENT_SCHEMA && intent.request_sha256 == request).then_some(intent)
+    }
+
+    /// An intent nobody is sending now: a request that may have been
+    /// accepted and whose job id is unknown.
+    #[must_use]
+    pub fn leftover_intent(&self, request: &str) -> Option<Intent> {
+        if self.in_flight(request) {
+            return None;
+        }
+        self.intent(request)
+    }
+
+    /// Writes the intent, before the request leaves.
+    ///
+    /// # Errors
+    ///
+    /// The folder or file cannot be written.
+    pub fn record_intent(&self, intent: &Intent) -> Result<(), String> {
+        let intents = self.folder("intents")?;
+        let mut intent = intent.clone();
+        intent.schema = INTENT_SCHEMA.to_owned();
+        write_private(
+            &intents.join(format!("{}.json", intent.request_sha256)),
+            serde_json::to_string_pretty(&intent)
+                .map_err(|error| error.to_string())?
+                .as_bytes(),
+        )
+    }
+
+    pub fn forget_intent(&self, request: &str) {
+        if is_digest(request) {
+            let _ = std::fs::remove_file(self.root.join("intents").join(format!("{request}.json")));
+        }
     }
 
     pub fn forget_job(&self, request: &str) {

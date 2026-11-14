@@ -91,8 +91,15 @@ impl Endpoint {
 pub enum ClientError {
     #[error("curl could not be started ({0}); generating clips needs curl")]
     NoCurl(String),
-    #[error("could not reach {host}: {detail}")]
-    Network { host: String, detail: String },
+    /// `sent`: the request was written to the connection (curl's
+    /// `size_request`), or that cannot be told; a submit that failed after
+    /// it may have been accepted.
+    #[error("{}", network_text(.host, .detail, *.sent))]
+    Network {
+        host: String,
+        detail: String,
+        sent: bool,
+    },
     #[error("stopped")]
     Stopped,
     #[error("{0}")]
@@ -103,6 +110,14 @@ pub enum ClientError {
     TooLarge(u64),
     #[error("{0}")]
     Local(String),
+}
+
+fn network_text(host: &str, detail: &str, sent: bool) -> String {
+    if sent {
+        format!("the call to {host} failed: {detail}")
+    } else {
+        format!("could not reach {host}: {detail}")
+    }
 }
 
 /// A refusal with an HTTP status, in the words a person should read. E10: the
@@ -224,7 +239,7 @@ fn run(
         .map_err(|error| ClientError::NoCurl(error.to_string()))?;
     let full = format!(
         "{config}output = {}\nsilent\nshow-error\nmax-time = {}\nuser-agent = {}\n\
-         write-out = \"%{{http_code}}\\n%{{content_type}}\\n\"\n",
+         write-out = \"%{{http_code}}\\n%{{content_type}}\\n%{{size_request}}\\n\"\n",
         quoted(&output.to_string_lossy()),
         limit.as_secs().max(1),
         quoted(USER_AGENT),
@@ -244,7 +259,15 @@ fn run(
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) => {}
-            Err(error) => return Err(ClientError::Local(error.to_string())),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ClientError::Network {
+                    host: endpoint.describe().to_owned(),
+                    detail: error.to_string(),
+                    sent: true,
+                });
+            }
         }
         if stop.load(Ordering::Relaxed) || started.elapsed() > limit + Duration::from_secs(5) {
             let _ = child.kill();
@@ -255,6 +278,7 @@ fn run(
                 ClientError::Network {
                     host: endpoint.describe().to_owned(),
                     detail: "curl did not return".into(),
+                    sent: true,
                 }
             });
         }
@@ -268,15 +292,27 @@ fn run(
     if let Some(mut pipe) = child.stderr.take() {
         let _ = pipe.by_ref().take(4096).read_to_string(&mut stderr);
     }
-    let status = child
-        .wait()
-        .map_err(|error| ClientError::Local(error.to_string()))?;
+    let status = child.wait().map_err(|error| ClientError::Network {
+        host: endpoint.describe().to_owned(),
+        detail: error.to_string(),
+        sent: true,
+    })?;
     let mut lines = stdout.lines();
     let code: u16 = lines
         .next()
         .and_then(|code| code.trim().parse().ok())
         .unwrap_or(0);
     let content_type = lines.next().unwrap_or("").trim().to_ascii_lowercase();
+    // Whether any of the request went out: curl prints `size_request` even
+    // when the transfer failed. Unreadable is "it may have": 6 (no such
+    // host) and 7 (refused) are the only failures known to precede it.
+    let sent = match lines
+        .next()
+        .and_then(|bytes| bytes.trim().parse::<u64>().ok())
+    {
+        Some(bytes) => bytes > 0,
+        None => !matches!(status.code(), Some(6 | 7)),
+    };
     // 63: `max-filesize` exceeded.
     if status.code() == Some(63) {
         return Err(ClientError::TooLarge(0));
@@ -285,6 +321,24 @@ fn run(
         return Err(ClientError::Network {
             host: endpoint.describe().to_owned(),
             detail: bounded_message(&stderr),
+            sent,
+        });
+    }
+    // An answer that began and was cut short (18: a partial file, 56: the
+    // connection reset): not an answer.
+    if !status.success() {
+        return Err(ClientError::Network {
+            host: endpoint.describe().to_owned(),
+            detail: format!(
+                "the answer was cut short (curl {}){}",
+                status.code().unwrap_or(-1),
+                if stderr.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", bounded_message(&stderr))
+                }
+            ),
+            sent: true,
         });
     }
     Ok(Answer {
@@ -306,12 +360,14 @@ fn authorization(secret: &Secret) -> String {
     )
 }
 
+/// An answer's JSON. Every failure here is a [`ClientError::Format`]: the
+/// call was answered, so a submit that ends here may have made a job.
 fn read_json(path: &Path) -> Result<Value, ClientError> {
-    let file = std::fs::File::open(path).map_err(|error| ClientError::Local(error.to_string()))?;
+    let file = std::fs::File::open(path).map_err(|error| ClientError::Format(error.to_string()))?;
     let mut bytes = Vec::new();
     file.take(MAX_JSON_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| ClientError::Local(error.to_string()))?;
+        .map_err(|error| ClientError::Format(error.to_string()))?;
     if bytes.len() as u64 > MAX_JSON_BYTES {
         return Err(ClientError::Format(
             "the answer is larger than 1 MiB".into(),
@@ -326,6 +382,16 @@ fn refusal(answer: &Answer, body: &Path) -> ClientError {
         status: answer.status,
         message: error_message(&bytes[..bytes.len().min(MAX_JSON_BYTES as usize)]),
     })
+}
+
+/// A submit that gave no job id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Submitted {
+    pub error: ClientError,
+    /// The request may have reached OpenRouter and been accepted: its answer
+    /// was lost after it was written to the connection, or OpenRouter failed
+    /// in a way that does not say no job was made.
+    pub may_be_billed: bool,
 }
 
 /// A job's state, as a poll or the submit answered.
@@ -403,8 +469,30 @@ impl Client<'_> {
     ///
     /// # Errors
     ///
-    /// Any refusal, by status and the provider's message.
-    pub fn submit(&self, body: &Path) -> Result<JobState, ClientError> {
+    /// Any refusal, by status and the provider's message, with whether the
+    /// request may have been accepted all the same ([`Submitted::may_be_billed`]).
+    pub fn submit(&self, body: &Path) -> Result<JobState, Submitted> {
+        self.submit_inner(body).map_err(|error| {
+            let may_be_billed = match &error {
+                // Never started, or never wrote a byte of the request (the
+                // only `Local` a submit returns is curl closing its input).
+                ClientError::NoCurl(_) | ClientError::Local(_) => false,
+                ClientError::Network { sent, .. } => *sent,
+                // The provider answered and refused: no job. A 5xx or a
+                // timeout from OpenRouter may come after the model's
+                // provider took the job.
+                ClientError::Http(refusal) => refusal.status >= 500 || refusal.status == 408,
+                // Killed mid-call, or a 2xx whose answer could not be read.
+                ClientError::Stopped | ClientError::Format(_) | ClientError::TooLarge(_) => true,
+            };
+            Submitted {
+                error,
+                may_be_billed,
+            }
+        })
+    }
+
+    fn submit_inner(&self, body: &Path) -> Result<JobState, ClientError> {
         let answer_path = self.scratch("submit.json");
         let config = format!(
             "url = {}\nrequest = \"POST\"\n{}header = \"Content-Type: application/json\"\n\

@@ -31,6 +31,14 @@ use super::job::{Billing, GenerationJob, JobSpec, Outcome, Reuse, Stage};
 use super::store::Store;
 use crate::scene_host::SceneRenderer;
 
+/// The notice's title when a request is held because an earlier send of it
+/// may have been billed.
+const HELD_TITLE: &str = "An earlier send may have been billed";
+
+/// What the card's next Send does after that warning.
+const AGAIN: &str = "Press Generate again to send it anew: that is a second request, and it \
+                     is billed too.";
+
 /// What the card asks for when its Send is pressed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GenerateOrder {
@@ -45,6 +53,18 @@ pub struct GenerateOrder {
     pub last: bool,
     /// The price the button showed, which the request must still have.
     pub shown: Option<f64>,
+    /// The request digest the card warned about: sent before, its answer
+    /// lost, so it may have been billed. Sending it again needs this to be
+    /// the request's own digest (the card showed the warning for it).
+    pub resend: Option<String>,
+}
+
+/// A request whose earlier send may have been billed, for the card: its
+/// warning, and the digest a second Send agrees to send again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnconfirmedView {
+    pub digest: String,
+    pub words: String,
 }
 
 /// A job's state, for the card.
@@ -77,6 +97,8 @@ pub struct CardView {
     pub key: Result<(), String>,
     pub running: Vec<RunningView>,
     pub last: HashMap<u64, LastOutcome>,
+    /// Sections whose request was sent before and never answered.
+    pub unconfirmed: HashMap<u64, UnconfirmedView>,
     /// The store's folder, for the card's hint.
     pub kept_in: Option<PathBuf>,
     /// The `generate:` report line.
@@ -92,6 +114,7 @@ impl Default for CardView {
             key: Err(super::NO_KEY.to_owned()),
             running: Vec::new(),
             last: HashMap::new(),
+            unconfirmed: HashMap::new(),
             kept_in: None,
             report: "none".to_owned(),
         }
@@ -111,6 +134,28 @@ struct Running {
     estimate: Option<f64>,
     /// The audio the track that asked has, so a clip never lands in another.
     audio_sha256: String,
+    /// The request's digest, for a warning when its answer is lost.
+    digest: String,
+}
+
+/// Why [`Generations::prepare`] started nothing.
+enum NotStarted {
+    /// By name, as any refusal.
+    Refused(String),
+    /// An earlier send of this request may have been billed: the warning.
+    Held(String),
+}
+
+impl From<String> for NotStarted {
+    fn from(reason: String) -> Self {
+        Self::Refused(reason)
+    }
+}
+
+impl From<&str> for NotStarted {
+    fn from(reason: &str) -> Self {
+        Self::Refused(reason.to_owned())
+    }
 }
 
 /// The window's generations: at most one job per section.
@@ -123,6 +168,7 @@ pub struct Generations {
     key_checked: Option<Instant>,
     jobs: Vec<Running>,
     last: HashMap<u64, LastOutcome>,
+    unconfirmed: HashMap<u64, UnconfirmedView>,
 }
 
 impl Default for Generations {
@@ -149,6 +195,7 @@ impl Generations {
             key_checked: None,
             jobs: Vec::new(),
             last: HashMap::new(),
+            unconfirmed: HashMap::new(),
         }
     }
 
@@ -176,6 +223,7 @@ impl Generations {
                 })
                 .collect(),
             last: self.last.clone(),
+            unconfirmed: self.unconfirmed.clone(),
             kept_in: self.store.as_ref().ok().map(super::job::kept_at),
             report: self.describe(),
         }
@@ -259,6 +307,15 @@ impl Generations {
             || "price unknown".to_owned(),
             |usd| format!("${:.2}", price::ceil_cents(usd)),
         );
+        let lost = matches!(
+            &outcome,
+            Outcome::Failed {
+                billing: Billing::Unconfirmed(_),
+                ..
+            } | Outcome::Stopped {
+                billing: Billing::Unconfirmed(_),
+            }
+        );
         let (severity, title, words) = match outcome {
             Outcome::Done(generated) => {
                 let cost = generated
@@ -293,6 +350,10 @@ impl Generations {
                     ),
                 }
             }
+            Outcome::Unconfirmed(intent) => {
+                let words = self.hold(order.cue_id, &running.digest, &intent);
+                (Severity::Warning, HELD_TITLE, words)
+            }
             Outcome::Failed { reason, billing } => (
                 Severity::Error,
                 "Clip not generated",
@@ -307,6 +368,10 @@ impl Generations {
                 "Stopped waiting for the clip",
                 match billing {
                     Billing::Nothing => "Nothing was sent.".to_owned(),
+                    Billing::Unconfirmed(_) => format!(
+                        "Stopped while the request was being sent. {}",
+                        billing.sentence().unwrap_or_default()
+                    ),
                     other => format!(
                         "{} Generate again with the same settings picks the job up instead of paying twice.",
                         other.sentence().unwrap_or_default()
@@ -314,9 +379,34 @@ impl Generations {
                 },
             ),
         };
+        // A send whose answer was lost: the card warns, and its next Send
+        // is the agreement to send it again.
+        if lost {
+            self.unconfirmed.insert(
+                order.cue_id,
+                UnconfirmedView {
+                    digest: running.digest.clone(),
+                    words: format!("{words} {AGAIN}"),
+                },
+            );
+        }
         app.shell.notify(severity, title, &words);
         self.last
             .insert(order.cue_id, LastOutcome { severity, words });
+    }
+
+    /// Holds a request whose earlier send may have been billed: the card
+    /// shows why, and its next Send agrees to send it again.
+    fn hold(&mut self, cue_id: u64, digest: &str, intent: &super::store::Intent) -> String {
+        let words = format!("{} {AGAIN}", super::job::unconfirmed_words(intent));
+        self.unconfirmed.insert(
+            cue_id,
+            UnconfirmedView {
+                digest: digest.to_owned(),
+                words: words.clone(),
+            },
+        );
+        words
     }
 
     /// Renders the frames, builds the request and starts the job.
@@ -344,7 +434,17 @@ impl Generations {
             Ok(()) => {
                 self.last.remove(&cue_id);
             }
-            Err(reason) => {
+            Err(NotStarted::Held(words)) => {
+                app.shell.notify(Severity::Warning, HELD_TITLE, &words);
+                self.last.insert(
+                    cue_id,
+                    LastOutcome {
+                        severity: Severity::Warning,
+                        words,
+                    },
+                );
+            }
+            Err(NotStarted::Refused(reason)) => {
                 app.shell
                     .notify(Severity::Warning, "Clip not generated", &reason);
                 self.last.insert(
@@ -371,7 +471,7 @@ impl Generations {
         renderer: &mut SceneRenderer,
         fonts: &Faces,
         session: Option<&Secret>,
-    ) -> Result<(), String> {
+    ) -> Result<(), NotStarted> {
         if self
             .jobs
             .iter()
@@ -489,12 +589,25 @@ impl Generations {
         let now_usd = estimate.usd().map(price::ceil_cents);
         let shown = order.shown.map(price::ceil_cents);
         if now_usd != shown {
-            return Err(format!(
+            return Err(NotStarted::Refused(format!(
                 "the price changed from {} to {} since the card showed it; look at it again",
                 shown.map_or_else(|| "unknown".to_owned(), |usd| format!("${usd:.2}")),
                 estimate.short()
-            ));
+            )));
         }
+        // Sent before and never answered: held until the person, told it may
+        // have been billed, presses Send again for this very request.
+        let digest = request.digest();
+        let resend = match store.leftover_intent(&digest) {
+            Some(intent) if order.resend.as_deref() == Some(digest.as_str()) => {
+                Some(intent.sent_utc)
+            }
+            Some(intent) => {
+                return Err(NotStarted::Held(self.hold(order.cue_id, &digest, &intent)))
+            }
+            None => None,
+        };
+        self.unconfirmed.remove(&order.cue_id);
         let (poll, deadline, max_bytes) = JobSpec::timings_from_env();
         let job = GenerationJob::spawn(JobSpec {
             name: super::job::clip_name(&request),
@@ -508,12 +621,14 @@ impl Generations {
             poll,
             deadline,
             max_bytes,
+            resend,
         });
         self.jobs.push(Running {
             estimate: estimate.usd(),
             order,
             job,
             audio_sha256,
+            digest,
         });
         Ok(())
     }

@@ -14,6 +14,11 @@
 //! job at a time, while the estimates of the jobs submitted stay within the
 //! ceiling; the rest are refused by name. An unknown price is refused under
 //! a ceiling, since no ceiling can be kept with it.
+//!
+//! **A request whose earlier send lost its answer** (an intent left in the
+//! store, H4b) may have been billed. It counts against the ceiling at its
+//! estimate, and it is refused by name unless the run also carries
+//! `--resend-unconfirmed`; then sending it again counts a second estimate.
 
 use std::path::{Path, PathBuf};
 
@@ -38,6 +43,9 @@ const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 pub struct Spending {
     /// `--generate-clips` with `--max-spend USD`.
     pub ceiling_usd: Option<f64>,
+    /// `--resend-unconfirmed`: a request sent before whose answer never
+    /// arrived may be sent again (it may then be paid twice).
+    pub resend_unconfirmed: bool,
 }
 
 /// A treatment whose generated clips are attached, with the library entries
@@ -322,6 +330,7 @@ pub fn prepare<'audio>(
         // picked up rather than sent again, and it counts against the ceiling
         // at its estimate all the same — the money is this request's.
         let resumable = store.job(&digest).is_some() || store.in_flight(&digest);
+        let leftover = store.leftover_intent(&digest);
         println!(
             "generate:        {} missing: {} s of {} at {} {}, {}{} — {}",
             generation.place,
@@ -338,19 +347,50 @@ pub fn prepare<'audio>(
             },
             request.leaves()
         );
+        let earlier = leftover.as_ref().map(|intent| {
+            let words = super::job::unconfirmed_words(intent);
+            println!("generate:        {} {words}", generation.place);
+            (intent.clone(), words)
+        });
         let Some(ceiling) = spending.ceiling_usd else {
             blocked.push(generation.segment);
             outcomes.push((
                 generation,
                 Resolution::Missing {
                     estimate,
-                    why: "the run has no --generate-clips --max-spend".into(),
+                    why: match &earlier {
+                        Some((_, words)) => {
+                            format!("the run has no --generate-clips --max-spend. {words}")
+                        }
+                        None => "the run has no --generate-clips --max-spend".into(),
+                    },
                 },
             ));
             continue;
         };
+        // An earlier send that may have been billed is money this run
+        // counts as spent, whether or not it sends again.
+        let mut earlier_refusal = None;
+        if let Some((intent, words)) = &earlier {
+            match intent.estimate_usd {
+                Some(usd) => committed += usd,
+                None => {
+                    earlier_refusal = Some(format!(
+                        "{words} Its price is unknown, so no ceiling can count it"
+                    ))
+                }
+            }
+            if earlier_refusal.is_none() && !spending.resend_unconfirmed {
+                earlier_refusal = Some(format!(
+                    "{words} It counts against the ceiling. To send it again, which is a second \
+                     request ({} more), add --resend-unconfirmed",
+                    estimate.short()
+                ));
+            }
+        }
         let cost_now = estimate.usd();
         let refusal = match cost_now {
+            _ if earlier_refusal.is_some() => earlier_refusal,
             _ if ceiling <= 0.0 => Some("--max-spend 0 sends nothing".to_owned()),
             None => Some(format!(
                 "{}; a run with a ceiling cannot pay an unknown price",
@@ -388,6 +428,7 @@ pub fn prepare<'audio>(
             poll,
             deadline,
             max_bytes,
+            resend: earlier.map(|(intent, _)| intent.sent_utc),
         });
         let place = generation.place.clone();
         let outcome = job.wait(|stage, elapsed| {
@@ -433,6 +474,15 @@ pub fn prepare<'audio>(
                     None => reason,
                 };
                 println!("generate:        {} failed: {why}", generation.place);
+                blocked.push(generation.segment);
+                outcomes.push((generation, Resolution::Missing { estimate, why }));
+            }
+            Outcome::Unconfirmed(intent) => {
+                let why = format!(
+                    "{} Nothing was sent now; add --resend-unconfirmed to send it again",
+                    super::job::unconfirmed_words(&intent)
+                );
+                println!("generate:        {} refused: {why}", generation.place);
                 blocked.push(generation.segment);
                 outcomes.push((generation, Resolution::Missing { estimate, why }));
             }

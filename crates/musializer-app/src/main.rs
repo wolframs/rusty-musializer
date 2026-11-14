@@ -696,6 +696,7 @@ fn run(
                 &path,
                 generation::treatment::Spending {
                     ceiling_usd: options.max_spend.filter(|_| options.generate_clips),
+                    resend_unconfirmed: options.resend_unconfirmed,
                 },
                 assist.session_openrouter(),
                 options.resolution,

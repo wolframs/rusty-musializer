@@ -19,6 +19,9 @@ asserts:
      and the autosaved project carries it with the card's prompt;
   5. Cancel stops waiting: the card and the notice say it may still be billed,
      nothing is placed; Generate again picks the same job up (no new submit);
+     a Send whose answer is lost says it may have been billed, the next Send
+     sends nothing and warns, and a second press after the warning sends once
+     more (H4b);
   6. with no key stored, the button is drawn disabled and the card says where
      the key is set; following a treatment, Generate... is disabled;
   7. the Scenes flyout's Generate... opens Look on the section with the block;
@@ -195,6 +198,31 @@ log, saved = run('pick-up', f'{SECTION},generate=send,generate-prompt={SLOW}', f
 check(count('submit') == submits + 1 and 'nothing new was paid for' in line(log, 'generate'),
       'Generate again picks the job up: no new submit')
 (out / 'fake' / 'release').unlink()
+
+# 5b. A Send whose answer never arrives (H4b): "may have been billed", never
+# "nothing"; the next Send sends nothing and warns; a second press after the
+# warning sends it again, once.
+LOST = 'a+lost+answer+in+the+window+[lost-answer-once]'
+submits = count('submit')
+log, _ = run('lost', f'{SECTION},generate=send,generate-prompt={LOST}', frames=420)
+words = line(log, 'generate')
+check(count('submit') == submits + 1 and 'last=2:Error:' in words
+      and 'its answer never arrived, so it may have been billed (about $0.12)' in words
+      and 'Nothing was sent' not in words and field(cards(log), 'generate-unconfirmed') == 'yes',
+      'a Send accepted and never answered: one submit, the card says it may have been billed, not "nothing"')
+log, _ = run('lost-held', f'{SECTION},generate=send,generate-prompt={LOST}', frames=300)
+words = line(log, 'generate')
+check(count('submit') == submits + 1 and 'last=2:Warning:' in words
+      and 'may have accepted and billed it (about $0.12)' in words and 'Press Generate again' in words
+      and field(cards(log), 'generate-unconfirmed') == 'yes',
+      'the next Send, in a new window, sends nothing and says the first may have been billed')
+log, saved = run('lost-resend', f'{SECTION},generate=send-twice,generate-prompt={LOST}', frames=900)
+words = line(log, 'generate')
+placed = saved['scene_switches']['cues'][1].get('clip', {}).get('clip')
+record = next((clip.get('generated') for clip in saved.get('clips', []) if clip['sha256'] == placed), None)
+check(count('submit') == submits + 2 and record is not None and 'lost answer in the window' in record['prompt']
+      and 'Estimated $0.12' in words and field(cards(log), 'generate-unconfirmed') == 'no',
+      'Send pressed again after the warning sends it once more and places the clip')
 
 # 6. No key; a followed treatment.
 log, _ = run('no-key', OPEN, key=False)

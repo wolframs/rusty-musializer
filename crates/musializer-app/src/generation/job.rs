@@ -19,6 +19,14 @@
 //! - **A stop is honest about money.** OpenRouter has no call that cancels a
 //!   job (2026-11-14), so a stop after the submit stops *waiting*; the job may
 //!   still finish and be billed, and the outcome says so with the estimate.
+//! - **A lost answer is not "nothing".** An intent is written to the store
+//!   before the request leaves and becomes the job's record when the id
+//!   arrives. A submit interrupted after the request was written (a Cancel, a
+//!   closed window, a dropped connection, a crash) leaves the intent: the job
+//!   may exist and be billed, and OpenRouter has no way to find it
+//!   (read 2026-11-14). The next ask for that request says so and is
+//!   [`Outcome::Unconfirmed`] until the person agrees to send it again
+//!   ([`JobSpec::resend`]).
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -89,6 +97,9 @@ pub enum Billing {
     Reported(f64),
     /// Submitted and not reported: it may be billed, at about the estimate.
     Possibly(Option<f64>),
+    /// Sent and never answered: it may have been accepted and billed, and
+    /// its job id is unknown.
+    Unconfirmed(Option<f64>),
 }
 
 impl Billing {
@@ -104,8 +115,40 @@ impl Billing {
             Self::Possibly(None) => {
                 Some("It was already submitted, so it may still be billed (price unknown).".into())
             }
+            Self::Unconfirmed(usd) => Some(format!(
+                "The request was sent and its answer never arrived, so it may have been billed \
+                 ({}) for a job this application cannot find: OpenRouter has no way to look one \
+                 up. Asking for it again would be a second request, and you are asked first.",
+                about(*usd)
+            )),
         }
     }
+}
+
+/// "about $0.12", or "price unknown".
+fn about(usd: Option<f64>) -> String {
+    usd.map_or_else(
+        || "price unknown".to_owned(),
+        |usd| {
+            format!(
+                "about ${:.2}",
+                musializer_core::generation::price::ceil_cents(usd)
+            )
+        },
+    )
+}
+
+/// What a person reads when a request they ask for was sent before and its
+/// answer never arrived. The caller adds how to send it again.
+#[must_use]
+pub fn unconfirmed_words(intent: &super::store::Intent) -> String {
+    format!(
+        "This exact request was sent on {} and its answer never arrived, so OpenRouter may have \
+         accepted and billed it ({}). OpenRouter has no way to find a job whose id was lost; \
+         your activity page at openrouter.ai/activity shows whether it was billed.",
+        intent.sent_utc.replace('T', " ").replace('Z', " UTC"),
+        about(intent.estimate_usd)
+    )
 }
 
 /// A clip that is ready to import.
@@ -135,8 +178,17 @@ pub enum Reuse {
 )]
 pub enum Outcome {
     Done(Generated),
-    Failed { reason: String, billing: Billing },
-    Stopped { billing: Billing },
+    Failed {
+        reason: String,
+        billing: Billing,
+    },
+    Stopped {
+        billing: Billing,
+    },
+    /// Nothing was sent now: an earlier send of this request may have been
+    /// billed (its intent is left over), and this ask did not agree to send
+    /// it again.
+    Unconfirmed(super::store::Intent),
 }
 
 /// Everything a job needs, owned.
@@ -156,6 +208,10 @@ pub struct JobSpec {
     pub max_bytes: u64,
     /// A name for the clip in the library.
     pub name: String,
+    /// The `sent_utc` of a left-over intent the person agreed to send
+    /// again after being told it may have been billed. Any other left-over
+    /// intent stops the job before anything is sent.
+    pub resend: Option<String>,
 }
 
 impl JobSpec {
@@ -403,6 +459,17 @@ fn run(spec: &JobSpec, stop: &AtomicBool, shared: &Mutex<Shared>) -> Outcome {
             },
         ),
         Outcome::Stopped { .. } => ("stopped".to_owned(), None),
+        Outcome::Unconfirmed(_) => ("held".to_owned(), None),
+    };
+    let verdict = match &outcome {
+        Outcome::Failed {
+            billing: Billing::Unconfirmed(_),
+            ..
+        }
+        | Outcome::Stopped {
+            billing: Billing::Unconfirmed(_),
+        } => format!("{verdict}, unconfirmed"),
+        _ => verdict,
     };
     if !matches!(
         &outcome,
@@ -414,7 +481,7 @@ fn run(spec: &JobSpec, stop: &AtomicBool, shared: &Mutex<Shared>) -> Outcome {
         &outcome,
         Outcome::Stopped {
             billing: Billing::Nothing
-        }
+        } | Outcome::Unconfirmed(_)
     ) {
         let job_id = shared
             .lock()
@@ -451,6 +518,14 @@ fn run_with(
         claim.release();
         (record.job_id, true)
     } else {
+        // An earlier send whose answer never arrived: nothing goes out unless
+        // the person agreed to send it again, knowing it may be billed.
+        if let Some(intent) = store.intent(digest) {
+            if spec.resend.as_deref() != Some(intent.sent_utc.as_str()) {
+                claim.release();
+                return Outcome::Unconfirmed(intent);
+            }
+        }
         if stop.load(Ordering::Relaxed) {
             return Outcome::Stopped {
                 billing: Billing::Nothing,
@@ -483,18 +558,50 @@ fn run_with(
                 billing: Billing::Nothing,
             };
         }
+        // Written down before it leaves: if the answer is lost, the next
+        // ask finds this and says the request may have been billed.
+        let intent = super::store::Intent {
+            schema: String::new(),
+            request_sha256: digest.to_owned(),
+            model: spec.request.model.clone(),
+            seconds: spec.request.seconds,
+            sent_utc: now_utc(),
+            estimate_usd: spec.estimate_usd,
+        };
+        if let Err(reason) = store.record_intent(&intent) {
+            return Outcome::Failed {
+                reason: format!(
+                    "the request could not be written down before sending ({reason}), so it was \
+                     not sent"
+                ),
+                billing: Billing::Nothing,
+            };
+        }
+        let unconfirmed = Billing::Unconfirmed(spec.estimate_usd);
         let state = match client.submit(&body_path) {
             Ok(state) => state,
-            Err(ClientError::Stopped) => {
-                // The request may have reached OpenRouter before the stop.
-                return Outcome::Stopped { billing: possibly };
-            }
-            Err(error) => {
+            Err(failed) if !failed.may_be_billed => {
+                // Refused by the provider, or never sent: no job exists.
+                store.forget_intent(digest);
                 return Outcome::Failed {
-                    reason: error.to_string(),
-                    // A refused submit created no job.
+                    reason: failed.error.to_string(),
                     billing: Billing::Nothing,
                 };
+            }
+            // The intent stays: the job may exist, and its id is unknown.
+            Err(super::client::Submitted {
+                error: ClientError::Stopped,
+                ..
+            }) => {
+                return Outcome::Stopped {
+                    billing: unconfirmed,
+                }
+            }
+            Err(failed) => {
+                return Outcome::Failed {
+                    reason: failed.error.to_string(),
+                    billing: unconfirmed,
+                }
             }
         };
         let record = JobRecord {
@@ -506,9 +613,11 @@ fn run_with(
             submitted_utc: now_utc(),
             estimate_usd: spec.estimate_usd,
         };
-        if let Err(reason) = store.record_job(&record) {
-            // Without the record a stop would lose the job: say so, keep going.
-            eprintln!("warning: the job could not be recorded: {reason}");
+        match store.record_job(&record) {
+            Ok(()) => store.forget_intent(digest),
+            // The intent stays, so a lost record still stops the next ask
+            // from paying again silently.
+            Err(reason) => eprintln!("warning: the job could not be recorded: {reason}"),
         }
         // Its id is on disk: the next caller for this request polls it.
         claim.release();
@@ -709,6 +818,9 @@ pub(crate) mod tests {
     pub(crate) struct Script {
         /// How long the submit takes to answer (after it was read).
         pub submit_delay: Duration,
+        /// The first this many submits are read and accepted, and the
+        /// connection then closes with no answer.
+        pub drop_submits: usize,
         /// The submit's status and body, or `None` for a normal 202.
         pub submit: Option<(u16, String)>,
         /// Polls answered `in_progress` before the end.
@@ -819,6 +931,11 @@ pub(crate) mod tests {
         let _ = reader.read_exact(&mut body);
         if method == "POST" && path == "/api/v1/videos" {
             std::thread::sleep(script.submit_delay);
+            let seen = counts.lock().unwrap().get("submit").copied().unwrap_or(0);
+            if seen < script.drop_submits {
+                *counts.lock().unwrap().entry("submit".into()).or_default() += 1;
+                return;
+            }
         }
         let route = if method == "POST" && path == "/api/v1/videos" {
             "submit"
@@ -901,6 +1018,10 @@ pub(crate) mod tests {
     const KEY: &str = "sk-or-v1-canary-H4-0123456789";
 
     fn spec(fake: &Fake, store: &Path, request: GenerationRequest) -> JobSpec {
+        spec_at(&fake.base, store, request)
+    }
+
+    fn spec_at(base: &str, store: &Path, request: GenerationRequest) -> JobSpec {
         JobSpec {
             name: clip_name(&request),
             request,
@@ -908,11 +1029,12 @@ pub(crate) mod tests {
             last_png: None,
             estimate_usd: Some(0.12),
             secret: Secret::new(KEY.to_owned()),
-            endpoint: Endpoint::new(&fake.base).unwrap(),
+            endpoint: Endpoint::new(base).unwrap(),
             store: Store::at(store.to_path_buf()),
             poll: Duration::from_millis(30),
             deadline: Duration::from_secs(20),
             max_bytes: 10 * 1024 * 1024,
+            resend: None,
         }
     }
 
@@ -1144,6 +1266,75 @@ pub(crate) mod tests {
         );
         assert!(Store::at(store.clone()).find(&request().digest()).is_some());
         assert!(!Store::at(store).in_flight(&request().digest()));
+    }
+
+    #[test]
+    fn a_lost_answer_may_be_billed_and_is_sent_again_only_when_agreed() {
+        let folder = Scratch::new("job-lost");
+        let video = tiny_mp4(folder.path());
+        let fake = Fake::start(Script {
+            drop_submits: 1,
+            polls: 0,
+            end: completed(0.12),
+            content: ("video/mp4".into(), video),
+            ..Script::default()
+        });
+        let store = folder.path().join("store");
+        let digest = request().digest();
+        // Accepted, and the answer never arrives: it may have been billed.
+        let (reason, billing) =
+            failed(GenerationJob::spawn(spec(&fake, &store, request())).wait(|_, _| {}));
+        assert_eq!(billing, Billing::Unconfirmed(Some(0.12)), "{reason}");
+        assert!(billing
+            .sentence()
+            .unwrap()
+            .contains("may have been billed (about $0.12)"));
+        let intent = Store::at(store.clone())
+            .intent(&digest)
+            .expect("the intent stays");
+        assert_eq!(fake.count("submit"), 1);
+        // Asked again without agreeing: nothing is sent, and why is said.
+        let held = GenerationJob::spawn(spec(&fake, &store, request())).wait(|_, _| {});
+        let Outcome::Unconfirmed(seen) = held else {
+            panic!("{held:?}")
+        };
+        assert_eq!(seen, intent);
+        assert!(unconfirmed_words(&seen).contains("may have accepted and billed it (about $0.12)"));
+        assert_eq!(fake.count("submit"), 1, "nothing resent silently");
+        // Agreed: sent anew, and the intent becomes the job.
+        let mut agreed = spec(&fake, &store, request());
+        agreed.resend = Some(intent.sent_utc.clone());
+        let outcome = GenerationJob::spawn(agreed).wait(|_, _| {});
+        assert!(
+            matches!(
+                &outcome,
+                Outcome::Done(Generated {
+                    reused: Reuse::New,
+                    ..
+                })
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(fake.count("submit"), 2);
+        assert!(Store::at(store).intent(&digest).is_none());
+    }
+
+    #[test]
+    fn a_submit_that_never_left_bills_nothing_and_leaves_no_intent() {
+        let folder = Scratch::new("job-unsent");
+        let store = folder.path().join("store");
+        // A port nothing listens on: curl is refused before a byte is sent.
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!(
+            "http://127.0.0.1:{}/api/v1",
+            closed.local_addr().unwrap().port()
+        );
+        drop(closed);
+        let mut job = spec_at(&base, &store, request());
+        job.deadline = Duration::from_secs(2);
+        let (reason, billing) = failed(GenerationJob::spawn(job).wait(|_, _| {}));
+        assert_eq!(billing, Billing::Nothing, "{reason}");
+        assert!(Store::at(store).intent(&request().digest()).is_none());
     }
 
     #[test]

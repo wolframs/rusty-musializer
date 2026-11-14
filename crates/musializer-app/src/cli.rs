@@ -726,6 +726,10 @@ pub struct Cli {
     /// `--max-spend USD`: the ceiling on what `--generate-clips` submits, in
     /// dollars by the estimates shown before each request.
     pub max_spend: Option<f64>,
+    /// `--resend-unconfirmed` (H4b, additive): a request sent before whose
+    /// answer never arrived (it may have been billed, and its job cannot be
+    /// found) may be sent again, counted twice against `--max-spend`.
+    pub resend_unconfirmed: bool,
     /// `--still SECONDS FILE`, repeatable: frames rendered through the export's
     /// own offline path and written as PNGs. All of them come out of one pass
     /// over the track.
@@ -1055,6 +1059,7 @@ where
 
             // VG H4, additive. Spending is never implied: both or neither.
             "--generate-clips" => cli.generate_clips = true,
+            "--resend-unconfirmed" => cli.resend_unconfirmed = true,
             "--max-spend" => match value_of(&argv, i).and_then(parse_seconds) {
                 Some(usd) if usd.is_finite() && usd <= 1000.0 => cli.max_spend = Some(usd),
                 _ => cli.warn("Invalid --max-spend; expected dollars, 0 to 1000"),
@@ -1135,6 +1140,9 @@ where
             cli.warn("--max-spend is the ceiling for --generate-clips, which is missing")
         }
         _ => {}
+    }
+    if cli.resend_unconfirmed && !cli.generate_clips {
+        cli.warn("--resend-unconfirmed sends again only with --generate-clips --max-spend USD");
     }
 
     Outcome::Parsed(Box::new(cli))
@@ -1585,7 +1593,8 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         }
         "look-text" => probe.look_text = Some(value.to_owned()),
         "generate" => {
-            probe.generate = matches!(value, "open" | "armed" | "send").then(|| value.to_owned());
+            probe.generate =
+                matches!(value, "open" | "armed" | "send" | "send-twice").then(|| value.to_owned());
             probe.generate.as_ref()?;
         }
         "generate-prompt" => probe.generate_prompt = Some(value.replace('+', " ")),
@@ -1821,6 +1830,9 @@ Directing (no window needed to author; see docs/MUSIC_VIDEO_CLI.md):
                           USD by the estimates. Without both, a run with a
                           missing generated clip prints each estimate and
                           the total and exits 1; nothing is sent
+  --resend-unconfirmed    Send again a request whose earlier send lost its
+                          answer (it may have been billed, and its job cannot
+                          be found); both count against --max-spend
   --vocabulary            Print every scene, setting (with bounds and
                           default), route source, curve and caption option a
                           treatment may name, as JSON, and exit. Opens no
