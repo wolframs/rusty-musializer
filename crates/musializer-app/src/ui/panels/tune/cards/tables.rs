@@ -924,7 +924,7 @@ impl Shell {
                     let id = widgets::widget_id(widgets::id::LOOK_CARDS, first + k as u32);
                     let selected = entry.style.anchor == Some(*anchor);
                     let state = self.card_chip(d, font, id, *chip, label, selected, enabled);
-                    self.widgets.hint(
+                    self.card_hint(
                         d,
                         state,
                         id,
@@ -1218,7 +1218,7 @@ impl Shell {
                     let id = widgets::widget_id(widgets::id::LOOK_CARDS, first + k as u32);
                     let label = name.map_or_else(|| "Card".to_owned(), |name| name.to_string());
                     let state = self.card_chip(d, font, id, *chip, &label, card.style == *name, enabled);
-                    self.widgets.hint(
+                    self.card_hint(
                         d,
                         state,
                         id,
@@ -1352,23 +1352,21 @@ impl Shell {
         });
         let half = ((rect.width - 6.0) * 0.5).floor();
         let first = table_slot::VOICE + voice as u32 * table_slot::STRIDE;
-        // (label, slot, assignments, reason when there is nothing to give)
         let line_take = line.is_some_and(|cue| sings(cue.id));
         let section_take = !section_lines.is_empty() && section_lines.iter().all(|id| sings(*id));
         let section_number = cx.playing_section.map_or(0, |(number, _)| number);
+        // Two toggles: drawn chosen while the voice sings the line (every line
+        // of the section), and a press gives or takes back.
         let choices = [
             (
-                if line_take {
-                    "- This line".to_owned()
-                } else {
-                    "+ This line".to_owned()
-                },
+                "This line".to_owned(),
                 table_slot::LINE,
+                line_take,
                 line.map(|cue| vec![(cue.id, (!line_take).then_some(voice))]),
                 "No line is sung at the playhead: move it onto one",
                 line.map_or_else(String::new, |cue| {
                     if line_take {
-                        format!("Take \"{}\" back from this voice", cue.text)
+                        format!("This voice sings \"{}\": press to take it back", cue.text)
                     } else {
                         format!("Give \"{}\" to this voice", cue.text)
                     }
@@ -1376,11 +1374,9 @@ impl Shell {
                 "line",
             ),
             (
-                format!(
-                    "{} Section {section_number}",
-                    if section_take { "-" } else { "+" }
-                ),
+                format!("Section {section_number}"),
                 table_slot::SECTION,
+                section_take,
                 (!section_lines.is_empty()).then(|| {
                     section_lines
                         .iter()
@@ -1390,7 +1386,7 @@ impl Shell {
                 "No line begins in the section under the playhead",
                 if section_take {
                     format!(
-                        "Take the {} lines of section {section_number} back from this voice",
+                        "This voice sings the {} lines of section {section_number}: press to take them back",
                         section_lines.len()
                     )
                 } else {
@@ -1402,49 +1398,31 @@ impl Shell {
                 "section",
             ),
         ];
-        for (k, (label, slot, assignments, empty, hint, name)) in choices.into_iter().enumerate() {
-            let button = UiRect::new(rect.x + k as f32 * (half + 6.0), rect.y, half, rect.height);
+        for (k, (label, slot, sung, assignments, empty, hint, name)) in
+            choices.into_iter().enumerate()
+        {
+            let chip = UiRect::new(rect.x + k as f32 * (half + 6.0), rect.y, half, rect.height);
             let id = widgets::widget_id(widgets::id::LOOK_CARDS, first + slot);
-            match assignments {
-                Some(assignments) if cx.enabled => {
-                    let state = self.widgets.text_button(
-                        d,
-                        font,
-                        id,
-                        button,
-                        &label,
-                        false,
-                        widgets::ButtonStyle::Neutral,
-                        Some(metric::UI_FONT_CAPTION),
-                    );
-                    self.widgets.hint(d, state, id, button, &hint);
-                    cx.controls
-                        .push(format!("voice-{voice}-{name}@{}", rect_text(button)));
-                    if state.clicked {
-                        cx.edits.push(ScenePlanEdit::SetCueVoices(assignments));
-                    }
-                }
-                _ => {
-                    self.widgets.disabled_button(
-                        d,
-                        font,
-                        button,
-                        &label,
-                        Some(metric::UI_FONT_CAPTION),
-                    );
-                    let state = self.widgets.button(d, id, button);
-                    self.widgets.hint(
-                        d,
-                        state,
-                        id,
-                        button,
-                        if cx.enabled { empty } else { FOLLOWING },
-                    );
-                    cx.controls.push(format!(
-                        "voice-{voice}-{name}@disabled:{}",
-                        rect_text(button)
-                    ));
-                }
+            let enabled = cx.enabled && assignments.is_some();
+            let state = self.card_chip(d, font, id, chip, &label, sung, enabled);
+            let reason = if !cx.enabled {
+                FOLLOWING
+            } else if assignments.is_none() {
+                empty
+            } else {
+                hint.as_str()
+            };
+            self.widgets.hint(d, state, id, chip, reason);
+            cx.controls.push(format!(
+                "voice-{voice}-{name}@{}{}",
+                if enabled { "" } else { "disabled:" },
+                rect_text(chip)
+            ));
+            if sung {
+                cx.controls.push(format!("voice-{voice}-{name}-sung"));
+            }
+            if let (true, Some(assignments)) = (state.clicked, assignments) {
+                cx.edits.push(ScenePlanEdit::SetCueVoices(assignments));
             }
         }
     }

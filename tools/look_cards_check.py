@@ -42,8 +42,9 @@ file):
   19. every entry rests as one row; a press on one opens it alone, the gap
       between two opens nothing, its fold lays it to rest; an added style
       or card opens.
-  20. Add a voice adds voice-1, open; This line gives the line at the
-      playhead to a voice, and on a line it sings takes it back; the gap
+  20. Add a voice adds voice-1, open; This line is chosen on the voice that
+      sings the line at the playhead; it gives the line to a voice, and on
+      the voice that sings it takes it back; the gap
       between This line and Section N changes nothing.
  follow
   13. following a treatment, the cards are drawn disabled and a press
@@ -69,6 +70,7 @@ file):
   22. a length typed with real keys saves and picks no scene; a title typed
       with T, space and 4 in it saves and moves neither the column, the
       playhead nor the scene; the 4 alone, with no field open, picks one.
+  23. following, a kind chip's hover gives the follow's reason.
  captures
   14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
@@ -128,6 +130,9 @@ and `git status` shown clean:
   22 (2 failures): `card_typing()` made false: "1.25" typed with real keys
     picked Song Atlas; "To Room 4" never reached the title: its T closed
     Look and its space played (playhead 3.6).
+  20c/23 (1 failure each, one binary): This line never drawn chosen: the
+    marker of the voice that sings the line went missing; `card_hint`
+    passing the chip's own words while following: Flash's description.
   Found on the way: the first sequence ran 120 frames and passed against
   both perturbations, because autosave settles 1.5 s after an edit and the
   file was read before it; the control (no drop, must commit) caught that.
@@ -704,8 +709,9 @@ if only in ('all', 'tables'):
     log, saved = run('voice-remove', spec_v0 + click(centre(rect(bv0, 'voice-name-0-button'))), project='words')
     check(same(saved) and 'voice-0-armed:1-lines' in cards(log), 'removing a voice that sings lines first asks to confirm')
     # 20. Add a voice (D2): a new voice with a hue of its own, open; at 3 s
-    #     the line sung is "the loud line" (tenor): alto's This line takes it,
-    #     tenor's (now "- This line") gives it back to no voice.
+    #     the line sung is "the loud line" (tenor): tenor's This line is drawn
+    #     chosen and alto's is not; alto's takes the line, tenor's gives it
+    #     back to no voice.
     log, saved = run('voice-add', WORDS + click(centre(rect(bw, 'add-voice'))), project='words')
     voices = words(saved)[0]['voices']
     check([v['name'] for v in voices] == ['alto', 'tenor', 'voice-1'] and field(cards(log), 'open') == 'voice-2',
@@ -713,12 +719,14 @@ if only in ('all', 'tables'):
     r = rect(bw, 'add-voice')
     log, saved = run('voice-add-gap', WORDS + click((r[0] + r[2] + 4, r[1] + r[3] // 2)), project='words')
     check(same(saved), 'the gap beside Add a voice changes nothing')
+    check('voice-1-line-sung' in bv1 and 'voice-0-line-sung' not in bv0,
+          'the voice that sings the line at the playhead has This line chosen; the other does not')
     log, saved = run('voice-line-give', spec_v0 + click(centre(rect(bv0, 'voice-0-line'))), project='words')
     check(words(saved)[0]['cues'][1].get('voice') == 'alto' and words(saved)[0]['cues'][0].get('voice') == 'alto',
           f"alto's This line takes the line at the playhead ({words(saved)[0]['cues'][1].get('voice')})")
     log, saved = run('voice-line-take', spec_v1 + click(centre(rect(bv1, 'voice-1-line'))), project='words')
     check('voice' not in words(saved)[0]['cues'][1] and words(saved)[0]['cues'][1]['text'] == 'the loud line',
-          f"tenor's - This line takes the line back from it ({words(saved)[0]['cues'][1]})")
+          f"tenor's chosen This line takes the line back from it ({words(saved)[0]['cues'][1]})")
     a_, b_ = rect(bv0, 'voice-0-line'), rect(bv0, 'voice-0-section')
     log, saved = run('voice-line-gap', spec_v0 + click(((a_[0] + a_[2] + b_[0]) // 2, a_[1] + a_[3] // 2)), project='words')
     check(same(saved), 'the gap between This line and Section N changes nothing')
@@ -920,6 +928,10 @@ if only in ('all', 'follow'):
           'following, the card names the file and is not editable')
     log, _ = run('follow-press', SECTION + ',section=2,follow=1' + click(centre(rect(b, 'kind-flash'))), frames=40, follow=True)
     check(field(cards(log), 'kind') == 'fade', 'following, a kind press changes nothing')
+    # 23. (D2) a disabled control says why: hovered while following, a kind
+    #     chip's words are the follow's reason, not the kind's description.
+    log, _ = run('follow-hover', SECTION + ',section=2,follow=1,hover=%dx%d' % centre(rect(b, 'kind-flash')), frames=40, follow=True)
+    check('Following a treatment' in line(log, 'tooltip'), f"following, a kind chip's hover says why it waits ({line(log, 'tooltip')})")
     log, _ = run('follow-stop', SECTION + ',section=2,follow=1' + click(centre(rect(b, 'stop-follow'))), frames=40, follow=True)
     check(line(log, 'treatment follow') == 'none' and field(cards(log), 'editable') == '1',
           'Stop following stops it, and the card is editable again')

@@ -1175,6 +1175,24 @@ impl Shell {
         )
     }
 
+    /// A card control's hover words: its own, or, while a treatment is
+    /// followed (every edit drawn disabled), why it cannot be pressed.
+    fn card_hint(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        state: widgets::ButtonState,
+        id: u64,
+        rect: UiRect,
+        hint: &str,
+    ) {
+        let words = if self.look_column.cards.followed.is_some() {
+            FOLLOWING
+        } else {
+            hint
+        };
+        self.widgets.hint(d, state, id, rect, words);
+    }
+
     /// A slider row that cannot be moved: its label, a flat bar and its value
     /// in the disabled tone, and a hover target for the reason.
     #[allow(clippy::too_many_arguments, reason = "a row's content and its reason")]
@@ -1396,7 +1414,7 @@ impl Shell {
             let id = widgets::widget_id(widgets::id::LOOK_CARDS, first + i as u32);
             let (state, glyph) =
                 self.kind_chip(d, font, id, *chip, *kind, current.kind == *kind, enabled);
-            self.widgets.hint(d, state, id, *chip, kind.look());
+            self.card_hint(d, state, id, *chip, kind.look());
             controls.push(format!("{prefix}-{}@{}", kind.name(), rect_text(*chip)));
             if let Some(glyph) = glyph {
                 controls.push(format!(
@@ -1869,7 +1887,7 @@ impl Shell {
                     let name = UiRect::new(previous.x + 30.0, rect.y, (next.x - 4.0 - previous.x - 30.0).max(0.0), rect.height);
                     let id = |slot| widgets::widget_id(widgets::id::LOOK_CARDS, slot);
                     let fog_state = self.card_chip(d, font, id(slot::BEYOND_FOG), fog, "Fog", shown.is_none(), enabled);
-                    self.widgets.hint(d, fog_state, id(slot::BEYOND_FOG), fog, "The doorway's own luminous fog");
+                    self.card_hint(d, fog_state, id(slot::BEYOND_FOG), fog, "The doorway's own luminous fog");
                     let back = self.card_chip(d, font, id(slot::BEYOND_PREVIOUS), previous, "<", false, enabled);
                     let forward = self.card_chip(d, font, id(slot::BEYOND_NEXT), next, ">", false, enabled);
                     widgets::control_box(d, name, color::ui_selected(), color::ui_selected_edge(), 1.0);
@@ -1881,14 +1899,14 @@ impl Shell {
                         metric::UI_FONT_CAPTION,
                         if enabled { color::ui_ink() } else { color::ui_disabled() },
                     );
-                    self.widgets.hint(
+                    self.card_hint(
                         d,
                         back,
                         id(slot::BEYOND_PREVIOUS),
                         previous,
                         "The scene before, live in the doorway",
                     );
-                    self.widgets.hint(d, forward, id(slot::BEYOND_NEXT), next, "The scene after, live in the doorway");
+                    self.card_hint(d, forward, id(slot::BEYOND_NEXT), next, "The scene after, live in the doorway");
                     controls.push(format!(
                         "beyond-fog@{};beyond-previous@{};beyond-name@{};beyond-next@{}",
                         rect_text(fog),
@@ -2048,7 +2066,7 @@ impl Shell {
                             ),
                             GradeChoice::Listed => "Colours the treatment listed; pick a palette to replace them".to_owned(),
                         };
-                        self.widgets.hint(d, state, id, *chip, &hint);
+                        self.card_hint(d, state, id, *chip, &hint);
                         controls.push(format!(
                             "palette-{}@{}",
                             match choice {
@@ -2162,7 +2180,7 @@ impl Shell {
                                     .map_or_else(String::new, |style| style.describe())
                             ),
                         };
-                        self.widgets.hint(d, state, id, *chip, &hint);
+                        self.card_hint(d, state, id, *chip, &hint);
                         controls.push(format!("style-{label}@{}", rect_text(*chip)));
                         if state.clicked && cue.caption_style != *name {
                             edits.push(ScenePlanEdit::SetCaptionStyle { cue_id: cue.id, style: *name });
@@ -2351,7 +2369,7 @@ impl Shell {
                     for (i, (label, chip)) in FINISH_PRESETS.iter().zip(&place.chips).enumerate() {
                         let id = widgets::widget_id(widgets::id::LOOK_CARDS, slot::FINISH + i as u32);
                         let state = self.card_chip(d, font, id, *chip, label, shown == Some(i), enabled);
-                        self.widgets.hint(
+                        self.card_hint(
                             d,
                             state,
                             id,
