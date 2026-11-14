@@ -276,6 +276,69 @@ class CostEstimate(LaneTestCase):
         self.assertIn(f"at most {ceiling:.3f} USD", str(raised.exception))
 
 
+class NumericScales(LaneTestCase):
+    def test_every_scale_is_stated_in_the_prompt_and_the_schema(self) -> None:
+        expected = {"energy": (0, 1), "tension": (0, 1), "valence": (-1, 1),
+                    "confidence": (0, 1)}
+        self.assertEqual({name: (low, high) for name, (low, high, _) in
+                          mimo_openrouter.NUMERIC_SCALES.items()}, expected)
+        for where in ("global", "segments"):
+            schema = mimo_openrouter.MODEL_OUTPUT_SCHEMA["properties"][where]
+            properties = (schema["items"] if where == "segments" else schema)["properties"]
+            for name, (low, high) in expected.items():
+                with self.subTest(where=where, field=name):
+                    field = properties[name]
+                    self.assertEqual((field["minimum"], field["maximum"]), (low, high))
+                    self.assertIn(f"from {low:g} to {high:g}", field["description"])
+        for name, (low, high) in expected.items():
+            self.assertIn(f"- {name}: a number from {low:g} to {high:g};",
+                          mimo_openrouter.SYSTEM_PROMPT)
+        self.assertIn("Never use percentages", mimo_openrouter.SYSTEM_PROMPT)
+
+    def test_the_benchmarks_off_scale_energy_fails_the_run(self) -> None:
+        # 78, 8 and 5: the three chunks of one excerpt, unprompted.
+        for energy in (78, 8, 5):
+            with self.subTest(energy=energy):
+                with self.assertRaises(mimo_openrouter.FailedRun) as raised:
+                    self.run_lane(response(answer(energy=energy)))
+                message = str(raised.exception)
+                self.assertIn(f"segments[0].energy is {energy}, outside 0 to 1", message)
+                self.assertFalse(self.ws.cache.exists(), "never clamped into a result")
+                self.ws.receipt.unlink()
+
+    def test_valence_has_its_own_range(self) -> None:
+        _, envelope = self.run_lane(response(answer(valence=-1.0)))
+        self.assertEqual(envelope["normalized"]["segments"][0]["valence"], -1.0)
+        self.ws.cache.unlink()
+        with self.assertRaises(mimo_openrouter.FailedRun) as raised:
+            self.run_lane(response(answer(valence=-1.5)))
+        self.assertIn("valence is -1.5, outside -1 to 1", str(raised.exception))
+
+    def test_float_noise_at_a_bound_is_the_bound(self) -> None:
+        _, envelope = self.run_lane(response(answer(confidence=1.0000000002)))
+        self.assertEqual(envelope["normalized"]["segments"][0]["confidence"], 1.0)
+
+    def test_an_old_cache_is_not_read_as_a_new_answer_but_still_opens(self) -> None:
+        v2 = external_analysis._mimo_request_identity(
+            Path("song.wav"), audio_sha="a" * 64, measured_duration=DURATION, zdr=False)
+        self.assertEqual(v2["prompt_version"], "musializer-semantic-score/v2")
+        # A v1 cache as the previous helper wrote it: its identity named v1, a
+        # different prompt and schema hash, and no cap.
+        v1_identity = dict(v2, prompt_version="musializer-semantic-score/v1",
+                           prompt_sha256="0" * 64, model_output_schema_sha256="1" * 64)
+        v1_identity.pop("max_tokens")
+        normalized = mimo_openrouter.normalize_semantic_score(
+            json.loads(answer()), audio_sha256="a" * 64, audio_duration=DURATION,
+            request_settings={k: v for k, v in v1_identity.items() if k != "audio_sha256"})
+        normalized["provenance"]["prompt_version"] = "musializer-semantic-score/v1"
+        old = {"schema_version": "musializer.analysis-cache/v1",
+               "cache_key": external_analysis.canonical_sha256(v1_identity),
+               "request": v1_identity, "raw_response": {}, "normalized": normalized}
+        self.assertFalse(external_analysis._mimo_cache_accepts(old, request_identity=v2))
+        # The document itself is still a semantic-score/v1 and still reads.
+        self.assertEqual(external_analysis._semantic_document(old)["segments"][0]["energy"], 0.5)
+
+
 class FailedRunReachesTheUser(LaneTestCase):
     """Through `run_assist`, the sentence the job log's last line carries."""
 

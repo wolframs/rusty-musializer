@@ -30,6 +30,7 @@ from analysis_io import (
     canonical_sha256,
     clamp,
     duration,
+    number,
     read_json,
     string_list,
     text,
@@ -38,7 +39,12 @@ from analysis_io import (
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = "xiaomi/mimo-v2.5"
-PROMPT_VERSION = "musializer-semantic-score/v1"
+# v2 (2026-11-14): the numeric scales are defined in the prompt and the
+# schema, and an off-scale number fails the run instead of being clamped. A v1
+# answer was produced without those definitions, so it is a different request
+# (`prompt_sha256`, `model_output_schema_sha256`) and is regenerated, not
+# reused; the document it produced is still a readable semantic-score/v1.
+PROMPT_VERSION = "musializer-semantic-score/v2"
 SCORE_SCHEMA_VERSION = "musializer.semantic-score/v1"
 CACHE_SCHEMA_VERSION = "musializer.analysis-cache/v1"
 TRANSIENT_STATUSES = frozenset((429, 502, 503))
@@ -142,33 +148,66 @@ def _snapshot_audio(audio_path: Path) -> tuple[bytes, str]:
     return audio_bytes, hashlib.sha256(audio_bytes).hexdigest()
 
 
+# Each numeric field's range and meaning, stated once and used twice: in the
+# prompt and as the schema's `description`. The benchmark's own schema gave
+# `energy` no range, and three chunks of one excerpt came back 78, 8 and 5.
+NUMERIC_SCALES: dict[str, tuple[float, float, str]] = {
+    "energy": (0.0, 1.0,
+               "how much force and activity the music has: 0 is silence or "
+               "stillness, 0.5 a steady moderate drive, 1 full intensity "
+               "(loud, dense, driving)"),
+    "tension": (0.0, 1.0,
+                "unresolved pull: 0 is settled and at rest, 0.5 some "
+                "expectation, 1 maximum suspense, dissonance or build-up"),
+    "valence": (-1.0, 1.0,
+                "emotional colour: -1 is dark, sad or menacing, 0 neutral or "
+                "mixed, 1 bright, happy or triumphant"),
+    "confidence": (0.0, 1.0,
+                   "how sure you are of this description: 0 a guess, 1 certain"),
+}
+
+
+def _scale_text(name: str) -> str:
+    low, high, meaning = NUMERIC_SCALES[name]
+    return f"a number from {low:g} to {high:g}; {meaning}"
+
+
 SYSTEM_PROMPT = """You are a music-to-visual creative interpreter. Describe how the
 provided music feels, not what can be measured with certainty. Do not claim
 authoritative lyrics, beat times, or signal facts. Return only JSON matching
 the supplied SemanticScore schema. Cover the full requested duration with
-non-overlapping interpretive segments. Continuous values must use the ranges
-declared by the schema."""
+non-overlapping interpretive segments; start_seconds and end_seconds count
+seconds from the start of this audio, from 0 to the audio duration.
+Every number must lie inside its range. Never use percentages, 0-10 or 0-100
+scales:
+""" + "\n".join(f"- {name}: {_scale_text(name)}." for name in NUMERIC_SCALES)
 
 
 def _creative_schema(include_timing: bool) -> dict[str, Any]:
     properties: dict[str, Any] = {
         "summary": {"type": "string"},
         "moods": {"type": "array", "items": {"type": "string"}},
-        "energy": {"type": "number", "minimum": 0, "maximum": 1},
-        "tension": {"type": "number", "minimum": 0, "maximum": 1},
-        "valence": {"type": "number", "minimum": -1, "maximum": 1},
+        "energy": {"type": "number", "minimum": 0, "maximum": 1,
+                          "description": _scale_text("energy")},
+        "tension": {"type": "number", "minimum": 0, "maximum": 1,
+                           "description": _scale_text("tension")},
+        "valence": {"type": "number", "minimum": -1, "maximum": 1,
+                           "description": _scale_text("valence")},
         "motion": {"type": "array", "items": {"type": "string"}},
         "textures": {"type": "array", "items": {"type": "string"}},
         "imagery": {"type": "array", "items": {"type": "string"}},
         "palette": {"type": "array", "items": {"type": "string"}},
         "scene_cues": {"type": "array", "items": {"type": "string"}},
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1,
+                              "description": _scale_text("confidence")},
     }
     required = list(properties)
     if include_timing:
         properties = {
-            "start_seconds": {"type": "number"},
-            "end_seconds": {"type": "number"},
+            "start_seconds": {"type": "number", "minimum": 0,
+                              "description": "seconds from the start of this audio"},
+            "end_seconds": {"type": "number", "minimum": 0,
+                            "description": "seconds from the start of this audio, at most its duration"},
             **properties,
         }
         required = list(properties)
@@ -196,6 +235,27 @@ MODEL_OUTPUT_SCHEMA: dict[str, Any] = {
 }
 
 
+# Float noise at a bound (1.0000000002) is the bound; anything further out is
+# an answer on another scale.
+SCALE_TOLERANCE = 1e-6
+
+
+def _on_scale(raw: Any, name: str, field: str) -> float:
+    """The value, when it lies on its stated scale; a schema failure otherwise.
+
+    Not a clamp: `energy: 78` clamped to 1.0 would be drawn as the loudest
+    passage of the song, and an answer on a 0-100 scale has its other numbers
+    on that scale too. So the run fails, naming the field, rather than one
+    field being dropped (docs/DIVERGENCES.md, "MiMo numeric scales").
+    """
+    low, high, _meaning = NUMERIC_SCALES[name]
+    value = number(raw, f"{field}.{name}")
+    if value < low - SCALE_TOLERANCE or value > high + SCALE_TOLERANCE:
+        raise AnalysisValidationError(
+            f"{field}.{name} is {value:g}, outside {low:g} to {high:g}")
+    return max(low, min(high, value))
+
+
 def _creative(raw: Any, field: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise AnalysisValidationError(f"{field} must be an object")
@@ -209,15 +269,15 @@ def _creative(raw: Any, field: str) -> dict[str, Any]:
     return {
         "summary": text(raw["summary"], f"{field}.summary"),
         "moods": string_list(raw["moods"], f"{field}.moods"),
-        "energy": clamp(raw["energy"], 0, 1, f"{field}.energy"),
-        "tension": clamp(raw["tension"], 0, 1, f"{field}.tension"),
-        "valence": clamp(raw["valence"], -1, 1, f"{field}.valence"),
+        "energy": _on_scale(raw["energy"], "energy", field),
+        "tension": _on_scale(raw["tension"], "tension", field),
+        "valence": _on_scale(raw["valence"], "valence", field),
         "motion": string_list(raw["motion"], f"{field}.motion"),
         "textures": string_list(raw["textures"], f"{field}.textures"),
         "imagery": string_list(raw["imagery"], f"{field}.imagery"),
         "palette": string_list(raw["palette"], f"{field}.palette"),
         "scene_cues": string_list(raw["scene_cues"], f"{field}.scene_cues"),
-        "confidence": clamp(raw["confidence"], 0, 1, f"{field}.confidence"),
+        "confidence": _on_scale(raw["confidence"], "confidence", field),
     }
 
 
@@ -408,7 +468,7 @@ def build_request(
         "response_format": {
             "type": "json_schema",
             "json_schema": {
-                "name": "musializer_semantic_score_v1",
+                "name": "musializer_semantic_score_v2",
                 "strict": True,
                 "schema": MODEL_OUTPUT_SCHEMA,
             },
