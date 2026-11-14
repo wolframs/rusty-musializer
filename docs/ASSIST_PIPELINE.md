@@ -274,7 +274,9 @@ and three guards it found missing:
 The cost is estimated from completion tokens, not audio
 (`musializer.mimo-cost-estimate/v1`, `core::assist::cost` and its pinned Python
 twin): the confirmation shows a range and the cap's ceiling under the MiMo
-route, and the artifact's `provenance.generation` and the manifest's
+route (the ceiling rounded up at the thousandth shown, so a capped call on
+100 s, 0.032376 USD, reads "at most 0.033 USD", in the confirmation and in a
+failure sentence alike), and the artifact's `provenance.generation` and the manifest's
 `semantic_cost` keep that estimate beside the provider's `usage` and cost.
 
 ### Local performed-phrase recovery (2026-09-08)

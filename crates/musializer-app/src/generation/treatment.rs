@@ -440,8 +440,10 @@ pub fn prepare<'audio>(
                 }
             )),
             Some(usd) if committed + usd > ceiling + 1.0e-9 => Some(format!(
-                "it would pass the ceiling: ${:.2} committed this run, ${:.2} more, ${ceiling:.2} allowed",
-                committed, usd
+                "it would pass the ceiling: ${:.2} committed this run, ${:.2} more, {} allowed",
+                price::ceil_cents(committed),
+                price::ceil_cents(usd),
+                ceiling_words(ceiling)
             )),
             Some(_) => None,
         };
@@ -576,7 +578,7 @@ pub fn prepare<'audio>(
         println!(
             "generate:        {} generated sections: {found} found, {made} generated now (${:.2} reported or estimated)",
             outcomes.len(),
-            spent.max(0.0) + 0.0
+            price::ceil_cents(spent.max(0.0))
         );
         return Ok(Some(Prepared { treatment, entries }));
     }
@@ -672,6 +674,18 @@ fn stand_in_in_frame(
         }
     }
     None
+}
+
+/// The ceiling as the person gave it: `$0.15`, or every digit it has
+/// (`$0.125`), never rounded to a cent either way.
+fn ceiling_words(ceiling: f64) -> String {
+    let cents = format!("{ceiling:.2}");
+    if (cents.parse::<f64>().unwrap_or(f64::NAN) - ceiling).abs() < 1.0e-9 {
+        format!("${cents}")
+    } else {
+        let exact = format!("{ceiling:.6}");
+        format!("${}", exact.trim_end_matches('0'))
+    }
 }
 
 fn estimate_without_frames(
@@ -823,6 +837,14 @@ mod tests {
         let middle = frame_middle(119, 30);
         assert_eq!((middle * 30.0).floor() as u64, 119);
         assert!(middle < 4.0);
+    }
+
+    #[test]
+    fn a_ceiling_is_shown_as_given_and_never_rounded() {
+        assert_eq!(ceiling_words(0.15), "$0.15");
+        assert_eq!(ceiling_words(1.0), "$1.00");
+        assert_eq!(ceiling_words(0.125), "$0.125");
+        assert_eq!(ceiling_words(0.129_9), "$0.1299");
     }
 
     #[test]

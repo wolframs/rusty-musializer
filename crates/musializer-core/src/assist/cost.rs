@@ -60,17 +60,29 @@ pub struct CostEstimate {
 }
 
 impl CostEstimate {
-    /// The line the confirmation shows.
+    /// The line the confirmation shows. The range is "about", rounded to the
+    /// nearest thousandth; the maximum is a bound, so it is rounded **up**
+    /// ([`ceil_thousandths`]): a capped call on 100 s costs 0.032376 USD and
+    /// reads "at most 0.033 USD", never 0.032.
     #[must_use]
     pub fn sentence(&self) -> String {
         format!(
             "Estimated cost: about {:.3}\u{2013}{:.3} USD, at most {:.3} USD (answer capped at {} tokens)",
             self.usd_typical[0],
             self.usd_typical[1],
-            self.usd_max,
+            ceil_thousandths(self.usd_max),
             SEMANTIC_MAX_COMPLETION_TOKENS,
         )
     }
+}
+
+/// Dollars rounded up to the thousandth a maximum is shown at, tolerating
+/// float noise below a millionth of a thousandth (0.033 computed as
+/// 0.0330000000001 stays 0.033). The helper's `ceil_usd(value, 3)` in
+/// `tools/mimo_openrouter.py` is the same rule; both are pinned at 100 s.
+#[must_use]
+pub fn ceil_thousandths(usd: f64) -> f64 {
+    ((usd * 1000.0) - 1.0e-6).ceil().max(0.0) / 1000.0
 }
 
 #[must_use]
@@ -155,6 +167,27 @@ mod tests {
             estimate.sentence(),
             "Estimated cost: about 0.004\u{2013}0.023 USD, at most 0.033 USD (answer capped at 16000 tokens)"
         );
+    }
+
+    /// A maximum is rounded up at the precision shown: 100 s is 940 prompt
+    /// tokens, so a capped call is 0.000376 + 0.032 = 0.032376 USD, which a
+    /// nearest rounding showed as "at most 0.032 USD". The helper's failure
+    /// sentence pins the same figure (`tests/test_mimo_openrouter.py`).
+    #[test]
+    fn at_most_is_rounded_up_never_down() {
+        let estimate = semantic_estimate("xiaomi/mimo-v2.5", 100.0).expect("priced");
+        assert_eq!(estimate.input_tokens, 940);
+        assert!((estimate.usd_max - 0.032_376).abs() < 1e-12, "{estimate:?}");
+        assert_eq!(
+            estimate.sentence(),
+            "Estimated cost: about 0.003\u{2013}0.022 USD, at most 0.033 USD (answer capped at 16000 tokens)"
+        );
+        // Exact thousandths stay where they are; noise above one does not
+        // add a thousandth.
+        assert_eq!(ceil_thousandths(0.033), 0.033);
+        assert_eq!(ceil_thousandths(0.032_000_000_000_1), 0.032);
+        assert_eq!(ceil_thousandths(0.032_001), 0.033);
+        assert_eq!(ceil_thousandths(0.0), 0.0);
     }
 
     /// The benchmark's real whole-excerpt call: 100 s, 940 prompt tokens and

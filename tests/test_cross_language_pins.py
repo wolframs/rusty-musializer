@@ -124,6 +124,20 @@ class MimoCostEstimate(unittest.TestCase):
             self.assertIn(figure, source)
 
 
+class MimoAtMostRoundsUp(unittest.TestCase):
+    """A maximum is rounded up at the shown precision, by one rule on both sides."""
+
+    def test_both_sides_show_0_033_for_a_capped_call_on_100_seconds(self) -> None:
+        estimate = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", 100.0)
+        self.assertIn("(at most 0.033 USD)", mimo_openrouter._cost_clause({}, estimate))
+        source = rust_source(COST_RS)
+        self.assertIn('semantic_estimate("xiaomi/mimo-v2.5", 100.0)', source)
+        self.assertIn("at most 0.033 USD (answer capped", source)
+        # The same tolerance: noise below a millionth of the last place.
+        self.assertIn("((usd * 1000.0) - 1.0e-6).ceil()", source)
+        self.assertEqual(mimo_openrouter.ceil_usd(0.0320000000001, 3), 0.032)
+
+
 class BridgeHeaderConstants(unittest.TestCase):
     """`MUSIALIZER_BRIDGE\\t1` — protocol-map row 1's first line."""
 

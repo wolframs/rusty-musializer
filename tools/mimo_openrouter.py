@@ -615,13 +615,26 @@ def reported_cost_usd(response: dict[str, Any]) -> float | None:
     return None
 
 
+def ceil_usd(value: float, places: int) -> float:
+    """Dollars rounded **up** at the precision shown, for a maximum.
+
+    A bound printed at three decimals is a bound only if it rounds up: a
+    capped call on 100 s is 0.032376 USD, and a nearest rounding read "at
+    most 0.032 USD". Float noise below a millionth of the last place shown is
+    not rounded up (0.033 stays 0.033). The same rule as
+    ``core::assist::cost::ceil_thousandths``; both sides pin 100 s.
+    """
+    scale = 10 ** places
+    return max(0.0, math.ceil(value * scale - 1e-6)) / scale
+
+
 def _cost_clause(response: dict[str, Any], estimate: dict[str, Any] | None = None) -> str:
     cost = reported_cost_usd(response)
     if cost is not None:
         return f"OpenRouter billed {cost:.4f} USD for it"
     ceiling = (estimate or {}).get("usd_max")
     if isinstance(ceiling, (int, float)):
-        return f"OpenRouter reported no cost for it (at most {ceiling:.3f} USD)"
+        return f"OpenRouter reported no cost for it (at most {ceil_usd(ceiling, 3):.3f} USD)"
     return "OpenRouter reported no cost for it"
 
 

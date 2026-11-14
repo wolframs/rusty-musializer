@@ -274,8 +274,23 @@ class CostEstimate(LaneTestCase):
     def test_a_failed_run_without_a_reported_cost_names_the_ceiling(self) -> None:
         with self.assertRaises(mimo_openrouter.FailedRun) as raised:
             self.run_lane(response(None, cost=None))
+        # 8 s is 260 prompt tokens: the capped call is 0.032104 USD, a bound
+        # that reads 0.033 (rounded up), never 0.032.
         ceiling = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", DURATION)["usd_max"]
-        self.assertIn(f"at most {ceiling:.3f} USD", str(raised.exception))
+        self.assertEqual(ceiling, 0.032104)
+        self.assertIn("(at most 0.033 USD)", str(raised.exception))
+
+    def test_at_most_is_rounded_up_as_the_rust_side_rounds_it(self) -> None:
+        # The figure core::assist::cost pins at 100 s: 940 prompt tokens,
+        # 0.032376 USD, shown as at most 0.033 USD on both sides.
+        estimate = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", 100.0)
+        self.assertEqual(estimate["input_tokens"], 940)
+        self.assertEqual(estimate["usd_max"], 0.032376)
+        self.assertEqual(mimo_openrouter._cost_clause({}, estimate),
+                         "OpenRouter reported no cost for it (at most 0.033 USD)")
+        self.assertEqual(mimo_openrouter.ceil_usd(0.033, 3), 0.033)
+        self.assertEqual(mimo_openrouter.ceil_usd(0.0320000000001, 3), 0.032)
+        self.assertEqual(mimo_openrouter.ceil_usd(0.032001, 3), 0.033)
 
 
 class NumericScales(LaneTestCase):
