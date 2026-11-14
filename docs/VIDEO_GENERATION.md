@@ -412,6 +412,7 @@ restored byte for byte (`cmp` against a saved copy), 2026-11-14:
 | Every failed submit "nothing" and its intent removed (as before) | gate lost: the lost answer not reported as possibly billed; the next run sent it again (2 submits, status 0) |
 | The window's prepare ignoring a left-over intent | card check 5b: the next Send went out silently |
 | The job forgotten after the refused downloads (as before) | `a_refused_download_keeps_its_job_and_the_next_ask_downloads_it_again` ("the paid job is kept"); gate redownload: the next run paid again (2 submits) |
+| An expired job's record kept | gate redownload: "the expired job was not named or not forgotten" |
 | `max-filesize` dropped from the JSON calls | `a_json_answer_is_bounded_on_the_wire_and_in_memory`: 8388610 bytes reached the disk. The in-memory cap on an error body has no observable difference once the wire cap holds and is not pinned separately |
 | The window's lookup in the open project skipped | card 4b by hand: with an empty store the same Send made a submit and read "Estimated $0.12" instead of "nothing was sent" |
 | Placement ignoring a followed treatment | `a_clip_is_placed_only_in_the_section_send_was_pressed_for`; card 6b by hand: the followed file's section 2 (Pulse) became Video Clip with the clip, the review's defect |

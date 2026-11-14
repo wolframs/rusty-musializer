@@ -439,9 +439,13 @@ else
     fail "the next run paid again or failed (status $(status_of cut-2), $(( $(count submit) - submits )) submits); see $OUT/cut-2.log"
 fi
 treatment "$OUT/expire.treatment.json" "a clip that expires [expire]" ""
+# Other groups leave paid jobs whose downloads were refused (kept on purpose):
+# the expired one must add none.
+jobs_before="$(find "$MUSIALIZER_GENERATED_DIR/jobs" -name '*.json' 2>/dev/null | wc -l)"
 launch expire --treatment "$OUT/expire.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/expire.musi"
+jobs_after="$(find "$MUSIALIZER_GENERATED_DIR/jobs" -name '*.json' 2>/dev/null | wc -l)"
 if [ "$(status_of expire)" = 1 ] && has expire 'the job expired at OpenRouter before its clip was downloaded; Generate again asks (and pays) anew' \
-    && ! ls "$MUSIALIZER_GENERATED_DIR/jobs/"*.json >/dev/null 2>&1; then
+    && [ "$jobs_after" = "$jobs_before" ]; then
     pass "an expired job is named, with what asking again costs, and forgotten"
 else
     fail "the expired job was not named or not forgotten; see $OUT/expire.log"
