@@ -699,7 +699,19 @@ fn run(
                     resend_unconfirmed: options.resend_unconfirmed,
                 },
                 assist.session_openrouter(),
-                options.resolution,
+                generation::treatment::Overrides {
+                    resolution: options.resolution,
+                    fps: options.fps,
+                    quality: options
+                        .quality
+                        .as_deref()
+                        .and_then(cli::Quality::from_name)
+                        .map(|named| match named {
+                            cli::Quality::Balanced => RenderQuality::Balanced,
+                            cli::Quality::High => RenderQuality::High,
+                            cli::Quality::Master => RenderQuality::Master,
+                        }),
+                },
                 &mut rl,
                 &thread,
                 &audio,

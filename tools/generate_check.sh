@@ -40,6 +40,10 @@
 #   - order (H4b): a frame inside the blend from a generated section this run
 #     could not make (a stand-in) is never sent: the request is refused by
 #     name and the provider gets no submit for it;
+#   - fps (H4b): under --fps 12 --quality high (supersampled) the frames sent
+#     for a 24 fps balanced treatment are,
+#     byte for byte, the stills at the export's own frames around the cuts
+#     (47/12 s and 96/12 s);
 #   - concurrent (H4b): two runs asking for one request while the first one's
 #     submit is in flight pay once (the provider's submit count), a run with
 #     --max-spend 0 sends nothing, and a job found in progress counts against
@@ -469,6 +473,26 @@ else
     fail "a stand-in frame was sent or not named (status $(status_of blend), $(( $(count submit) - submits )) submits); see $OUT/blend.log"
 fi
 fi # order
+
+# --- 12. --fps governs the frames sent (H4b) -------------------------------------
+if only fps; then
+treatment "$OUT/fps.treatment.json" "fog at another frame rate" ""
+submits="$(count submit)"
+launch fps --treatment "$OUT/fps.treatment.json" --fps 12 --quality high --generate-clips --max-spend 1.00 \
+    --save-project "$OUT/fps.musi"
+number=$((submits + 1))
+# At 12 fps the last frame before 4 s is frame 47 (3.9583 s) and the first at
+# 8 s is frame 96; at the treatment's 24 they would be 95 and 192.
+launch fps-still --treatment "$OUT/fps.treatment.json" --project "$OUT/fps.musi" --resolution 1280x720 --fps 12 --quality high \
+    --still 3.9583 "$OUT/fps-before.png" --still 8.0417 "$OUT/fps-after.png"
+if [ "$(status_of fps)" = 0 ] && [ "$(count submit)" = "$number" ] \
+    && cmp -s "$OUT/fps-before.png" "$OUT/fake/submit-$number-first.png" \
+    && cmp -s "$OUT/fps-after.png" "$OUT/fake/submit-$number-last.png"; then
+    pass "under --fps 12 --quality high the frames sent are the export's own frames at the cuts, byte for byte"
+else
+    fail "the frames sent under --fps 12 --quality high are not the export's (status $(status_of fps)); see $OUT/fps-before.png, $OUT/fake/submit-$number-first.png"
+fi
+fi # fps
 
 # --- 6. the section card's Generate, pressed (tools/generate_card_check.py) -------
 if [ "${GENERATE_SKIP_CARD:-}" != 1 ] && only card; then

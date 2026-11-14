@@ -48,6 +48,18 @@ pub struct Spending {
     pub resend_unconfirmed: bool,
 }
 
+/// The command line's `--resolution`, `--fps` and `--quality`, which the
+/// export applies after the treatment's `output` block. The frames sent are
+/// the export's frames at those cuts, so they are rendered under the same
+/// overrides (size and aspect follow `--resolution`; the seed is the
+/// treatment's own, with no flag).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Overrides {
+    pub resolution: Option<(u32, u32)>,
+    pub fps: Option<u32>,
+    pub quality: Option<musializer_core::timing::render_export::Quality>,
+}
+
 /// A treatment whose generated clips are attached, with the library entries
 /// they need.
 pub struct Prepared {
@@ -121,7 +133,7 @@ pub fn prepare<'audio>(
     path: &Path,
     spending: Spending,
     session_key: Option<&musializer_core::assist::secret::Secret>,
-    resolution_override: Option<(u32, u32)>,
+    overrides: Overrides,
     rl: &mut RaylibHandle,
     thread: &RaylibThread,
     audio: &'audio RaylibAudio,
@@ -132,6 +144,7 @@ pub fn prepare<'audio>(
     renderer: &mut SceneRenderer,
     fonts: &Faces,
 ) -> Result<Option<Prepared>, String> {
+    let resolution_override = overrides.resolution;
     let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
     let mut treatment = Treatment::parse(&bytes).map_err(|error| error.to_string())?;
     if treatment.clip_generations().is_empty() {
@@ -201,6 +214,21 @@ pub fn prepare<'audio>(
             0.0,
         )
         .map_err(|error| format!("{}: the draft for its frames: {error}", generation.place))?;
+        // The export applies the command line's output flags after the
+        // treatment's; so do the frames, or a 24 fps treatment rendered at
+        // 30 sends the picture at 95/24 s for a cut the export shows at 119/30.
+        if let Some(track) = app.workspace.current_mut() {
+            if let Some((width, height)) = overrides.resolution {
+                track.render_config.width = width;
+                track.render_config.height = height;
+            }
+            if let Some(fps) = overrides.fps {
+                track.render_config.fps = fps;
+            }
+            if let Some(quality) = overrides.quality {
+                track.render_config.set_quality(quality);
+            }
+        }
         let (output, fps) = {
             let track = app
                 .workspace
