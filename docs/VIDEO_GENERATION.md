@@ -199,3 +199,5 @@ source restored byte for byte (`cmp` against a saved copy):
 | The track's `from` read as every section's own | the same test, the track's-clip case |
 | The old fallback restored (an unresolved clip path joined to the folder and used) | `a_clip_record_that_leaves_the_bundle_is_refused_not_read`: the symlink out of the bundle opened with no refusal |
 | The import target filtered to clip sections again (a selected Spectrum section falls through to the track) | `an_import_lands_in_the_section_pointed_at` and `the_notice_says_where_it_landed`. By hand, playhead at 4.5 s in the clip section of spectrum/clip/spectrum, section 1 selected, a clip dropped: before, the plan stayed `spectrum, clip, spectrum`; after, `clip, clip, spectrum` |
+| The hash's look at `stop` removed | `dropping_a_worker_cancels_its_hash`: the drop waited 13.1 s for a 3 GiB hash |
+| ffprobe's group unregistered and its poll blind to `stop` (as before) | `dropping_a_worker_kills_its_probe`: the drop waited 20.0 s, the probe's deadline |

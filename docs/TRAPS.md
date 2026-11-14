@@ -339,6 +339,19 @@ before verification ran. Bundling now opens through `publish::open_source`
 `project_files::byte_limit`), reads through the cap and hashes while it copies,
 so a mismatch never links. Found by review of the clip scene, 2026-11-14.
 
+## A drop that joins a thread waits for whatever that thread is doing
+
+`ClipWorker`'s drop raised `stop`, killed the decoder's process group and
+joined the thread. But the thread's start-up never looked at `stop`, and its
+ffprobe ran in a group of its own the drop did not know: closing the window
+while a large clip was hashing or probing waited for the whole hash (13 s for
+3 GiB) or the probe's 20 s deadline. Everything a worker runs before it
+serves a frame checks `stop` (the hash between reads, the probe in its poll,
+a decoder right after its spawn), and every child registers its group where
+the drop can kill it. The thread clears the group and reaps under one lock,
+and the drop signals under it, so a reaped id is never signalled. Found by
+review of the clip scene, 2026-11-14.
+
 ## A small file can claim a huge picture
 
 File size says nothing about decoded size: a PNG of a few hundred KB can

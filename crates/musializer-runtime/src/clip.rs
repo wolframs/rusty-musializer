@@ -39,7 +39,7 @@
 //! its numbers: `docs/VIDEO_GENERATION.md`, *Decoding*.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::OpenOptionsExt;
@@ -178,6 +178,12 @@ impl ClipSource {
     ///
     /// A read failure, or a file that grew past the cap while being read.
     pub fn sha256_hex(&self) -> Result<String, ClipError> {
+        self.sha256_hex_until(&|| false)
+    }
+
+    /// [`ClipSource::sha256_hex`], looking at `stopped` between reads: a
+    /// worker being dropped must not wait for a multi-gigabyte hash.
+    fn sha256_hex_until(&self, stopped: &dyn Fn() -> bool) -> Result<String, ClipError> {
         let mut file = self
             .file
             .try_clone()
@@ -189,6 +195,9 @@ impl ClipSource {
         let mut buffer = vec![0u8; 1024 * 1024];
         let mut total = 0u64;
         loop {
+            if stopped() {
+                return Err(ClipError::Stopped);
+            }
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(count) => {
@@ -252,19 +261,50 @@ impl Probe {
     }
 }
 
-fn ffmpeg_program(name: &str) -> &OsStr {
-    OsStr::new(name)
+/// The FFmpeg tools a clip runs, by name on `PATH`. A test swaps in a
+/// stand-in to hold a start-up still.
+#[derive(Clone, Debug)]
+struct Programs {
+    ffmpeg: OsString,
+    ffprobe: OsString,
+}
+
+impl Default for Programs {
+    fn default() -> Self {
+        Self {
+            ffmpeg: OsString::from("ffmpeg"),
+            ffprobe: OsString::from("ffprobe"),
+        }
+    }
+}
+
+/// What lets another thread stop a worker's FFmpeg tools: whether it has
+/// been asked to, and the running child's process group, which a drop kills
+/// without waiting. The thread clears the group under its lock before it
+/// reaps the child, and the drop signals under the same lock, so a reaped id
+/// (free for reuse) is never signalled.
+struct Interrupt<'a> {
+    stopped: &'a dyn Fn() -> bool,
+    group: &'a Mutex<Option<u32>>,
+}
+
+/// Kills and reaps a child whose group `interrupt` holds, clearing it first.
+fn end_child(child: &mut Child, interrupt: &Interrupt<'_>) {
+    let mut group = lock(interrupt.group);
+    *group = None;
+    let _ = kill_group_and_reap(child);
 }
 
 /// Runs a short-lived FFmpeg tool over the source, reading at most `cap`
-/// bytes of its output before `deadline`. Its own group, killed and reaped on
-/// every way out.
+/// bytes of its output before `deadline`. Its own group, registered with
+/// `interrupt` so a drop can kill it, and killed and reaped on every way out.
 fn run_bounded(
     program: &OsStr,
     args: &[&str],
     source: &ClipSource,
     cap: usize,
     deadline: Duration,
+    interrupt: &Interrupt<'_>,
 ) -> Result<(Vec<u8>, bool), ClipError> {
     let mut child = Command::new(program)
         .args(args)
@@ -274,8 +314,9 @@ fn run_bounded(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| ClipError::NoFfmpeg(error.to_string()))?;
+    *lock(interrupt.group) = Some(child.id());
     let Some(stdout) = child.stdout.take() else {
-        let _ = kill_group_and_reap(&mut child);
+        end_child(&mut child, interrupt);
         return Err(ClipError::Unreadable);
     };
     let reader = std::thread::spawn(move || {
@@ -285,8 +326,14 @@ fn run_bounded(
     });
     let started = Instant::now();
     while !reader.is_finished() {
+        // A stop raised before the group was registered is seen here.
+        if (interrupt.stopped)() {
+            end_child(&mut child, interrupt);
+            let _ = reader.join();
+            return Err(ClipError::Stopped);
+        }
         if started.elapsed() >= deadline {
-            let _ = kill_group_and_reap(&mut child);
+            end_child(&mut child, interrupt);
             let _ = reader.join();
             return Err(ClipError::Timeout(deadline.as_secs()));
         }
@@ -294,17 +341,27 @@ fn run_bounded(
     }
     let out = reader.join().map_err(|_| ClipError::Unreadable)?;
     if out.len() > cap {
-        let _ = kill_group_and_reap(&mut child);
+        end_child(&mut child, interrupt);
         return Ok((out, false));
     }
     let status = loop {
-        match child.try_wait() {
+        let polled = {
+            // Reaped under the lock, so the group is cleared before a drop
+            // can read it again.
+            let mut group = lock(interrupt.group);
+            let polled = child.try_wait();
+            if matches!(polled, Ok(Some(_))) {
+                *group = None;
+            }
+            polled
+        };
+        match polled {
             Ok(Some(status)) => break Some(status),
-            Ok(None) if started.elapsed() < deadline => {
+            Ok(None) if started.elapsed() < deadline && !(interrupt.stopped)() => {
                 std::thread::sleep(Duration::from_millis(2));
             }
             _ => {
-                let _ = kill_group_and_reap(&mut child);
+                end_child(&mut child, interrupt);
                 break None;
             }
         }
@@ -324,7 +381,21 @@ fn rational(text: &str) -> Option<(i64, i64)> {
 /// No FFmpeg, not a video, no video stream, a size past the bounds, no
 /// timestamps, too many frames, too long.
 pub fn probe(source: &ClipSource) -> Result<Probe, ClipError> {
-    let ffprobe = ffmpeg_program("ffprobe");
+    let group = Mutex::new(None);
+    let interrupt = Interrupt {
+        stopped: &|| false,
+        group: &group,
+    };
+    probe_with(source, &Programs::default(), &interrupt)
+}
+
+/// [`probe`] with the tools and the interrupt a worker brings.
+fn probe_with(
+    source: &ClipSource,
+    programs: &Programs,
+    interrupt: &Interrupt<'_>,
+) -> Result<Probe, ClipError> {
+    let ffprobe = programs.ffprobe.as_os_str();
     let input = "file:/proc/self/fd/0";
     let (stream, ok) = run_bounded(
         ffprobe,
@@ -342,6 +413,7 @@ pub fn probe(source: &ClipSource) -> Result<Probe, ClipError> {
         source,
         STREAM_REPORT_BYTES,
         PROBE_DEADLINE,
+        interrupt,
     )?;
     if !ok {
         return Err(ClipError::Unreadable);
@@ -393,6 +465,7 @@ pub fn probe(source: &ClipSource) -> Result<Probe, ClipError> {
         source,
         cap,
         PROBE_DEADLINE,
+        interrupt,
     )?;
     if packets.len() > cap {
         return Err(ClipError::Timing(TimingError::TooManyFrames));
@@ -460,7 +533,17 @@ impl Decoder {
         index: usize,
         group: &Mutex<Option<u32>>,
     ) -> Result<Self, ClipError> {
-        let mut command = Command::new(ffmpeg_program("ffmpeg"));
+        Self::start_with(source, probe, index, &Programs::default(), group)
+    }
+
+    fn start_with(
+        source: &ClipSource,
+        probe: &Probe,
+        index: usize,
+        programs: &Programs,
+        group: &Mutex<Option<u32>>,
+    ) -> Result<Self, ClipError> {
+        let mut command = Command::new(&programs.ffmpeg);
         command.args(["-nostdin", "-v", "error", "-max_pixels"]);
         let aligned = (u64::from(probe.width) + FFMPEG_ALIGNMENT)
             * (u64::from(probe.height) + FFMPEG_ALIGNMENT);
@@ -518,7 +601,10 @@ impl Decoder {
     }
 
     fn stop(mut self, group: &Mutex<Option<u32>>) {
-        *lock(group) = None;
+        // Cleared and reaped under the lock: a drop signalling the group
+        // holds it too, so it never signals a reaped id.
+        let mut held = lock(group);
+        *held = None;
         let _ = kill_group_and_reap(&mut self.child);
     }
 }
@@ -584,6 +670,10 @@ impl ClipWorker {
     /// against `expected`, then waits to be asked for frames.
     #[must_use]
     pub fn spawn(path: PathBuf, expected: Expected) -> Self {
+        Self::spawn_with(path, expected, Programs::default())
+    }
+
+    fn spawn_with(path: PathBuf, expected: Expected, programs: Programs) -> Self {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 phase: ClipPhase::Starting,
@@ -599,7 +689,7 @@ impl ClipWorker {
         let inner = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
             .name("clip-decoder".into())
-            .spawn(move || run(&inner, &path, &expected))
+            .spawn(move || run(&inner, &path, &expected, &programs))
             .ok();
         if thread.is_none() {
             lock(&shared.state).phase = ClipPhase::Failed(ClipError::NoFfmpeg("no thread".into()));
@@ -673,6 +763,9 @@ impl Drop for ClipWorker {
     fn drop(&mut self) {
         lock(&self.shared.state).stop = true;
         self.shared.changed.notify_all();
+        // Signalled under the lock the thread clears it under before a reap.
+        // Whatever starts after this sees `stop` and ends itself: the hash
+        // between reads, a probe in its poll, a decoder right after its spawn.
         if let Some(group) = *lock(&self.shared.group) {
             let _ = signal_group_or_process(group, Signal::Kill);
         }
@@ -683,16 +776,25 @@ impl Drop for ClipWorker {
 }
 
 /// The worker thread.
-fn run(shared: &Shared, path: &Path, expected: &Expected) {
+fn run(shared: &Shared, path: &Path, expected: &Expected, programs: &Programs) {
+    let stopped = || lock(&shared.state).stop;
     let fail = |error: ClipError| {
+        // A stop is nobody's failure: whoever asked is gone.
+        if error == ClipError::Stopped || stopped() {
+            return;
+        }
         lock(&shared.state).phase = ClipPhase::Failed(error);
         shared.changed.notify_all();
+    };
+    let interrupt = Interrupt {
+        stopped: &stopped,
+        group: &shared.group,
     };
     let source = match ClipSource::open(path) {
         Ok(source) => source,
         Err(error) => return fail(error),
     };
-    match source.sha256_hex() {
+    match source.sha256_hex_until(&stopped) {
         Ok(found) if found == expected.sha256 => {}
         Ok(found) => {
             return fail(ClipError::Changed {
@@ -702,7 +804,7 @@ fn run(shared: &Shared, path: &Path, expected: &Expected) {
         }
         Err(error) => return fail(error),
     }
-    let probe = match probe(&source) {
+    let probe = match probe_with(&source, programs, &interrupt) {
         Ok(probe) => probe,
         Err(error) => return fail(error),
     };
@@ -788,6 +890,7 @@ fn run(shared: &Shared, path: &Path, expected: &Expected) {
                     shared,
                     &source,
                     &probe,
+                    programs,
                     &mut decoder,
                     &mut cache,
                     capacity,
@@ -825,6 +928,7 @@ fn produce(
     shared: &Shared,
     source: &ClipSource,
     probe: &Probe,
+    programs: &Programs,
     decoder: &mut Option<Decoder>,
     cache: &mut BTreeMap<usize, Frame>,
     capacity: usize,
@@ -845,7 +949,13 @@ fn produce(
         } else {
             wanted
         };
-        *decoder = Some(Decoder::start(source, probe, start, &shared.group)?);
+        let started = Decoder::start_with(source, probe, start, programs, &shared.group)?;
+        // A drop that read the group before this spawn registered it.
+        if lock(&shared.state).stop {
+            started.stop(&shared.group);
+            return Err(ClipError::Stopped);
+        }
+        *decoder = Some(started);
         lock(&shared.state).restarts += 1;
         if backwards {
             start
@@ -1210,5 +1320,79 @@ mod tests {
             decoder.stop(&group);
             assert!(frame == frames[index], "seek to {index}");
         }
+    }
+
+    /// F1b defect 7: dropping a worker while it hashes a large clip returns
+    /// at once. The hash looks at `stop` between reads; before, the drop
+    /// joined a thread that read all 3 GiB first.
+    #[test]
+    fn dropping_a_worker_cancels_its_hash() {
+        let scratch = Scratch::new("drop-hash");
+        let big = scratch.0.join("big.mp4");
+        // Sparse: three gibibytes of zeros that take no disk.
+        File::create(&big).unwrap().set_len(3 << 30).unwrap();
+        let worker = ClipWorker::spawn(
+            big,
+            Expected {
+                sha256: "0".repeat(64),
+                width: 96,
+                height: 54,
+                frames: 48,
+            },
+        );
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(worker.phase(), ClipPhase::Starting, "still hashing");
+        let started = Instant::now();
+        drop(worker);
+        let took = started.elapsed();
+        assert!(
+            took < Duration::from_millis(500),
+            "the drop waited {took:?}"
+        );
+    }
+
+    /// F1b defect 7: dropping a worker while its probe runs kills the probe,
+    /// which is in a process group the drop can reach, and returns at once
+    /// rather than at the probe's 20 s deadline. A stand-in ffprobe that only
+    /// sleeps holds the start-up still.
+    #[test]
+    fn dropping_a_worker_kills_its_probe() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("drop-probe");
+        let path = ntsc_clip(&scratch.0);
+        let source = ClipSource::open(&path).unwrap();
+        let real = probe(&source).unwrap();
+        let marker = format!("37.{}", std::process::id());
+        let stand_in = scratch.0.join("ffprobe-that-sleeps");
+        std::fs::write(&stand_in, format!("#!/bin/sh\nexec sleep {marker}\n")).unwrap();
+        std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let sleeping = || {
+            Command::new("pgrep")
+                .args(["-f", &format!("sleep {marker}")])
+                .stdout(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        let worker = ClipWorker::spawn_with(
+            path,
+            expected(&source, &real),
+            Programs {
+                ffprobe: stand_in.into_os_string(),
+                ..Programs::default()
+            },
+        );
+        let waited = Instant::now();
+        while !sleeping() {
+            assert!(
+                waited.elapsed() < Duration::from_secs(5),
+                "the probe never started"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let started = Instant::now();
+        drop(worker);
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(1), "the drop waited {took:?}");
+        assert!(!sleeping(), "the probe outlived its worker");
     }
 }
