@@ -74,9 +74,12 @@ verified; delete the block when done, with the record in the archive.
 
 - [x] **H1 — a click on a section jumps**, playing or paused; Shift+click
   selects without moving the playhead.
-- [ ] **H2 — Balanced exports keep their gradients** (EX3 remainder): measure
-  `-aq-mode 3` and its neighbours for size and banding on real videos, adopt
-  what earns it, record the numbers.
+- [x] **H2 — Balanced exports keep their gradients**: measured 2026-11-14,
+  nothing adopted. No x264 setting brings Balanced half way to High within
+  the size caps; `docs/archive/BALANCED_ENCODER_2026-11.md` has the table.
+  What it leaves: under the film finish Balanced flattens the grain into
+  blocks and only High keeps it, and the window does not say so. A line in
+  the Render view when the finish is on and the quality is Balanced would.
 - [ ] **H3 — MiMo v2.5 benchmark** (row 2): the live run (at most 0.60 USD),
   and a listening session in the operator's own tooling that collects key,
   meter and instruments for the two excerpts and writes them into the

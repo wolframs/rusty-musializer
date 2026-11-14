@@ -233,6 +233,7 @@ number disagrees, grep it there before debugging from scratch.
 - **A containment check on a name is a check on names too**: open a bundled file beneath its folder, one `O_NOFOLLOW` name at a time, and read only that handle. See `docs/TRAPS.md`.
 - **A recorded number that playback recomputes is corrected in one place, not read beside it**: the card pinned with a clip's stale recorded length. See `docs/TRAPS.md`.
 - **A press is not yet a click**: anything a drag must not do happens on the release, and `click-hold=` photographs a press before it resolves. See `docs/TRAPS.md`.
+- **The gate's gradient measure reads film grain as detail**: an encoder that flattens grain lowers it, so under a finish read the blurred encoding error instead. See `docs/TRAPS.md`.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe
