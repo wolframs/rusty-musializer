@@ -215,7 +215,8 @@ if only in ('all', 'section'):
           f'section 2 selected by section=2 arrives by fade 0.60: {b2[:120]}')
 
     # 1. kinds
-    log, saved = run('kind-flash', SECTION + ',section=2' + click(centre(rect(b2, 'kind-flash'))))
+    # Long enough for the 3.1 s cut it plays to end and pause.
+    log, saved = run('kind-flash', SECTION + ',section=2' + click(centre(rect(b2, 'kind-flash'))), frames=420)
     check(field(cards(log), 'kind') == 'flash', 'kind chip: flash reaches the report')
     playhead = float(field(line(log, 'transport'), 'playhead'))
     check(4.1 <= playhead <= 4.7 and 'playing=false' in line(log, 'resume'),
