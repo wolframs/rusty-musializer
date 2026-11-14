@@ -410,6 +410,9 @@ pub struct UiProbe {
     /// or 6 frames after the last `agent-press=`, so the text-entry guard and
     /// the protocol's claim on the digits are the real ones.
     pub key_digit: Option<u8>,
+    /// `key=right` (D2): one Right arrow (a nudge forward, the user's own
+    /// seek) through the shell's keyboard path, on `key=DIGIT`'s frame.
+    pub key_right: bool,
     /// Artist draft input at frame 12; requires click= to focus the real slot.
     pub artist_text: Option<String>,
     pub artist_action: Option<crate::ui::top_bar::ArtistAction>,
@@ -1575,6 +1578,7 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         }
         "key" => match value {
             "escape" => probe.key_escape = true,
+            "right" => probe.key_right = true,
             digit if digit.len() == 1 && digit.as_bytes()[0].is_ascii_digit() => {
                 let n = digit.as_bytes()[0] - b'0';
                 probe.key_digit = Some(if n == 0 { 10 } else { n });
@@ -1802,7 +1806,7 @@ Diagnostics:
                           artist-text=TEXT,artist-action=draft|commit|cancel|clear
                           types into the artist slot at frame 12 (requires click=),
                           key=escape presses Escape once, key=0..9 one
-                          number-row key (D7),
+                          number-row key (D7), key=right one Right arrow,
                           notices=all|info+done+warning+error posts one
                           sample notice of each severity,
                           fullscreen=0|1, time=SECONDS, size=WIDTHxHEIGHT,

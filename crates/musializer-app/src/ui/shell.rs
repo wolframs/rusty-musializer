@@ -543,6 +543,9 @@ pub struct Shell {
     /// `--ui-probe key=DIGIT` (D7): the digit (1-10) and the frames left
     /// before [`Shell::keyboard`] presses it.
     pub probe_digit: Option<(u8, u32)>,
+    /// `--ui-probe key=right` (D2): the frames left before one Right arrow,
+    /// a nudge forward through the same keyboard path.
+    pub probe_nudge: Option<u32>,
     pub widgets: Widgets,
     /// The right-hand tuning inspector.
     pub inspector_open: bool,
@@ -1365,6 +1368,7 @@ impl Shell {
             probe_run_open: None,
             probe_escape: false,
             probe_digit: None,
+            probe_nudge: None,
             widgets: Widgets::new(),
             notices: NoticeQueue::default(),
             inspector_open: false,
@@ -1936,6 +1940,9 @@ impl Shell {
             );
         }
 
+        // After every command of the frame: a look card's play-the-cut keeps
+        // its stop whatever the column shows, and yields to the user's own.
+        self.tend_look_cards(input, &mut commands);
         self.notices.tick(f64::from(d.get_frame_time()));
         commands
     }
@@ -2634,6 +2641,10 @@ impl Shell {
             } else {
                 self.probe_digit = Some((digit, frames - 1));
             }
+        }
+        if let Some(frames) = self.probe_nudge {
+            self.probe_nudge = frames.checked_sub(1);
+            keys.nudge_forward |= frames == 0;
         }
         if self.artist_editing() && keys.escape {
             self.top_bar_state.artist_probe = Some((None, super::top_bar::ArtistAction::Cancel));

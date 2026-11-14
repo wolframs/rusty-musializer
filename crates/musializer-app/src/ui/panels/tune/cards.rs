@@ -374,6 +374,10 @@ pub(crate) struct CardState {
     pub(crate) scope: CardScope,
     typing: Option<(CardField, TextField)>,
     cut: Option<CutPreview>,
+    /// Transport commands the cards pushed this frame (a play-the-cut's seek
+    /// and play), so [`Shell::tend_look_cards`] can tell the user's own
+    /// from theirs.
+    own_transport: usize,
     /// The followed treatment's file name, set every frame by the
     /// composition root; `None` while nothing is followed.
     pub(crate) followed: Option<String>,
@@ -670,6 +674,9 @@ impl CardState {
     /// Drops everything uncommitted: a half-typed value, a probe's text,
     /// a refusal, and the section the card last showed.
     fn forget(&mut self) {
+        // A play-the-cut's stop belongs to the track it was pressed on: its
+        // `until` would pause the next one at an unrelated moment.
+        self.cut = None;
         self.armed = None;
         self.typing = None;
         self.probe_text = None;
@@ -686,6 +693,7 @@ impl Shell {
     pub(crate) fn look_cards_frame(&mut self, workspace: &Workspace) {
         let owner = CardOwner::of(workspace);
         let cards = &mut self.look_column.cards;
+        cards.own_transport = 0;
         // An armed removal whose row was not drawn last frame was looked
         // away from (another view, another card, scrolled off).
         match cards.armed.as_mut() {
@@ -771,11 +779,27 @@ impl Shell {
     }
 
     /// Plays the cut while it plays, and pauses where it ends when playback
-    /// was paused before the press. Run every frame Look is drawn.
-    fn tend_cut(&mut self, input: &ShellInput<'_>, commands: &mut Vec<ShellCommand>) {
+    /// was paused before the press. Run at the end of every frame, whatever
+    /// the column shows (D2 review, defect 3: a stop serviced only while
+    /// Look was drawn ran past its promise behind another view, and paused
+    /// at a later, unrelated moment on the way back). A seek or a play the
+    /// user made this frame takes the transport back: the cut is let go.
+    pub(crate) fn tend_look_cards(
+        &mut self,
+        input: &ShellInput<'_>,
+        commands: &mut Vec<ShellCommand>,
+    ) {
         let Some(mut cut) = self.look_column.cards.cut else {
             return;
         };
+        let transport = commands
+            .iter()
+            .filter(|command| matches!(command, ShellCommand::TogglePlay | ShellCommand::Seek(_)))
+            .count();
+        if transport > self.look_column.cards.own_transport {
+            self.look_column.cards.cut = None;
+            return;
+        }
         cut.frames += 1;
         if input.playing {
             cut.started = true;
@@ -804,8 +828,10 @@ impl Shell {
         commands: &mut Vec<ShellCommand>,
     ) {
         commands.push(ShellCommand::Seek(from));
+        self.look_column.cards.own_transport += 1;
         if !input.playing {
             commands.push(ShellCommand::TogglePlay);
+            self.look_column.cards.own_transport += 1;
         }
         self.look_column.cards.cut = Some(CutPreview {
             from,
@@ -1399,7 +1425,6 @@ impl Shell {
         area: UiRect,
         commands: &mut Vec<ShellCommand>,
     ) {
-        self.tend_cut(input, commands);
         let Some(track) = input.workspace.current() else {
             self.look_column.cards.report.clear();
             return;

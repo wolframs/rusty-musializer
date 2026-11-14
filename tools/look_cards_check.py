@@ -50,6 +50,9 @@ file):
       control (no drop) commits the same draft.
   16. a removal armed in one project (a title card's, a voice's) is not
       armed in the other; the control, with no drop, stays armed in view.
+  17. Play the cut still pauses at its end with the column on Lyrics; it
+      is let go when another project opens and when the user's own Right
+      arrow seeks (`key=right`).
  captures
   14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
@@ -87,6 +90,12 @@ and `git status` shown clean:
     check green; with only the row's contents left the stored arm survived
     (reported `armed=title-0`) although the other project's row read
     Remove, so the check pins the stored state, not the label.
+  17a (1 failure): the cut tended only while Look is the view: with the
+    column on Lyrics it played on to 7.89 s.
+  17b (1 failure): the cut kept across a project change: the other track
+    was paused at 4.13, the first track's stop.
+  17c (1 failure): the user's seek ignored: the cut paused at 4.13 after
+    the Right arrow.
   Found on the way: the first sequence ran 120 frames and passed against
   both perturbations, because autosave settles 1.5 s after an edit and the
   file was read before it; the control (no drop, must commit) caught that.
@@ -589,6 +598,34 @@ if only in ('all', 'sequence'):
                      frames=60, project='words', also=('other',))
         check('current 1 "Other fixture"' in line(log, 'tracks') and field(cards(log), 'armed') == 'none',
               f'{name}: armed in one project, nothing is armed in the other (armed={field(cards(log), "armed")})')
+
+    # 17. Play the cut keeps its promise off Look, and only its own: pressed
+    #     on section 2 (paused at 7 s: it seeks to 1.0 and should pause
+    #     after 4.1), then the column switched to Lyrics on frame 40, it still
+    #     pauses there; another project opened on frame 40 lets it go (the
+    #     report says cut=none and the new track is not paused at the old
+    #     track's stop); the user's own Right arrow on frame 45 lets it go too
+    #     (playback runs on past the stop).
+    PLAY = 'size=1280x720,column=look,time=7,play=0,section=2'
+    s2, _ = run('seq-play-base', PLAY, frames=30)
+    play = centre(rect(cards(s2), 'play'))
+    log, _ = run('seq-play-lyrics', PLAY + click(play) + ',column-switch=lyrics', frames=420)
+    playhead = float(field(line(log, 'transport'), 'playhead'))
+    check(field(line(log, 'column'), 'view') == 'lyrics' and 4.1 <= playhead <= 4.7 and 'playing=false' in line(log, 'resume'),
+          f'Play the cut, then Lyrics on frame 40: it still pauses after the cut (playhead {playhead:.3f})')
+    name = 'seq-play-drop'
+    log, _ = run(name, PLAY + click(play) + f',drop={dropped(name)},drop-at=40', frames=400, also=('other',))
+    # `resume: playing=` reads the stream after the loop has ended, false
+    # either way: the playhead is the evidence. The other track starts from
+    # 0 on frame 40; the old cut paused it as it crossed 4.1.
+    playhead = float(field(line(log, 'transport'), 'playhead'))
+    check('current 1 "Other fixture"' in line(log, 'tracks') and field(cards(log), 'cut') == 'none' and playhead > 5.0,
+          f"Play the cut, then another project: the cut is let go, the new track not paused at its stop (playhead {playhead:.3f}, {line(log, 'resume')})")
+    # 260 frames: past the stop, short of the 8 s fixture's end.
+    log, _ = run('seq-play-nudge', PLAY + click(play) + ',key=right', frames=260)
+    playhead = float(field(line(log, 'transport'), 'playhead'))
+    check(field(cards(log), 'cut') == 'none' and playhead > 5.0,
+          f'Play the cut, then the user\'s own Right arrow: the cut lets go and playback runs on (playhead {playhead:.3f})')
 
 if only in ('all', 'follow'):
     log, _ = run('follow-base', SECTION + ',section=2,follow=1', frames=40, follow=True)
