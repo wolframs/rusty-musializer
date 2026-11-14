@@ -79,7 +79,7 @@ commit that adds this block; the lead cherry-picks.
 - [x] **C — friction.** PXF-7 reopen at the last playhead position; the
   treatment file picker for native agent sessions (`docs/WORKSTATION.md`, open
   work); D7 number-row scene selection and tile tooltips.
-- [ ] **Integrate A–C**: cherry-pick, one review by GPT-6.1-Sol on the merged
+- [x] **Integrate A–C**: cherry-pick, one review by GPT-6.1-Sol on the merged
   diff, one full `tools/verify.sh`, `cargo build --release`.
 - [ ] **ST — saved stills are opaque.** Found while integrating (2026-11-14):
   a still's PNG carries whatever alpha the frame's blends left. In the caption
