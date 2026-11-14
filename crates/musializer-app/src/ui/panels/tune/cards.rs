@@ -22,8 +22,11 @@ mod tables;
 pub(crate) use tables::apply_table_edit;
 #[path = "cards/clip.rs"]
 mod clip;
+#[path = "cards/generate.rs"]
+mod generate;
 #[cfg(test)]
 pub(crate) use clip::fixture as clip_fixture;
+pub(crate) use generate::GenerateForm;
 
 /// Which card the block shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -406,6 +409,8 @@ pub(crate) struct CardState {
     /// What the clip rows drew last frame (their poster's state and the
     /// words they said), for the report (F1c).
     clip_drawn: String,
+    /// The generate block's form, while it is open for a section (VG H4).
+    pub(crate) generate: Option<GenerateForm>,
 }
 
 /// A removal waiting for its confirming press (D2 review, defect 2). It
@@ -535,6 +540,8 @@ enum Part {
     Table(tables::TablePart),
     /// A Video Clip section's clip rows (`clip.rs`, F1c).
     Clip(clip::ClipPart),
+    /// The generate block (`generate.rs`, VG H4), while it is open.
+    Generate(generate::GeneratePart),
     Space,
 }
 
@@ -995,6 +1002,16 @@ impl Shell {
         }
         if cue.scene_index == SceneId::Clip.index() as u32 {
             clip::plan(track, selected, &mut parts);
+        }
+        if let Some(form) = self
+            .look_column
+            .cards
+            .generate
+            .as_ref()
+            .filter(|form| form.cue_id == cue.id)
+        {
+            generate::plan(&self.generation, form, &mut parts);
+            parts.push((Part::Space, Block::Gap(look_cards::GROUP_GAP)));
         }
         parts.extend([
             (Part::ArrivesLabel, Block::Label),
@@ -2529,6 +2546,20 @@ impl Shell {
                     };
                     self.clip_part(d, font, *row, &mut context);
                 }
+                Part::Generate(row) => {
+                    let Some((index, cue, _)) = selected else { continue };
+                    let mut context = generate::Context {
+                        track,
+                        input,
+                        index,
+                        cue,
+                        place,
+                        enabled,
+                        controls: &mut controls,
+                        commands,
+                    };
+                    self.generate_part(d, font, *row, &mut context);
+                }
                 Part::Space => {}
             }
         }
@@ -2572,7 +2603,18 @@ impl Shell {
         );
         let clip_text = selected.map_or_else(
             || "clip=-".to_owned(),
-            |(index, _, _)| clip::report(track, index, &self.look_column.cards),
+            |(index, cue, _)| {
+                format!(
+                    "{} {}",
+                    clip::report(track, index, &self.look_column.cards),
+                    generate::report(
+                        &self.generation,
+                        self.look_column.cards.generate.as_ref(),
+                        cue.id,
+                        (track.render_config.width, track.render_config.height),
+                    )
+                )
+            },
         );
         let cut = self.look_column.cards.cut.map_or_else(
             || "none".to_owned(),

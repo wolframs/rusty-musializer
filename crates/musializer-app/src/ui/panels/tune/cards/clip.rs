@@ -29,7 +29,7 @@ pub(crate) enum ClipPart {
     Choice(usize),
     /// An empty library, in words.
     NoClips,
-    /// "Import clip…" and the disabled "Generate…".
+    /// "Import clip…" and "Generate…".
     Import,
     StartLabel,
     /// Continue the section before, or an own start.
@@ -608,29 +608,53 @@ impl Shell {
                     cx.commands
                         .push(ShellCommand::ImportClipDialogInto(cx.cue.id));
                 }
-                // A real registration for the hover and to take the press, so
-                // a click on the disabled control lands nowhere, as in the
-                // flyout's footer.
+                // VG H4: opens (or closes) the generate block below, for
+                // this section. Disabled only while a treatment is followed.
                 let generate_id = id(clip_slot::GENERATE);
-                let hover = self.widgets.button(d, generate_id, generate);
-                self.widgets.disabled_button(
-                    d,
-                    font,
-                    generate,
-                    "Generate\u{2026}",
-                    Some(metric::UI_FONT_CAPTION),
-                );
-                self.widgets.hint(
-                    d,
-                    hover,
-                    generate_id,
-                    generate,
-                    crate::clips::GENERATE_NOT_BUILT,
-                );
+                let open = self
+                    .look_column
+                    .cards
+                    .generate
+                    .as_ref()
+                    .is_some_and(|form| form.cue_id == cx.cue.id);
+                let state = if cx.enabled {
+                    self.widgets.text_button(
+                        d,
+                        font,
+                        generate_id,
+                        generate,
+                        "Generate\u{2026}",
+                        open,
+                        widgets::ButtonStyle::Neutral,
+                        Some(metric::UI_FONT_CAPTION),
+                    )
+                } else {
+                    let state = self.widgets.button(d, generate_id, generate);
+                    self.widgets.disabled_button(
+                        d,
+                        font,
+                        generate,
+                        "Generate\u{2026}",
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                    widgets::ButtonState {
+                        clicked: false,
+                        ..state
+                    }
+                };
+                self.card_hint(d, state, generate_id, generate, crate::clips::GENERATE_HINT);
+                if state.clicked {
+                    self.look_column.cards.generate = if open {
+                        None
+                    } else {
+                        Some(super::GenerateForm::new(cx.cue.id))
+                    };
+                }
                 cx.controls.push(format!(
-                    "clip-import@{}{};clip-generate@disabled:{}",
+                    "clip-import@{}{};clip-generate@{}{}",
                     if cx.enabled { "" } else { "disabled:" },
                     rect_text(import),
+                    if cx.enabled { "" } else { "disabled:" },
                     rect_text(generate)
                 ));
             }
@@ -929,7 +953,7 @@ impl Shell {
 }
 
 /// The poster in its box, fitted by its aspect and centred.
-fn draw_poster(
+pub(super) fn draw_poster(
     d: &mut RaylibDrawHandle<'_>,
     poster: &raylib::prelude::RenderTexture2D,
     aspect: f32,

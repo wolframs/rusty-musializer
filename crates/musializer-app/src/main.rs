@@ -447,6 +447,8 @@ fn run(
     // part of `Shell`, so the shell can borrow it while it draws; see
     // `posters.rs` for the seam and the rules on both sides of it.
     let mut posters = posters::PosterBoard::from_env();
+    // VG H4: the window's clip generations; reads the cached price list only.
+    let mut generations = generation::window::Generations::new();
     if let Some(probe) = options.ui_probe.as_ref() {
         posters.configure(probe.posters, probe.poster_dump.clone());
         app.shell.probe_run_open = probe.run_open;
@@ -1064,6 +1066,10 @@ fn run(
             }
             if let Some(number) = probe.section {
                 app.shell.probe_select_section(&app.workspace, number);
+            }
+            if let Some(mode) = probe.generate.as_deref() {
+                app.shell
+                    .probe_generate(mode, probe.generate_prompt.as_deref());
             }
             if let Some(entry) = probe.look_entry {
                 app.shell.probe_look_entry(entry);
@@ -1809,6 +1815,14 @@ fn run(
         for track in app.workspace.tracks_mut() {
             clips::confirm_lengths(track);
         }
+        // VG H4: finished generations into their sections; the card's view.
+        generations.tend(
+            &mut app,
+            assist.session_openrouter(),
+            time_seconds,
+            rl.get_time(),
+        );
+        app.shell.generation = generations.view();
         let audition_gain = app
             .shell
             .protocol
@@ -2388,6 +2402,24 @@ fn run(
 
         for command in commands {
             match command {
+                // VG H4: the generate block's work.
+                ShellCommand::GenerateClip(order) => generations.start(
+                    order,
+                    &mut rl,
+                    &thread,
+                    &audio,
+                    &music,
+                    &mut app,
+                    &mut analysis,
+                    &mut renderer,
+                    &fonts,
+                    assist.session_openrouter(),
+                ),
+                ShellCommand::CancelGeneration(cue_id) => generations.cancel(cue_id),
+                ShellCommand::ReadVideoPrices => generations.refresh_prices(),
+                ShellCommand::OpenGenerate => {
+                    generation::window::open_block(&mut app, time_seconds)
+                }
                 ShellCommand::FollowTreatment(path) => {
                     let mut state = TreatmentFollow::new(&path);
                     // Applied now, not on the next change: a dropped file is a
@@ -6803,6 +6835,8 @@ impl Report {
         // Video Clip: which clip frame drew against the one asked for, or the
         // placeholder and why, and the run's exact/inexact/placeholder counts.
         println!("clip:            {}", renderer.describe_clip());
+        // VG H4: the price list, whether a key is stored, running and last jobs.
+        println!("generate:        {}", app.shell.generation.report);
         println!("scene picker:    {}", app.shell.describe_scene_picker());
         println!(
             "chrome: {}",

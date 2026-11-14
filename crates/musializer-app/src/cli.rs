@@ -554,6 +554,12 @@ pub struct UiProbe {
     /// artist draft; refused and reported with no field focused.
     pub look_text: Option<String>,
     pub look_action: Option<crate::ui::panels::tune::CardProbeAction>,
+    /// `generate=open|armed|send` (VG H4): the selected section's generate
+    /// block open at the start, its button armed, or armed and pressed once
+    /// it can be — so the run's one click can be a control inside it.
+    pub generate: Option<String>,
+    /// `generate-prompt=WORDS` (VG H4), `+` for a space: the block's prompt.
+    pub generate_prompt: Option<String>,
     /// `look-entry=voice-N|style-N|title-N` (D2): open that entry of the
     /// captions card's tables, as a press on its row does. Invented for the
     /// reason `section=` was: the press on a control inside it is the run's
@@ -1123,10 +1129,11 @@ where
     }
 
     match (cli.generate_clips, cli.max_spend.is_some()) {
-        (true, false) => cli.warn(
-            "--generate-clips needs --max-spend USD: a run that may spend names its ceiling",
-        ),
-        (false, true) => cli.warn("--max-spend is the ceiling for --generate-clips, which is missing"),
+        (true, false) => cli
+            .warn("--generate-clips needs --max-spend USD: a run that may spend names its ceiling"),
+        (false, true) => {
+            cli.warn("--max-spend is the ceiling for --generate-clips, which is missing")
+        }
         _ => {}
     }
 
@@ -1577,6 +1584,11 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             })
         }
         "look-text" => probe.look_text = Some(value.to_owned()),
+        "generate" => {
+            probe.generate = matches!(value, "open" | "armed" | "send").then(|| value.to_owned());
+            probe.generate.as_ref()?;
+        }
+        "generate-prompt" => probe.generate_prompt = Some(value.replace('+', " ")),
         "look-entry" => {
             let (table, row) = value.rsplit_once('-')?;
             let table = match table {

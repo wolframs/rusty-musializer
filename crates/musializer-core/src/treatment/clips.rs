@@ -513,22 +513,34 @@ pub(super) mod tests {
                {{ "at": 8, "scene": "clip", "clip": "take.mp4" }}"#
         ))
         .unwrap();
-        assert_eq!(parsed.clip_files().len(), 1, "a generated clip is no file to read");
+        assert_eq!(
+            parsed.clip_files().len(),
+            1,
+            "a generated clip is no file to read"
+        );
         let generations = parsed.clip_generations();
         assert_eq!(generations.len(), 1);
         let generation = &generations[0];
         assert_eq!(generation.key, "generate:segments[1]");
-        assert_eq!((generation.at, generation.next_at, generation.previous_at), (4.0, Some(8.0), Some(0.0)));
+        assert_eq!(
+            (generation.at, generation.next_at, generation.previous_at),
+            (4.0, Some(8.0), Some(0.0))
+        );
         assert_eq!(generation.spec.first, Some(super::FrameSource::Previous));
         assert_eq!(generation.spec.last, Some(super::FrameSource::Next));
         assert_eq!(generation.spec.seconds, 4);
         assert!(!generation.attached);
         parsed.attach_clip("take.mp4", asset()).unwrap();
         let refused = parsed.compile(20.0).unwrap_err().to_string();
-        assert!(refused.contains("generate:segments[1]") && refused.contains("not been read"), "{refused}");
+        assert!(
+            refused.contains("generate:segments[1]") && refused.contains("not been read"),
+            "{refused}"
+        );
         let mut generated = asset();
         generated.sha256 = sha256::digest_hex(b"generated");
-        parsed.attach_clip("generate:segments[1]", generated.clone()).unwrap();
+        parsed
+            .attach_clip("generate:segments[1]", generated.clone())
+            .unwrap();
         assert!(parsed.clip_generations()[0].attached);
         let compiled = parsed.compile(20.0).unwrap();
         assert_eq!(compiled.summary.clip_sections, 2);
@@ -551,11 +563,15 @@ pub(super) mod tests {
         let cues = compiled.scene_switches.cues();
         let stand_in = crate::scene::SceneId::from_index(cues[1].scene_index as usize).unwrap();
         assert!(
-            stand_in != crate::scene::SceneId::Spectrum && stand_in.index() != cues[2].scene_index as usize,
+            stand_in != crate::scene::SceneId::Spectrum
+                && stand_in.index() != cues[2].scene_index as usize,
             "{stand_in:?}"
         );
         assert_eq!(cues[1].clip, None);
-        assert_eq!(cues[2].transition, crate::project::transition::Transition::CUT);
+        assert_eq!(
+            cues[2].transition,
+            crate::project::transition::Transition::CUT
+        );
     }
 
     #[test]

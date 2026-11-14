@@ -567,12 +567,12 @@ impl Shell {
             }
         }
         // The footer belongs to the scene being drawn: Video Clip's import and
-        // its not-yet-built Generate while it is the scene, ASCII Field's pair
+        // its Generate (VG H4) while it is the scene, ASCII Field's pair
         // otherwise (VG).
         let footer_report = if input.scene == SceneId::Clip {
             let (import, generate) = self.clip_footer(d, input, footer, commands);
             format!(
-                "clip@{};generate@{}(disabled)",
+                "clip@{};generate@{}",
                 rect_token(import),
                 rect_token(generate)
             )
@@ -610,9 +610,8 @@ impl Shell {
     }
 
     /// The scenes flyout's footer while Video Clip is the scene (VG): "Import
-    /// clip…", and beside it a "Generate…" drawn disabled with its reason —
-    /// generating a clip from the section's frames is the other half of VG and
-    /// is not built, and a missing control would teach nothing about it.
+    /// clip…", and beside it "Generate…", which opens Look's generate block
+    /// on the section an import would land in (VG H4).
     fn clip_footer(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,
@@ -654,24 +653,24 @@ impl Shell {
         if state.clicked {
             commands.push(ShellCommand::ImportClipDialog);
         }
-        // A real registration for the hover and to take the press, so a click
-        // on the disabled control lands nowhere (as `assist_settings` does).
+        // VG H4: opens Look's generate block on the section an import would
+        // land in.
         let generate_id = widgets::widget_id(widgets::id::SCENE_CLIP, 1);
-        let hover = self.widgets.button(d, generate_id, generate);
-        self.widgets.disabled_button(
+        let state = self.widgets.text_button(
             d,
             font,
-            generate,
-            "Generate…",
-            Some(metric::UI_FONT_CAPTION),
-        );
-        self.widgets.hint(
-            d,
-            hover,
             generate_id,
             generate,
-            crate::clips::GENERATE_NOT_BUILT,
+            "Generate…",
+            false,
+            ButtonStyle::Neutral,
+            Some(metric::UI_FONT_CAPTION),
         );
+        self.widgets
+            .hint(d, state, generate_id, generate, crate::clips::GENERATE_HINT);
+        if state.clicked {
+            commands.push(ShellCommand::OpenGenerate);
+        }
         (import, generate)
     }
 

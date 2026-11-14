@@ -197,20 +197,18 @@ impl GenerationRequest {
     pub fn leaves(&self) -> String {
         let frames = match (&self.first, &self.last) {
             (None, None) => String::new(),
-            (Some(image), None) | (None, Some(image)) => format!(
-                " and one still frame this application rendered ({}x{} PNG)",
-                image.width, image.height
-            ),
-            (Some(image), Some(_)) => format!(
-                " and two still frames this application rendered ({}x{} PNG)",
-                image.width, image.height
-            ),
+            (Some(image), None) | (None, Some(image)) => {
+                format!(" and one frame rendered here ({}x{} PNG)", image.width, image.height)
+            }
+            (Some(image), Some(_)) => {
+                format!(" and two frames rendered here ({}x{} PNG)", image.width, image.height)
+            }
         };
+        let verb = if frames.is_empty() { "goes" } else { "go" };
         format!(
-            "The prompt ({} characters){frames} go to OpenRouter, which hands them to the \
-             provider of {}. No audio, no file name, nothing about you or this project. \
-             OpenRouter keeps the clip for download; video is not eligible for zero data \
-             retention.",
+            "The prompt ({} characters){frames} {verb} to OpenRouter and {}'s provider. \
+             No audio, no file name, nothing about you. OpenRouter keeps the clip \
+             for download; video has no zero data retention.",
             self.prompt.chars().count(),
             self.model
         )
@@ -368,7 +366,7 @@ mod tests {
         let frames = body["frame_images"].as_array().unwrap();
         assert_eq!(frames[0]["frame_type"], "first_frame");
         assert_eq!(frames[1]["image_url"]["url"], "data:image/png;base64,AQ==");
-        assert!(request.leaves().contains("two still frames"));
+        assert!(request.leaves().contains("two frames rendered here"));
         assert!(request.leaves().contains("23 characters"));
     }
 

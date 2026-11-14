@@ -76,12 +76,6 @@ impl Endpoint {
         })
     }
 
-    /// Whether this is OpenRouter itself rather than a stand-in.
-    #[must_use]
-    pub fn is_openrouter(&self) -> bool {
-        self.base == DEFAULT_BASE
-    }
-
     #[must_use]
     pub fn describe(&self) -> &str {
         &self.base

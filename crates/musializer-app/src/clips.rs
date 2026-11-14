@@ -70,11 +70,11 @@ impl TrackClip {
     }
 }
 
-/// Why "Generate…" is drawn disabled, wherever it is (the Scenes flyout's
-/// footer, Look's section card): the one sentence both say.
-pub const GENERATE_NOT_BUILT: &str =
-    "Generating clips is not built yet: a model that starts and ends on this \
-     section's frames, with its price shown before anything is spent";
+/// What "Generate…" does, wherever it is (the Scenes flyout's footer, Look's
+/// section card): the one sentence both say (VG H4).
+pub const GENERATE_HINT: &str =
+    "Ask a video model for this section's clip: one that starts and ends on the \
+     video's own frames, with the price shown before anything is sent";
 
 /// What "Import clip…" does, wherever it is.
 pub const IMPORT_HINT: &str =

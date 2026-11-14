@@ -98,6 +98,16 @@ pub enum ShellCommand {
     /// the section with this cue id, whatever the generic rule would pick
     /// (G, 2026-11-14: with the plan off that rule is the track's clip).
     ImportClipDialogInto(u64),
+    /// Send a generation (VG H4): the section card's Send, after the price
+    /// was shown and pressed twice.
+    GenerateClip(crate::generation::window::GenerateOrder),
+    /// Stop waiting for a section's generation.
+    CancelGeneration(u64),
+    /// Read OpenRouter's public video price list now.
+    ReadVideoPrices,
+    /// Open Look's generate block on the section an import would land in
+    /// (the Scenes flyout's Generate…).
+    OpenGenerate,
     /// Reopen a project named by the welcome screen's recent list (UX0-C06).
     OpenRecentProject(PathBuf),
     /// Take an entry out of the recent list and persist the shorter list.
@@ -321,6 +331,11 @@ impl ShellCommand {
             | ShellCommand::ImportAsciiImageDialog
             | ShellCommand::ImportClipDialog
             | ShellCommand::ImportClipDialogInto(_)
+            // A generation only asks; its import, frames later, marks dirty.
+            | ShellCommand::GenerateClip(_)
+            | ShellCommand::CancelGeneration(_)
+            | ShellCommand::ReadVideoPrices
+            | ShellCommand::OpenGenerate
             | ShellCommand::SaveProject
             | ShellCommand::SaveProjectAs
             | ShellCommand::SaveUiPreferences(_) => false,
@@ -540,6 +555,9 @@ pub struct Shell {
     /// The runs the plan lane drew this frame and wants posters for (WX-5b),
     /// drained by the composition root after the frame.
     pub(crate) poster_requests: Vec<crate::posters::PosterRequest>,
+    /// What the generate block reads (VG H4), handed over by the composition
+    /// root each frame.
+    pub(crate) generation: crate::generation::window::CardView,
     /// `--ui-probe run-open=N`, delivered by the lane once a track is open.
     pub probe_run_open: Option<usize>,
     /// `--ui-probe key=escape`: one Escape for the next keyboard read, set by
@@ -1373,6 +1391,7 @@ impl Shell {
             dock_keyboard: false,
             dock_picture_open: false,
             poster_requests: Vec::new(),
+            generation: crate::generation::window::CardView::default(),
             probe_run_open: None,
             probe_escape: false,
             probe_digit: None,

@@ -84,9 +84,16 @@ pub(crate) fn frames_around(at: f64, fps: u32) -> (Option<u64>, u64) {
 /// One generated section, resolved or refused.
 #[derive(Debug)]
 enum Resolution {
-    Found { from: &'static str },
-    Generated { estimate: Option<f64>, cost: Option<f64>, resumed: bool },
-    Missing { estimate: Price, why: String },
+    Found,
+    Generated {
+        estimate: Option<f64>,
+        cost: Option<f64>,
+        resumed: bool,
+    },
+    Missing {
+        estimate: Price,
+        why: String,
+    },
 }
 
 /// Resolves every generated section of the treatment at `path`.
@@ -124,7 +131,10 @@ pub fn prepare<'audio>(
     }
     let store = Store::from_env()?;
     let (catalog, prices_line) = super::prices(&store, true);
-    println!("generate:        {prices_line}; clips kept in {}", store.root().display());
+    println!(
+        "generate:        {prices_line}; clips kept in {}",
+        store.root().display()
+    );
 
     let mut entries: Vec<(String, TrackClip)> = Vec::new();
     let mut committed = 0.0f64;
@@ -137,7 +147,8 @@ pub fn prepare<'audio>(
         if generation.spec.first == Some(FrameSource::Previous)
             && blocked.contains(&(generation.segment - 1))
         {
-            let estimate = estimate_without_frames(&generation, catalog.as_ref(), app, resolution_override);
+            let estimate =
+                estimate_without_frames(&generation, catalog.as_ref(), app, resolution_override);
             println!(
                 "generate:        {} waits for the section before it, which is missing ({})",
                 generation.place,
@@ -188,17 +199,22 @@ pub fn prepare<'audio>(
                 .current()
                 .ok_or("a treatment directs a track: name one in its audio block")?;
             (
-                resolution_override.unwrap_or((track.render_config.width, track.render_config.height)),
+                resolution_override
+                    .unwrap_or((track.render_config.width, track.render_config.height)),
                 track.render_config.fps,
             )
         };
-        let Some(offer) = catalog.as_ref().and_then(|catalog| catalog.offer(&generation.spec.model)) else {
+        let Some(offer) = catalog
+            .as_ref()
+            .and_then(|catalog| catalog.offer(&generation.spec.model))
+        else {
             return Err(format!(
                 "{}: {} is not on the price list ({prices_line}); `--vocabulary` lists the models",
                 generation.place, generation.spec.model
             ));
         };
-        let shape = price::shape(offer, output).map_err(|error| format!("{}: {error}", generation.place))?;
+        let shape = price::shape(offer, output)
+            .map_err(|error| format!("{}: {error}", generation.place))?;
 
         let mut stills: Vec<(f64, PathBuf)> = Vec::new();
         let mut first = None;
@@ -206,7 +222,8 @@ pub fn prepare<'audio>(
         match &generation.spec.first {
             Some(FrameSource::Previous) => {
                 let (before, _) = frames_around(generation.at, fps);
-                let index = before.ok_or_else(|| format!("{}.first: no frame before 0:00", generation.place))?;
+                let index = before
+                    .ok_or_else(|| format!("{}.first: no frame before 0:00", generation.place))?;
                 let file = frames_dir.join(format!("{}-first.png", generation.segment));
                 stills.push((frame_middle(index, fps), file.clone()));
                 first = Some(file);
@@ -228,12 +245,15 @@ pub fn prepare<'audio>(
             Some(FrameSource::Previous) | None => {}
         }
         if !stills.is_empty() {
-            render_frames(rl, thread, audio, music, app, analysis, renderer, fonts, &stills, shape.size)
-                .map_err(|error| format!("{}: its frames: {error}", generation.place))?;
+            render_frames(
+                rl, thread, audio, music, app, analysis, renderer, fonts, &stills, shape.size,
+            )
+            .map_err(|error| format!("{}: its frames: {error}", generation.place))?;
         }
         let read_frame = |file: &Option<PathBuf>| -> Result<Option<(Vec<u8>, FrameImage)>, String> {
             let Some(file) = file else { return Ok(None) };
-            let bytes = read_image(file).map_err(|error| format!("{}: {}: {error}", generation.place, file.display()))?;
+            let bytes = read_image(file)
+                .map_err(|error| format!("{}: {}: {error}", generation.place, file.display()))?;
             let size = png_size(&bytes).unwrap_or((0, 0));
             Ok(Some((
                 bytes.clone(),
@@ -246,14 +266,26 @@ pub fn prepare<'audio>(
         };
         let first = read_frame(&first)?;
         let last = read_frame(&last)?;
-        let mut request = GenerationRequest::new(&offer.id, &generation.spec.prompt, generation.spec.seconds, &shape);
+        let mut request = GenerationRequest::new(
+            &offer.id,
+            &generation.spec.prompt,
+            generation.spec.seconds,
+            &shape,
+        );
         request.first = first.as_ref().map(|(_, image)| image.clone());
         request.last = last.as_ref().map(|(_, image)| image.clone());
         request
             .check(offer)
             .map_err(|error| format!("{}: {error}", generation.place))?;
         let digest = request.digest();
-        let estimate = price::estimate(catalog.as_ref(), super::now_unix(), &offer.id, request.seconds, &shape, request.frame_count());
+        let estimate = price::estimate(
+            catalog.as_ref(),
+            super::now_unix(),
+            &offer.id,
+            request.seconds,
+            &shape,
+            request.frame_count(),
+        );
 
         // Found: in the open project, or in the store.
         let in_project = app.workspace.current().and_then(|track| {
@@ -282,7 +314,7 @@ pub fn prepare<'audio>(
                 &digest[..12]
             );
             attach(&mut treatment, &mut entries, &generation, entry)?;
-            outcomes.push((generation, Resolution::Found { from }));
+            outcomes.push((generation, Resolution::Found));
             continue;
         }
 
@@ -295,7 +327,11 @@ pub fn prepare<'audio>(
             shape.resolution,
             shape.aspect_ratio,
             estimate.short(),
-            if resumable { " (submitted before; picking it up costs nothing new)" } else { "" },
+            if resumable {
+                " (submitted before; picking it up costs nothing new)"
+            } else {
+                ""
+            },
             request.leaves()
         );
         let Some(ceiling) = spending.ceiling_usd else {
@@ -330,7 +366,8 @@ pub fn prepare<'audio>(
             outcomes.push((generation, Resolution::Missing { estimate, why }));
             continue;
         }
-        let secret = super::credential(session_key).map_err(|error| format!("{}: {error}", generation.place))?;
+        let secret = super::credential(session_key)
+            .map_err(|error| format!("{}: {error}", generation.place))?;
         let endpoint = super::client::Endpoint::from_env()?;
         let (poll, deadline, max_bytes) = JobSpec::timings_from_env();
         committed += cost_now.unwrap_or(0.0);
@@ -349,7 +386,11 @@ pub fn prepare<'audio>(
         });
         let place = generation.place.clone();
         let outcome = job.wait(|stage, elapsed| {
-            println!("generate:        {place} {} ({:.0} s)", stage.describe(), elapsed.as_secs_f64());
+            println!(
+                "generate:        {place} {} ({:.0} s)",
+                stage.describe(),
+                elapsed.as_secs_f64()
+            );
         });
         match outcome {
             Outcome::Done(generated) => {
@@ -393,7 +434,10 @@ pub fn prepare<'audio>(
             Outcome::Stopped { billing } => {
                 let why = format!(
                     "stopped{}",
-                    billing.sentence().map(|text| format!(". {text}")).unwrap_or_default()
+                    billing
+                        .sentence()
+                        .map(|text| format!(". {text}"))
+                        .unwrap_or_default()
                 );
                 blocked.push(generation.segment);
                 outcomes.push((generation, Resolution::Missing { estimate, why }));
@@ -410,17 +454,28 @@ pub fn prepare<'audio>(
     let spent: f64 = outcomes
         .iter()
         .filter_map(|(_, resolution)| match resolution {
-            Resolution::Generated { cost, estimate, resumed: false } => cost.or(*estimate),
+            Resolution::Generated {
+                cost,
+                estimate,
+                resumed: false,
+            } => cost.or(*estimate),
             _ => None,
         })
         .sum();
     let found = outcomes
         .iter()
-        .filter(|(_, resolution)| matches!(resolution, Resolution::Found { .. } | Resolution::Generated { resumed: true, .. }))
+        .filter(|(_, resolution)| {
+            matches!(
+                resolution,
+                Resolution::Found | Resolution::Generated { resumed: true, .. }
+            )
+        })
         .count();
     let made = outcomes
         .iter()
-        .filter(|(_, resolution)| matches!(resolution, Resolution::Generated { resumed: false, .. }))
+        .filter(|(_, resolution)| {
+            matches!(resolution, Resolution::Generated { resumed: false, .. })
+        })
         .count();
     if missing.is_empty() {
         println!(
@@ -455,7 +510,11 @@ pub fn prepare<'audio>(
         missing.len(),
         outcomes.len(),
         price::ceil_cents(total),
-        if unknown > 0 { format!(" plus {unknown} at an unknown price") } else { String::new() },
+        if unknown > 0 {
+            format!(" plus {unknown} at an unknown price")
+        } else {
+            String::new()
+        },
         if spending.ceiling_usd.is_some() {
             "Raise --max-spend, or change what the treatment asks for."
         } else {
@@ -481,8 +540,16 @@ fn estimate_without_frames(
         .and_then(|(offer, output)| price::shape(offer, output).ok());
     match shape {
         Some(shape) => {
-            let frames = u32::from(generation.spec.first.is_some()) + u32::from(generation.spec.last.is_some());
-            price::estimate(catalog, super::now_unix(), &generation.spec.model, generation.spec.seconds, &shape, frames)
+            let frames = u32::from(generation.spec.first.is_some())
+                + u32::from(generation.spec.last.is_some());
+            price::estimate(
+                catalog,
+                super::now_unix(),
+                &generation.spec.model,
+                generation.spec.seconds,
+                &shape,
+                frames,
+            )
         }
         None => Price::Unknown(price::UnknownPrice::NotListed),
     }
@@ -548,7 +615,8 @@ pub fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.len() < 24 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") || &bytes[12..16] != b"IHDR" {
         return None;
     }
-    let word = |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let word =
+        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
     Some((word(16), word(20)))
 }
 

@@ -24,6 +24,9 @@
 #   - each failure shape (a failed job with a bill, a refused submit, a
 #     download that is not a video, one too large) is named and nothing is
 #     imported or saved;
+#   - the section card: every control pressed with a press beside it, Send,
+#     Cancel, no key, a followed treatment, the flyout, captures (see
+#     tools/generate_card_check.py);
 #   - the canary key is in no output file, log, store file or argv.
 
 set -euo pipefail
@@ -272,7 +275,12 @@ else
     pass "no job left scratch behind"
 fi
 
-# --- 6. the key is nowhere it should not be --------------------------------------
+# --- 6. the section card's Generate, pressed (tools/generate_card_check.py) -------
+if [ "${GENERATE_SKIP_CARD:-}" != 1 ]; then
+    python3 -I tools/generate_card_check.py "$OUT" || FAILURES=$((FAILURES + 1))
+fi
+
+# --- 7. the key is nowhere it should not be --------------------------------------
 # A slow job, so its curl can be caught running and its argv read.
 treatment "$OUT/slow.treatment.json" "a long take [slow]" ""
 tools/headless_run.sh --treatment "$OUT/slow.treatment.json" --generate-clips --max-spend 1.00 \

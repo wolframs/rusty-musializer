@@ -79,6 +79,8 @@ pub struct CardView {
     pub last: HashMap<u64, LastOutcome>,
     /// The store's folder, for the card's hint.
     pub kept_in: Option<PathBuf>,
+    /// The `generate:` report line.
+    pub report: String,
 }
 
 impl Default for CardView {
@@ -91,6 +93,7 @@ impl Default for CardView {
             running: Vec::new(),
             last: HashMap::new(),
             kept_in: None,
+            report: "none".to_owned(),
         }
     }
 }
@@ -174,6 +177,7 @@ impl Generations {
                 .collect(),
             last: self.last.clone(),
             kept_in: self.store.as_ref().ok().map(super::job::kept_at),
+            report: self.describe(),
         }
     }
 
@@ -201,17 +205,23 @@ impl Generations {
         }
     }
 
-    /// Whether anything is running (the frame loop keeps tending then).
-    #[must_use]
-    pub fn busy(&self) -> bool {
-        !self.jobs.is_empty() || self.refresh.is_some()
-    }
-
     /// Each frame: the price refresh, the key's presence every two seconds,
     /// and finished jobs into their tracks.
-    pub fn tend(&mut self, app: &mut crate::App, session: Option<&Secret>, time_seconds: f64, now: f64) {
-        if self.refresh.as_ref().is_some_and(std::thread::JoinHandle::is_finished) {
-            if let Some(Ok((catalog, line))) = self.refresh.take().map(std::thread::JoinHandle::join) {
+    pub fn tend(
+        &mut self,
+        app: &mut crate::App,
+        session: Option<&Secret>,
+        time_seconds: f64,
+        now: f64,
+    ) {
+        if self
+            .refresh
+            .as_ref()
+            .is_some_and(std::thread::JoinHandle::is_finished)
+        {
+            if let Some(Ok((catalog, line))) =
+                self.refresh.take().map(std::thread::JoinHandle::join)
+            {
                 if catalog.is_some() {
                     self.catalog = catalog.map(Arc::new);
                 }
@@ -245,9 +255,10 @@ impl Generations {
         now: f64,
     ) {
         let order = &running.order;
-        let estimate = running
-            .estimate
-            .map_or_else(|| "price unknown".to_owned(), |usd| format!("${:.2}", price::ceil_cents(usd)));
+        let estimate = running.estimate.map_or_else(
+            || "price unknown".to_owned(),
+            |usd| format!("${:.2}", price::ceil_cents(usd)),
+        );
         let (severity, title, words) = match outcome {
             Outcome::Done(generated) => {
                 let cost = generated
@@ -304,7 +315,8 @@ impl Generations {
             ),
         };
         app.shell.notify(severity, title, &words);
-        self.last.insert(order.cue_id, LastOutcome { severity, words });
+        self.last
+            .insert(order.cue_id, LastOutcome { severity, words });
     }
 
     /// Renders the frames, builds the request and starts the job.
@@ -326,12 +338,15 @@ impl Generations {
         session: Option<&Secret>,
     ) {
         let cue_id = order.cue_id;
-        match self.prepare(order, rl, thread, audio, music, app, analysis, renderer, fonts, session) {
+        match self.prepare(
+            order, rl, thread, audio, music, app, analysis, renderer, fonts, session,
+        ) {
             Ok(()) => {
                 self.last.remove(&cue_id);
             }
             Err(reason) => {
-                app.shell.notify(Severity::Warning, "Clip not generated", &reason);
+                app.shell
+                    .notify(Severity::Warning, "Clip not generated", &reason);
                 self.last.insert(
                     cue_id,
                     LastOutcome {
@@ -357,7 +372,11 @@ impl Generations {
         fonts: &Faces,
         session: Option<&Secret>,
     ) -> Result<(), String> {
-        if self.jobs.iter().any(|running| running.order.cue_id == order.cue_id) {
+        if self
+            .jobs
+            .iter()
+            .any(|running| running.order.cue_id == order.cue_id)
+        {
             return Err("this section is generating already".into());
         }
         let store = self.store.clone()?;
@@ -381,7 +400,12 @@ impl Generations {
         let offer = catalog
             .as_ref()
             .and_then(|catalog| catalog.offer(&order.model))
-            .ok_or_else(|| format!("{} is not on the price list; read today's prices", order.model))?;
+            .ok_or_else(|| {
+                format!(
+                    "{} is not on the price list; read today's prices",
+                    order.model
+                )
+            })?;
         let shape = price::shape(offer, output)?;
 
         // The frames, through the export's still path, at the request's size;
@@ -392,21 +416,37 @@ impl Generations {
         let last_path = folder.join("last.png");
         if order.first {
             let (_, at) = super::treatment::frames_around(start, fps);
-            stills.push((super::treatment::frame_middle(at, fps), first_path.clone(), order.cue_id));
+            stills.push((
+                super::treatment::frame_middle(at, fps),
+                first_path.clone(),
+                order.cue_id,
+            ));
         }
         if order.last {
             let (next_id, next_start) = next.ok_or("there is no next section to end on")?;
             let (_, at) = super::treatment::frames_around(next_start, fps);
-            stills.push((super::treatment::frame_middle(at, fps), last_path.clone(), next_id));
+            stills.push((
+                super::treatment::frame_middle(at, fps),
+                last_path.clone(),
+                next_id,
+            ));
         }
         if !stills.is_empty() {
-            let saved = app.workspace.current().map(|track| track.scene_switches.clone());
+            let saved = app
+                .workspace
+                .current()
+                .map(|track| track.scene_switches.clone());
             if let Some(track) = app.workspace.current_mut() {
                 for (_, _, cut_into) in &stills {
-                    track.scene_switches.set_transition(*cut_into, Transition::CUT);
+                    track
+                        .scene_switches
+                        .set_transition(*cut_into, Transition::CUT);
                 }
             }
-            let list: Vec<(f64, PathBuf)> = stills.iter().map(|(time, path, _)| (*time, path.clone())).collect();
+            let list: Vec<(f64, PathBuf)> = stills
+                .iter()
+                .map(|(time, path, _)| (*time, path.clone()))
+                .collect();
             let rendered = super::treatment::render_frames(
                 rl, thread, audio, music, app, analysis, renderer, fonts, &list, shape.size,
             );
@@ -415,20 +455,21 @@ impl Generations {
             }
             rendered.map_err(|error| format!("its frames could not be rendered: {error}"))?;
         }
-        let read = |wanted: bool, path: &PathBuf| -> Result<Option<(Vec<u8>, FrameImage)>, String> {
-            if !wanted {
-                return Ok(None);
-            }
-            let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-            Ok(Some((
-                bytes.clone(),
-                FrameImage {
-                    sha256: sha256::digest_hex(&bytes),
-                    width: shape.size.0,
-                    height: shape.size.1,
-                },
-            )))
-        };
+        let read =
+            |wanted: bool, path: &PathBuf| -> Result<Option<(Vec<u8>, FrameImage)>, String> {
+                if !wanted {
+                    return Ok(None);
+                }
+                let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+                Ok(Some((
+                    bytes.clone(),
+                    FrameImage {
+                        sha256: sha256::digest_hex(&bytes),
+                        width: shape.size.0,
+                        height: shape.size.1,
+                    },
+                )))
+            };
         let first = read(order.first, &first_path)?;
         let last = read(order.last, &last_path)?;
         store.clear_work("frames");
@@ -486,26 +527,39 @@ impl Generations {
             .map(|running| {
                 let (stage, elapsed) = running.job.progress();
                 format!(
-                    "{}:{}:{:.1}s{}",
+                    "{}:{}:{:.1}s:{}{}",
                     running.order.cue_id,
                     stage_token(&stage),
                     elapsed.as_secs_f64(),
-                    if running.job.is_cancelled() { ":cancelling" } else { "" }
+                    running.job.job_id().unwrap_or_else(|| "-".to_owned()),
+                    if running.job.is_cancelled() {
+                        ":cancelling"
+                    } else {
+                        ""
+                    }
                 )
             })
             .collect();
         let mut last: Vec<String> = self
             .last
             .iter()
-            .map(|(cue, outcome)| format!("{cue}:{:?}", outcome.severity))
+            .map(|(cue, outcome)| format!("{cue}:{:?}:{}", outcome.severity, outcome.words))
             .collect();
         last.sort();
         format!(
             "prices=\"{}\" key={} running={} last={}",
             self.prices,
             if self.key.is_ok() { "stored" } else { "none" },
-            if running.is_empty() { "none".to_owned() } else { running.join(",") },
-            if last.is_empty() { "none".to_owned() } else { last.join(",") },
+            if running.is_empty() {
+                "none".to_owned()
+            } else {
+                running.join(",")
+            },
+            if last.is_empty() {
+                "none".to_owned()
+            } else {
+                last.join(" | ")
+            },
         )
     }
 }
@@ -557,4 +611,33 @@ fn place(
         app.apply_auto_scene_switch(time_seconds);
     }
     Ok(crate::clips::import_place(target))
+}
+
+/// The Scenes flyout's Generate…: Look, on the section an import would land
+/// in, with its generate block open. With no plan there is no section to
+/// generate for, and the notice says so.
+pub fn open_block(app: &mut crate::App, time_seconds: f64) {
+    let Some(track) = app.workspace.current() else {
+        app.shell.notify(
+            Severity::Warning,
+            "Open a track first",
+            "A generated clip plays in a section of a track's video.",
+        );
+        return;
+    };
+    let target = crate::clips::import_target(
+        &track.scene_switches,
+        app.shell.scene_lane.selected_id,
+        time_seconds,
+    );
+    let crate::clips::ImportTarget::Section { cue_id, .. } = target else {
+        app.shell.notify(
+            Severity::Warning,
+            "No section to generate for",
+            "A generated clip plays in a section of the plan: turn the plan on (Auto in the plan lane) \
+             or split the track into sections first.",
+        );
+        return;
+    };
+    app.shell.open_generate_block(cue_id);
 }

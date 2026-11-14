@@ -877,11 +877,19 @@ impl Treatment {
         let generated: Vec<usize> = segments
             .iter()
             .enumerate()
-            .filter(|(_, segment)| segment.clip.as_ref().is_some_and(|clip| clip.generate.is_some()))
+            .filter(|(_, segment)| {
+                segment
+                    .clip
+                    .as_ref()
+                    .is_some_and(|clip| clip.generate.is_some())
+            })
             .map(|(index, _)| index)
             .collect();
         for &index in &generated {
-            let place = format!("segments[{index}] ({}).clip.generate", format_time(segments[index].at));
+            let place = format!(
+                "segments[{index}] ({}).clip.generate",
+                format_time(segments[index].at)
+            );
             let spec = segments[index]
                 .clip
                 .as_ref()
@@ -1092,7 +1100,10 @@ impl Treatment {
                 Some(ClipGeneration {
                     key: clip.path.clone(),
                     segment: index,
-                    place: format!("segments[{index}] ({}).clip.generate", format_time(segment.at)),
+                    place: format!(
+                        "segments[{index}] ({}).clip.generate",
+                        format_time(segment.at)
+                    ),
                     at: segment.at,
                     next_at: self.segments.get(index + 1).map(|next| next.at),
                     previous_at: index.checked_sub(1).map(|before| self.segments[before].at),
@@ -1113,10 +1124,14 @@ impl Treatment {
             .flatten()
             .filter_map(|index| self.segments.get(index).map(|segment| segment.scene))
             .collect();
-        let scene = [SceneId::Spectrum, SceneId::PulseField, SceneId::OrbitalLattice]
-            .into_iter()
-            .find(|scene| !neighbours.contains(scene))
-            .unwrap_or(SceneId::Spectrum);
+        let scene = [
+            SceneId::Spectrum,
+            SceneId::PulseField,
+            SceneId::OrbitalLattice,
+        ]
+        .into_iter()
+        .find(|scene| !neighbours.contains(scene))
+        .unwrap_or(SceneId::Spectrum);
         if let Some(target) = self.segments.get_mut(segment) {
             target.scene = scene;
             target.clip = None;

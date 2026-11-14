@@ -119,6 +119,7 @@ impl Store {
         Ok(Self { root })
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn at(root: PathBuf) -> Self {
         Self { root }

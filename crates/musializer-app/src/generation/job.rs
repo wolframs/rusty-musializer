@@ -182,7 +182,6 @@ pub struct GenerationJob {
     shared: Arc<Mutex<Shared>>,
     handle: Option<JoinHandle<()>>,
     started: Instant,
-    pub request_sha256: String,
 }
 
 impl GenerationJob {
@@ -194,7 +193,6 @@ impl GenerationJob {
             job_id: None,
             outcome: None,
         }));
-        let request_sha256 = spec.request.digest();
         let handle = {
             let stop = Arc::clone(&stop);
             let shared = Arc::clone(&shared);
@@ -221,7 +219,6 @@ impl GenerationJob {
             shared,
             handle,
             started: Instant::now(),
-            request_sha256,
         }
     }
 
