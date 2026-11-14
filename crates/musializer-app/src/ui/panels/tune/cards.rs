@@ -511,10 +511,9 @@ fn grade_choice(grade: Option<Grade>) -> GradeChoice {
 }
 
 /// The selected section, its position, and the one before it.
-fn target<'a>(
-    cues: &'a [SceneSwitchCue],
-    selected: u64,
-) -> Option<(usize, &'a SceneSwitchCue, Option<&'a SceneSwitchCue>)> {
+type Target<'a> = (usize, &'a SceneSwitchCue, Option<&'a SceneSwitchCue>);
+
+fn target(cues: &[SceneSwitchCue], selected: u64) -> Option<Target<'_>> {
     let index = cues.iter().position(|cue| cue.id == selected)?;
     Some((index, &cues[index], index.checked_sub(1).map(|i| &cues[i])))
 }
@@ -1585,6 +1584,12 @@ impl Shell {
                             cue_id: cue.id,
                             transition,
                         });
+                        // Seen at once: a new kind picked while paused plays
+                        // its cut, so the choice is felt where it lands.
+                        if !input.playing {
+                            let (from, until) = cut_span_for(cue, transition, index_of(cues, cue.id) == 0);
+                            self.play_span(input, from, until.min(input.duration_seconds), commands);
+                        }
                     }
                 }
                 Part::Length => {
@@ -1914,6 +1919,10 @@ impl Shell {
                         &mut controls,
                     ) {
                         edits.push(ScenePlanEdit::SetTransition { cue_id: first.id, transition });
+                        if !input.playing {
+                            let (from, until) = cut_span_for(first, transition, true);
+                            self.play_span(input, from, until.min(input.duration_seconds), commands);
+                        }
                     }
                 }
                 Part::IntroLength => {
@@ -1943,6 +1952,11 @@ impl Shell {
                         &mut controls,
                     ) {
                         edits.push(ScenePlanEdit::SetOutro(transition));
+                        if !input.playing {
+                            let seconds = f64::from(transition.seconds);
+                            let from = (input.duration_seconds - seconds - look_cards::CUT_LEAD_SECONDS).max(0.0);
+                            self.play_span(input, from, input.duration_seconds, commands);
+                        }
                     }
                 }
                 Part::OutroLength => {
@@ -2182,6 +2196,28 @@ impl Shell {
             controls.join(";"),
         );
     }
+}
+
+/// Where play-the-cut runs for `cue` arriving by `transition`.
+fn cut_span_for(cue: &SceneSwitchCue, transition: Transition, first: bool) -> (f64, f64) {
+    let seconds = if transition.is_cut() {
+        0.0
+    } else {
+        musializer_core::project::transition::fitted_seconds(
+            transition,
+            cue.end_seconds - cue.start_seconds,
+        )
+    };
+    look_cards::cut_span(
+        cue.start_seconds,
+        seconds,
+        transition.kind == TransitionKind::Dip,
+        first,
+    )
+}
+
+fn index_of(cues: &[SceneSwitchCue], id: u64) -> usize {
+    cues.iter().position(|cue| cue.id == id).unwrap_or(0)
 }
 
 /// The scene a threshold section's doorway shows, as it plays: the track's

@@ -200,6 +200,9 @@ if only in ('all', 'section'):
     # 1. kinds
     log, saved = run('kind-flash', SECTION + ',section=2' + click(centre(rect(b2, 'kind-flash'))))
     check(field(cards(log), 'kind') == 'flash', 'kind chip: flash reaches the report')
+    playhead = float(field(line(log, 'transport'), 'playhead'))
+    check(4.1 <= playhead <= 4.7 and 'playing=false' in line(log, 'resume'),
+          f'a kind picked while paused plays its cut and pauses after it: playhead {playhead:.3f}')
     check(cue(saved, 1)['transition']['kind'] == 'flash' and abs(cue(saved, 1)['transition']['seconds'] - 0.6) < 1e-6,
           f"kind chip: the autosaved .musi says flash 0.6: {cue(saved, 1).get('transition')}")
     r = rect(b2, 'kind-flash')
