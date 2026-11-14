@@ -529,3 +529,31 @@ texel for texel and is **bit-identical** to FFmpeg's frame on both renderers
 (`tools/clip_check.sh`). Compare at the source size; judge any scaled
 comparison by its margin over the neighbouring frames, not by its level.
 Found writing the clip gate, 2026-11-14.
+
+## A poster the replay draws from a field its recipe lacks never goes stale
+
+A poster is invalidated only by its key changing (`render::poster`), and the
+key is the `Debug` of `PosterRecipe`. The replay draws the clip scene through
+the track's plan, so it read each section's clip placement, but the recipe had
+no clip in it: a clip imported into a section, a new start or another end left
+the lane's poster of that section showing the old picture as **current**, with
+every gate green, because nothing looked at a poster after an edit. Whatever
+the replay reads from the track must be in the recipe (the clip moment at the
+poster's frame, and whether the file is readable, since a missing one draws a
+card). Symptom: a lane or card poster that does not follow an edit the preview
+shows at once; `posters:` `refreshed=` stays 0. Pinned by
+`a_clip_edit_changes_the_section_posters_key` and the look cards gate's
+`refreshed>=1` after a new start. Found joining the clip scene to Look's
+section card (F1c), 2026-11-14.
+
+## Switching to an own start must not round the clip time
+
+"Own start" pins a section where its clip's clock already is. Rounded to the
+card's 0.01 s readout, 4.2335 s becomes 4.23 s, which is frame 126 at 30 fps
+instead of 127: a one-frame jump on a switch that promises none, and invisible
+in a capture of a slow clip. The pin keeps the exact clip time (a millisecond
+inside the clip when a hold has run past its end, the last frame still); only
+a number the user drags or types is rounded. Symptom: the `clip:` line's
+`drew frame` index differs before and after Continue / Own start. Pinned by
+`continuing_and_pinning_an_own_start_move_no_frame` and the look cards gate.
+Found building the card's start row (F1c), 2026-11-14.

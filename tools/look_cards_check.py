@@ -71,11 +71,36 @@ file):
   22. a length typed with real keys saves and picks no scene; a title typed
       with T, space and 4 in it saves and moves neither the column, the
       playhead nor the scene; the 4 alone, with no field open, picks one.
+ clip (F1c: a Video Clip section's clip, testsrc2 clips made under OUT)
+  24. a press on a library row plays that clip in the section (its end and
+      fit kept); the gap between two rows changes nothing.
+  25. Own start pins the section where its clip's clock is (from 3.0) and
+      the preview draws the same clip frame (`clip:` drew frame 120 EXACT
+      before and after); the gap between Continue and Own start: nothing.
+  26. Continue on an own start equal to the clock drops `from` and draws the
+      same frame; Continue is drawn disabled after another clip.
+  27. the From track sets the start at the pressed point (0.01 s) and the
+      frame follows; the section's poster is drawn again (`refreshed>=1`);
+      a typed 2.5 gives frame 105; the space above the row changes nothing.
+  28. Hold / Loop / Bounce and Cover / Contain by name, saved (a default not
+      written), each with its glyph; the gaps between chips change nothing.
+  29. Import clip (`clip-pick=`) adds the file and the section plays it; the
+      gap beside it changes nothing; Generate is drawn disabled and a press
+      on it imports nothing.
+  30. a clip whose bundled file is gone says so in the placeholder's words
+      (`clip-words=` equals the `clip:` PLACEHOLDER title); Import is offered.
+  31. Play the cut over a clip section plays through its fade and pauses.
+  32. following a treatment the clip rows are drawn disabled: a press on
+      Bounce changes nothing and a press on Import imports nothing.
+  33. a Spectrum section shows no clip rows.
  captures
   14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
   21. (in 14) every transition kind's glyph is placed beside its name and
       has inked pixels against its chip, at 1280 and at the 300 px column.
+  36. the clip section in both appearances at 1280 and at the 300 px column:
+      inside the list, the section's poster and both clips' frames drawn,
+      the poster a picture (> 50 colours), every end and fit glyph inked.
 
 NEGATIVE CONTROLS (2026-11-14, GPU path), each a binary built from a perturbed
 tree into its own target directory, run as LOOK_CARDS_BIN, then the tree
@@ -136,6 +161,27 @@ and `git status` shown clean:
   Found on the way: the first sequence ran 120 frames and passed against
   both perturbations, because autosave settles 1.5 s after an edit and the
   file was read before it; the control (no drop, must commit) caught that.
+
+F1c NEGATIVE CONTROLS (2026-11-14, GPU path), three perturbed binaries built
+into their own target directory, run as LOOK_CARDS_BIN, the files restored
+with `git checkout` and `git diff --quiet` shown clean:
+  1 (5 failures): a library row's press inert (24); Own start writing 0
+    instead of the clock (25: from 0, frame 30 against 120); every end chip
+    writing Hold (28: Bounce not saved); the missing clip's words never
+    drawn (30: '' against 'a.mp4: the file is missing').
+  2 (5 failures): Continue keeping the own start (26: from 3 kept); the From
+    number half a second off (27: track 2.0 not 1.5, typed frame 120 not
+    105); every fit chip writing Contain (28); Import pushing nothing (29).
+  3 (4 clip failures, 8 capture failures): the clip left out of a poster's
+    recipe (27: refreshed=0); Generate doing what Import does (29: the
+    library grew); clip rows on every section (33); Import drawn enabled
+    while following, which first passed because 32 read the report's
+    `disabled:` marker and pressed only Bounce, an edit the follow guard
+    drops anyway: the press on Import (a command, not an edit) now catches
+    it (3 clips); no clip frame ever decoded and the poster never drawn
+    into its well (36: thumbs pending, the poster 1 colour).
+  Found on the way: the import check read the file after 90 frames, before
+  autosave's settle, and failed on a binary whose import worked; 200 frames.
 """
 import json
 import os
@@ -1025,10 +1071,10 @@ if only in ('all', 'clip'):
           and 'from' not in cue(saved, 2)['clip'],
           f"Continue drops section 3's own start, saved: {cue(saved, 2).get('clip')}")
     check(clip_frame(log) == before == (120, True), f'Continue draws the same clip frame: {clip_frame(log)} against {before}')
-    # 27. Continue is not offered where the section before plays another clip.
+    # 26b. Continue is not offered where the section before plays another clip.
     check('start-continue@disabled:' in b4, 'Continue is drawn disabled on section 4 (section 3 plays a.mp4)')
 
-    # 28. the number: a press on the From track and a typed one move the frame.
+    # 27. the number: a press on the From track and a typed one move the frame.
     bar = rect(b3, 'clip-from')
     point, unit = at_fraction(bar, 0.25)
     log, saved = run('clip-from', CLIP + ',section=3' + click(point), project='clip', frames=150)
@@ -1046,7 +1092,7 @@ if only in ('all', 'clip'):
     check(abs(cue(saved, 2)['clip'].get('from', -1) - 2.5) < 1e-9 and clip_frame(log) == (105, True),
           f"a typed 2.5 starts section 3 at 2.5 s: frame {clip_frame(log)} (2.5 + 1 s = 105)")
 
-    # 29. after its end, by name.
+    # 28. after its end, by name.
     log, saved = run('clip-bounce', CLIP + ',section=4' + click(centre(rect(b4, 'after-bounce'))), project='clip')
     check(field(cards(log), 'clip-after') == 'bounce' and cue(saved, 3)['clip'].get('after') == 'bounce',
           f"Bounce: section 4 bounces, saved: {cue(saved, 3).get('clip')}")
@@ -1055,7 +1101,7 @@ if only in ('all', 'clip'):
     check(field(cards(log), 'clip-after') == 'loop' and clip_unchanged(saved) and claimed_nothing(log),
           'the gap between Loop and Bounce changes nothing')
 
-    # 30. fit.
+    # 28b. fit.
     log, saved = run('clip-cover', CLIP + ',section=4' + click(centre(rect(b4, 'fit-cover'))), project='clip')
     check(field(cards(log), 'clip-fit') == 'cover' and 'fit' not in cue(saved, 3)['clip'],
           f"Cover: section 4 fills the frame; the default is not written: {cue(saved, 3).get('clip')}")
@@ -1066,10 +1112,10 @@ if only in ('all', 'clip'):
     glyphs = re.findall(r'(?:after|fit)-\w+-glyph@', b4)
     check(len(glyphs) == 5, f'every end and fit chip has its glyph beside its name ({len(glyphs)})')
 
-    # 31. Import clip (the flyout's import, landing here), and Generate drawn
+    # 29. Import clip (the flyout's import, landing here), and Generate drawn
     #     disabled with nothing behind it.
     log, saved = run('clip-import', CLIP + ',section=2' + click(centre(rect(b3, 'clip-import'))) + f",clip-pick={out / 'c.mp4'}",
-                     project='clip', frames=90)
+                     project='clip', frames=200)
     names = [entry['name'] for entry in saved.get('clips', [])]
     c_sha = next((entry['sha256'] for entry in saved.get('clips', []) if entry['name'] == 'c.mp4'), None)
     check(names == ['a.mp4', 'b.mp4', 'c.mp4'] and c_sha and cue(saved, 1)['clip'].get('clip') == c_sha
@@ -1083,7 +1129,7 @@ if only in ('all', 'clip'):
     check('clip-generate@disabled:' in b3 and clip_unchanged(saved) and field(cards(log), 'clip-library') == '2',
           'Generate is drawn disabled and a press on it changes nothing')
 
-    # 32. a clip whose file is gone says so, in the placeholder's words.
+    # 30. a clip whose file is gone says so, in the placeholder's words.
     def lose_a(work):
         for path in (work / 'clip.assets' / 'clips').glob(a_sha + '.*'):
             path.unlink()
@@ -1094,13 +1140,13 @@ if only in ('all', 'clip'):
           f"a missing clip says why, as the placeholder does: {words and words[1]!r} / {placeholder and placeholder[1]!r}")
     check('clip-import@' in cards(log) and 'clip-import@disabled' not in cards(log), 'Import is the way out')
 
-    # 34. Play the cut over a clip section: from 2.5 through the fade to 5.6.
+    # 31. Play the cut over a clip section: from 2.5 through the fade to 5.6.
     log, _ = run('clip-play', CLIP + ',section=3' + click(centre(rect(b3, 'play'))), project='clip', frames=420)
     playhead = float(field(line(log, 'transport'), 'playhead'))
     check(5.5 <= playhead <= 6.0 and 'playing=false' in line(log, 'resume') and clip_frame(log)[0] is not None,
           f'Play the cut plays through section 3\'s fade and pauses: playhead {playhead:.3f}, clip {clip_frame(log)}')
 
-    # 35. following a treatment, the clip rows are disabled and say why.
+    # 32. following a treatment, the clip rows are disabled and say why.
     log, _ = run('clip-follow-base', CLIP + ',section=4,follow=1', project='clip', follow=True, frames=60)
     followed = cards(log)
     log, _ = run('clip-follow', CLIP + ',section=4,follow=1' + click(centre(rect(followed, 'after-bounce'))),
@@ -1109,6 +1155,12 @@ if only in ('all', 'clip'):
     check('clip-import@disabled:' in followed and 'start-own@disabled:' in followed and field(followed, 'editable') == '0'
           and field(report, 'clip-after') == 'loop' and field(report, 'follow') == 'show.treatment.json',
           f"following, the clip rows are drawn disabled and a press on Bounce changes nothing ({field(report, 'clip-after')})")
+    # The import is a command, not an edit, so the follow's edit guard does
+    # not stop it: the drawn-disabled button must not take the press.
+    log, _ = run('clip-follow-import', CLIP + ',section=4,follow=1' + click(centre(rect(followed, 'clip-import')))
+                 + f",clip-pick={out / 'c.mp4'}", project='clip', follow=True, frames=200)
+    check(field(cards(log), 'clip-library') == '2' and 'Clip imported' not in log,
+          f"following, a press on Import clip imports nothing ({field(cards(log), 'clip-library')} clips)")
 
 if only in ('all', 'captures'):
     for theme in ['dark', 'light']:
