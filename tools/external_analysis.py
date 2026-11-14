@@ -1625,6 +1625,31 @@ def _mimo_request_identity(
     return {"audio_sha256": audio_sha, **settings}
 
 
+def _mimo_failure(cache_path: Path, audio_sha: str) -> str | None:
+    """The helper's own sentence for a failed run, read from its receipt.
+
+    `_run` reports a failed child as "python3 exited with code 1", which says
+    nothing about a MiMo answer that was cut off, empty or off-schema, nor what
+    it cost. The helper writes that sentence into a receipt beside the cache
+    (`mimo_openrouter.failure_receipt_path`), and it is surfaced from there: it
+    names a reason and a number, never the answer or the request.
+    """
+    path = mimo_adapter.failure_receipt_path(cache_path)
+    try:
+        if path.stat().st_size > 1 << 20:
+            return None
+        receipt = read_json(path)
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(receipt, dict)
+            or receipt.get("schema_version") != mimo_adapter.FAILED_RUN_SCHEMA_VERSION
+            or receipt.get("audio_sha256") != audio_sha
+            or not isinstance(receipt.get("message"), str)):
+        return None
+    # One line, bounded: it becomes the job's diagnosis line.
+    return " ".join(receipt["message"].split())[:300] or None
+
+
 def _mimo_cache_accepts(
     envelope: dict[str, Any], *, request_identity: dict[str, Any],
     execution_route: dict[str, Any] | None = None,
@@ -2249,8 +2274,16 @@ def run_assist(
                 command.extend([f"--max-price-{name}", f"{value:.9g}"])
             if not semantic_route["allow_fallbacks"]: command.append("--no-fallbacks")
             if zdr: command.append("--zdr")
-            _run(command, timeout=external_timeout,
-                 env=_openrouter_env(allow_dotenv=allow_dotenv), runner=runner)
+            # A receipt left by an earlier attempt must not explain this one.
+            mimo_adapter.failure_receipt_path(paths["semantic"]).unlink(missing_ok=True)
+            try:
+                _run(command, timeout=external_timeout,
+                     env=_openrouter_env(allow_dotenv=allow_dotenv), runner=runner)
+            except RuntimeError as error:
+                failure = _mimo_failure(paths["semantic"], audio_sha)
+                if failure is None:
+                    raise
+                raise RuntimeError(failure) from error
             envelope = _cache_matches(
                 paths["semantic"], "musializer.analysis-cache/v1", audio_sha,
                 accept=lambda value: (

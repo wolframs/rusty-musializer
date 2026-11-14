@@ -44,8 +44,32 @@ TRANSIENT_STATUSES = frozenset((429, 502, 503))
 DEFAULT_TIMEOUT = 600.0
 DEFAULT_MAX_ATTEMPTS = 3
 COVERAGE_TOLERANCE_SECONDS = 0.001
+FAILED_RUN_SCHEMA_VERSION = "musializer.mimo-failed-run/v1"
+
+# The completion cap, reasoning included (OpenRouter's `max_tokens`; MiMo bills
+# its reasoning as completion tokens and counts it against this limit). Without
+# it the provider's own ceiling, 65 536, applied: in the 2026-11-14 benchmark
+# one call emitted that many tokens of whitespace (0.131 USD) and another ran
+# to 43 578. The largest legitimate answer used 10 942, on a 100-second excerpt;
+# this lane sends whole tracks, so the cap leaves half again as much room and
+# still cuts both runaways. docs/MIMO_BENCHMARK_RESULTS.md, "Cost".
+MAX_COMPLETION_TOKENS = 16_000
+# Bytes of a failed answer's text kept in its receipt: enough to see what kind
+# of failure it was (whitespace, prose, half a JSON object), never 65 k tokens.
+FAILED_CONTENT_KEEP = 4096
 
 Transport = Callable[..., Any]
+
+
+class FailedRun(RuntimeError):
+    """A billed answer that is not a result: cut off, empty, or off-schema.
+
+    Its message is the one sentence the user reads (behind the helper's
+    ``External analysis failed:`` prefix, clipped by the application at 160
+    bytes, so the reason comes first and the cost second). A failed run is
+    never written to the cache and never staged; its receipt sits beside the
+    cache path instead.
+    """
 
 
 def _snapshot_audio(audio_path: Path) -> tuple[bytes, str]:
@@ -250,6 +274,9 @@ def request_settings(
         "provider_only": provider_only or [],
         "provider_ignore": provider_ignore or [],
         "max_price": dict(sorted((max_price or {}).items())),
+        # Part of the identity: an answer produced under another cap (or none)
+        # is not this request's answer (§5 rule 7).
+        "max_tokens": MAX_COMPLETION_TOKENS,
     }
 
 
@@ -318,6 +345,7 @@ def build_request(
         },
         "provider": provider,
         "temperature": 0.2,
+        "max_tokens": MAX_COMPLETION_TOKENS,
     }
     return payload, settings
 
@@ -387,10 +415,10 @@ def submit_request(
         )
         try:
             with transport(request, timeout=timeout) as response:
-                parsed = json.loads(response.read().decode("utf-8"))
-            if not _content(parsed):
-                raise EOFError("OpenRouter returned an empty completion")
-            return parsed
+                # An empty or cut-off answer is returned, not retried: it was
+                # billed, and a silent retry triples a failure's cost before
+                # anyone sees it. `completion_failure` names it instead.
+                return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
             last_error = error
             if error.code not in TRANSIENT_STATUSES or attempt == max_attempts:
@@ -399,12 +427,107 @@ def submit_request(
             delay = _retry_delay(error.headers, attempt, now)
             error.close()
             sleeper(delay)
-        except EOFError as error:
-            last_error = error
-            if attempt == max_attempts:
-                raise RuntimeError("OpenRouter returned empty completions") from error
-            sleeper(min(2 ** (attempt - 1), 8))
     raise RuntimeError("OpenRouter request failed") from last_error
+
+
+def _choice(response: dict[str, Any]) -> dict[str, Any]:
+    choices = response.get("choices") if isinstance(response, dict) else None
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        return choices[0]
+    return {}
+
+
+def _raw_content(response: dict[str, Any]) -> str | None:
+    """The answer text, or None when the response carries none at all."""
+    message = _choice(response).get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            item.get("text", "") for item in content if isinstance(item, dict)
+            and isinstance(item.get("text"), str))
+    return None
+
+
+def completion_failure(response: dict[str, Any]) -> str | None:
+    """Why this billed response is not an answer, or None when it may be one.
+
+    The three shapes the benchmark met: a completion cut off at the token
+    limit (``finish_reason: length``, 65 536 tokens of whitespace), a response
+    billed with null content, and an empty one. Only ``stop`` is a finished
+    answer; anything else (``content_filter``, ``error``, a missing reason) is
+    named rather than parsed, because a half answer can still be valid JSON.
+    """
+    finish = _choice(response).get("finish_reason")
+    content = _raw_content(response)
+    if finish == "length":
+        return f"MiMo's answer was cut off at the {MAX_COMPLETION_TOKENS}-token cap"
+    if content is None:
+        return "MiMo returned no answer text"
+    if not content.strip():
+        return "MiMo returned an empty answer"
+    if finish != "stop":
+        label = finish if isinstance(finish, str) and finish else "none"
+        return f"MiMo's answer did not finish (finish reason: {label[:24]})"
+    return None
+
+
+def reported_cost_usd(response: dict[str, Any]) -> float | None:
+    """What OpenRouter says this call cost, when it says so (``usage.cost``)."""
+    usage = response.get("usage") if isinstance(response, dict) else None
+    cost = usage.get("cost") if isinstance(usage, dict) else None
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool) and cost >= 0:
+        return float(cost)
+    return None
+
+
+def _cost_clause(response: dict[str, Any]) -> str:
+    cost = reported_cost_usd(response)
+    if cost is None:
+        return "OpenRouter reported no cost for it"
+    return f"OpenRouter billed {cost:.4f} USD for it"
+
+
+def failure_receipt_path(cache_path: Path) -> Path:
+    return cache_path.with_name(f"{cache_path.stem}.failed.json")
+
+
+def failure_message(reason: str, response: dict[str, Any] | None) -> str:
+    return f"{reason}. Nothing was saved; {_cost_clause(response or {})}."
+
+
+def _write_failure_receipt(
+    cache_path: Path, *, reason: str, response: dict[str, Any] | None,
+    settings: dict[str, Any], audio_sha256: str, detail: str | None = None,
+) -> dict[str, Any]:
+    """The record of a failed run, beside (never in) the cache.
+
+    It keeps what explains the failure and what it cost: the finish reason,
+    the provider's ``usage`` and cost, the generation id, and the start of the
+    answer text. The text is clipped, since a runaway answer is 65 k tokens.
+    """
+    response = response if isinstance(response, dict) else {}
+    content = _raw_content(response)
+    receipt = {
+        "schema_version": FAILED_RUN_SCHEMA_VERSION,
+        "reason": reason,
+        "message": failure_message(reason, response),
+        "detail": detail,
+        "audio_sha256": audio_sha256,
+        "request": settings,
+        "finish_reason": _choice(response).get("finish_reason"),
+        "generation": {
+            key: response[key]
+            for key in ("id", "created", "model", "provider", "usage")
+            if key in response
+        },
+        "reported_cost_usd": reported_cost_usd(response),
+        "content_characters": None if content is None else len(content),
+        "content_start": None if content is None else content[:FAILED_CONTENT_KEEP],
+    }
+    atomic_write_json(failure_receipt_path(cache_path), receipt)
+    return receipt
 
 
 def decode_model_score(response: dict[str, Any]) -> Any:
@@ -455,16 +578,37 @@ def analyze_to_cache(
         )
     else:
         payload, settings = _prepared_request
+    receipt_path = failure_receipt_path(cache_path)
+    # A receipt from an earlier attempt describes that attempt, not this one.
+    receipt_path.unlink(missing_ok=True)
     response = submit_request(payload, transport=transport, sleeper=sleeper)
-    score = decode_model_score(response)
-    normalized = normalize_semantic_score(
-        score,
-        audio_sha256=audio_hash,
-        audio_duration=audio_duration,
-        request_settings=settings,
-        response_metadata=response,
-        requested_model=str(settings.get("model") or model),
-    )
+
+    def failed(reason: str, detail: str | None = None) -> FailedRun:
+        _write_failure_receipt(
+            cache_path, reason=reason, response=response, settings=settings,
+            audio_sha256=audio_hash, detail=detail)
+        return FailedRun(failure_message(reason, response))
+
+    reason = completion_failure(response)
+    if reason is not None:
+        raise failed(reason)
+    try:
+        score = decode_model_score(response)
+    except AnalysisValidationError as error:
+        raise failed("MiMo's answer is not valid JSON", str(error)) from error
+    try:
+        normalized = normalize_semantic_score(
+            score,
+            audio_sha256=audio_hash,
+            audio_duration=audio_duration,
+            request_settings=settings,
+            response_metadata=response,
+            requested_model=str(settings.get("model") or model),
+        )
+    except AnalysisValidationError as error:
+        detail = str(error)
+        raise failed(f"MiMo's answer does not fit the schema ({detail[:60]})",
+                     detail) from error
     cache_key = canonical_sha256({"audio_sha256": audio_hash, **settings})
     envelope = {
         "schema_version": CACHE_SCHEMA_VERSION,
