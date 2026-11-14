@@ -775,8 +775,11 @@ and billed; three tries cost up to three calls against a confirmation for one.
 Retry only what the provider says it did not process (a 429) or what never
 left whole (`urllib` raises `URLError` only from connecting and sending);
 anything after the send is a failed run that says it may have been billed.
-The video client draws the same line with curl's `size_request`. Found by the
-second review (H4c), 2026-11-14.
+The video client draws the same line with curl's `size_request`. Name the
+statuses that are clear refusals, not the ones that may be billed: a list of
+five billed statuses let a Cloudflare 524 through as a plain error with no word
+on cost (H4d, `REFUSED_STATUSES`). Found by the second review (H4c),
+2026-11-14; the list turned around 2026-11-15.
 
 ## An upper bound printed at a precision must be rounded up
 

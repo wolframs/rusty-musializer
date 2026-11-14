@@ -48,12 +48,19 @@ PROMPT_VERSION = "musializer-semantic-score/v2"
 SCORE_SCHEMA_VERSION = "musializer.semantic-score/v1"
 CACHE_SCHEMA_VERSION = "musializer.analysis-cache/v1"
 # Retried, because OpenRouter says the request was not processed: 429 is a
-# rate limit applied before routing. A 502, 503, 504 or 408 comes after the
-# request was sent, possibly after the model ran, and may have been billed: it
-# is a failed run the person decides about, never a silent second call (H4c;
-# the confirmation they accepted budgets one call).
+# rate limit applied before routing.
 TRANSIENT_STATUSES = frozenset((429,))
-MAY_BE_BILLED_STATUSES = frozenset((408, 500, 502, 503, 504))
+# Clear refusals: OpenRouter answers these before the request reaches a model,
+# so nothing ran and nothing is billed. Its error list (openrouter.ai/docs,
+# "Errors", read 2026-11-14) names 400 (bad or missing parameters), 401 (the
+# key), 402 (too little credit) and 403 (the input flagged by moderation); 404
+# (no such route or model), 405, 413 (body too large), 415 and 422 (a body it
+# cannot take) refuse the request as sent. **Every other status** after the
+# request left — 408, any 5xx, a Cloudflare 52x, a 3xx, a 4xx not listed —
+# may come after the model ran: a failed run that may have been billed, with
+# a receipt, never a silent second call (H4c, H4d; the confirmation the person
+# accepted budgets one call).
+REFUSED_STATUSES = frozenset((400, 401, 402, 403, 404, 405, 413, 415, 422))
 DEFAULT_TIMEOUT = 600.0
 DEFAULT_MAX_ATTEMPTS = 3
 COVERAGE_TOLERANCE_SECONDS = 0.001
@@ -534,8 +541,9 @@ def _content(response: dict[str, Any]) -> str:
 class SentUnanswered(RuntimeError):
     """The request left and no usable answer came back: it may have been billed.
 
-    A 5xx or 408 from the gateway, a timeout or a dropped connection while
-    waiting for the answer, an answer that does not read. Nothing tells this
+    Any HTTP status that is not a clear refusal (``REFUSED_STATUSES``) or a
+    rate limit — a 5xx, a 408, a gateway's 524 — a timeout or a dropped
+    connection while waiting for the answer, an answer that does not read. Nothing tells this
     helper whether the model ran, so the run fails, says it may have been
     billed up to the cap, and is not sent again by itself (H4c).
     """
@@ -555,7 +563,8 @@ def submit_request(
     Retried: a 429 (OpenRouter's rate limit, before routing) and a failure
     before the request was sent whole (``urllib`` raises ``URLError`` only
     from connecting and sending; anything after that comes as the bare
-    error). Everything else that follows the send is ``SentUnanswered``.
+    error). A clear refusal (``REFUSED_STATUSES``) is a plain error; everything
+    else that follows the send is ``SentUnanswered``.
     """
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
@@ -580,13 +589,13 @@ def submit_request(
             code = error.code
             headers = error.headers
             error.close()
-            if code in MAY_BE_BILLED_STATUSES:
-                raise SentUnanswered(
-                    f"OpenRouter answered HTTP {code} after the request was sent") from error
-            if code not in TRANSIENT_STATUSES or attempt == max_attempts:
+            if code in TRANSIENT_STATUSES and attempt < max_attempts:
+                sleeper(_retry_delay(headers, attempt, now))
+                continue
+            if code in REFUSED_STATUSES or code in TRANSIENT_STATUSES:
                 raise RuntimeError(f"OpenRouter request failed with HTTP {code}") from error
-            sleeper(_retry_delay(headers, attempt, now))
-            continue
+            raise SentUnanswered(
+                f"OpenRouter answered HTTP {code} after the request was sent") from error
         except urllib.error.URLError as error:
             # Connecting or sending failed: the request never reached
             # OpenRouter whole, so nothing can have been processed.

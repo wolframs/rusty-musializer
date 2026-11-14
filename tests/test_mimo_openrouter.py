@@ -226,7 +226,9 @@ class FailedRuns(LaneTestCase):
         # H4c: a 502 or 503 was retried up to three times, while the
         # confirmation budgets one call; three capped calls on 100 s are
         # about 0.097 USD against "at most 0.033".
-        for status in (502, 503, 504, 408):
+        # H4d: every status that is not a clear refusal, not only the five
+        # the H4c list named (a Cloudflare 524, a 418, a 409, a redirect).
+        for status in (502, 503, 504, 408, 500, 524, 520, 418, 409, 307):
             with self.subTest(status=status):
                 gateway = urllib.error.HTTPError(
                     mimo_openrouter.OPENROUTER_URL, status, "gateway", {}, io.BytesIO(b""))
@@ -247,6 +249,22 @@ class FailedRuns(LaneTestCase):
                 self.assertTrue(receipt["may_be_billed"])
                 self.assertEqual(receipt["message"], message)
                 self.assertIsNone(receipt["reported_cost_usd"])
+
+    def test_a_clear_refusal_is_not_billed_and_not_resent(self) -> None:
+        for status in sorted(mimo_openrouter.REFUSED_STATUSES):
+            with self.subTest(status=status):
+                refused = urllib.error.HTTPError(
+                    mimo_openrouter.OPENROUTER_URL, status, "no", {}, io.BytesIO(b""))
+                fake = FakeOpenRouter(refused, response(answer()))
+                with self.assertRaises(RuntimeError) as raised:
+                    mimo_openrouter.analyze_to_cache(
+                        self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                        transport=fake, sleeper=lambda _seconds: None)
+                self.assertNotIsInstance(raised.exception, mimo_openrouter.FailedRun)
+                self.assertEqual(str(raised.exception),
+                                 f"OpenRouter request failed with HTTP {status}")
+                self.assertEqual(len(fake.sent), 1)
+                self.assertFalse(self.ws.receipt.exists())
 
     def test_a_timeout_or_a_dropped_answer_may_be_billed_and_is_not_resent(self) -> None:
         import http.client
