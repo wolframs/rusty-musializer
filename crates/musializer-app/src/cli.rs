@@ -492,6 +492,10 @@ pub struct UiProbe {
     /// This is a bounded negative-control hook for the output-underrun counter;
     /// the audio device thread remains live and must observe the starvation.
     pub audio_stall_ms: Option<u64>,
+    /// `scrub=FROM:TO:STEPS` (VG): one seek per frame from FROM to TO in STEPS
+    /// steps, the way a drag over the timeline moves the playhead, so the
+    /// clip scene's preview can be made to chase it.
+    pub scrub: Option<(f64, f64, u32)>,
     /// `encoder-stall=MS` (EX4): the export's frame writer waits this long
     /// before each frame, an encoder that reads slowly on demand. The frames
     /// and their bytes are unchanged; only their pace into the pipe is.
@@ -1625,6 +1629,16 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             }
             probe.protocol_flip = Some(value.to_string());
         }
+        "scrub" => {
+            let mut parts = value.split(':');
+            let from = parse_seconds(parts.next()?)?;
+            let to = parse_seconds(parts.next()?)?;
+            let steps: u32 = parts.next()?.parse().ok()?;
+            if parts.next().is_some() || !(1..=10_000).contains(&steps) {
+                return None;
+            }
+            probe.scrub = Some((from, to, steps));
+        }
         "audio-stall" => {
             let milliseconds: u64 = value.parse().ok()?;
             if !(1..=5_000).contains(&milliseconds) {
@@ -1823,6 +1837,8 @@ Diagnostics:
                           protocol items by id; protocol-flip=ID plays
                           the item's other look first (need --protocol),
                           audio-stall=MS stalls the audio callback,
+                          scrub=FROM:TO:STEPS seeks once a frame from FROM
+                          to TO, as a drag over the timeline does,
                           encoder-stall=MS paces the export's frame writer,
                           replay-cancel=N backs a still's replay out at frame N
   --size WIDTHxHEIGHT     Preview window geometry

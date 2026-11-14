@@ -36,6 +36,10 @@ const SOURCE: &str = include_str!("../../../../resources/shaders/glsl330/clip.fs
 /// How long an exact draw waits for its frame: opening, hashing and probing a
 /// large clip, then a restart. A healthy frame takes milliseconds.
 const EXACT_DEADLINE: Duration = Duration::from_secs(60);
+/// How long the preview waits for the exact frame before drawing the nearest
+/// it has: long enough for a frame being decoded (about 4 ms at 1080p), short
+/// enough that a scrub never stalls the window.
+const PREVIEW_GRACE: Duration = Duration::from_millis(8);
 /// Draws a worker may go unused before its FFmpeg is stopped.
 const IDLE_DRAWS: u64 = 900;
 
@@ -90,6 +94,10 @@ pub struct ClipResources {
     exact_frames: u64,
     inexact_frames: u64,
     placeholder_frames: u64,
+    /// Consecutive inexact preview frames now, and the longest run: how long
+    /// the preview trailed a scrub before it caught up.
+    inexact_run: u64,
+    longest_inexact_run: u64,
 }
 
 impl ClipResources {
@@ -107,6 +115,8 @@ impl ClipResources {
             exact_frames: 0,
             inexact_frames: 0,
             placeholder_frames: 0,
+            inexact_run: 0,
+            longest_inexact_run: 0,
         }
     }
 
@@ -117,10 +127,11 @@ impl ClipResources {
             return "none".into();
         }
         format!(
-            "{}; frames exact={} inexact={} placeholder={} shader={}",
+            "{}; frames exact={} inexact={} (longest run {}) placeholder={} shader={}",
             self.last.line,
             self.exact_frames,
             self.inexact_frames,
+            self.longest_inexact_run,
             self.placeholder_frames,
             if self.shader.is_some() {
                 "compiled"
@@ -234,8 +245,12 @@ pub fn draw(
             let exact = index == wanted;
             if exact {
                 resources.exact_frames += 1;
+                resources.inexact_run = 0;
             } else {
                 resources.inexact_frames += 1;
+                resources.inexact_run += 1;
+                resources.longest_inexact_run =
+                    resources.longest_inexact_run.max(resources.inexact_run);
             }
             let moment_text = moment.map_or_else(String::new, |moment| {
                 format!(
@@ -335,8 +350,14 @@ fn picture(
             Err(error) => return Outcome::Card(format!("{name}: {error}"), source),
         }
     } else {
-        entry.worker.request(wanted);
-        match entry.worker.latest() {
+        let got = match entry.worker.wait_for(wanted, PREVIEW_GRACE) {
+            Ok(pixels) => Some((wanted, pixels)),
+            Err(_) => entry.worker.latest(),
+        };
+        // A frame the worker read ahead is there at once; one it is decoding
+        // gets a few milliseconds, which a played clip's next frame needs and
+        // a scrub's far one does not get.
+        match got {
             Some(latest) => latest,
             None => {
                 if let ClipPhase::Failed(error) = entry.worker.phase() {

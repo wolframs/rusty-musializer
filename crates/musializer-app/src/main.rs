@@ -818,6 +818,8 @@ fn run(
     // `--ui-probe treatment-pick=PATH`, the treatment picker's stand-in.
     let mut probe_treatment_pick: Option<std::path::PathBuf> = None;
     let mut audio_stall_ms: Option<u64> = None;
+    // `scrub=` (VG): the seeks still to make, one a frame.
+    let mut scrub: Option<((f64, f64, u32), u32)> = None;
     let mut scene_clock_previous: Option<f64> = None;
 
     // Render configuration is the first gated stage after deferred routes. It
@@ -1097,6 +1099,7 @@ fn run(
             middle_drag = probe.middle_drag;
             left_drag = probe.left_drag;
             audio_stall_ms = probe.audio_stall_ms;
+            scrub = probe.scrub.map(|spec| (spec, 0));
             if probe.panel == cli::UiPanel::Tune {
                 app.shell.inspector_open = true;
             }
@@ -1660,6 +1663,20 @@ fn run(
         }
         if let Some(music) = music.as_ref() {
             music.update_stream();
+        }
+        if let (Some(((from, to, steps), done)), Some(music)) = (scrub.as_mut(), music.as_ref()) {
+            let at = *from + (*to - *from) * f64::from(*done) / f64::from(*steps);
+            seek_preview(
+                music,
+                &mut analysis,
+                &mut app,
+                at,
+                &mut scene_clock_previous,
+            );
+            *done += 1;
+            if *done > *steps {
+                scrub = None;
+            }
         }
         // Negative control for the output-underrun counter. This sleeps only the
         // refill/UI thread; raylib's audio device thread continues consuming the

@@ -70,6 +70,10 @@ const SKIP_LIMIT: usize = 30;
 const CACHE_BYTES: usize = 192 * 1024 * 1024;
 /// The longest run decoded and kept for one backwards step.
 const BACK_RUN: usize = 24;
+/// Frames read ahead of the last one asked for while nothing new is asked:
+/// a played clip's next frame is then waiting when the preview asks, rather
+/// than decoded after it asked and drawn a frame late.
+const LOOKAHEAD: usize = 6;
 /// What FFmpeg rounds a frame up to before it checks `-max_pixels`.
 const FFMPEG_ALIGNMENT: u64 = 128;
 
@@ -719,13 +723,48 @@ fn run(shared: &Shared, path: &Path, expected: &Expected) {
                     Some(wanted) if Some(wanted) != served => break wanted.min(last),
                     _ => {}
                 }
+                // Nothing new asked: read ahead while the decoder is just
+                // past the last frame served.
+                let ahead = match (&decoder, served) {
+                    (Some(running), Some(served)) => {
+                        running.next <= last && running.next <= served + LOOKAHEAD
+                    }
+                    _ => false,
+                };
+                if ahead {
+                    break usize::MAX;
+                }
                 state = shared
                     .changed
                     .wait(state)
                     .unwrap_or_else(PoisonError::into_inner);
             }
         };
-        let backwards = served.is_some_and(|served| wanted < served);
+        if wanted == usize::MAX {
+            let Some(running) = decoder.as_mut() else {
+                continue;
+            };
+            let index = running.next;
+            let mut frame = vec![0u8; probe.frame_bytes()];
+            match running.read(&mut frame) {
+                Ok(true) => {
+                    lock(&shared.state).decoded += 1;
+                    cache.insert(index, Arc::new(frame));
+                    trim(&mut cache, capacity, served.unwrap_or(index));
+                }
+                // The end, or a fault the next real request will meet and
+                // name; reading ahead stops here either way.
+                _ => {
+                    if let Some(old) = decoder.take() {
+                        old.stop(&shared.group);
+                    }
+                }
+            }
+            continue;
+        }
+        // A bounce's way back steps a frame or two at a time and is worth a
+        // decoded run; a scrub's jump back wants only its one frame.
+        let backwards = served.is_some_and(|served| wanted < served && served - wanted <= 4);
         let frame = match cache.get(&wanted) {
             Some(frame) => Arc::clone(frame),
             None => {
@@ -817,23 +856,28 @@ fn produce(
         let frame = Arc::new(frame);
         if index >= keep_from {
             cache.insert(index, Arc::clone(&frame));
-            while cache.len() > capacity {
-                // Drop whichever end is further from the frame asked for.
-                let (low, high) = (
-                    *cache.keys().next().unwrap_or(&0),
-                    *cache.keys().next_back().unwrap_or(&0),
-                );
-                let evict = if wanted.abs_diff(low) > wanted.abs_diff(high) {
-                    low
-                } else {
-                    high
-                };
-                cache.remove(&evict);
-            }
+            trim(cache, capacity, wanted);
         }
         if index == wanted {
             return Ok(frame);
         }
+    }
+}
+
+/// Keeps the cache to `capacity`, dropping whichever end is further from
+/// `centre`.
+fn trim(cache: &mut BTreeMap<usize, Frame>, capacity: usize, centre: usize) {
+    while cache.len() > capacity {
+        let (low, high) = (
+            *cache.keys().next().unwrap_or(&0),
+            *cache.keys().next_back().unwrap_or(&0),
+        );
+        let evict = if centre.abs_diff(low) > centre.abs_diff(high) {
+            low
+        } else {
+            high
+        };
+        cache.remove(&evict);
     }
 }
 
