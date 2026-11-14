@@ -150,9 +150,10 @@ pub fn load(width: i32, height: i32) -> Result<RenderTexture2D, DeepRefusal> {
     };
 
     // SAFETY: the same sequence as raylib's `LoadRenderTexture`
-    // (`rtextures.c:4251-4287`), with two differences: the colour texture's
-    // storage is re-specified as `GL_RGBA16` before it is attached, and
-    // completeness is *checked* rather than logged. Every call takes ids and
+    // (`rtextures.c:4251-4287`), with three differences: the colour texture's
+    // storage is re-specified as `GL_RGBA16` before it is attached, the depth
+    // renderbuffer is attached first so a refusal in between cannot strand
+    // it, and completeness is *checked* rather than logged. Every call takes ids and
     // dimensions by value and no pointer crosses except the null data pointer
     // `glTexImage2D` is documented to accept (it allocates without
     // uploading). The texture is bound only between `rlEnableTexture` and
@@ -175,6 +176,19 @@ pub fn load(width: i32, height: i32) -> Result<RenderTexture2D, DeepRefusal> {
             1,
         );
         let depth = raylib_sys::rlLoadTextureDepth(width, height, true);
+        // Attached before anything below can refuse: `rlUnloadFramebuffer`
+        // finds the depth renderbuffer only through the framebuffer's
+        // attachment, so one that was never attached would outlive a refused
+        // target.
+        if depth != 0 {
+            raylib_sys::rlFramebufferAttach(
+                id,
+                depth,
+                raylib_sys::rlFramebufferAttachType::RL_ATTACHMENT_DEPTH as i32,
+                raylib_sys::rlFramebufferAttachTextureType::RL_ATTACHMENT_RENDERBUFFER as i32,
+                0,
+            );
+        }
         let face = |id: u32, format: i32| raylib_sys::Texture2D {
             id,
             width,
@@ -219,13 +233,6 @@ pub fn load(width: i32, height: i32) -> Result<RenderTexture2D, DeepRefusal> {
             colour,
             raylib_sys::rlFramebufferAttachType::RL_ATTACHMENT_COLOR_CHANNEL0 as i32,
             raylib_sys::rlFramebufferAttachTextureType::RL_ATTACHMENT_TEXTURE2D as i32,
-            0,
-        );
-        raylib_sys::rlFramebufferAttach(
-            id,
-            depth,
-            raylib_sys::rlFramebufferAttachType::RL_ATTACHMENT_DEPTH as i32,
-            raylib_sys::rlFramebufferAttachTextureType::RL_ATTACHMENT_RENDERBUFFER as i32,
             0,
         );
         if !raylib_sys::rlFramebufferComplete(id) {

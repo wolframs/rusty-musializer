@@ -156,7 +156,9 @@ if only in ('all','posters'):
     # to photograph it on BOTH renderers; a one-frame GPU shot is the previous
     # buffer and cannot prove that the fallback label was drawn (TRAPS.md).
     log=run('poster-pending','size=960x640,play=1,scene-family=atmosphere')
-    states=re.findall(r'([\w-]+):(\w+)@',line(log,'scene picker'))
+    # Only the `posters=` field: `keys=` (D7) has the same name:value@ shape.
+    posters=re.search(r' posters=(\S+)',line(log,'scene picker'))
+    states=re.findall(r'([\w-]+):(\w+)@',posters.group(1) if posters else '')
     check(states == [('constellation','ready'),('fluid','pending'),('aurora','ready'),('tunnel','ready')],
           'pending Fluid Ink is held visibly while the other three scenes arrive')
     # Ordinary scheduling, while music plays: this is not the unbounded settle.
@@ -190,7 +192,10 @@ if only in ('all','artist'):
     data=json.loads(seed.read_text())
     check(data['schema_version']=='musializer.project/v2' and data.get('metadata',{}).get('artist')=='Fixture Artist','UI commit autosaves the artist as v2')
     point=centre(rect(committed,'top bar','artist'))
-    clear=run('artist-clear',f'size=960x640,time=3,click={point},artist-action=clear',150,project=seed)
+    # At 0:00: an autosave away from the start also writes where the playhead
+    # was (PXF-7), and the commit above did. Clearing at the start must leave
+    # neither member behind.
+    clear=run('artist-clear',f'size=960x640,time=0,click={point},artist-action=clear',150,project=seed)
     check('artist=none' in line(clear,'top bar') and seed.read_bytes()==original, 'clearing in the UI restores byte-identical v1')
 
 if only in ('all','captures'):

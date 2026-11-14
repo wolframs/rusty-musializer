@@ -873,7 +873,18 @@ impl LyricsDocument {
             origin: CueOrigin::UserApplied,
         };
         match self.insert(right) {
-            Ok(right_id) => Ok(right_id),
+            Ok(right_id) => {
+                // The right half is the same line sung by the same voice:
+                // it keeps the cue's style and voice rather than falling back
+                // to its section's.
+                if let Some(style) = self.cue_styles.get(&id).copied() {
+                    self.cue_styles.insert(right_id, style);
+                }
+                if let Some(voice) = self.cue_voices.get(&id).copied() {
+                    self.cue_voices.insert(right_id, voice);
+                }
+                Ok(right_id)
+            }
             Err(error) => {
                 let left_index = self.index_of(id).expect("the left cue is still present");
                 self.cues[left_index] = original;
@@ -2043,6 +2054,32 @@ mod tests {
         assert_eq!(document.cues()[1].id, right);
         assert_eq!(document.cues()[1].start_seconds, 3.0);
         assert_eq!(document.cues()[1].end_seconds, 5.0);
+    }
+
+    #[test]
+    fn split_gives_the_right_half_the_cues_style_and_voice() {
+        let mut document = document();
+        let id = document.insert(cue(0, 1.0, 5.0, "left right")).unwrap();
+        let shout = StyleName::new("shout").unwrap();
+        assert!(document.set_voices(vec![Voice {
+            name: "low".into(),
+            style: VoiceStyle::default(),
+        }]));
+        assert!(document.set_cue_style(id, Some(shout)));
+        assert!(document.set_cue_voice(id, Some(0)));
+        let right = document.split(id, 3.0, "left", "right").unwrap();
+        assert_eq!(document.style_of(right), Some(shout));
+        assert_eq!(
+            document.voice_of(right).map(|voice| voice.name.as_str()),
+            Some("low")
+        );
+        assert_eq!(document.style_of(id), Some(shout));
+
+        // A cue with neither gives its right half neither.
+        let plain = document.insert(cue(0, 6.0, 9.0, "one two")).unwrap();
+        let plain_right = document.split(plain, 7.0, "one", "two").unwrap();
+        assert_eq!(document.style_of(plain_right), None);
+        assert!(document.voice_of(plain_right).is_none());
     }
 
     #[test]

@@ -70,17 +70,27 @@ and verified; delete the block when the wave is done, moving the evidence to
 the archive as usual. Each agent works in its own worktree and branch from the
 commit that adds this block; the lead cherry-picks.
 
-- [ ] **A — export.** EX3 gradient banding in exported frames; EX4 the progress
+- [x] **A — export.** EX3 gradient banding in exported frames; EX4 the progress
   screen that stops repainting and polling Cancel while the encoder is backed
   up; PXF-5 the still that blocks the frame loop.
-- [ ] **B — captions.** MV2: named caption styles a lyric line or a section can
+- [x] **B — captions.** MV2: named caption styles a lyric line or a section can
   pick, and a title lane (title, artist, handle) separate from lyrics. Never a
   card by default.
-- [ ] **C — friction.** PXF-7 reopen at the last playhead position; the
+- [x] **C — friction.** PXF-7 reopen at the last playhead position; the
   treatment file picker for native agent sessions (`docs/WORKSTATION.md`, open
   work); D7 number-row scene selection and tile tooltips.
 - [ ] **Integrate A–C**: cherry-pick, one review by GPT-6.1-Sol on the merged
   diff, one full `tools/verify.sh`, `cargo build --release`.
+- [ ] **ST — saved stills are opaque.** Found while integrating (2026-11-14):
+  a still's PNG carries whatever alpha the frame's blends left. In the caption
+  gate's stills, 230,396 of 230,400 pixels of a Cadence frame are below 255
+  (minimum 178), and Pulse Field, Clawd and every caption or title-card glyph
+  edge leave some. A still is the video's frame and the video has no alpha, so
+  the still, contact-sheet and share-frame writers should write alpha 255 and
+  leave r, g, b alone. Deliberate: record it in `docs/DIVERGENCES.md`, and keep
+  a per-plane report line so a scene that eats destination alpha (the
+  `BLEND_ALPHA` trap) stays visible to the gates that used the alpha plane to
+  find one.
 - [ ] **D — the segment inspector** (MV9-l, MV3-a), after B and C are merged:
   edit a section's transition, grade, glide, the finish, voices and B's caption
   style in the right column. Designer and critic as in WX-5.

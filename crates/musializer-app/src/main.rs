@@ -617,7 +617,10 @@ fn run(
                     &mut music,
                     &mut app,
                     &mut scratch,
-                    is_session_run(&options),
+                    // Not next to `--treatment`: the treatment is applied
+                    // from 0:00, and a transport parked elsewhere would show
+                    // a different moment than the scene state it built.
+                    is_session_run(&options) && options.treatment.is_none(),
                 ) {
                     eprintln!("warning: could not open {}: {error}", path.display());
                     options.error = true;
@@ -5167,8 +5170,8 @@ fn confirm_close(app: &mut App, exporting: bool, already_warned: &mut bool) -> b
 ///
 /// With `resume`, a project saved away from the start reopens there, paused
 /// (PXF-7). Every interactive open resumes; an open from the command line
-/// does only in a session, so a render, still, contact sheet, probe or
-/// `--save-project` run starts where it always did.
+/// does only in a session without `--treatment`, so a render, still, contact
+/// sheet, probe, `--save-project` or directed run starts where it always did.
 fn open_project<'audio>(
     audio: &'audio RaylibAudio,
     path: &Path,
