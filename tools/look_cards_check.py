@@ -43,6 +43,11 @@ file):
   13. following a treatment, the cards are drawn disabled and a press
       changes nothing; Stop following stops following and the card is
       editable again.
+ sequence (D2: a second project, `drop-at=`, `look-commit-at=`)
+  15. a title card half-typed in one project, another project dropped in,
+      Enter a frame later: the draft died with its project; Enter in the
+      frame the other opens: refused where it is applied (`stale=1`). The
+      control (no drop) commits the same draft.
  captures
   14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
@@ -63,6 +68,18 @@ restored with `git checkout` and shown clean:
     cards were masked: 0.00); the glide refusal ignored (drawn enabled, the
     press glided); a style rename without its cascade (the line lost its
     style); Add a title card never blocked (it offered itself over a card).
+
+D2 NEGATIVE CONTROLS (2026-11-14, GPU path), each a perturbed debug build
+copied aside, run as LOOK_CARDS_BIN, the file restored with `git checkout`
+and `git status` shown clean:
+  15a (2 failures): `look_cards_frame` without `forget()`: the late Enter
+    committed STALE into the other project's title card 0 and autosaved it
+    (the review's defect 1 reproduced).
+  15b (2 failures): the composition root's owner check made `true ||`: the
+    same-frame Enter wrote STALE into the other project (`stale=0`).
+  Found on the way: the first sequence ran 120 frames and passed against
+  both perturbations, because autosave settles 1.5 s after an edit and the
+  file was read before it; the control (no drop, must commit) caught that.
 """
 import json
 import os
@@ -106,7 +123,12 @@ words_show = dict(base_show,
                   lyrics=[{'at': 1.0, 'until': 2.0, 'text': 'the first line', 'voice': 'alto'},
                           {'at': 2.6, 'until': 3.6, 'text': 'the loud line', 'voice': 'tenor', 'style': 'shout'}],
                   titles=[{'at': 0.5, 'until': 2.0, 'title': 'Fixture Title'}])
-films = {'plain': base_show, 'film': dict(base_show, finish='film'), 'words': words_show}
+# A second project for the sequences (D2): the same song with words of its
+# own and a title card 0 of its own, so a stale draft or confirmation from
+# `words` has a row of the same index to land on.
+other_show = dict(words_show, title='Other fixture',
+                  titles=[{'at': 0.5, 'until': 2.0, 'title': 'Other Title'}])
+films = {'plain': base_show, 'film': dict(base_show, finish='film'), 'words': words_show, 'other': other_show}
 for name, show in films.items():
     (out / f'{name}.treatment.json').write_text(json.dumps(show))
     with (out / f'seed-{name}.log').open('w') as log:
@@ -123,21 +145,29 @@ def line(log, label):
     return found[-1]
 
 
-def run(name, probe, frames=150, project='plain', theme='dark', follow=False):
-    """One probe run on a fresh copy of a seeded project. Returns (log, saved)."""
+def copy_project(project, work):
+    # The .musi names its bundled audio by its own stem: keep the names.
+    shutil.copy(out / f'{project}.musi', work / f'{project}.musi')
+    assets = out / f'{project}.assets'
+    if assets.exists():
+        shutil.copytree(assets, work / f'{project}.assets')
+
+
+def run(name, probe, frames=150, project='plain', theme='dark', follow=False, also=()):
+    """One probe run on a fresh copy of a seeded project. Returns (log, saved).
+
+    `also` names projects copied beside it, for a `drop=` of a second one."""
     work = out / name
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir()
+    for other in also:
+        copy_project(other, work)
     if follow:
         shutil.copy(out / 'fixture.wav', work / 'fixture.wav')
         shutil.copy(out / f'{project}.treatment.json', work / 'show.treatment.json')
         source = ['--treatment', str(work / 'show.treatment.json')]
     else:
-        # The .musi names its bundled audio by its own stem: keep the names.
-        shutil.copy(out / f'{project}.musi', work / f'{project}.musi')
-        assets = out / f'{project}.assets'
-        if assets.exists():
-            shutil.copytree(assets, work / f'{project}.assets')
+        copy_project(project, work)
         source = ['--project', str(work / f'{project}.musi')]
     cmd = ['tools/headless_run.sh', *source, '--ui-scale', '100', '--hud=0', '--ui-theme', theme,
            '--ui-probe', probe, '--probe-frames', str(frames), '--probe-shot', str(work / 'shot.png')]
@@ -496,6 +526,45 @@ if only in ('all', 'tables'):
     check('add-title@disabled:' in cards(covered), 'with a card on screen at the playhead, Add waits and says why')
     log, saved = run('title-add-gap', WORDS + click((rect(bw, 'add-title')[0] + rect(bw, 'add-title')[2] + 4, rect(bw, 'add-title')[1] + 10)), project='words')
     check(same(saved), 'the gap beside Add a title card changes nothing')
+
+if only in ('all', 'sequence'):
+    # The review's defects (D2, 2026-11-14): state a card holds must belong to
+    # one project, and Play the cut must keep its promise off the Look view.
+    WORDS = 'size=1280x1440,column=look,time=3,play=0,look=captions'
+    w, _ = run('seq-base', WORDS, frames=30, project='words')
+    bw = cards(w)
+
+    def dropped(name):
+        # Relative to the checkout, where headless_run.sh runs: the spec has
+        # a 256-byte limit and the absolute path alone is half of it.
+        return os.path.relpath(out / name / 'other.musi')
+
+    def titles_of(name, project):
+        return json.loads((out / name / f'{project}.musi').read_text())['scene_switches'].get('titles', [])
+
+    # 15. a title half-typed in one project, another project dropped in, then
+    #     Enter: the draft died with its project (frame 60, a frame after);
+    #     and an Enter in the very frame the other opens is refused where it
+    #     is applied (`stale=`), because the edit is addressed to its project.
+    # The control: the same draft and Enter with no other project commits.
+    # 240 frames: autosave settles 1.5 s after the edit at frame 60.
+    log, saved = run('seq-draft-control', WORDS + click(centre(rect(bw, 'title-text-0')))
+                     + ',look-text=STALE,look-action=draft,look-commit-at=60', frames=240, project='words')
+    check(saved['scene_switches']['titles'][0]['title'] == 'STALE', 'control: with no project change the same draft and Enter commit')
+    for name, commit in [('seq-draft-late', 60), ('seq-draft-same', 30)]:
+        log, saved = run(name, WORDS + click(centre(rect(bw, 'title-text-0')))
+                         + f',look-text=STALE,look-action=draft,drop={dropped(name)},drop-at=30,look-commit-at={commit}',
+                         frames=240, project='words', also=('other',))
+        other = titles_of(name, 'other')
+        check('current 1 "Other fixture"' in line(log, 'tracks'), f"{name}: the other project opened and is current ({line(log, 'tracks')})")
+        check(other == original['other']['scene_switches']['titles'] and saved['scene_switches']['titles'] == original['words']['scene_switches']['titles'],
+              f'{name}: a draft typed in one project never lands on the other\'s title card 0 ({[t["title"] for t in other]})')
+        check(field(cards(log), 'typing') == 'none' and line(log, 'project').endswith('(clean)'),
+              f"{name}: nothing is left typing and the opened project was never dirtied ({line(log, 'project')})")
+        if commit == 60:
+            check('probe=refused-no-focus' in cards(log), f'{name}: the late Enter finds no field (the draft died with its project)')
+        else:
+            check(field(cards(log), 'stale') == '1', f'{name}: the same-frame edit was refused as addressed to the other project (stale={field(cards(log), "stale")})')
 
 if only in ('all', 'follow'):
     log, _ = run('follow-base', SECTION + ',section=2,follow=1', frames=40, follow=True)

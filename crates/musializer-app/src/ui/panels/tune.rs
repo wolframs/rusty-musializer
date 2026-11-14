@@ -50,7 +50,7 @@ use musializer_core::ui::tune_groups;
 mod cards;
 #[path = "tune/pixel.rs"]
 mod pixel;
-pub(crate) use cards::{apply_table_edit, CardProbeAction, CardScope};
+pub(crate) use cards::{apply_table_edit, CardOwner, CardProbeAction, CardScope};
 use musializer_core::ui::workspace_layout::UiRect;
 use musializer_runtime::font::AuthoredText;
 use raylib::prelude::{KeyboardKey, RaylibDraw, RaylibDrawHandle, Rectangle};

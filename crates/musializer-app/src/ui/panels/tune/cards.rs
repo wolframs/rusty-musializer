@@ -336,9 +336,41 @@ pub(crate) enum CardProbeAction {
     Cancel,
 }
 
+/// Which open project a card's state and its edits belong to: the
+/// workspace slot, the track's audio and its project file. Opening another
+/// project makes a new slot, and two copies of one song differ by their
+/// project file, so a value typed in one can never be committed into the
+/// other's row of the same index (D2 review, defect 1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CardOwner {
+    slot: usize,
+    audio: std::path::PathBuf,
+    project: Option<std::path::PathBuf>,
+}
+
+impl CardOwner {
+    /// The current track's owner key, or `None` with nothing open.
+    pub(crate) fn of(workspace: &Workspace) -> Option<Self> {
+        let slot = workspace.current_index()?;
+        let track = workspace.current()?;
+        Some(Self {
+            slot,
+            audio: track.file_path.clone(),
+            project: track.project_path.clone(),
+        })
+    }
+}
+
 /// The cards' state across frames, on [`LookColumn`].
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CardState {
+    /// The project everything below belongs to; when the current one is
+    /// another, [`Shell::look_cards_frame`] forgets it all.
+    owner: Option<CardOwner>,
+    /// Card edits the composition root refused because the project they
+    /// were made in is no longer the current one. Kept across the change
+    /// (it is what the report proves), never reset.
+    stale_refused: u32,
     pub(crate) scope: CardScope,
     typing: Option<(CardField, TextField)>,
     cut: Option<CutPreview>,
@@ -602,7 +634,51 @@ fn transition_knob(
 /// The scope switch and the gap under it, above the card's frame.
 const SCOPE_BLOCK: f32 = look_cards::BUTTON_HEIGHT + 8.0;
 
+impl CardState {
+    /// Drops everything uncommitted: a half-typed value, a probe's text,
+    /// a refusal, and the section the card last showed.
+    fn forget(&mut self) {
+        self.typing = None;
+        self.probe_text = None;
+        self.refused = None;
+        self.shown = None;
+    }
+}
+
 impl Shell {
+    /// Run at the start of every frame, whatever the column shows: when the
+    /// current project is no longer the one the cards' state belongs to,
+    /// that state dies, and so does the lane's selection (a section id of
+    /// one project names an unrelated section, or none, in another).
+    pub(crate) fn look_cards_frame(&mut self, workspace: &Workspace) {
+        let owner = CardOwner::of(workspace);
+        let cards = &mut self.look_column.cards;
+        if cards.owner == owner {
+            return;
+        }
+        // The first project of a run has nothing before it to forget, and a
+        // selection a probe made before the first frame is kept.
+        if cards.owner.is_some() {
+            cards.forget();
+            self.scene_lane.selected_id = 0;
+        }
+        self.look_column.cards.owner = owner;
+    }
+
+    /// The owner a card edit made this frame is addressed to.
+    fn card_command(&self, edit: ScenePlanEdit) -> Option<ShellCommand> {
+        Some(ShellCommand::LookCardEdit {
+            owner: self.look_column.cards.owner.clone()?,
+            edit,
+        })
+    }
+
+    /// The composition root refused a card edit addressed to a project that
+    /// is no longer current.
+    pub(crate) fn look_card_edit_refused(&mut self) {
+        self.look_column.cards.stale_refused += 1;
+    }
+
     /// `--ui-probe look-text=…,look-action=…`: delivered to a focused card
     /// field on the next frame, refused (and said so) with none focused.
     pub(crate) fn probe_look_text(&mut self, text: Option<String>, action: CardProbeAction) {
@@ -2154,7 +2230,13 @@ impl Shell {
         if !edits.is_empty() {
             self.look_column.cards.refused = None;
         }
-        commands.extend(edits.into_iter().map(ShellCommand::ScenePlan));
+        // Addressed to the project they were made in: a project opened by a
+        // command earlier in this frame's list must not receive them.
+        let addressed: Vec<ShellCommand> = edits
+            .into_iter()
+            .filter_map(|edit| self.card_command(edit))
+            .collect();
+        commands.extend(addressed);
 
         let target_text = selected.map_or_else(
             || "none".to_owned(),
@@ -2225,11 +2307,12 @@ impl Shell {
             finish.highlight_rgb,
         );
         self.look_column.cards.report = format!(
-            "scope={} target={target_text} {video_text} follow={} editable={} cut={cut} typing={typing} refused={} area={} frame={} controls={}{probe}",
+            "scope={} target={target_text} {video_text} follow={} editable={} cut={cut} typing={typing} refused={} stale={} area={} frame={} controls={}{probe}",
             self.look_column.cards.scope.name(),
             followed.as_deref().unwrap_or("none"),
             u8::from(enabled),
             self.look_column.cards.refused.as_deref().unwrap_or("none"),
+            self.look_column.cards.stale_refused,
             rect_text(area),
             rect_text(frame),
             controls.join(";"),

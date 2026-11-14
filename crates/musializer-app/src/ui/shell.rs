@@ -157,6 +157,12 @@ pub enum ShellCommand {
     ManualEvent(ManualEventAction),
     /// One durable edit from the always-visible scene-plan lane.
     ScenePlan(super::panels::scene_timeline::ScenePlanEdit),
+    /// A look card's plan edit, addressed to the project it was made in; the
+    /// composition root applies it only while that project is current (D2).
+    LookCardEdit {
+        owner: super::panels::tune::CardOwner,
+        edit: super::panels::scene_timeline::ScenePlanEdit,
+    },
     /// The shared preset block's outcome (`plug.c:5979-6100`).
     Preset(PresetAction),
     /// Output volume in `[0, 1]`, from the transport row's slider.
@@ -265,7 +271,8 @@ impl ShellCommand {
             | ShellCommand::RemoveRoute { .. }
             | ShellCommand::SetRenderConfig(_)
             | ShellCommand::ManualEvent(_)
-            | ShellCommand::ScenePlan(_) => true,
+            | ShellCommand::ScenePlan(_)
+            | ShellCommand::LookCardEdit { .. } => true,
             // `Preset::Apply` writes the scene settings and so is durable; the
             // other arms write the *shared* preset store, which is its own file
             // and not `.musi` state. The command cannot be split finer here, so
@@ -1760,6 +1767,8 @@ impl Shell {
     ) -> Vec<ShellCommand> {
         let mut commands = Vec::new();
         self.begin_frame(input.ui_scale, shift_held(d));
+        // Before anything draws: a look card's state dies with its project.
+        self.look_cards_frame(input.workspace);
 
         // The AI settings modal is application-modal *inside* the window
         // (tranche AP3). Blocking falls out of the oracle's own claim rule

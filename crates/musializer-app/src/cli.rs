@@ -539,6 +539,13 @@ pub struct UiProbe {
     /// artist draft; refused and reported with no field focused.
     pub look_text: Option<String>,
     pub look_action: Option<crate::ui::panels::tune::CardProbeAction>,
+    /// `drop-at=FRAME` (D2): hold `drop=`'s file back until this frame, so a
+    /// look card can be left half-typed in one project before another opens.
+    pub drop_at: Option<u64>,
+    /// `look-commit-at=FRAME` (D2): press a focused look card field's Enter
+    /// on this frame too (after `look-action=draft` at frame 12), refused and
+    /// reported like `look-action=` with nothing focused.
+    pub look_commit_at: Option<u64>,
     /// `column-switch=VIEW` (WX-5d): change the column to VIEW on frame 40,
     /// through the press path, after `dock-focus=` (frame 20) and
     /// `agent-say=` (frame 30) have run. Invented because the claims about
@@ -1525,6 +1532,10 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             })
         }
         "look-text" => probe.look_text = Some(value.to_owned()),
+        "drop-at" => probe.drop_at = Some(value.parse().ok().filter(|frame: &u64| *frame > 0)?),
+        "look-commit-at" => {
+            probe.look_commit_at = Some(value.parse().ok().filter(|frame: &u64| *frame > 12)?)
+        }
         "look-action" => {
             probe.look_action = Some(match value {
                 "draft" => crate::ui::panels::tune::CardProbeAction::Draft,
@@ -1782,7 +1793,8 @@ Diagnostics:
                           section=N selects plan section N, look=section|video|captions
                           picks Look's card, look-text=TEXT,look-action=
                           draft|commit|cancel types into the card field a
-                          click= focused (frame 12),
+                          click= focused (frame 12), drop-at=FRAME holds
+                          drop= back, look-commit-at=FRAME presses Enter,
                           column-width=PX, column-switch=VIEW (frame 40),
                           lyrics-pane=cues|style|effects,
                           assist-card=lyrics|scenes|feelings|full,
@@ -2591,6 +2603,13 @@ mod tests {
         assert!(probe.share_frame_playhead);
         assert_eq!(probe.left_drag, Some((40.0, 50.0)));
         assert_eq!(probe.hover, Some((1.0, 2.0)));
+
+        // D2: a late drop and a late Enter; frame 0 and an Enter before the
+        // frame-12 draft are refused rather than quietly reordered.
+        let probe = parse_ui_probe("drop=b.musi,drop-at=30,look-commit-at=60").unwrap();
+        assert_eq!((probe.drop_at, probe.look_commit_at), (Some(30), Some(60)));
+        assert!(parse_ui_probe("drop=b.musi,drop-at=0").is_none());
+        assert!(parse_ui_probe("look-commit-at=12").is_none());
 
         let probe = parse_ui_probe("panel=lyrics,style=caption,fonts=consent").unwrap();
         assert!(probe.caption_style_pane);

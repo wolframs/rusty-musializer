@@ -1093,7 +1093,9 @@ fn run(
             app.shell.probe_wheel = probe.wheel;
             // The same one-shot contract, and through the same classifier the
             // device path uses (D1).
-            app.shell.probe_drop = probe.drop_file.clone();
+            if probe.drop_at.is_none() {
+                app.shell.probe_drop = probe.drop_file.clone();
+            }
             app.shell.probe_wheel_shift = probe.wheel_shift;
             app.shell.probe_wheel_alt = probe.wheel_alt;
             middle_drag = probe.middle_drag;
@@ -1883,6 +1885,17 @@ fn run(
         if app.shell.artist_editing() && dock.wants_keyboard() {
             dock.release_keyboard(egui_backend.ctx());
             app.shell.dock_keyboard = false;
+        }
+        // `drop-at=` and `look-commit-at=` (D2): the late drop and the late
+        // Enter of a look card sequence, before this frame's shell draws.
+        if let Some(probe) = options.ui_probe.as_ref() {
+            if probe.drop_at == Some(report.frames) {
+                app.shell.probe_drop = probe.drop_file.clone();
+            }
+            if probe.look_commit_at == Some(report.frames) {
+                app.shell
+                    .probe_look_text(None, ui::panels::tune::CardProbeAction::Commit);
+            }
         }
         if report.frames == 12 {
             if let Some(probe) = options.ui_probe.as_ref() {
@@ -2716,6 +2729,15 @@ fn run(
                 }
                 ShellCommand::ScenePlan(edit) => {
                     handle_scene_plan_edit(&mut app, edit, time_seconds, rl.get_time());
+                }
+                ShellCommand::LookCardEdit { owner, edit } => {
+                    // Only onto the project the card was editing (D2): a
+                    // project opened earlier in this list must not take it.
+                    if ui::panels::tune::CardOwner::of(&app.workspace).as_ref() == Some(&owner) {
+                        handle_scene_plan_edit(&mut app, edit, time_seconds, rl.get_time());
+                    } else {
+                        app.shell.look_card_edit_refused();
+                    }
                 }
                 ShellCommand::Preset(action) => {
                     handle_preset(&mut app, action, rl.get_time());

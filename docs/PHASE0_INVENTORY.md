@@ -69,7 +69,10 @@ its scope for a capture; it performs no project edit. Edits require `click=`.
 `section=N` selects plan section N and `look=section|video|captions` picks the
 card Look's look cards show (D, 2026-11-14); `look-text=TEXT,look-action=draft|commit|cancel`
 types into the card field a `click=` focused, at frame 12. None of the three
-edits anything by itself.
+edits anything by itself. `drop-at=FRAME` holds `drop=`'s file back until that
+frame and `look-commit-at=FRAME` presses a focused card field's Enter then
+(D2, 2026-11-14), so a gate can leave a card half-typed in one project and open
+another before it commits.
 See [UI_TOOLKIT.md](UI_TOOLKIT.md).
 
 The directing flags — `--treatment`, `--vocabulary`, `--contact-sheet`,
