@@ -10,6 +10,8 @@
 # Run from tools/clip_check.sh. Every launch goes through tools/headless_run.sh.
 # GENERATE_BIN names another binary, for a negative control without replacing
 # the build. GENERATE_SKIP_CARD=1 leaves out the window card's half.
+# GENERATE_ONLY="NAME ..." runs only those groups (base, concurrent, lost,
+# redownload, order, fps, card, canary), for a negative control.
 #
 # What it asserts:
 #   - the estimate is printed before any request, and without the flag (or with
@@ -27,7 +29,11 @@
 #   - the section card: every control pressed with a press beside it, Send,
 #     Cancel, no key, a followed treatment, the flyout, captures (see
 #     tools/generate_card_check.py);
-#   - the canary key is in no output file, log, store file or argv.
+#   - the canary key is in no output file, log, store file or argv;
+#   - concurrent (H4b): two runs asking for one request while the first one's
+#     submit is in flight pay once (the provider's submit count), a run with
+#     --max-spend 0 sends nothing, and a job found in progress counts against
+#     a ceiling at its estimate;
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -52,6 +58,9 @@ fail() {
 }
 pass() {
     echo "ok:   $*"
+}
+only() {
+    [ -z "${GENERATE_ONLY:-}" ] || [[ " $GENERATE_ONLY " == *" $1 "* ]]
 }
 
 # The capture display, owned for the whole series (as tools/clip_check.sh).
@@ -140,6 +149,7 @@ EOF
 }
 treatment "$OUT/fog.treatment.json" "fog rolls across a field at dawn" ""
 
+if only base; then
 # --- 1. no flag: the estimate, the refusal, nothing sent -------------------------
 launch bare --treatment "$OUT/fog.treatment.json" --save-project "$OUT/bare.musi"
 if [ "$(status_of bare)" = 1 ] && has bare 'missing: 4 s of google/veo-3.1-lite at 720p 16:9, $0.12' \
@@ -274,13 +284,87 @@ if ls "$MUSIALIZER_GENERATED_DIR/work" 2>/dev/null | grep -q .; then
 else
     pass "no job left scratch behind"
 fi
+fi # base
+
+# --- 8. two callers for one request (H4b) -------------------------------------------
+# The first run's submit takes 8 s at the fake; two more runs start while it is
+# in flight. The lock in the store makes the second wait and pick the job up;
+# --max-spend 0 sends nothing. Then, with the job recorded and held in
+# progress, a ceiling below its estimate refuses it: it counts at $0.12, not 0.
+if only concurrent; then
+# Runs at the same time each get a state folder of their own (with the same
+# key): headless_run.sh links its tools into it and two at once would race.
+own_state() {
+    mkdir -p "$OUT/state-$1"
+    cp -a "$MZ_STATE_DIR/config" "$OUT/state-$1/"
+    echo "$OUT/state-$1"
+}
+treatment "$OUT/twice.treatment.json" "two callers at once [slow-submit] [hold]" ""
+submits="$(count submit)"
+MZ_STATE_DIR="$(own_state a)" tools/headless_run.sh --treatment "$OUT/twice.treatment.json" \
+    --generate-clips --max-spend 1.00 --save-project "$OUT/twice-a.musi" >"$OUT/twice-a.log" 2>&1 &
+TWICE_A=$!
+for _ in {1..600}; do
+    [ "$(count submit)" -gt "$submits" ] && break
+    sleep 0.05
+done
+MZ_STATE_DIR="$(own_state b)" tools/headless_run.sh --treatment "$OUT/twice.treatment.json" \
+    --generate-clips --max-spend 1.00 --save-project "$OUT/twice-b.musi" >"$OUT/twice-b.log" 2>&1 &
+TWICE_B=$!
+MZ_STATE_DIR="$(own_state z)" tools/headless_run.sh --treatment "$OUT/twice.treatment.json" \
+    --generate-clips --max-spend 0 --save-project "$OUT/twice-z.musi" >"$OUT/twice-z.log" 2>&1 &
+TWICE_Z=$!
+# The first run's job is recorded once it polls.
+polls="$(count poll)"
+for _ in {1..600}; do
+    [ "$(count poll)" -gt "$polls" ] && break
+    sleep 0.05
+done
+MZ_STATE_DIR="$(own_state w)" launch twice-w --treatment "$OUT/twice.treatment.json" --generate-clips --max-spend 0.10 \
+    --save-project "$OUT/twice-w.musi" &
+TWICE_W=$!
+for _ in {1..400}; do
+    [ -e "$OUT/twice-w.status" ] && break
+    sleep 0.05
+done
+touch "$OUT/fake/release-hold"
+status_a=0; wait "$TWICE_A" || status_a=$?
+status_b=0; wait "$TWICE_B" || status_b=$?
+status_z=0; wait "$TWICE_Z" || status_z=$?
+wait "$TWICE_W" || true
+rm -f "$OUT/fake/release-hold"
+if [ "$(count submit)" = $((submits + 1)) ]; then
+    pass "two runs for one request while its submit was in flight: the provider got one submit"
+else
+    fail "two runs for one request paid $(( $(count submit) - submits )) times; see $OUT/twice-a.log, $OUT/twice-b.log"
+fi
+if [ "$status_a" = 0 ] && grep -qF 'clip.generate generated' "$OUT/twice-a.log" \
+    && [ "$status_b" = 0 ] && grep -qF 'clip.generate picked up' "$OUT/twice-b.log" \
+    && grep -qF 'being sent by another window or run' "$OUT/twice-b.log"; then
+    pass "the first run generated it; the second waited, said so, and picked the same job up"
+else
+    fail "the two runs did not share the job (status $status_a, $status_b); see $OUT/twice-a.log, $OUT/twice-b.log"
+fi
+if [ "$status_z" = 1 ] && grep -qF 'refused: --max-spend 0 sends nothing' "$OUT/twice-z.log"; then
+    pass "--max-spend 0 sends nothing, even for a request another run is sending"
+else
+    fail "--max-spend 0 did not refuse (status $status_z); see $OUT/twice-z.log"
+fi
+if [ "$(status_of twice-w)" = 1 ] \
+    && has twice-w 'refused: it would pass the ceiling: $0.00 committed this run, $0.12 more, $0.10 allowed'; then
+    pass "a job found in progress counts against a \$0.10 ceiling at its \$0.12 estimate"
+else
+    fail "a job in progress was not counted at its estimate (status $(status_of twice-w)); see $OUT/twice-w.log"
+fi
+fi # concurrent
 
 # --- 6. the section card's Generate, pressed (tools/generate_card_check.py) -------
-if [ "${GENERATE_SKIP_CARD:-}" != 1 ]; then
+if [ "${GENERATE_SKIP_CARD:-}" != 1 ] && only card; then
     python3 -I tools/generate_card_check.py "$OUT" || FAILURES=$((FAILURES + 1))
 fi
 
 # --- 7. the key is nowhere it should not be --------------------------------------
+if only canary; then
 # A slow job, so its curl can be caught running and its argv read.
 treatment "$OUT/slow.treatment.json" "a long take [slow]" ""
 tools/headless_run.sh --treatment "$OUT/slow.treatment.json" --generate-clips --max-spend 1.00 \
@@ -311,6 +395,7 @@ if grep -rlaF "$CANARY" "$OUT" --exclude=credentials.json 2>/dev/null | grep -v 
 else
     pass "the key is in no log, project, store file or capture"
 fi
+fi # canary
 
 echo
 if [ "$FAILURES" -gt 0 ]; then

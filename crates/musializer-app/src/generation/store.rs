@@ -11,17 +11,29 @@
 //! clips/<request sha256>.mp4    the verified download
 //! clips/<request sha256>.json   its provenance (model, prompt, cost, …)
 //! jobs/<request sha256>.json    a job submitted and not yet downloaded
-//! work/<request sha256>/        one job's scratch (body, answers, partial)
+//! locks/<request sha256>.lock   held by the one caller asking for a request
+//! work/<name>/                  one caller's scratch (body, answers, partial)
 //! prices.json                   the price list, with when it was read
 //! spending.tsv                  one line per job: when, what, estimate, cost
 //! ```
 //!
 //! The folder is created `0700` and every file `0600`: the request body is a
 //! prompt and frames, not a secret, but nobody else on the machine needs it.
+//!
+//! **One owner per request** (H4b, 2026-11-14). Two callers — two windows, a
+//! window and a treatment run — can ask for the same request at once. From
+//! "is there a clip or a job for it already" until "its job id is on disk",
+//! the caller holds the request's lock ([`Store::claim`]); a second caller
+//! waits on it and then finds the job the first recorded, instead of paying
+//! for it again. The lock is given back with `File::unlock` before the file
+//! closes (`docs/TRAPS.md`, "A lock given back by closing its file").
 
+use std::fs::{File, TryLockError};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 use musializer_core::generation::catalog::Catalog;
 use musializer_core::project::clip::ClipProvenance;
@@ -36,6 +48,37 @@ const MAX_RECORD_BYTES: u64 = 64 * 1024;
 pub struct Store {
     root: PathBuf,
 }
+
+/// The lock on one request, held by the caller that may look it up and send
+/// it. Given back by [`Claim::release`] or on drop, explicitly unlocked first.
+#[derive(Debug)]
+pub struct Claim {
+    file: Option<File>,
+}
+
+impl Claim {
+    /// Gives the request back to the next caller.
+    pub fn release(mut self) {
+        self.unlock();
+    }
+
+    fn unlock(&mut self) {
+        if let Some(file) = self.file.take() {
+            // Before the close: a child another thread is spawning holds a
+            // copy of the open file until it execs.
+            let _ = file.unlock();
+        }
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        self.unlock();
+    }
+}
+
+/// Scratch folders of this process, so two callers never share one.
+static WORK_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// A job that was submitted: enough to poll it again after a cancel, a crash
 /// or a restart, instead of paying for it twice.
@@ -140,7 +183,25 @@ impl Store {
         Ok(folder)
     }
 
-    /// A private, empty scratch folder for one job.
+    /// A private, empty scratch folder of this caller's own, named after
+    /// `what` and this process: two callers (two windows, a window and a
+    /// treatment run) never empty each other's. Returns its name, for
+    /// [`Self::clear_work`], and its path.
+    ///
+    /// # Errors
+    ///
+    /// The folder cannot be made.
+    pub fn private_work(&self, what: &str) -> Result<(String, PathBuf), String> {
+        let name = format!(
+            "{what}p{}n{}",
+            std::process::id(),
+            WORK_SERIAL.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = self.work(&name)?;
+        Ok((name, path))
+    }
+
+    /// A private, empty scratch folder named `request`.
     ///
     /// # Errors
     ///
@@ -280,6 +341,66 @@ impl Store {
     pub fn forget_job(&self, request: &str) {
         if is_digest(request) {
             let _ = std::fs::remove_file(self.root.join("jobs").join(format!("{request}.json")));
+        }
+    }
+
+    fn lock_file(&self, request: &str) -> Result<File, String> {
+        if !is_digest(request) {
+            return Err(format!("{request} is not a request digest"));
+        }
+        let path = self.folder("locks")?.join(format!("{request}.lock"));
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|error| format!("{}: {error}", path.display()))
+    }
+
+    /// Takes the request's lock, waiting while another caller holds it and
+    /// calling `waiting` meanwhile. `Ok(None)` when `stop` was set first.
+    ///
+    /// # Errors
+    ///
+    /// The lock file cannot be opened or locked.
+    pub fn claim(
+        &self,
+        request: &str,
+        stop: &AtomicBool,
+        mut waiting: impl FnMut(),
+    ) -> Result<Option<Claim>, String> {
+        let file = self.lock_file(request)?;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Some(Claim { file: Some(file) })),
+                Err(TryLockError::WouldBlock) => {
+                    waiting();
+                    if stop.load(Ordering::Relaxed) {
+                        return Ok(None);
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(TryLockError::Error(error)) => {
+                    return Err(format!("the lock on request {request}: {error}"))
+                }
+            }
+        }
+    }
+
+    /// Another caller is sending this request now (it holds the lock).
+    #[must_use]
+    pub fn in_flight(&self, request: &str) -> bool {
+        let Ok(file) = self.lock_file(request) else {
+            return false;
+        };
+        match file.try_lock() {
+            Ok(()) => {
+                let _ = file.unlock();
+                false
+            }
+            Err(TryLockError::WouldBlock) => true,
+            Err(TryLockError::Error(_)) => false,
         }
     }
 

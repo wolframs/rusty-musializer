@@ -410,7 +410,7 @@ impl Generations {
 
         // The frames, through the export's still path, at the request's size;
         // the cut into the framed section plain for the moment of the render.
-        let folder = store.work("frames")?;
+        let (frames_name, folder) = store.private_work("frames")?;
         let mut stills = Vec::new();
         let first_path = folder.join("first.png");
         let last_path = folder.join("last.png");
@@ -472,7 +472,7 @@ impl Generations {
             };
         let first = read(order.first, &first_path)?;
         let last = read(order.last, &last_path)?;
-        store.clear_work("frames");
+        store.clear_work(&frames_name);
         let mut request = GenerationRequest::new(&offer.id, &order.prompt, order.seconds, &shape);
         request.first = first.as_ref().map(|(_, image)| image.clone());
         request.last = last.as_ref().map(|(_, image)| image.clone());
@@ -567,6 +567,7 @@ impl Generations {
 fn stage_token(stage: &Stage) -> &'static str {
     match stage {
         Stage::Starting => "starting",
+        Stage::Queued => "queued",
         Stage::Submitting => "submitting",
         Stage::Waiting { .. } => "waiting",
         Stage::Downloading => "downloading",

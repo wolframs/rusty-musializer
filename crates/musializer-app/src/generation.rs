@@ -90,14 +90,12 @@ impl KeepCached for (Option<Catalog>, String) {
 pub fn prices_now(store: &store::Store) -> (Option<Catalog>, String) {
     let now = now_unix();
     let fetched = client::Endpoint::from_env().and_then(|endpoint| {
-        let destination = store
-            .work("prices")
-            .map(|folder| folder.join("models.json"))
-            .unwrap_or_else(|_| std::env::temp_dir().join("musializer-video-models.json"));
+        let (name, folder) = store.private_work("prices")?;
+        let destination = folder.join("models.json");
         let stop = std::sync::atomic::AtomicBool::new(false);
-        let bytes = client::fetch_models(&endpoint, &destination, &stop)
-            .map_err(|error| error.to_string())?;
-        store.clear_work("prices");
+        let fetched = client::fetch_models(&endpoint, &destination, &stop);
+        store.clear_work(&name);
+        let bytes = fetched.map_err(|error| error.to_string())?;
         Catalog::from_live(&bytes, now).map_err(|error| error.to_string())
     });
     match fetched {

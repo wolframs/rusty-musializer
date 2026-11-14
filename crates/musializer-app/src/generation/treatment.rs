@@ -140,7 +140,7 @@ pub fn prepare<'audio>(
     let mut committed = 0.0f64;
     let mut outcomes: Vec<(ClipGeneration, Resolution)> = Vec::new();
     let mut blocked: Vec<usize> = Vec::new();
-    let frames_dir = store.work("frames")?;
+    let (frames_name, frames_dir) = store.private_work("frames")?;
 
     for generation in treatment.clip_generations() {
         // A section whose previous one is still missing has no frame to start on.
@@ -318,7 +318,10 @@ pub fn prepare<'audio>(
             continue;
         }
 
-        let resumable = store.job(&digest).is_some();
+        // A job submitted before, or one another caller is sending now: it is
+        // picked up rather than sent again, and it counts against the ceiling
+        // at its estimate all the same — the money is this request's.
+        let resumable = store.job(&digest).is_some() || store.in_flight(&digest);
         println!(
             "generate:        {} missing: {} s of {} at {} {}, {}{} — {}",
             generation.place,
@@ -328,7 +331,8 @@ pub fn prepare<'audio>(
             shape.aspect_ratio,
             estimate.short(),
             if resumable {
-                " (submitted before; picking it up costs nothing new)"
+                " (submitted before, or being sent by another window or run: it is picked up, \
+                 not sent again, and counts against the ceiling at its estimate)"
             } else {
                 ""
             },
@@ -345,8 +349,9 @@ pub fn prepare<'audio>(
             ));
             continue;
         };
-        let cost_now = if resumable { Some(0.0) } else { estimate.usd() };
+        let cost_now = estimate.usd();
         let refusal = match cost_now {
+            _ if ceiling <= 0.0 => Some("--max-spend 0 sends nothing".to_owned()),
             None => Some(format!(
                 "{}; a run with a ceiling cannot pay an unknown price",
                 match &estimate {
@@ -444,7 +449,7 @@ pub fn prepare<'audio>(
             }
         }
     }
-    store.clear_work("frames");
+    store.clear_work(&frames_name);
 
     // The summary, and the refusal when anything is missing.
     let missing: Vec<&(ClipGeneration, Resolution)> = outcomes

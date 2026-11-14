@@ -18,6 +18,16 @@ What a job does is chosen by a marker in its prompt:
     [too-large]     completes, and the content is 6 MiB of zeros
     [refuse-402]    the submit is refused, 402 Insufficient credits
     [slow]          stays in_progress until STATE_DIR/release exists
+    [hold]          stays in_progress until STATE_DIR/release-hold exists
+    [slow-submit]   the submit takes 8 s to answer (the job exists at once)
+    [lost-answer-once]  the first submit of this prompt creates the job and
+                    closes the connection without an answer (a dropped
+                    connection after the provider accepted); later ones answer
+    [truncate-N]    the first N downloads are the clip's first half, with an
+                    honest Content-Length (a cut-short file the importer refuses)
+    [expire]        ends `expired`
+    [huge-poll]     every poll answers 3 MiB of JSON
+    [polls-N]       completes after N polls instead of three
     (none)          completes after two polls with usage.cost = the estimate
 
 A completed clip is made by FFmpeg from the request: the first frame image
@@ -46,6 +56,17 @@ EXPECT = os.environ.get("FAKE_EXPECT_KEY", "")
 LOCK = threading.Lock()
 COUNTS = {"models": 0, "submit": 0, "poll": 0, "content": 0}
 JOBS: dict[str, dict] = {}
+LOST: set[str] = set()
+DOWNLOADS: dict[str, int] = {}
+
+
+def marker(prompt: str, name: str) -> int | None:
+    """N of `[name-N]` in the prompt, or None."""
+    start = prompt.find(f"[{name}-")
+    if start < 0:
+        return None
+    rest = prompt[start + len(name) + 2:]
+    return int(rest[:rest.index("]")])
 
 MODELS = {"data": [
     {"id": "google/veo-3.1-lite", "name": "Google: Veo 3.1 Lite",
@@ -153,14 +174,27 @@ class Handler(BaseHTTPRequestHandler):
             if not os.path.exists(clip):
                 make_clip(job, clip)
             with open(clip, "rb") as handle:
-                return self.send(200, handle.read(), "video/mp4")
+                data = handle.read()
+            truncate = marker(prompt, "truncate")
+            with LOCK:
+                DOWNLOADS[job_id] = DOWNLOADS.get(job_id, 0) + 1
+                seen = DOWNLOADS[job_id]
+            if truncate is not None and seen <= truncate:
+                data = data[: len(data) // 2]
+            return self.send(200, data, "video/mp4")
         job["polls"] += 1
         answer = {"id": job_id, "polling_url": f"/api/v1/videos/{job_id}"}
+        if "[huge-poll]" in prompt:
+            return self.json(200, {**answer, "status": "in_progress", "padding": "x" * (3 * 1024 * 1024)})
+        if "[hold]" in prompt and not os.path.exists(os.path.join(STATE, "release-hold")):
+            return self.json(200, {**answer, "status": "in_progress"})
+        if "[expire]" in prompt:
+            return self.json(200, {**answer, "status": "expired"})
         if "[slow]" in prompt and not os.path.exists(os.path.join(STATE, "release")):
             # Slow to answer, too, so the client's curl can be seen running.
             time.sleep(0.4)
             return self.json(200, {**answer, "status": "in_progress"})
-        if job["polls"] < 3:
+        if job["polls"] < (marker(prompt, "polls") or 3):
             return self.json(200, {**answer, "status": "pending" if job["polls"] == 1 else "in_progress"})
         if "[fail-billed]" in prompt:
             return self.json(200, {**answer, "status": "failed", "error": "the provider refused the content",
@@ -196,6 +230,17 @@ class Handler(BaseHTTPRequestHandler):
                 out.write(data)
             job[kind] = path
         JOBS[job_id] = job
+        prompt = request.get("prompt", "")
+        if "[slow-submit]" in prompt:
+            time.sleep(8)
+        if "[lost-answer-once]" in prompt and prompt not in LOST:
+            # Accepted, and the answer never arrives: the connection drops.
+            LOST.add(prompt)
+            with LOCK:
+                with open(os.path.join(STATE, "requests.log"), "a") as log:
+                    log.write(f"LOST {job_id}\n")
+            self.close_connection = True
+            return
         self.json(202, {"id": job_id, "polling_url": f"/api/v1/videos/{job_id}", "status": "pending"})
 
 

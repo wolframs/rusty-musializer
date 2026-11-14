@@ -7,7 +7,10 @@
 //! - **Nothing is paid for twice.** A clip the store already has for the
 //!   request is the outcome at once, with no call; a job submitted earlier
 //!   and never downloaded (cancelled, failed to download, the application
-//!   closed) is polled again instead of submitted again.
+//!   closed) is polled again instead of submitted again. The lookup and the
+//!   submit are one span under the request's lock in the store
+//!   ([`Store::claim`]), so a second caller for the same request — another
+//!   window, a treatment run — waits and then finds the first one's job.
 //! - **Nothing is half-imported.** The download goes to the job's scratch
 //!   folder, is opened by its handle and probed as the clip importer does
 //!   (`clips::import`), and only then moves into the store. A download that
@@ -47,6 +50,8 @@ pub const DEADLINE: Duration = Duration::from_secs(30 * 60);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stage {
     Starting,
+    /// Another caller holds the request: it is being sent by them.
+    Queued,
     /// Sending the request.
     Submitting,
     /// Submitted; the provider's word for where it is.
@@ -62,6 +67,7 @@ impl Stage {
     pub fn describe(&self) -> String {
         match self {
             Self::Starting => "starting".into(),
+            Self::Queued => "waiting: another window or run is sending this same request".into(),
             Self::Submitting => "sending the request".into(),
             Self::Waiting { status } => match status.as_str() {
                 "pending" => "queued at the provider".into(),
@@ -325,8 +331,26 @@ fn run(spec: &JobSpec, stop: &AtomicBool, shared: &Mutex<Shared>) -> Outcome {
     let digest = spec.request.digest();
     let store = &spec.store;
 
+    // The request is this caller's from the lookup until its job id is on
+    // disk; a second caller waits here, then finds that job.
+    let claim = match store.claim(&digest, stop, || set_stage(shared, Stage::Queued)) {
+        Ok(Some(claim)) => claim,
+        Ok(None) => {
+            return Outcome::Stopped {
+                billing: Billing::Nothing,
+            }
+        }
+        Err(reason) => {
+            return Outcome::Failed {
+                reason,
+                billing: Billing::Nothing,
+            }
+        }
+    };
+
     // 1. The store has it: nothing is sent.
     if let Some((path, record)) = store.find(&digest) {
+        claim.release();
         return match import(&path, record, &spec.name) {
             Ok(clip) => Outcome::Done(Generated {
                 clip,
@@ -339,7 +363,7 @@ fn run(spec: &JobSpec, stop: &AtomicBool, shared: &Mutex<Shared>) -> Outcome {
         };
     }
 
-    let work = match store.work(&digest) {
+    let (work_name, work) = match store.private_work(&digest) {
         Ok(work) => work,
         Err(reason) => {
             return Outcome::Failed {
@@ -354,8 +378,8 @@ fn run(spec: &JobSpec, stop: &AtomicBool, shared: &Mutex<Shared>) -> Outcome {
         work: &work,
         stop,
     };
-    let outcome = run_with(spec, &client, &digest, stop, shared);
-    store.clear_work(&digest);
+    let outcome = run_with(spec, &client, &digest, claim, stop, shared);
+    store.clear_work(&work_name);
     let (verdict, cost) = match &outcome {
         Outcome::Done(generated) => (
             match generated.reused {
@@ -415,6 +439,7 @@ fn run_with(
     spec: &JobSpec,
     client: &Client<'_>,
     digest: &str,
+    claim: super::store::Claim,
     stop: &AtomicBool,
     shared: &Mutex<Shared>,
 ) -> Outcome {
@@ -423,6 +448,7 @@ fn run_with(
 
     // 2. An earlier submit for the same request is picked up, not repeated.
     let (job_id, resumed) = if let Some(record) = store.job(digest) {
+        claim.release();
         (record.job_id, true)
     } else {
         if stop.load(Ordering::Relaxed) {
@@ -484,6 +510,8 @@ fn run_with(
             // Without the record a stop would lose the job: say so, keep going.
             eprintln!("warning: the job could not be recorded: {reason}");
         }
+        // Its id is on disk: the next caller for this request polls it.
+        claim.release();
         (state.id, false)
     };
     if let Ok(mut shared) = shared.lock() {
@@ -584,7 +612,29 @@ fn run_with(
             };
         }
     };
-    let kept = match store.keep(&part, &record, &clip.asset.sha256) {
+    // Kept under the request's lock: two callers that polled the same job
+    // both download it, and the second finds the first one's copy.
+    let claim = match store.claim(digest, stop, || {}) {
+        Ok(Some(claim)) => claim,
+        Ok(None) => {
+            let _ = std::fs::remove_file(&part);
+            return Outcome::Stopped { billing };
+        }
+        Err(reason) => {
+            return Outcome::Failed {
+                reason: format!("the clip could not be kept: {reason}"),
+                billing,
+            }
+        }
+    };
+    let kept = match store.find(digest) {
+        Some((path, _)) => {
+            let _ = std::fs::remove_file(&part);
+            Ok(path)
+        }
+        None => store.keep(&part, &record, &clip.asset.sha256),
+    };
+    let kept = match kept {
         Ok(kept) => kept,
         Err(reason) => {
             return Outcome::Failed {
@@ -594,6 +644,7 @@ fn run_with(
         }
     };
     store.forget_job(digest);
+    claim.release();
     Outcome::Done(Generated {
         clip: TrackClip {
             source: kept,
@@ -654,8 +705,10 @@ pub(crate) mod tests {
     use super::*;
 
     /// What the fake provider does with one job.
-    #[derive(Clone)]
+    #[derive(Clone, Default)]
     pub(crate) struct Script {
+        /// How long the submit takes to answer (after it was read).
+        pub submit_delay: Duration,
         /// The submit's status and body, or `None` for a normal 202.
         pub submit: Option<(u16, String)>,
         /// Polls answered `in_progress` before the end.
@@ -764,6 +817,9 @@ pub(crate) mod tests {
         }
         let mut body = vec![0; length];
         let _ = reader.read_exact(&mut body);
+        if method == "POST" && path == "/api/v1/videos" {
+            std::thread::sleep(script.submit_delay);
+        }
         let route = if method == "POST" && path == "/api/v1/videos" {
             "submit"
         } else if path == "/api/v1/videos/models" {
@@ -873,6 +929,7 @@ pub(crate) mod tests {
             polls: 2,
             end: completed(0.1234),
             content: ("video/mp4".into(), video.clone()),
+            ..Script::default()
         });
         let store = folder.path().join("store");
         let outcome = GenerationJob::spawn(spec(&fake, &store, request())).wait(|_, _| {});
@@ -971,6 +1028,7 @@ pub(crate) mod tests {
             polls: 0,
             end: serde_json::json!({"status": "failed", "error": "content policy", "usage": {"cost": 0.05}}),
             content: ("video/mp4".into(), video.clone()),
+            ..Script::default()
         });
         let (reason, billing) = failed(outcome);
         assert_eq!(reason, "the job failed: content policy");
@@ -985,6 +1043,7 @@ pub(crate) mod tests {
             polls: 0,
             end: completed(0.1),
             content: ("video/mp4".into(), video.clone()),
+            ..Script::default()
         });
         let (reason, billing) = failed(outcome);
         assert_eq!(
@@ -1005,6 +1064,7 @@ pub(crate) mod tests {
                 polls: 0,
                 end: completed(0.12),
                 content,
+                ..Script::default()
             });
             let (reason, billing) = failed(outcome);
             assert!(
@@ -1020,6 +1080,7 @@ pub(crate) mod tests {
             polls: 0,
             end: completed(0.12),
             content: ("video/mp4".into(), vec![0; 11 * 1024 * 1024]),
+            ..Script::default()
         });
         let (reason, _) = failed(outcome);
         assert!(
@@ -1027,6 +1088,62 @@ pub(crate) mod tests {
             "{reason}"
         );
         assert!(!kept);
+    }
+
+    #[test]
+    fn two_callers_for_one_request_pay_once() {
+        // A slow submit holds the request's lock; the second caller, started
+        // while it is in flight, waits and then polls the job the first one
+        // recorded. Without the lock both submit.
+        let folder = Scratch::new("job-two");
+        let video = tiny_mp4(folder.path());
+        let fake = Fake::start(Script {
+            submit_delay: Duration::from_millis(600),
+            polls: 2,
+            end: completed(0.12),
+            content: ("video/mp4".into(), video),
+            ..Script::default()
+        });
+        let store = folder.path().join("store");
+        let first = GenerationJob::spawn(spec(&fake, &store, request()));
+        let started = Instant::now();
+        while fake.count("submit") == 0 && first.progress().0 != Stage::Submitting {
+            assert!(started.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let second = GenerationJob::spawn(spec(&fake, &store, request()));
+        // The second shows it is waiting on the first.
+        let started = Instant::now();
+        let mut queued = false;
+        while !queued && started.elapsed() < Duration::from_secs(2) {
+            queued = second.progress().0 == Stage::Queued;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let (a, b) = (first.wait(|_, _| {}), second.wait(|_, _| {}));
+        assert_eq!(fake.count("submit"), 1, "one request, paid once");
+        assert!(queued, "the second caller waited on the first");
+        assert!(
+            matches!(
+                &a,
+                Outcome::Done(Generated {
+                    reused: Reuse::New,
+                    ..
+                })
+            ),
+            "{a:?}"
+        );
+        assert!(
+            matches!(
+                &b,
+                Outcome::Done(Generated {
+                    reused: Reuse::Resumed | Reuse::Stored,
+                    ..
+                })
+            ),
+            "{b:?}"
+        );
+        assert!(Store::at(store.clone()).find(&request().digest()).is_some());
+        assert!(!Store::at(store).in_flight(&request().digest()));
     }
 
     #[test]
@@ -1038,6 +1155,7 @@ pub(crate) mod tests {
             polls: 1_000_000,
             end: completed(0.12),
             content: ("video/mp4".into(), video),
+            ..Script::default()
         });
         let store = folder.path().join("store");
         let job = GenerationJob::spawn(spec(&fake, &store, request()));
@@ -1066,6 +1184,7 @@ pub(crate) mod tests {
             polls: 0,
             end: completed(0.12),
             content: ("video/mp4".into(), tiny_mp4(folder.path())),
+            ..Script::default()
         });
         let outcome = GenerationJob::spawn(spec(&fake, &store, request())).wait(|_, _| {});
         assert!(
