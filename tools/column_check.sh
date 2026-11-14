@@ -63,6 +63,9 @@
 #      are refused with their reason and an error notice, and nothing changes;
 #      change and stop work from following; a press with no stand-in reaches
 #      the dialog path and warns that there is no picker (control).
+#  11. The look cards in Look (D): tools/look_cards_check.sh, with its own
+#      evidence under OUTPUT_DIR/look-cards and its checks and negative
+#      controls listed in tools/look_cards_check.py.
 #
 # COLUMN_BIN names a different binary, for a negative control without
 # replacing the build. MZ_GL_LAUNCH="" runs it on the CPU.
@@ -771,6 +774,10 @@ case "$(line_of notices "$OUT/pick-no-dialog.log")|$(line_of 'treatment pick' "$
     *" warning card="*"|none") ;;
     *) fail "a press without a picker did not say there is none" ;;
 esac
+
+# 11. The look cards (D). Its own X server unless an ancestor's is reusable.
+LOOK_CARDS_BIN="$MZ_BIN" tools/look_cards_check.sh "$OUT/look-cards" >"$OUT/look-cards.log" 2>&1 ||
+    fail "the look cards check failed: $(grep -c '^FAIL' "$OUT/look-cards.log" || true) failure(s), see $OUT/look-cards.log"
 
 if [ "$failures" -gt 0 ]; then
     printf '%d column check(s) failed; logs in %s\n' "$failures" "$OUT"

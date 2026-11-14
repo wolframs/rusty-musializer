@@ -1817,7 +1817,15 @@ impl Shell {
                         Part::Vignette => finish_knob("Vignette", CardField::Vignette, slot::VIGNETTE, finish.vignette, finish_bounds::UNIT, none.vignette, Unit::Percent),
                         _ => finish_knob("Grain", CardField::Grain, slot::GRAIN, finish.grain, finish_bounds::UNIT, none.grain, Unit::Percent),
                     };
-                    if let Some(value) = self.knob(d, font, rect, &knob, disabled, label_width, &mut controls) {
+                    // A member with no effect while its strength is zero says
+                    // so rather than storing a value nothing draws.
+                    let reason = match part {
+                        Part::BloomThreshold | Part::BloomRadius if finish.bloom <= 0.0 => {
+                            Some("Bloom is off: raise Bloom and this shapes it.")
+                        }
+                        _ => disabled,
+                    };
+                    if let Some(value) = self.knob(d, font, rect, &knob, reason, label_width, &mut controls) {
                         let mut next = finish;
                         match part {
                             Part::Bloom => next.bloom = value,
@@ -1834,6 +1842,22 @@ impl Shell {
                 Part::Shadow | Part::Highlight => {
                     let finish = track.scene_switches.finish;
                     let shadow = *part == Part::Shadow;
+                    if finish.tone <= 0.0 || !enabled {
+                        // Toning off: the colour would draw nothing and an
+                        // inactive finish is never written, so the row says
+                        // why instead of taking a pick that would vanish.
+                        let label = if shadow { "Shadow tone" } else { "Highlight tone" };
+                        let value = format!("#{:06x}", if shadow { finish.shadow_rgb } else { finish.highlight_rgb });
+                        let field = if shadow { CardField::Shadow } else { CardField::Highlight };
+                        let reason = if enabled {
+                            "Toning is off: raise Toning to lean the shadows and highlights toward these."
+                        } else {
+                            FOLLOWING
+                        };
+                        let row = self.disabled_card_row(d, font, field as u32, rect, label, &value, reason, label_width);
+                        controls.push(format!("{}@disabled:{}", field.name(), rect_text(row)));
+                        continue;
+                    }
                     let picked = self.colour_row(
                         d,
                         font,
