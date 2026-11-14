@@ -457,7 +457,8 @@ impl Store {
         if !is_digest(request) {
             return None;
         }
-        let file: IntentFile = serde_json::from_slice(&read_bounded(&self.intent_path(request))?).ok()?;
+        let file: IntentFile =
+            serde_json::from_slice(&read_bounded(&self.intent_path(request))?).ok()?;
         if file.request_sha256 != request {
             return None;
         }
@@ -575,7 +576,10 @@ impl Store {
     /// [`Self::forget_job_if`] for a caller that already holds the request's
     /// lock (`_held` proves it).
     pub fn forget_job_held(&self, _held: &Claim, request: &str, job_id: &str) -> bool {
-        if self.job(request).is_some_and(|record| record.job_id == job_id) {
+        if self
+            .job(request)
+            .is_some_and(|record| record.job_id == job_id)
+        {
             std::fs::remove_file(self.root.join("jobs").join(format!("{request}.json"))).is_ok()
         } else {
             false
@@ -725,7 +729,10 @@ fn sync_dir(dir: &Path) -> std::io::Result<()> {
 fn sync_file(path: &Path) -> std::io::Result<()> {
     #[cfg(test)]
     SYNCED.with(|synced| synced.borrow_mut().push(path.to_path_buf()));
-    std::fs::OpenOptions::new().write(true).open(path)?.sync_all()
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .sync_all()
 }
 
 /// Writes a file `0600` through a sibling and a rename, durably: the bytes

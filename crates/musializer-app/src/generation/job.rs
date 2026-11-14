@@ -646,7 +646,9 @@ fn run_with(
             Err(failed) if !failed.may_be_billed => {
                 // Refused by the provider, or never sent: no job exists.
                 if let Err(reason) = store.resolve_attempt(&claim, digest, &sending) {
-                    eprintln!("warning: a refused send could not be taken off the record: {reason}");
+                    eprintln!(
+                        "warning: a refused send could not be taken off the record: {reason}"
+                    );
                 }
                 return Outcome::Failed {
                     reason: failed.error.to_string(),
@@ -1468,7 +1470,11 @@ pub(crate) mod tests {
         let (_, billing) = failed(GenerationJob::spawn(again).wait(|_, _| {}));
         assert_eq!(billing, Billing::Unconfirmed(Some(0.12)));
         let both = Store::at(store.clone()).intent(&digest).unwrap();
-        assert_eq!(both.attempts.len(), 2, "the second send did not replace the first");
+        assert_eq!(
+            both.attempts.len(),
+            2,
+            "the second send did not replace the first"
+        );
         assert_eq!(both.attempts[0], first.attempts[0]);
         // Agreeing to the first one only is not agreeing to both.
         let mut stale = spec(&fake, &store, request());
@@ -1490,7 +1496,9 @@ pub(crate) mod tests {
         assert!(Store::at(store.clone()).intent(&digest).is_none());
         let ledger = std::fs::read_to_string(store.join("spending.tsv")).unwrap();
         assert_eq!(
-            ledger.matches("failed, answer lost, possibly billed").count(),
+            ledger
+                .matches("failed, answer lost, possibly billed")
+                .count(),
             2,
             "{ledger}"
         );
