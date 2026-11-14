@@ -1825,6 +1825,7 @@ fn run(
             assist.session_openrouter(),
             time_seconds,
             rl.get_time(),
+            follow.is_some(),
         );
         app.shell.generation = generations.view();
         let audition_gain = app

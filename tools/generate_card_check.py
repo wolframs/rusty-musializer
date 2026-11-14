@@ -25,7 +25,9 @@ asserts:
      sends nothing and warns, and a second press after the warning sends once
      more (H4b);
   6. with no key stored, the button is drawn disabled and the card says where
-     the key is set; following a treatment, Generate... is disabled;
+     the key is set; following a treatment, Generate... is disabled; a clip
+     that finishes after a treatment was followed stays in the library,
+     unplaced (H4b);
   7. the Scenes flyout's Generate... opens Look on the section with the block;
   8. captures: dark and light at 1280x1440, and the 300 px column.
 """
@@ -267,6 +269,28 @@ follow_file.write_text(json.dumps({
                  {'at': 8, 'scene': 'pulse'}]}))
 log, _ = run('follow', SECTION + ',follow=1', follow=follow_file)
 check(disabled(cards(log), 'clip-generate'), 'following a treatment, Generate... is disabled')
+
+# 6b. A treatment followed while a generation runs (H4b): the file recompiles
+# the plan with the same positional ids, so the finished clip must not land in
+# the file's section 2. It is kept in the library, and the card says so.
+retarget = out / 'card-retarget.treatment.json'
+retarget.write_text(json.dumps({
+    'schema': 'musializer.treatment/v1', 'audio': {'path': 'fixture.wav'},
+    'output': {'resolution': '640x360', 'fps': 24},
+    'segments': [{'at': 0, 'scene': 'spectrum'}, {'at': 4, 'scene': 'pulse'}, {'at': 8, 'scene': 'spectrum'}]}))
+FOLLOWED = 'a+late+shot+[polls-60]'
+submits = count('submit')
+log, saved = run('retarget', f'{SECTION},generate=send,generate-frames=none,generate-prompt={FOLLOWED},'
+                 f'drop={os.path.relpath(retarget)},drop-at=40', frames=900)
+words = line(log, 'generate')
+# A save writes only the clips a section plays; the paid clip is in the store.
+kept = [json.loads(receipt.read_text()) for receipt in (out / 'store' / 'clips').glob('*.json')]
+kept = [receipt for receipt in kept if receipt['prompt'] == FOLLOWED.replace('+', ' ')]
+cue = saved['scene_switches']['cues'][1]
+check(count('submit') == submits + 1 and 'not in a section: a treatment was followed while it was made' in words
+      and 'Nothing paid for is lost' in words and cue['scene_name'] == 'pulse' and len(kept) == 1
+      and cue.get('clip', {}).get('clip') != kept[0]['clip_sha256'],
+      'a clip finished after a treatment was followed is not placed in the file\'s section 2, is kept, and the card says why')
 
 # 7. The flyout's Generate... opens Look on the section, with the block.
 flyout, _ = run('flyout', 'size=1280x1440,column=direct,time=5,play=0,flyout=scenes')

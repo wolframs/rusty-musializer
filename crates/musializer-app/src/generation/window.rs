@@ -132,10 +132,92 @@ struct Running {
     order: GenerateOrder,
     job: GenerationJob,
     estimate: Option<f64>,
-    /// The audio the track that asked has, so a clip never lands in another.
-    audio_sha256: String,
+    /// The section it is for, as it was when Send was pressed.
+    target: Target,
     /// The request's digest, for a warning when its answer is lost.
     digest: String,
+}
+
+/// The project a section belongs to: its slot, its audio file and the
+/// project file, as the look cards' owner is (a slot alone is reused by the
+/// next project opened there).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Owner {
+    slot: usize,
+    audio: PathBuf,
+    project: Option<PathBuf>,
+}
+
+impl Owner {
+    fn of(workspace: &crate::workspace::Workspace, slot: usize) -> Option<Self> {
+        let track = workspace.get(slot)?;
+        Some(Self {
+            slot,
+            audio: track.file_path.clone(),
+            project: track.project_path.clone(),
+        })
+    }
+}
+
+/// The section a generated clip is for, by identity rather than position:
+/// a followed treatment recompiles the plan and hands out the same positional
+/// cue ids to other sections.
+#[derive(Clone, Debug)]
+struct Target {
+    owner: Owner,
+    audio_sha256: String,
+    cue_id: u64,
+    /// The section's start and end when Send was pressed.
+    span: (f64, f64),
+    /// A treatment was followed at some frame while the job ran: the plan
+    /// is the file's, whatever the ids say.
+    followed: bool,
+}
+
+/// Why a finished clip goes into the library unplaced.
+#[derive(Debug, PartialEq)]
+enum Unplaced {
+    /// The project is not open any more: the clip is only in the store.
+    Gone,
+    /// In the project, not in a section: why.
+    Kept(String),
+}
+
+/// Whether the clip may still play in the section it was asked for.
+fn placement(
+    target: &Target,
+    owner: Option<&Owner>,
+    audio_sha256: &str,
+    cues: &[musializer_core::project::scene_switch::SceneSwitchCue],
+    followed_now: bool,
+) -> Result<(), Unplaced> {
+    if owner != Some(&target.owner) || audio_sha256 != target.audio_sha256 {
+        return Err(Unplaced::Gone);
+    }
+    if followed_now || target.followed {
+        return Err(Unplaced::Kept(
+            "a treatment was followed while it was made, and the followed file decides what each \
+             section plays"
+                .into(),
+        ));
+    }
+    let Some(cue) = cues.iter().find(|cue| cue.id == target.cue_id) else {
+        return Err(Unplaced::Kept(
+            "the section it was for is no longer in the plan".into(),
+        ));
+    };
+    let same = |a: f64, b: f64| (a - b).abs() < 1.0e-6;
+    if !same(cue.start_seconds, target.span.0) || !same(cue.end_seconds, target.span.1) {
+        return Err(Unplaced::Kept(format!(
+            "the section it was for changed while it was made (it ran {} to {}, the section now \
+             there runs {} to {})",
+            musializer_core::treatment::format_time(target.span.0),
+            musializer_core::treatment::format_time(target.span.1),
+            musializer_core::treatment::format_time(cue.start_seconds),
+            musializer_core::treatment::format_time(cue.end_seconds),
+        )));
+    }
+    Ok(())
 }
 
 /// What [`Generations::prepare`] did.
@@ -176,6 +258,8 @@ pub struct Generations {
     jobs: Vec<Running>,
     last: HashMap<u64, LastOutcome>,
     unconfirmed: HashMap<u64, UnconfirmedView>,
+    /// A treatment is followed this frame.
+    followed: bool,
 }
 
 impl Default for Generations {
@@ -203,6 +287,7 @@ impl Generations {
             jobs: Vec::new(),
             last: HashMap::new(),
             unconfirmed: HashMap::new(),
+            followed: false,
         }
     }
 
@@ -261,14 +346,21 @@ impl Generations {
     }
 
     /// Each frame: the price refresh, the key's presence every two seconds,
-    /// and finished jobs into their tracks.
+    /// whether a treatment is followed, and finished jobs into their tracks.
     pub fn tend(
         &mut self,
         app: &mut crate::App,
         session: Option<&Secret>,
         time_seconds: f64,
         now: f64,
+        followed: bool,
     ) {
+        self.followed = followed;
+        if followed {
+            for running in &mut self.jobs {
+                running.target.followed = true;
+            }
+        }
         if self
             .refresh
             .as_ref()
@@ -332,8 +424,8 @@ impl Generations {
                     .as_ref()
                     .and_then(|record| record.cost_usd);
                 let name = generated.clip.asset.name.clone();
-                match place(app, order, &running.audio_sha256, generated.clip, time_seconds, now) {
-                    Ok(place) => (
+                match place(app, &running.target, generated.clip, self.followed, time_seconds, now) {
+                    Ok(Placed::Plays(place)) => (
                         Severity::Info,
                         "Clip generated",
                         format!(
@@ -348,11 +440,29 @@ impl Generations {
                             }
                         ),
                     ),
+                    Ok(Placed::Kept(why)) => (
+                        Severity::Warning,
+                        "Clip generated, not placed",
+                        format!(
+                            "{name} is in this project's clip library, not in a section: {why}. \
+                             Nothing paid for is lost: choose it in a Video Clip section's clip rows \
+                             (a save keeps only clips a section plays), and it stays in {}, where \
+                             Generate with the same settings finds it without paying again.",
+                            self.store.as_ref().map_or_else(
+                                |_| "the store".to_owned(),
+                                |store| super::job::kept_at(store).display().to_string()
+                            )
+                        ),
+                    ),
                     Err(reason) => (
                         Severity::Warning,
                         "Clip generated, not placed",
                         format!(
-                            "{name}: {reason}. It is kept, and Generate with the same settings finds it without paying again."
+                            "{name}: {reason}. It is kept in {}, and Generate with the same settings \
+                             in that project finds it without paying again.",
+                            self.store
+                                .as_ref()
+                                .map_or_else(|_| "the store".to_owned(), |store| super::job::kept_at(store).display().to_string())
                         ),
                     ),
                 }
@@ -519,6 +629,10 @@ impl Generations {
         if app.workspace.current_index() != Some(order.track_slot) {
             return Err("the track it was for is no longer the current one".into());
         }
+        if self.followed {
+            return Err("a treatment is followed: the file decides what each section plays".into());
+        }
+        let owner = Owner::of(&app.workspace, order.track_slot).ok_or("no track is open")?;
         let track = app.workspace.current().ok_or("no track is open")?;
         let cues = track.scene_switches.cues();
         let index = cues
@@ -527,7 +641,13 @@ impl Generations {
             .ok_or("the section is no longer in the plan")?;
         let start = cues[index].start_seconds;
         let next = cues.get(index + 1).map(|cue| (cue.id, cue.start_seconds));
-        let audio_sha256 = track.audio_sha256.clone();
+        let target = Target {
+            owner,
+            audio_sha256: track.audio_sha256.clone(),
+            cue_id: order.cue_id,
+            span: (cues[index].start_seconds, cues[index].end_seconds),
+            followed: false,
+        };
         let output = (track.render_config.width, track.render_config.height);
         let fps = track.render_config.fps;
         let catalog = self.catalog.clone();
@@ -631,11 +751,16 @@ impl Generations {
         });
         if let Some(entry) = held {
             let name = entry.asset.name.clone();
-            let place = place(app, &order, &audio_sha256, entry, time_seconds, now)?;
-            return Ok(Started::Found(format!(
-                "{name} plays {place}. The project already holds the clip made for exactly this \
-                 request, so nothing was sent."
-            )));
+            return match place(app, &target, entry, self.followed, time_seconds, now)? {
+                Placed::Plays(place) => Ok(Started::Found(format!(
+                    "{name} plays {place}. The project already holds the clip made for exactly \
+                     this request, so nothing was sent."
+                ))),
+                Placed::Kept(why) => Err(NotStarted::Refused(format!(
+                    "{name}, the clip made for exactly this request, is in the project already and \
+                     was not placed: {why}. Nothing was sent"
+                ))),
+            };
         }
         let estimate = price::estimate(
             catalog.as_deref(),
@@ -686,7 +811,7 @@ impl Generations {
             estimate: estimate.usd(),
             order,
             job,
-            audio_sha256,
+            target,
             digest,
         });
         Ok(Started::Job)
@@ -749,43 +874,75 @@ fn stage_token(stage: &Stage) -> &'static str {
     }
 }
 
-/// Puts a generated clip in the library of the track that asked and has it
-/// play in its section (Video Clip first, if it played another scene).
+/// Where a finished clip went.
+enum Placed {
+    /// It plays in its section; where, in words.
+    Plays(String),
+    /// It is in the project's library, not in a section: why.
+    Kept(String),
+}
+
+/// Puts a generated clip in the library of the project that asked, and has
+/// it play in its section (Video Clip first, if it played another scene)
+/// while that is still the section Send was pressed for and no treatment
+/// decides the plan. The paid clip is never thrown away: otherwise it stays
+/// in the library unplaced, and the words say why.
+///
+/// # Errors
+///
+/// The project is not open any more (the clip is only in the store), or it
+/// holds as many clips as a project may.
 fn place(
     app: &mut crate::App,
-    order: &GenerateOrder,
-    audio_sha256: &str,
+    target: &Target,
     entry: crate::clips::TrackClip,
+    followed: bool,
     time_seconds: f64,
     now: f64,
-) -> Result<String, String> {
-    let current = app.workspace.current_index() == Some(order.track_slot);
+) -> Result<Placed, String> {
+    let slot = target.owner.slot;
+    let current = app.workspace.current_index() == Some(slot);
+    let owner = Owner::of(&app.workspace, slot);
     let track = app
         .workspace
-        .get_mut(order.track_slot)
-        .filter(|track| track.audio_sha256 == audio_sha256)
-        .ok_or("the track it was for is no longer open")?;
-    let target = crate::clips::section_target(&track.scene_switches, order.cue_id)
-        .ok_or("the section it was for is no longer in the plan")?;
+        .get_mut(slot)
+        .ok_or("the project it was for is no longer open")?;
+    let verdict = placement(
+        target,
+        owner.as_ref(),
+        &track.audio_sha256,
+        track.scene_switches.cues(),
+        followed,
+    );
+    if verdict == Err(Unplaced::Gone) {
+        return Err("the project it was for is no longer open".into());
+    }
     let clip = crate::clips::add(&mut track.clips, entry).ok_or_else(|| {
         format!(
             "the project already holds {} clips",
             musializer_core::project::clip::MAX_CLIPS
         )
     })?;
-    if let crate::clips::ImportTarget::Section { retarget: true, .. } = target {
+    // In the library for this session; a save writes only what a section
+    // plays, so nothing the file holds changes.
+    if let Err(Unplaced::Kept(why)) = verdict {
+        return Ok(Placed::Kept(why));
+    }
+    let section = crate::clips::section_target(&track.scene_switches, target.cue_id)
+        .ok_or("the section it was for is no longer in the plan")?;
+    if let crate::clips::ImportTarget::Section { retarget: true, .. } = section {
         track
-            .retarget_scene_cue(order.cue_id, SceneId::Clip)
+            .retarget_scene_cue(target.cue_id, SceneId::Clip)
             .map_err(|error| format!("the section could not become Video Clip: {error}"))?;
     }
     track
         .scene_switches
-        .set_clip(order.cue_id, Some(ClipPlacement::new(clip)));
+        .set_clip(target.cue_id, Some(ClipPlacement::new(clip)));
     track.mark_dirty(now);
     if current {
         app.apply_auto_scene_switch(time_seconds);
     }
-    Ok(crate::clips::import_place(target))
+    Ok(Placed::Plays(crate::clips::import_place(section)))
 }
 
 /// The Scenes flyout's Generate…: Look, on the section an import would land
@@ -815,4 +972,89 @@ pub fn open_block(app: &mut crate::App, time_seconds: f64) {
         return;
     };
     app.shell.open_generate_block(cue_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use musializer_core::project::scene_switch::SceneSwitchCue;
+
+    use super::*;
+
+    fn owner() -> Owner {
+        Owner {
+            slot: 0,
+            audio: PathBuf::from("/music/song.wav"),
+            project: Some(PathBuf::from("/music/song.musi")),
+        }
+    }
+
+    fn target() -> Target {
+        Target {
+            owner: owner(),
+            audio_sha256: "a".repeat(64),
+            cue_id: 2,
+            span: (4.0, 8.0),
+            followed: false,
+        }
+    }
+
+    fn cue(id: u64, start: f64, end: f64) -> SceneSwitchCue {
+        SceneSwitchCue {
+            id,
+            start_seconds: start,
+            end_seconds: end,
+            ..SceneSwitchCue::default()
+        }
+    }
+
+    #[test]
+    fn a_clip_is_placed_only_in_the_section_send_was_pressed_for() {
+        let audio = "a".repeat(64);
+        let plan = [cue(1, 0.0, 4.0), cue(2, 4.0, 8.0), cue(3, 8.0, 12.0)];
+        assert_eq!(
+            placement(&target(), Some(&owner()), &audio, &plan, false),
+            Ok(())
+        );
+        // A treatment followed now, or at any frame while it was made: the
+        // same positional id names the file's section, not the person's.
+        let followed = Target {
+            followed: true,
+            ..target()
+        };
+        for (target, now) in [(followed, false), (target(), true)] {
+            let Err(Unplaced::Kept(why)) = placement(&target, Some(&owner()), &audio, &plan, now)
+            else {
+                panic!("placed while a treatment decides the plan");
+            };
+            assert!(why.contains("a treatment was followed"), "{why}");
+        }
+        // The id names another span: another section.
+        let moved = [cue(1, 0.0, 2.0), cue(2, 2.0, 8.0), cue(3, 8.0, 12.0)];
+        let Err(Unplaced::Kept(why)) = placement(&target(), Some(&owner()), &audio, &moved, false)
+        else {
+            panic!("placed in a section that changed");
+        };
+        assert!(why.contains("changed while it was made"), "{why}");
+        assert!(matches!(
+            placement(&target(), Some(&owner()), &audio, &plan[..1], false),
+            Err(Unplaced::Kept(_))
+        ));
+        // Another project in the slot, or other audio: only the store has it.
+        let other = Owner {
+            project: Some(PathBuf::from("/music/other.musi")),
+            ..owner()
+        };
+        assert_eq!(
+            placement(&target(), Some(&other), &audio, &plan, false),
+            Err(Unplaced::Gone)
+        );
+        assert_eq!(
+            placement(&target(), Some(&owner()), &"b".repeat(64), &plan, false),
+            Err(Unplaced::Gone)
+        );
+        assert_eq!(
+            placement(&target(), None, &audio, &plan, false),
+            Err(Unplaced::Gone)
+        );
+    }
 }
