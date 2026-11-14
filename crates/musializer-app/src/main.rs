@@ -4873,7 +4873,7 @@ fn handle_scene_plan_edit(
             return;
         };
         let was_empty = track.scene_switches.is_empty();
-        let result = match edit {
+        let result = match edit.clone() {
             Edit::SplitAt { seconds } => track.record_scene_cue(live_scene, seconds),
             Edit::RetimeBoundary {
                 right_cue_id,
@@ -4934,6 +4934,12 @@ fn handle_scene_plan_edit(
                 }
                 plan_result(valid)
             }
+            // The look cards' tables (D): validated as a whole by the cards'
+            // own applier; the cards draw a refusal's reason before a press.
+            table @ (Edit::SetVoices(_)
+            | Edit::RemoveVoice(_)
+            | Edit::SetCaptionStyles { .. }
+            | Edit::SetTitles(_)) => plan_result(ui::panels::tune::apply_table_edit(track, table)),
             Edit::SetEnabled(_) => unreachable!("handled above"),
         };
         if result.is_ok() {
@@ -4998,7 +5004,11 @@ fn handle_scene_plan_edit(
                     | Edit::SetGrade { .. }
                     | Edit::SetCaptionStyle { .. }
                     | Edit::SetOutro(_)
-                    | Edit::SetFinish(_) => unreachable!("handled above"),
+                    | Edit::SetFinish(_)
+                    | Edit::SetVoices(_)
+                    | Edit::RemoveVoice(_)
+                    | Edit::SetCaptionStyles { .. }
+                    | Edit::SetTitles(_) => unreachable!("handled above"),
                 },
             );
         }

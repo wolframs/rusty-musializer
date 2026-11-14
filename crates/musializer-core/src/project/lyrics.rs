@@ -453,6 +453,36 @@ impl LyricsDocument {
         true
     }
 
+    /// Removes voice `index` (D, Look's video card): the cues it sang lose
+    /// their voice, and every later voice's cues keep theirs, renumbered.
+    /// Refuses an index past the table and changes nothing when it refuses.
+    pub fn remove_voice(&mut self, index: usize) -> bool {
+        if index >= self.voices.len() {
+            return false;
+        }
+        self.voices.remove(index);
+        self.cue_voices
+            .retain(|_, voice| usize::from(*voice) != index);
+        for voice in self.cue_voices.values_mut() {
+            if usize::from(*voice) > index {
+                *voice -= 1;
+            }
+        }
+        self.bump_revision();
+        true
+    }
+
+    /// How many cues voice `index` sings.
+    #[must_use]
+    pub fn voice_uses(&self, index: usize) -> usize {
+        self.cue_voices
+            .iter()
+            .filter(|(id, voice)| {
+                usize::from(**voice) == index && self.cues.iter().any(|cue| cue.id == **id)
+            })
+            .count()
+    }
+
     /// The voice singing cue `id`, if the project names one.
     #[must_use]
     pub fn voice_of(&self, id: u64) -> Option<&Voice> {
@@ -1611,6 +1641,43 @@ mod tests {
         assert_eq!(copy.style_of(second), Some(top), "a copy keeps the styles");
         assert!(copy.set_cue_style(second, None));
         assert_eq!(copy.style_of(second), None);
+    }
+
+    #[test]
+    fn removing_a_voice_keeps_every_later_voices_lines() {
+        let mut doc = LyricsDocument::new(30.0).unwrap();
+        let mut ids = Vec::new();
+        for (index, start) in [1.0, 3.0, 5.0].into_iter().enumerate() {
+            ids.push(
+                doc.insert(LyricCue {
+                    id: 0,
+                    start_seconds: start,
+                    end_seconds: start + 1.0,
+                    text: format!("line {index}"),
+                    origin: CueOrigin::UserApplied,
+                })
+                .unwrap(),
+            );
+        }
+        let voice = |name: &str| Voice {
+            name: name.into(),
+            style: VoiceStyle::default(),
+        };
+        assert!(doc.set_voices(vec![voice("a"), voice("b"), voice("c")]));
+        for (id, index) in ids.iter().zip([0, 1, 2]) {
+            assert!(doc.set_cue_voice(*id, Some(index)));
+        }
+        assert_eq!(doc.voice_uses(1), 1);
+        assert!(doc.remove_voice(1));
+        let name = |id| doc.voice_of(id).map(|voice| voice.name.clone());
+        assert_eq!(name(ids[0]), Some("a".into()));
+        assert_eq!(name(ids[1]), None, "the removed voice's line is plain");
+        assert_eq!(
+            name(ids[2]),
+            Some("c".into()),
+            "a later voice keeps its line"
+        );
+        assert!(!doc.remove_voice(5));
     }
 
     #[test]

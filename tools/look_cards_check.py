@@ -30,12 +30,20 @@ file):
  video
   11. intro and outro kinds by name, the outro's length, Film and None,
       a finish member, a toning swatch, a typed highlight colour.
+ tables (look=captions)
+  12. a voice's hue, ink and name (its lines keep it); removing a voice that
+      sings lines asks to confirm; Add a voice is drawn with why it waits; a
+      style's anchor, a rename that takes its line along, Remove disabled for
+      a style in use and working for one that is not, Add a style; a title
+      card's text, handle (gains its @), start time (and a refused one),
+      style, Remove asking to confirm, Add at the playhead (and waiting
+      while a card covers it).
  follow
-  12. following a treatment, the cards are drawn disabled and a press
+  13. following a treatment, the cards are drawn disabled and a press
       changes nothing; Stop following stops following and the card is
       editable again.
  captures
-  13. both appearances at 1280x720 (section and video) and at the column's
+  14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
 """
 import json
@@ -73,7 +81,13 @@ base_show = {
     ],
     'outro': {'kind': 'fade', 'seconds': 1.6},
 }
-films = {'plain': base_show, 'film': dict(base_show, finish='film')}
+words_show = dict(base_show,
+                  artist='Fixture Artist',
+                  voices={'alto': {'hue': 253, 'text': '#e9e3ff'}, 'tenor': {'hue': 33}},
+                  lyrics=[{'at': 1.0, 'until': 2.0, 'text': 'the first line', 'voice': 'alto'},
+                          {'at': 2.6, 'until': 3.6, 'text': 'the loud line', 'voice': 'tenor', 'style': 'shout'}],
+                  titles=[{'at': 0.5, 'until': 2.0, 'title': 'Fixture Title'}])
+films = {'plain': base_show, 'film': dict(base_show, finish='film'), 'words': words_show}
 for name, show in films.items():
     (out / f'{name}.treatment.json').write_text(json.dumps(show))
     with (out / f'seed-{name}.log').open('w') as log:
@@ -365,6 +379,73 @@ if only in ('all', 'video'):
     log, saved = run('highlight-typed', VIDEO + click(centre(rect(bf, 'highlight-value'))) + ',look-text=#123456,look-action=commit', project='film')
     check(field(cards(log), 'finish').endswith('#123456') and saved['scene_switches'].get('finish', {}).get('highlight_rgb') == '123456',
           'a typed highlight colour commits and saves')
+
+if only in ('all', 'tables'):
+    WORDS = 'size=1280x1440,column=look,time=3,play=0,look=captions'
+    w, saved0 = run('base-words', WORDS, frames=30, project='words')
+    bw = cards(w)
+    check(field(bw, 'scope') == 'captions' and 'voice-name-0@' in bw and 'style-name-1@' in bw and 'title-text-0@' in bw,
+          'look=captions shows the three tables')
+    styles0 = [entry['name'] for entry in original['words']['caption_style']['styles']]
+
+    def words(saved):
+        return saved['lyrics'], saved['caption_style']['styles'], saved['scene_switches'].get('titles', [])
+
+    def same(saved):
+        return words(saved) == words(original['words'])
+    bar = rect(bw, 'voice-hue-0')
+    point, unit = at_fraction(bar, 0.5)
+    log, saved = run('voice-hue', WORDS + click(point), project='words')
+    check(abs(words(saved)[0]['voices'][0]['hue'] - round(unit * 360)) < 1e-6, f'voice hue track: exactly {round(unit * 360)} degrees, saved')
+    log, saved = run('voice-hue-gap', WORDS + click((point[0], bar[1] + bar[3] // 2 - 15 - 3)), project='words')
+    check(same(saved), 'voice hue gap changes nothing')
+    log, saved = run('voice-ink', WORDS + click(centre(rect(bw, 'voice-ink-1-3'))), project='words')
+    check(words(saved)[0]['voices'][1].get('text_rgba') == 'c8f0ffff', f"a voice ink swatch, saved: {words(saved)[0]['voices'][1]}")
+    log, saved = run('voice-name', WORDS + click(centre(rect(bw, 'voice-name-0'))) + ',look-text=mezzo,look-action=commit', project='words')
+    lyrics = words(saved)[0]
+    check(lyrics['voices'][0]['name'] == 'mezzo' and lyrics['cues'][0].get('voice') == 'mezzo',
+          'a renamed voice keeps its lines')
+    log, saved = run('voice-remove', WORDS + click(centre(rect(bw, 'voice-name-0-button'))), project='words')
+    check(same(saved) and 'voice-0-armed:1-lines' in cards(log), 'removing a voice that sings lines first asks to confirm')
+    check('add-voice@disabled:' in bw, 'Add a voice is drawn with why it waits')
+    shout = styles0.index('shout')
+    top = styles0.index('top')
+    log, saved = run('style-anchor', WORDS + click(centre(rect(bw, f'style-{top}-top_left'))), project='words')
+    check(words(saved)[1][top].get('anchor') == 'top_left', 'a style anchor chip, saved')
+    r = rect(bw, f'style-{top}-top_left')
+    log, saved = run('style-anchor-gap', WORDS + click((r[0] + r[2] + 2, r[1] + r[3] // 2)), project='words')
+    check(same(saved), 'style anchor gap changes nothing')
+    log, saved = run('style-rename', WORDS + click(centre(rect(bw, f'style-name-{shout}'))) + ',look-text=loud,look-action=commit', project='words')
+    names = [entry['name'] for entry in words(saved)[1]]
+    check('loud' in names and 'shout' not in names and words(saved)[0]['cues'][1].get('style') == 'loud',
+          'a renamed style takes the line that wore it along')
+    check(f'style-name-{shout}-button@disabled:' in bw, 'a style a line wears cannot be removed (drawn disabled)')
+    log, saved = run('style-remove-used', WORDS + click(centre(rect(bw, f'style-name-{shout}-button'))), project='words')
+    check(same(saved), 'a press on the disabled Remove changes nothing')
+    log, saved = run('style-remove', WORDS + click(centre(rect(bw, f'style-name-{top}-button'))), project='words')
+    check([entry['name'] for entry in words(saved)[1]] == [n for n in styles0 if n != 'top'], 'an unused style is removed')
+    log, saved = run('style-add', WORDS + click(centre(rect(bw, 'add-style'))), project='words')
+    check([entry['name'] for entry in words(saved)[1]] == styles0 + ['style-1'], 'Add a style adds style-1')
+    log, saved = run('title-text', WORDS + click(centre(rect(bw, 'title-text-0'))) + ',look-text=Door Fixture,look-action=commit', project='words')
+    check(words(saved)[2][0]['title'] == 'Door Fixture', 'a typed title, saved')
+    log, saved = run('title-handle', WORDS + click(centre(rect(bw, 'title-handle-0'))) + ',look-text=cats,look-action=commit', project='words')
+    check(words(saved)[2][0].get('handle') == '@cats', 'a typed handle gains its @, saved')
+    log, saved = run('title-from', WORDS + click(centre(rect(bw, 'title-start-0'))) + ',look-text=0:01.0,look-action=commit', project='words')
+    check(words(saved)[2][0]['start_seconds'] == 1.0, 'a typed start time, saved')
+    log, saved = run('title-from-bad', WORDS + click(centre(rect(bw, 'title-start-0'))) + ',look-text=3,look-action=commit', project='words')
+    check(same(saved) and field(cards(log), 'refused') == 'title-start-0', 'a start after the end is refused and says so')
+    log, saved = run('title-style', WORDS + click(centre(rect(bw, 'title-0-style-top'))), project='words')
+    check(words(saved)[2][0].get('style') == 'top', 'a title card style chip, saved')
+    log, saved = run('title-remove', WORDS + click(centre(rect(bw, 'title-text-0-button'))), project='words')
+    check(same(saved), 'removing a title card first asks to confirm')
+    log, saved = run('title-add', WORDS + click(centre(rect(bw, 'add-title'))), project='words')
+    titles = words(saved)[2]
+    check(len(titles) == 2 and titles[1]['start_seconds'] == 3.0 and titles[1]['title'] == 'Look cards fixture'
+          and 'artist' not in titles[1], f'Add a title card at the playhead: the project title, its artist by default, saved ({titles[-1:]})')
+    covered, _ = run('title-add-covered', WORDS.replace('time=3', 'time=1'), frames=30, project='words')
+    check('add-title@disabled:' in cards(covered), 'with a card on screen at the playhead, Add waits and says why')
+    log, saved = run('title-add-gap', WORDS + click((rect(bw, 'add-title')[0] + rect(bw, 'add-title')[2] + 4, rect(bw, 'add-title')[1] + 10)), project='words')
+    check(same(saved), 'the gap beside Add a title card changes nothing')
 
 if only in ('all', 'follow'):
     log, _ = run('follow-base', SECTION + ',section=2,follow=1', frames=40, follow=True)

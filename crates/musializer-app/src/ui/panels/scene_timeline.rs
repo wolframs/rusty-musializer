@@ -52,8 +52,9 @@ pub const SCENE_LANE_OFFSET: f32 = SCENE_CONTROLS_HEIGHT + metric::LANE_GAP;
 pub const SCENE_SECTION_HEIGHT: f32 = SCENE_LANE_OFFSET + SCENE_LANE_HEIGHT + metric::LANE_GAP;
 
 /// A durable scene-plan mutation. Stable cue ids cross the draw/model boundary;
-/// vector indexes do not, because split and delete renumber them.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// vector indexes do not, because split and delete renumber them. `Clone`, not
+/// `Copy`, since the look cards' tables carry their text.
+#[derive(Clone, Debug, PartialEq)]
 pub enum ScenePlanEdit {
     SplitAt {
         seconds: f64,
@@ -112,6 +113,23 @@ pub enum ScenePlanEdit {
     /// writes it with the pixel look it read, so the Pixel look group's own
     /// edits are never undone by a finish edit.
     SetFinish(musializer_core::project::look::Finish),
+    /// The voices table, edited or grown in place (order kept, so every
+    /// line's voice stays the one it was).
+    SetVoices(Vec<musializer_core::project::lyrics::Voice>),
+    /// Removes voice N; the lines sung in it are drawn plain, and the lines
+    /// of the voices after it keep theirs.
+    RemoveVoice(usize),
+    /// The caption styles table, with the rename it carries, if any: a
+    /// renamed style keeps every line, section and card that names it.
+    SetCaptionStyles {
+        table: Vec<musializer_core::project::caption_styles::NamedCaptionStyle>,
+        renamed: Option<(
+            musializer_core::project::caption_styles::StyleName,
+            musializer_core::project::caption_styles::StyleName,
+        )>,
+    },
+    /// The title cards, in order. Nothing adds one but a press on Add.
+    SetTitles(Vec<musializer_core::project::caption_styles::TitleCard>),
 }
 
 impl ScenePlanEdit {
@@ -132,6 +150,10 @@ impl ScenePlanEdit {
                 | Self::SetCaptionStyle { .. }
                 | Self::SetOutro(_)
                 | Self::SetFinish(_)
+                | Self::SetVoices(_)
+                | Self::RemoveVoice(_)
+                | Self::SetCaptionStyles { .. }
+                | Self::SetTitles(_)
         )
     }
 }

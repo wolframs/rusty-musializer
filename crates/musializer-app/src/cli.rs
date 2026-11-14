@@ -1516,6 +1516,7 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             probe.look_scope = Some(match value {
                 "section" => crate::ui::panels::tune::CardScope::Section,
                 "video" => crate::ui::panels::tune::CardScope::Video,
+                "captions" => crate::ui::panels::tune::CardScope::Captions,
                 _ => return None,
             })
         }
@@ -1764,7 +1765,7 @@ Diagnostics:
                           column=direct|lyrics|look|assist|render|closed
                           shows that column view (not with panel=),
                           pixel=video|section reveals Look's pixel filter,
-                          section=N selects plan section N, look=section|video
+                          section=N selects plan section N, look=section|video|captions
                           picks Look's card, look-text=TEXT,look-action=
                           draft|commit|cancel types into the card field a
                           click= focused (frame 12),

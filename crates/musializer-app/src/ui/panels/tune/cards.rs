@@ -15,12 +15,18 @@ use musializer_core::project::scene_switch::SceneSwitchCue;
 use musializer_core::project::transition::{Transition, TransitionKind, DEFAULT_SECONDS};
 use musializer_core::ui::tune_groups::look_cards::{self, Block, Placed};
 
+#[path = "tables.rs"]
+mod tables;
+pub(crate) use tables::apply_table_edit;
+
 /// Which card the block shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CardScope {
     #[default]
     Section,
     Video,
+    /// The words on screen: voices, caption styles, title cards (slice 3).
+    Captions,
 }
 
 impl CardScope {
@@ -28,6 +34,7 @@ impl CardScope {
         match self {
             Self::Section => "section",
             Self::Video => "video",
+            Self::Captions => "captions",
         }
     }
 }
@@ -52,10 +59,87 @@ pub(crate) enum CardField {
     Grain,
     Shadow,
     Highlight,
+    /// The tables (slice 3), by row.
+    VoiceName(u8),
+    VoiceHue(u8),
+    VoiceInk(u8),
+    VoiceGlow(u8),
+    StyleName(u8),
+    StyleSize(u8),
+    StyleInk(u8),
+    TitleText(u8),
+    TitleArtist(u8),
+    TitleHandle(u8),
+    TitleStart(u8),
+    TitleEnd(u8),
 }
 
 impl CardField {
-    fn name(self) -> &'static str {
+    fn name(self) -> String {
+        let row = |what: &str, index: u8| format!("{what}-{index}");
+        match self {
+            Self::VoiceName(i) => row("voice-name", i),
+            Self::VoiceHue(i) => row("voice-hue", i),
+            Self::VoiceInk(i) => row("voice-ink", i),
+            Self::VoiceGlow(i) => row("voice-glow", i),
+            Self::StyleName(i) => row("style-name", i),
+            Self::StyleSize(i) => row("style-size", i),
+            Self::StyleInk(i) => row("style-ink", i),
+            Self::TitleText(i) => row("title-text", i),
+            Self::TitleArtist(i) => row("title-artist", i),
+            Self::TitleHandle(i) => row("title-handle", i),
+            Self::TitleStart(i) => row("title-start", i),
+            Self::TitleEnd(i) => row("title-end", i),
+            other => other.plain_name().to_owned(),
+        }
+    }
+
+    /// A distinct small number per field, for a disabled row's hover id.
+    fn index(self) -> u32 {
+        let row = |kind: u32, index: u8| 100 + kind * 20 + u32::from(index);
+        match self {
+            Self::VoiceName(i) => row(0, i),
+            Self::VoiceHue(i) => row(1, i),
+            Self::VoiceInk(i) => row(2, i),
+            Self::VoiceGlow(i) => row(3, i),
+            Self::StyleName(i) => row(4, i),
+            Self::StyleSize(i) => row(5, i),
+            Self::StyleInk(i) => row(6, i),
+            Self::TitleText(i) => row(7, i),
+            Self::TitleArtist(i) => row(8, i),
+            Self::TitleHandle(i) => row(9, i),
+            Self::TitleStart(i) => row(10, i),
+            Self::TitleEnd(i) => row(11, i),
+            other => other.plain_index(),
+        }
+    }
+
+    fn plain_index(self) -> u32 {
+        [
+            Self::Length,
+            Self::Glide,
+            Self::Map,
+            Self::ShiftFrom,
+            Self::ShiftBy,
+            Self::ShiftWidth,
+            Self::IntroLength,
+            Self::OutroLength,
+            Self::Bloom,
+            Self::BloomThreshold,
+            Self::BloomRadius,
+            Self::Shoulder,
+            Self::Tone,
+            Self::Vignette,
+            Self::Grain,
+            Self::Shadow,
+            Self::Highlight,
+        ]
+        .iter()
+        .position(|field| *field == self)
+        .unwrap_or(99) as u32
+    }
+
+    fn plain_name(self) -> &'static str {
         match self {
             Self::Length => "length",
             Self::Glide => "glide",
@@ -74,6 +158,7 @@ impl CardField {
             Self::Grain => "grain",
             Self::Shadow => "shadow",
             Self::Highlight => "highlight",
+            _ => "table",
         }
     }
 }
@@ -260,6 +345,10 @@ pub(crate) struct CardState {
     pub(crate) followed: Option<String>,
     probe_text: Option<(Option<String>, CardProbeAction)>,
     report: String,
+    /// The last typed value the model's rules refused, until the next edit.
+    refused: Option<String>,
+    /// A removal waiting for its confirming press: (table, row).
+    armed: Option<(u8, usize)>,
     /// The section the last frame's card edited, so a new selection takes the
     /// card back to the section scope and drops a half-typed value.
     shown: Option<u64>,
@@ -347,6 +436,8 @@ enum Part {
     Highlight,
     Vignette,
     Grain,
+    /// A row of the captions card's tables (`tables.rs`).
+    Table(tables::TablePart),
     Space,
 }
 
@@ -625,6 +716,12 @@ impl Shell {
             parts.push((Part::Space, Block::Gap(look_cards::GROUP_GAP)));
         }
         let cues = track.scene_switches.cues();
+        if self.look_column.cards.scope == CardScope::Captions {
+            tables::plan(track, &mut parts);
+            parts.push((Part::Space, Block::Gap(8.0)));
+            parts.push((Part::Status, Block::Line));
+            return CardsPlan { parts };
+        }
         if self.look_column.cards.scope == CardScope::Video {
             let gap = (Part::Space, Block::Gap(look_cards::GROUP_GAP));
             let small = (Part::Space, Block::Gap(6.0));
@@ -904,7 +1001,13 @@ impl Shell {
 
     /// Opens typed entry on `field`, holding `text`.
     fn open_card_field(&mut self, field: CardField, text: &str) {
-        let mut entry = TextField::new(TextRules::ascii_query(10));
+        self.open_card_field_with(field, text, TextRules::ascii_query(10));
+    }
+
+    /// [`Self::open_card_field`] with the field's own rules (a title takes
+    /// any printable text; a name, ASCII).
+    fn open_card_field_with(&mut self, field: CardField, text: &str, rules: TextRules) {
+        let mut entry = TextField::new(rules);
         entry.bind(text);
         entry.set_focused(true);
         self.look_column.cards.typing = Some((field, entry));
@@ -933,7 +1036,7 @@ impl Shell {
             let rect = self.disabled_card_row(
                 d,
                 font,
-                knob.field as u32,
+                knob.field.index(),
                 row,
                 knob.label,
                 &shown,
@@ -1040,7 +1143,7 @@ impl Shell {
         label: &str,
         field: CardField,
         first: u32,
-        value: u32,
+        value: Option<u32>,
         presets: &[u32],
         enabled: bool,
         label_width: f32,
@@ -1075,9 +1178,9 @@ impl Shell {
             let place = UiRect::new(layout.track.x + i as f32 * (size + 4.0), top, size, size);
             let swatch = self
                 .widgets
-                .swatch(d, id, place, rgba(*preset), *preset == value);
+                .swatch(d, id, place, rgba(*preset), Some(*preset) == value);
             controls.push(format!("{}-{i}@{}", field.name(), rect_text(swatch.rect)));
-            if enabled && swatch.state.clicked && *preset != value {
+            if enabled && swatch.state.clicked && Some(*preset) != value {
                 picked = Some(*preset);
             }
         }
@@ -1088,7 +1191,8 @@ impl Shell {
         if enabled && state.hovered {
             widgets::control_box(d, chip, color::ui_hover(), color::ui_hover(), 1.0);
         }
-        let hex = format!("#{value:06x}");
+        // `own` while nothing is set: the colour is the base's.
+        let hex = value.map_or_else(|| "own".to_owned(), |value| format!("#{value:06x}"));
         let ink = if enabled {
             color::ui_ink()
         } else {
@@ -1106,13 +1210,13 @@ impl Shell {
         );
         controls.push(format!("{}-value@{}", field.name(), rect_text(chip)));
         if enabled && state.clicked {
-            self.open_card_field(field, &hex);
+            self.open_card_field(field, if value.is_some() { &hex } else { "#" });
         }
         if let Some(text) = self.card_field(d, font, field, chip) {
             let digits = text.trim().trim_start_matches('#');
             if digits.len() == 6 {
                 if let Ok(typed) = u32::from_str_radix(digits, 16) {
-                    picked = Some(typed).filter(|typed| *typed != value);
+                    picked = Some(typed).filter(|typed| Some(*typed) != value);
                 }
             }
         }
@@ -1183,16 +1287,23 @@ impl Shell {
                         widgets::id::LOOK_CARDS,
                         slot::SCOPE,
                         rect,
-                        &["This section", "Whole video"],
-                        Some(usize::from(self.look_column.cards.scope == CardScope::Video)),
+                        &["This section", "Whole video", "Captions"],
+                        Some(match self.look_column.cards.scope {
+                            CardScope::Section => 0,
+                            CardScope::Video => 1,
+                            CardScope::Captions => 2,
+                        }),
                         widgets::SegmentedFit::Fill,
                     );
                     for (i, item) in picked.layout.items.iter().enumerate() {
                         controls.push(format!("scope-{i}@{}", rect_text(*item)));
                     }
                     if let Some(i) = picked.clicked {
-                        self.look_column.cards.scope =
-                            if i == 0 { CardScope::Section } else { CardScope::Video };
+                        self.look_column.cards.scope = match i {
+                            0 => CardScope::Section,
+                            1 => CardScope::Video,
+                            _ => CardScope::Captions,
+                        };
                         self.look_column.cards.typing = None;
                     }
                 }
@@ -1616,6 +1727,8 @@ impl Shell {
                         )
                     } else if followed.is_some() {
                         ("The followed file decides.", color::ui_muted())
+                    } else if self.look_column.cards.scope == CardScope::Captions {
+                        ("Saved with the project.", color::ui_muted())
                     } else {
                         ("Saved with the project. The lane shows each change.", color::ui_muted())
                     };
@@ -1854,7 +1967,7 @@ impl Shell {
                         } else {
                             FOLLOWING
                         };
-                        let row = self.disabled_card_row(d, font, field as u32, rect, label, &value, reason, label_width);
+                        let row = self.disabled_card_row(d, font, field.index(), rect, label, &value, reason, label_width);
                         controls.push(format!("{}@disabled:{}", field.name(), rect_text(row)));
                         continue;
                     }
@@ -1865,7 +1978,7 @@ impl Shell {
                         if shadow { "Shadow tone" } else { "Highlight tone" },
                         if shadow { CardField::Shadow } else { CardField::Highlight },
                         if shadow { slot::SHADOW } else { slot::HIGHLIGHT },
-                        if shadow { finish.shadow_rgb } else { finish.highlight_rgb },
+                        Some(if shadow { finish.shadow_rgb } else { finish.highlight_rgb }),
                         if shadow { &SHADOW_TONES } else { &HIGHLIGHT_TONES },
                         enabled,
                         label_width,
@@ -1881,11 +1994,26 @@ impl Shell {
                         edits.push(ScenePlanEdit::SetFinish(next));
                     }
                 }
+                Part::Table(row) => {
+                    let mut context = tables::Context {
+                        track,
+                        place,
+                        enabled,
+                        label_width,
+                        time_seconds: input.time_seconds,
+                        controls: &mut controls,
+                        edits: &mut edits,
+                    };
+                    self.table_part(d, font, *row, &mut context);
+                }
                 Part::Space => {}
             }
         }
         if !enabled {
             edits.clear();
+        }
+        if !edits.is_empty() {
+            self.look_column.cards.refused = None;
         }
         commands.extend(edits.into_iter().map(ShellCommand::ScenePlan));
 
@@ -1921,7 +2049,7 @@ impl Shell {
             .cards
             .typing
             .as_ref()
-            .map_or("none", |(field, _)| field.name());
+            .map_or_else(|| "none".to_owned(), |(field, _)| field.name());
         let probe = if self
             .look_column
             .cards
@@ -1953,10 +2081,11 @@ impl Shell {
             finish.highlight_rgb,
         );
         self.look_column.cards.report = format!(
-            "scope={} target={target_text} {video_text} follow={} editable={} cut={cut} typing={typing} area={} frame={} controls={}{probe}",
+            "scope={} target={target_text} {video_text} follow={} editable={} cut={cut} typing={typing} refused={} area={} frame={} controls={}{probe}",
             self.look_column.cards.scope.name(),
             followed.as_deref().unwrap_or("none"),
             u8::from(enabled),
+            self.look_column.cards.refused.as_deref().unwrap_or("none"),
             rect_text(area),
             rect_text(frame),
             controls.join(";"),
