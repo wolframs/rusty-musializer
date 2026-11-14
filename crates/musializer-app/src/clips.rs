@@ -99,11 +99,11 @@ pub fn add(clips: &mut Vec<TrackClip>, entry: TrackClip) -> Option<ClipRef> {
 
 /// The clips a track's placements name, in library order: what a save writes.
 #[must_use]
-pub fn referenced<'a>(
-    clips: &'a [TrackClip],
+pub fn referenced(
+    clips: &[TrackClip],
     base: Option<ClipPlacement>,
     cues: impl Iterator<Item = Option<ClipPlacement>>,
-) -> Vec<&'a TrackClip> {
+) -> Vec<&TrackClip> {
     let mut used: Vec<ClipRef> = base.into_iter().map(|placement| placement.clip).collect();
     used.extend(cues.flatten().map(|placement| placement.clip));
     clips

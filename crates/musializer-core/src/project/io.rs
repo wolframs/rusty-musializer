@@ -3087,7 +3087,7 @@ mod tests {
         for (from, to, error) in [
             // Empty and default spellings this writer never produces.
             (
-                format!(",\"clips\":[{{\"path\""),
+                ",\"clips\":[{\"path\"".to_owned(),
                 ",\"clips\":[],\"x\":[{\"path\"".to_owned(),
                 ProjectIoError::MissingField,
             ),
