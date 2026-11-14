@@ -216,6 +216,8 @@ number disagrees, grep it there before debugging from scratch.
 - **A stream seeked to exactly its end reads 0:00**: anything that parks the playhead "at the end" stops short of it.
 - **`grep` here is ugrep and skips a file with a NUL byte silently** (`-c` prints nothing); use `grep -a` or `rg` when an empty answer decides something. See `docs/TRAPS.md`.
 - **Reaping the encoder does not close its pipe**: a process the child started still holds the read end. Stop the writer before the kill, join it only after the reap, and bound the join.
+- **A report's rect can be below the fold**: a `click=` past a scrolling view's `viewport=` is clipped and reads as a dead control. Check the viewport or make the window taller. See `docs/TRAPS.md`.
+- **An edit's autosave posts a notice over the preview**: mask the `notices:` cards from both runs before comparing preview pixels.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe

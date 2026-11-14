@@ -91,7 +91,7 @@ commit that adds this block; the lead cherry-picks.
   a per-plane report line so a scene that eats destination alpha (the
   `BLEND_ALPHA` trap) stays visible to the gates that used the alpha plane to
   find one.
-- [ ] **D — the segment inspector** (MV9-l, MV3-a), after B and C are merged:
+- [ ] **D — the segment inspector** (built and merged 2026-11-14; polish pass, review and full verify still to come) (MV9-l, MV3-a), after B and C are merged:
   edit a section's transition, grade, glide, the finish, voices and B's caption
   style in the right column. Designer and critic as in WX-5.
 - [ ] **E — MiMo v2.5 benchmark** (row 2). Offline dry run first; the live run
