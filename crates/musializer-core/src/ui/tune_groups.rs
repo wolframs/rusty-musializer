@@ -202,7 +202,6 @@ pub fn groups(scene: SceneId) -> Vec<GroupRows> {
         .collect()
 }
 
-#[path = "look_cards.rs"]
 pub mod look_cards;
 
 // ---------------------------------------------------------------------------
