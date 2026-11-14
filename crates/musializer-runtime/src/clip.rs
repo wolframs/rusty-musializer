@@ -59,8 +59,9 @@ use crate::process::process_group::{kill_group_and_reap, signal_group_or_process
 const O_NONBLOCK: i32 = 0o4000;
 /// How long a probe may take. A healthy one takes tens of milliseconds.
 const PROBE_DEADLINE: Duration = Duration::from_secs(20);
-/// The most a probe's frame list may print: one `pts,flags` line a frame.
-const PACKET_LINE_BYTES: usize = 48;
+/// The most a probe's frame list may print: one
+/// `pts=…|duration=…|flags=…` line a frame.
+const PACKET_LINE_BYTES: usize = 64;
 const STREAM_REPORT_BYTES: usize = 4096;
 /// Forward by reading rather than restarting, up to this many frames. A
 /// restart costs 95–340 ms on a 1080p H.264 clip and a frame read about 4 ms
@@ -380,9 +381,9 @@ pub fn probe(source: &ClipSource) -> Result<Probe, ClipError> {
             "-select_streams",
             "v:0",
             "-show_entries",
-            "packet=pts,flags",
+            "packet=pts,duration,flags",
             "-of",
-            "csv=p=0",
+            "compact=p=0",
             input,
         ],
         source,
@@ -395,16 +396,26 @@ pub fn probe(source: &ClipSource) -> Result<Probe, ClipError> {
     if !ok {
         return Err(ClipError::Unreadable);
     }
-    let mut pts = Vec::new();
+    // Keyed, not positional: ffprobe prints a section's fields in its own
+    // order whatever order they are asked for.
+    let mut frames: Vec<(i64, Option<i64>)> = Vec::new();
     for line in String::from_utf8_lossy(&packets).lines() {
-        let (value, flags) = line.split_once(',').unwrap_or((line, ""));
+        let value = |key: &str| {
+            line.split('|')
+                .find_map(|field| field.strip_prefix(key)?.strip_prefix('='))
+                .map(str::trim)
+        };
         // A packet the container's edit list discards is never shown.
-        if flags.contains('D') {
+        if value("flags").is_some_and(|flags| flags.contains('D')) {
             continue;
         }
-        let value: i64 = value.trim().parse().map_err(|_| ClipError::NoTimestamps)?;
-        pts.push(value);
-        if pts.len() > clip::MAX_CLIP_FRAMES as usize {
+        let pts: i64 = value("pts")
+            .and_then(|pts| pts.parse().ok())
+            .ok_or(ClipError::NoTimestamps)?;
+        // `N/A` when the container records none.
+        let duration = value("duration").and_then(|duration| duration.parse().ok());
+        frames.push((pts, duration));
+        if frames.len() > clip::MAX_CLIP_FRAMES as usize {
             return Err(ClipError::Timing(TimingError::TooManyFrames));
         }
     }
@@ -413,8 +424,9 @@ pub fn probe(source: &ClipSource) -> Result<Probe, ClipError> {
     } else {
         1.0 / 30.0
     };
-    let first = pts.iter().copied().min();
-    let timing = ClipTiming::from_pts(&pts, time_base, fallback).map_err(ClipError::Timing)?;
+    let first = frames.iter().map(|&(pts, _)| pts).min();
+    let timing =
+        ClipTiming::from_packets(&frames, time_base, fallback).map_err(ClipError::Timing)?;
     let video_start = first.map_or(0.0, |first| {
         (i128::from(first) * i128::from(time_base.0)) as f64 / time_base.1 as f64
     });
@@ -975,6 +987,55 @@ mod tests {
         assert_eq!(probe.timing.frame_count(), 48);
         assert!((probe.timing.time_of(47) - 47.0 * 1001.0 / 24000.0).abs() < 1.0e-9);
         assert_eq!(all_frames(&source, &probe).len(), 48, "the decoder agrees");
+    }
+
+    /// F1b defect 4, against FFmpeg: frames at 0, 0.04 and 0.08 s, the last
+    /// one's packet lasting a second (rewritten with the `setts` filter, as a
+    /// container that records a held frame does). The probe reads 1.08 s.
+    #[test]
+    fn a_probe_reads_how_long_the_last_frame_lasts() {
+        let scratch = Scratch::new("held");
+        let short = make_clip(
+            &scratch.0,
+            "short.mp4",
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=96x54:rate=25",
+                "-frames:v",
+                "3",
+                "-c:v",
+                "libx264",
+                "-bf",
+                "0",
+                "-pix_fmt",
+                "yuv420p",
+                "-video_track_timescale",
+                "12800",
+            ],
+        );
+        let held = make_clip(
+            &scratch.0,
+            "held.mp4",
+            &[
+                "-i",
+                short.to_str().unwrap(),
+                "-c",
+                "copy",
+                "-bsf:v",
+                "setts=duration='if(eq(N,2),12800,DURATION)'",
+            ],
+        );
+        let source = ClipSource::open(&held).unwrap();
+        let probe = probe(&source).unwrap();
+        assert_eq!(probe.timing.frame_count(), 3);
+        assert!((probe.timing.time_of(2) - 0.08).abs() < 1.0e-9);
+        assert!(
+            (probe.timing.duration() - 1.08).abs() < 1.0e-9,
+            "{}",
+            probe.timing.duration()
+        );
     }
 
     #[test]

@@ -234,8 +234,9 @@ pub enum TimingError {
 
 impl ClipTiming {
     /// From presentation timestamps in a stream's integer time base, in any
-    /// order (a probe lists packets in decode order). `fallback_frame` is the
-    /// last frame's duration when the clip has only one frame.
+    /// order (a probe lists packets in decode order). The last frame lasts as
+    /// long as the gap before it; `fallback_frame` is its duration when the
+    /// clip has only one frame.
     ///
     /// # Errors
     ///
@@ -243,6 +244,40 @@ impl ClipTiming {
     /// or longer than [`MAX_CLIP_SECONDS`].
     pub fn from_pts(
         pts: &[i64],
+        time_base: (i64, i64),
+        fallback_frame: f64,
+    ) -> Result<Self, TimingError> {
+        Self::build(pts, None, time_base, fallback_frame)
+    }
+
+    /// From a probe's packets: each one's presentation timestamp and, when the
+    /// container records it, its duration, both in the stream's time base.
+    /// The last frame presented lasts its own packet's duration — a variable
+    /// rate clip may hold its final frame far longer than the gap before it
+    /// (frames at 0, 0.04 and 0.08 s with the last held 1 s is a 1.08 s clip,
+    /// not 0.12 s). Without a positive recorded duration it lasts as
+    /// [`ClipTiming::from_pts`] says.
+    ///
+    /// # Errors
+    ///
+    /// As [`ClipTiming::from_pts`].
+    pub fn from_packets(
+        packets: &[(i64, Option<i64>)],
+        time_base: (i64, i64),
+        fallback_frame: f64,
+    ) -> Result<Self, TimingError> {
+        let pts: Vec<i64> = packets.iter().map(|&(pts, _)| pts).collect();
+        let last = packets
+            .iter()
+            .max_by_key(|&&(pts, _)| pts)
+            .and_then(|&(_, duration)| duration)
+            .filter(|&duration| duration > 0);
+        Self::build(&pts, last, time_base, fallback_frame)
+    }
+
+    fn build(
+        pts: &[i64],
+        last_duration: Option<i64>,
         time_base: (i64, i64),
         fallback_frame: f64,
     ) -> Result<Self, TimingError> {
@@ -269,7 +304,9 @@ impl ClipTiming {
             let seconds = (ticks * i128::from(num)) as f64 / den as f64;
             times.push(seconds);
         }
-        let last_gap = if times.len() >= 2 {
+        let last_gap = if let Some(ticks) = last_duration {
+            (i128::from(ticks) * i128::from(num)) as f64 / den as f64
+        } else if times.len() >= 2 {
             times[times.len() - 1] - times[times.len() - 2]
         } else {
             fallback_frame
@@ -535,6 +572,40 @@ mod tests {
         assert_eq!(timing.frame_at(2.0 + 1.0 / 15.0), 61);
         assert_eq!(timing.frame_at(2.0 + 1.5 / 15.0), 61);
         assert!((timing.duration() - 4.0).abs() < 1.0e-12);
+    }
+
+    /// F1b defect 4: a variable-rate clip whose last frame is held a second.
+    /// Its length is where that frame ends, so a loop turns there and a `from`
+    /// inside the hold is valid.
+    #[test]
+    fn the_last_frame_lasts_its_own_recorded_duration() {
+        // 0, 0.04 and 0.08 s at 1/12800, the last packet lasting 12800 ticks.
+        let packets = [(0, Some(512)), (1024, Some(12800)), (512, Some(512))];
+        let timing = ClipTiming::from_packets(&packets, (1, 12800), 1.0 / 25.0).unwrap();
+        assert!(
+            (timing.duration() - 1.08).abs() < 1.0e-12,
+            "{}",
+            timing.duration()
+        );
+        assert_eq!(timing.frame_at(0.5), 2, "inside the hold");
+        assert_eq!(timing.frame_at(timing.fold(1.0, ClipOverrun::Loop)), 2);
+        assert_eq!(timing.frame_at(timing.fold(1.1, ClipOverrun::Loop)), 0);
+        // No recorded duration, or a useless one: the gap before it.
+        for last in [None, Some(0), Some(-5)] {
+            let packets = [(0, Some(512)), (512, Some(512)), (1024, last)];
+            let timing = ClipTiming::from_packets(&packets, (1, 12800), 1.0 / 25.0).unwrap();
+            assert!((timing.duration() - 0.12).abs() < 1.0e-12, "{last:?}");
+        }
+        // One frame: its duration, else the fallback.
+        let one = ClipTiming::from_packets(&[(7, Some(2))], (1, 4), 0.1).unwrap();
+        assert_eq!(one.duration(), 0.5);
+        let one = ClipTiming::from_packets(&[(7, None)], (1, 4), 0.1).unwrap();
+        assert_eq!(one.duration(), 0.1);
+        // And a hold past the bound is refused like any long clip.
+        assert_eq!(
+            ClipTiming::from_packets(&[(0, Some(601))], (1, 1), 1.0),
+            Err(TimingError::TooLong)
+        );
     }
 
     #[test]

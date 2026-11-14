@@ -101,7 +101,9 @@ clip…" in the Scenes flyout or a dropped file. The grammar is in
   (`<stem>.assets/clips/<sha256>.<ext>`), so a project and its exports do not
   need the original path, and two sections of one file share one copy.
 - **Which frame is arithmetic on time** (`core::project::clip`): the probe
-  reads every frame's presentation timestamp; a video frame at track time `t`
+  reads every frame's presentation timestamp, and the clip ends where its
+  last frame's own packet duration says (a variable-rate clip may hold its
+  final frame far longer than the gap before it); a video frame at track time `t`
   in a section shows the last clip frame presented at or before
   `from + (t - origin)`, folded by `after`. A still and the export's frame at
   `t` are therefore one frame, and the gate finds them bit-identical to the
@@ -192,4 +194,4 @@ source restored byte for byte (`cmp` against a saved copy):
 | --- | --- |
 | Bundling's source opened without `O_NONBLOCK` | both FIFO tests (`publish`, `project_files`): the save parked for the 5 s the test waits |
 | The copy's byte cap ignored | `an_endless_source_stops_at_the_limit_and_publishes_nothing`: the endless source reached the digest instead of stopping at the cap |
-
+| The last frame's recorded duration ignored (the gap before it again) | `the_last_frame_lasts_its_own_recorded_duration` (0.12 s, not 1.08) and `a_probe_reads_how_long_the_last_frame_lasts` against a real held-frame MP4 |
