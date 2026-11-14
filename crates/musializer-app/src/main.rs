@@ -1029,6 +1029,9 @@ fn run(
             if let Some(number) = probe.section {
                 app.shell.probe_select_section(&app.workspace, number);
             }
+            if let Some(entry) = probe.look_entry {
+                app.shell.probe_look_entry(entry);
+            }
             hover_at = probe.hover;
             // `click=` parks the pointer too, so a run that passed both would
             // fight over `SetMousePosition`; the click wins, being the more
@@ -5026,6 +5029,7 @@ fn handle_scene_plan_edit(
             // own applier; the cards draw a refusal's reason before a press.
             table @ (Edit::SetVoices(_)
             | Edit::RemoveVoice(_)
+            | Edit::SetCueVoices(_)
             | Edit::SetCaptionStyles { .. }
             | Edit::SetTitles(_)
             | Edit::SetBeyond { .. }) => {
@@ -5098,6 +5102,7 @@ fn handle_scene_plan_edit(
                     | Edit::SetFinish(_)
                     | Edit::SetVoices(_)
                     | Edit::RemoveVoice(_)
+                    | Edit::SetCueVoices(_)
                     | Edit::SetCaptionStyles { .. }
                     | Edit::SetTitles(_) => unreachable!("handled above"),
                     Edit::SetBeyond { .. } => "The doorway now shows another scene.",

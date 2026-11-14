@@ -9,17 +9,37 @@ use musializer_core::project::caption_styles::{
 use musializer_core::project::lyrics::{Voice, VOICE_CAPACITY};
 use musializer_core::project::model::CaptionAnchor;
 
+/// The three tables, as [`CardState`]'s open entry and an arm name them.
+pub(super) const VOICES: u8 = 0;
+pub(super) const STYLES: u8 = 1;
+pub(super) const TITLES: u8 = 2;
+
+/// An entry's name in the report: `voice-0`, `style-2`, `title-1`.
+pub(super) fn entry_name((table, row): (u8, usize)) -> String {
+    let table = match table {
+        VOICES => "voice",
+        STYLES => "style",
+        _ => "title",
+    };
+    format!("{table}-{row}")
+}
+
 /// One row of a table, by index into it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TablePart {
     VoicesLabel,
     VoicesNone,
+    /// A resting entry: one row that reads at a glance, and opens it.
+    VoiceSummary(usize),
     VoiceName(usize),
     VoiceHue(usize),
     VoiceInk(usize),
     VoiceGlow(usize),
+    /// Which lines the voice sings: the line at the playhead, the section's.
+    VoiceLines(usize),
     AddVoice,
     StylesLabel,
+    StyleSummary(usize),
     StyleName(usize),
     StyleAnchor(usize),
     StyleSize(usize),
@@ -27,12 +47,36 @@ pub(crate) enum TablePart {
     AddStyle,
     TitlesLabel,
     TitlesNone,
+    TitleSummary(usize),
     TitleText(usize),
     TitleArtist(usize),
     TitleHandle(usize),
     TitleTimes(usize),
     TitleStyle(usize),
     AddTitle,
+}
+
+impl TablePart {
+    /// The entry an open row belongs to; `None` for a resting row, a label,
+    /// or an Add.
+    pub(crate) fn entry(self) -> Option<(u8, usize)> {
+        match self {
+            Self::VoiceName(i)
+            | Self::VoiceHue(i)
+            | Self::VoiceInk(i)
+            | Self::VoiceGlow(i)
+            | Self::VoiceLines(i) => Some((VOICES, i)),
+            Self::StyleName(i) | Self::StyleAnchor(i) | Self::StyleSize(i) | Self::StyleInk(i) => {
+                Some((STYLES, i))
+            }
+            Self::TitleText(i)
+            | Self::TitleArtist(i)
+            | Self::TitleHandle(i)
+            | Self::TitleTimes(i)
+            | Self::TitleStyle(i) => Some((TITLES, i)),
+            _ => None,
+        }
+    }
 }
 
 /// What a table row draws with: the track it reads, where it goes, and the
@@ -43,6 +87,12 @@ pub(super) struct Context<'a> {
     pub enabled: bool,
     pub label_width: f32,
     pub time_seconds: f64,
+    /// The section under the playhead, as (number from 1, its cue), for a
+    /// voice's "Section N".
+    pub playing_section: Option<(
+        usize,
+        &'a musializer_core::project::scene_switch::SceneSwitchCue,
+    )>,
     pub controls: &'a mut Vec<String>,
     pub edits: &'a mut Vec<ScenePlanEdit>,
 }
@@ -52,6 +102,12 @@ mod table_slot {
     pub const ADD_VOICE: u32 = 395;
     pub const ADD_STYLE: u32 = 396;
     pub const ADD_TITLE: u32 = 397;
+    /// An entry's resting row, and the fold at the left of its first open
+    /// row (never both drawn): `row + ENTRY`.
+    pub const ENTRY: u32 = 29;
+    /// A voice's "This line" and "Section N": `row + LINE`, `+ SECTION`.
+    pub const LINE: u32 = 26;
+    pub const SECTION: u32 = 27;
     pub const VOICE: u32 = 400;
     pub const STYLE: u32 = 700;
     pub const TITLE: u32 = 1200;
@@ -106,36 +162,63 @@ fn style_uses(track: &Track, name: caption_styles::StyleName) -> (usize, usize, 
     )
 }
 
-/// The tables' parts, appended to the captions card.
-pub(super) fn plan(track: &Track, parts: &mut Vec<(Part, Block)>) {
+/// The tables' parts, appended to the captions card: each entry rests as
+/// one row, and the open one (`open`) shows its controls in its place.
+pub(super) fn plan(track: &Track, open: Option<(u8, usize)>, parts: &mut Vec<(Part, Block)>) {
     let row = |part| (Part::Table(part), Block::Field);
+    let slider = |part| (Part::Table(part), Block::Slider);
     let gap = (Part::Space, Block::Gap(look_cards::GROUP_GAP));
-    let small = (Part::Space, Block::Gap(6.0));
+    let tight = (Part::Space, Block::Gap(4.0));
+    // Clear of the open entry's surface, which reaches 6 px past its rows.
+    let around = (Part::Space, Block::Gap(10.0));
+    let entry = |parts: &mut Vec<(Part, Block)>,
+                 opened: bool,
+                 rest: (Part, Block),
+                 rows: &[(Part, Block)]| {
+        if opened {
+            parts.push(around);
+            parts.extend_from_slice(rows);
+            parts.push(around);
+        } else {
+            parts.extend([rest, tight]);
+        }
+    };
     parts.push((Part::Table(TablePart::VoicesLabel), Block::Label));
     let voices = track.lyrics.voices().len();
     if voices == 0 {
         parts.push((Part::Table(TablePart::VoicesNone), Block::Lines(2)));
     }
     for i in 0..voices {
-        parts.extend([
-            row(TablePart::VoiceName(i)),
-            (Part::Table(TablePart::VoiceHue(i)), Block::Slider),
-            (Part::Table(TablePart::VoiceInk(i)), Block::Slider),
-            (Part::Table(TablePart::VoiceGlow(i)), Block::Slider),
-            small,
-        ]);
+        entry(
+            parts,
+            open == Some((VOICES, i)),
+            row(TablePart::VoiceSummary(i)),
+            &[
+                row(TablePart::VoiceName(i)),
+                slider(TablePart::VoiceHue(i)),
+                slider(TablePart::VoiceInk(i)),
+                slider(TablePart::VoiceGlow(i)),
+                tight,
+                (Part::Table(TablePart::VoiceLines(i)), Block::Buttons),
+            ],
+        );
     }
     parts.extend([(Part::Table(TablePart::AddVoice), Block::Buttons), gap]);
     parts.push((Part::Table(TablePart::StylesLabel), Block::Label));
     for i in 0..track.caption_style.styles.len() {
-        parts.extend([
-            row(TablePart::StyleName(i)),
-            (Part::Table(TablePart::StyleAnchor(i)), Block::Columns(9, 3)),
-            (Part::Space, Block::Gap(4.0)),
-            (Part::Table(TablePart::StyleSize(i)), Block::Slider),
-            (Part::Table(TablePart::StyleInk(i)), Block::Slider),
-            small,
-        ]);
+        entry(
+            parts,
+            open == Some((STYLES, i)),
+            row(TablePart::StyleSummary(i)),
+            &[
+                row(TablePart::StyleName(i)),
+                tight,
+                (Part::Table(TablePart::StyleAnchor(i)), Block::Columns(9, 3)),
+                tight,
+                slider(TablePart::StyleSize(i)),
+                slider(TablePart::StyleInk(i)),
+            ],
+        );
     }
     parts.extend([(Part::Table(TablePart::AddStyle), Block::Buttons), gap]);
     parts.push((Part::Table(TablePart::TitlesLabel), Block::Label));
@@ -145,21 +228,25 @@ pub(super) fn plan(track: &Track, parts: &mut Vec<(Part, Block)>) {
     }
     let styles = track.caption_style.styles.len();
     for i in 0..titles.len() {
-        parts.extend([
-            row(TablePart::TitleText(i)),
-            (Part::Space, Block::Gap(4.0)),
-            row(TablePart::TitleArtist(i)),
-            (Part::Space, Block::Gap(4.0)),
-            row(TablePart::TitleHandle(i)),
-            (Part::Space, Block::Gap(4.0)),
-            (Part::Table(TablePart::TitleTimes(i)), Block::Buttons),
-            (Part::Space, Block::Gap(4.0)),
-            (
-                Part::Table(TablePart::TitleStyle(i)),
-                Block::Grid(1 + styles),
-            ),
-            small,
-        ]);
+        entry(
+            parts,
+            open == Some((TITLES, i)),
+            row(TablePart::TitleSummary(i)),
+            &[
+                row(TablePart::TitleText(i)),
+                tight,
+                row(TablePart::TitleArtist(i)),
+                tight,
+                row(TablePart::TitleHandle(i)),
+                tight,
+                (Part::Table(TablePart::TitleTimes(i)), Block::Buttons),
+                tight,
+                (
+                    Part::Table(TablePart::TitleStyle(i)),
+                    Block::Grid(1 + styles),
+                ),
+            ],
+        );
     }
     parts.push((Part::Table(TablePart::AddTitle), Block::Buttons));
 }
@@ -172,6 +259,18 @@ pub(crate) fn apply_table_edit(track: &mut Track, edit: ScenePlanEdit) -> bool {
     match edit {
         ScenePlanEdit::SetVoices(voices) => track.lyrics.set_voices(voices),
         ScenePlanEdit::RemoveVoice(index) => track.lyrics.remove_voice(index),
+        ScenePlanEdit::SetCueVoices(assignments) => {
+            let mut lyrics = track.lyrics.clone();
+            if assignments.is_empty()
+                || !assignments
+                    .iter()
+                    .all(|(id, voice)| lyrics.set_cue_voice(*id, *voice))
+            {
+                return false;
+            }
+            track.lyrics = lyrics;
+            true
+        }
         ScenePlanEdit::SetCaptionStyles { table, renamed } => {
             if !caption_styles::table_is_valid(&table) {
                 return false;
@@ -400,6 +499,80 @@ impl Shell {
         (committed.filter(|_| enabled), pressed)
     }
 
+    /// An entry's resting row: the whole row is one press that opens it,
+    /// with a fold mark at its left. Returns the room right of the mark and
+    /// whether it was pressed.
+    fn entry_row(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        rect: UiRect,
+        first: u32,
+        entry: (u8, usize),
+        controls: &mut Vec<String>,
+    ) -> UiRect {
+        let id = widgets::widget_id(widgets::id::LOOK_CARDS, first + table_slot::ENTRY);
+        let state = self.widgets.button(d, id, rect);
+        widgets::control_box(
+            d,
+            rect,
+            if state.hovered {
+                color::ui_hover()
+            } else {
+                color::ui_control()
+            },
+            color::ui_control_edge(),
+            1.0,
+        );
+        draw_fold(
+            d,
+            rect.x + 11.0,
+            rect.y + rect.height * 0.5,
+            false,
+            state.hovered,
+        );
+        controls.push(format!("entry-{}@{}", entry_name(entry), rect_text(rect)));
+        if state.clicked {
+            self.look_column.cards.open_entry = Some(entry);
+            self.look_column.cards.typing = None;
+        }
+        UiRect::new(
+            rect.x + 22.0,
+            rect.y,
+            (rect.width - 30.0).max(0.0),
+            rect.height,
+        )
+    }
+
+    /// The fold at the left of an open entry's first row: a press closes the
+    /// entry. Returns the room right of it.
+    fn entry_fold(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        rect: UiRect,
+        first: u32,
+        entry: (u8, usize),
+        controls: &mut Vec<String>,
+    ) -> UiRect {
+        let fold = UiRect::new(rect.x, rect.y, 20.0, rect.height);
+        let id = widgets::widget_id(widgets::id::LOOK_CARDS, first + table_slot::ENTRY);
+        let state = self.widgets.button(d, id, fold);
+        if state.hovered {
+            widgets::control_box(d, fold, color::ui_hover(), color::ui_hover(), 1.0);
+        }
+        draw_fold(d, fold.x + 10.0, fold.y + fold.height * 0.5, true, true);
+        controls.push(format!("fold-{}@{}", entry_name(entry), rect_text(fold)));
+        if state.clicked {
+            self.look_column.cards.open_entry = None;
+            self.look_column.cards.typing = None;
+        }
+        UiRect::new(
+            rect.x + 24.0,
+            rect.y,
+            (rect.width - 24.0).max(0.0),
+            rect.height,
+        )
+    }
+
     /// The two-press arm for a removal that loses something: the first
     /// press arms, the second removes. `holds` names what the row holds, so
     /// the second press confirms only the row the first one armed. Returns
@@ -484,6 +657,7 @@ impl Shell {
                 let label = self.removal_label(0, i, &voice.name);
                 let uses = track.lyrics.voice_uses(i);
                 let first = table_slot::VOICE + i as u32 * table_slot::STRIDE;
+                let rect = self.entry_fold(d, rect, first, (VOICES, i), cx.controls);
                 let (typed, remove) = self.text_row(
                     d,
                     font,
@@ -561,23 +735,99 @@ impl Shell {
                     cx.edits.push(ScenePlanEdit::SetVoices(next));
                 }
             }
+            TablePart::VoiceSummary(i) => {
+                let Some(voice) = voices.get(i) else { return };
+                let first = table_slot::VOICE + i as u32 * table_slot::STRIDE;
+                let content = self.entry_row(d, rect, first, (VOICES, i), cx.controls);
+                let cy = content.y + content.height * 0.5;
+                // The voice's colour (its hue, as the scenes turn toward it)
+                // and its glow, then its name and what it sings.
+                let hue = voice.style.hue.map(hue_colour);
+                draw_dot(d, content.x + 6.0, cy, hue);
+                draw_dot(d, content.x + 20.0, cy, voice.style.glow_rgba.map(|rgba| rgb_colour(rgba >> 8)));
+                let uses = track.lyrics.voice_uses(i);
+                let count = match uses {
+                    0 => "sings nothing yet".to_owned(),
+                    1 => "1 line".to_owned(),
+                    n => format!("{n} lines"),
+                };
+                let count_width = widgets::measure(font, &count, metric::UI_FONT_CAPTION);
+                let text_y = content.y + (content.height - metric::UI_FONT_CAPTION) * 0.5;
+                widgets::draw_text(
+                    d,
+                    font,
+                    &count,
+                    content.x + content.width - count_width,
+                    text_y,
+                    metric::UI_FONT_CAPTION,
+                    if uses == 0 { color::ui_warning() } else { color::ui_muted() },
+                );
+                widgets::draw_text_faded(
+                    d,
+                    font,
+                    &voice.name,
+                    content.x + 34.0,
+                    text_y,
+                    (content.width - 34.0 - count_width - 8.0).max(0.0),
+                    16.0,
+                    metric::UI_FONT_CAPTION,
+                    color::ui_ink(),
+                );
+            }
+            TablePart::VoiceLines(i) => {
+                if voices.get(i).is_none() {
+                    return;
+                }
+                self.voice_lines(d, font, rect, i, cx);
+            }
             TablePart::AddVoice => {
-                // A voice nothing sings draws nothing, and lines are given
-                // their voice in a treatment: Add is shown, with why it waits.
+                let full = voices.len() >= VOICE_CAPACITY;
                 let label = "+ Add a voice";
                 let width = (widgets::measure(font, label, metric::UI_FONT_CAPTION) + 24.0).ceil();
                 let button = UiRect::new(rect.x, rect.y, width.min(rect.width), rect.height);
-                self.widgets.disabled_button(d, font, button, label, Some(metric::UI_FONT_CAPTION));
                 let id = widgets::widget_id(widgets::id::LOOK_CARDS, table_slot::ADD_VOICE);
-                let state = self.widgets.button(d, id, button);
-                self.widgets.hint(
-                    d,
-                    state,
-                    id,
-                    button,
-                    "Not built here: a line is given its voice in a treatment (a line's \"voice\"), and a voice no line sings draws nothing. Edit the voices a treatment named above.",
-                );
-                cx.controls.push(format!("add-voice@disabled:{}", rect_text(button)));
+                if enabled && !full {
+                    let state = self.widgets.text_button(
+                        d,
+                        font,
+                        id,
+                        button,
+                        label,
+                        false,
+                        widgets::ButtonStyle::Neutral,
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                    self.widgets.hint(
+                        d,
+                        state,
+                        id,
+                        button,
+                        "A second singer, a colour of its own: give it lines with This line or Section N",
+                    );
+                    cx.controls.push(format!("add-voice@{}", rect_text(button)));
+                    if state.clicked {
+                        let mut next = voices.to_vec();
+                        next.push(fresh_voice(voices));
+                        self.look_column.cards.open_entry = Some((VOICES, voices.len()));
+                        self.look_column.cards.typing = None;
+                        cx.edits.push(ScenePlanEdit::SetVoices(next));
+                    }
+                } else {
+                    self.widgets.disabled_button(d, font, button, label, Some(metric::UI_FONT_CAPTION));
+                    let state = self.widgets.button(d, id, button);
+                    self.widgets.hint(
+                        d,
+                        state,
+                        id,
+                        button,
+                        if enabled {
+                            "Eight voices is the most a project holds"
+                        } else {
+                            FOLLOWING
+                        },
+                    );
+                    cx.controls.push(format!("add-voice@disabled:{}", rect_text(button)));
+                }
             }
             TablePart::StylesLabel => Self::card_label(
                 d,
@@ -586,11 +836,55 @@ impl Shell {
                 "Caption styles",
                 &format!("{} of {}", styles.len(), caption_styles::CAPTION_STYLE_CAPACITY),
             ),
+            TablePart::StyleSummary(i) => {
+                let Some(entry) = styles.get(i) else { return };
+                let first = table_slot::STYLE + i as u32 * table_slot::STRIDE;
+                let content = self.entry_row(d, rect, first, (STYLES, i), cx.controls);
+                let cy = content.y + content.height * 0.5;
+                draw_anchor_mark(d, content.x, cy, entry.style.anchor);
+                let (lines, sections, cards) = style_uses(track, entry.name);
+                let mut worn = Vec::new();
+                for (count, one, many) in [(lines, "line", "lines"), (sections, "section", "sections"), (cards, "card", "cards")] {
+                    if count > 0 {
+                        worn.push(format!("{count} {}", if count == 1 { one } else { many }));
+                    }
+                }
+                let worn = if worn.is_empty() { "unused".to_owned() } else { worn.join(", ") };
+                let worn_width = widgets::measure(font, &worn, metric::UI_FONT_CAPTION);
+                let text_y = content.y + (content.height - metric::UI_FONT_CAPTION) * 0.5;
+                widgets::draw_text(
+                    d,
+                    font,
+                    &worn,
+                    content.x + content.width - worn_width,
+                    text_y,
+                    metric::UI_FONT_CAPTION,
+                    color::ui_muted(),
+                );
+                // Its ink, when it sets one, just left of what wears it.
+                let mut right = content.x + content.width - worn_width - 8.0;
+                if let Some(rgba) = entry.style.text_rgba {
+                    draw_dot(d, right - 5.0, cy, Some(rgb_colour(rgba >> 8)));
+                    right -= 16.0;
+                }
+                widgets::draw_text_faded(
+                    d,
+                    font,
+                    entry.name.as_str(),
+                    content.x + 22.0,
+                    text_y,
+                    (right - content.x - 22.0 - 4.0).max(0.0),
+                    16.0,
+                    metric::UI_FONT_CAPTION,
+                    color::ui_ink(),
+                );
+            }
             TablePart::StyleName(i) => {
                 let Some(entry) = styles.get(i) else { return };
                 let (lines, sections, cards) = style_uses(track, entry.name);
                 let used = lines + sections + cards;
                 let first = table_slot::STYLE + i as u32 * table_slot::STRIDE;
+                let rect = self.entry_fold(d, rect, first, (STYLES, i), cx.controls);
                 let refusal = format!(
                     "In use by {lines} line(s), {sections} section(s) and {cards} title card(s): pick another style there first."
                 );
@@ -726,6 +1020,8 @@ impl Shell {
                                 },
                             });
                             cx.edits.push(ScenePlanEdit::SetCaptionStyles { table, renamed: None });
+                            self.look_column.cards.open_entry = Some((STYLES, styles.len()));
+                            self.look_column.cards.typing = None;
                         }
                     }
                     cx.controls.push(format!("add-style@{}", rect_text(button)));
@@ -748,10 +1044,48 @@ impl Shell {
                 "No title cards. One is added only when you ask for one, and it carries the artist.",
                 color::ui_muted(),
             ),
+            TablePart::TitleSummary(i) => {
+                let Some(card) = titles.get(i) else { return };
+                let first = table_slot::TITLE + i as u32 * table_slot::STRIDE;
+                let content = self.entry_row(d, rect, first, (TITLES, i), cx.controls);
+                let text_y = content.y + (content.height - metric::UI_FONT_CAPTION) * 0.5;
+                let at = short_time(card.start_seconds);
+                let at_width = widgets::measure_tabular(font, &at, metric::UI_FONT_CAPTION);
+                widgets::draw_text_tabular(d, font, &at, content.x, text_y, metric::UI_FONT_CAPTION, color::ui_muted());
+                let style = card.style.map(|name| name.to_string()).unwrap_or_default();
+                let style_width = widgets::measure(font, &style, metric::UI_FONT_CAPTION);
+                widgets::draw_text(
+                    d,
+                    font,
+                    &style,
+                    content.x + content.width - style_width,
+                    text_y,
+                    metric::UI_FONT_CAPTION,
+                    color::ui_muted(),
+                );
+                let left = content.x + at_width.max(34.0) + 10.0;
+                widgets::draw_text_faded(
+                    d,
+                    font,
+                    &card.title,
+                    left,
+                    text_y,
+                    (content.x + content.width - style_width - 8.0 - left).max(0.0),
+                    16.0,
+                    metric::UI_FONT_CAPTION,
+                    color::ui_ink(),
+                );
+            }
             TablePart::TitleText(i) | TablePart::TitleArtist(i) | TablePart::TitleHandle(i) => {
                 let Some(card) = titles.get(i) else { return };
                 let first = table_slot::TITLE + i as u32 * table_slot::STRIDE;
                 let holds = title_holds(card);
+                // The fold on the entry's first row.
+                let rect = if matches!(row, TablePart::TitleText(_)) {
+                    self.entry_fold(d, rect, first, (TITLES, i), cx.controls)
+                } else {
+                    rect
+                };
                 let (field, value, placeholder, button, offset) = match row {
                     TablePart::TitleText(_) => (
                         CardField::TitleText(i as u8),
@@ -947,6 +1281,8 @@ impl Shell {
                             .unwrap_or_else(|| track.display_name().to_string());
                         let mut next = titles.clone();
                         let place = next.iter().position(|card| card.start_seconds > at).unwrap_or(next.len());
+                        self.look_column.cards.open_entry = Some((TITLES, place));
+                        self.look_column.cards.typing = None;
                         next.insert(
                             place,
                             TitleCard {
@@ -978,6 +1314,250 @@ impl Shell {
                 }
             }
         }
+    }
+}
+
+impl Shell {
+    /// An open voice's "This line" and "Section N": give the line at the
+    /// playhead, or every line that begins in the playhead's section, to the
+    /// voice; pressed again on lines it already sings, take them back.
+    fn voice_lines(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &musializer_runtime::font::UiFonts,
+        rect: UiRect,
+        voice: usize,
+        cx: &mut Context<'_>,
+    ) {
+        let lyrics = &cx.track.lyrics;
+        let sings = |id: u64| {
+            lyrics
+                .voice_of(id)
+                .is_some_and(|other| other.name == lyrics.voices()[voice].name)
+        };
+        let line = lyrics
+            .cues()
+            .iter()
+            .find(|cue| cue.start_seconds <= cx.time_seconds && cx.time_seconds < cue.end_seconds);
+        let section_lines: Vec<u64> = cx.playing_section.map_or_else(Vec::new, |(_, section)| {
+            lyrics
+                .cues()
+                .iter()
+                .filter(|cue| {
+                    section.start_seconds <= cue.start_seconds
+                        && cue.start_seconds < section.end_seconds
+                })
+                .map(|cue| cue.id)
+                .collect()
+        });
+        let half = ((rect.width - 6.0) * 0.5).floor();
+        let first = table_slot::VOICE + voice as u32 * table_slot::STRIDE;
+        // (label, slot, assignments, reason when there is nothing to give)
+        let line_take = line.is_some_and(|cue| sings(cue.id));
+        let section_take = !section_lines.is_empty() && section_lines.iter().all(|id| sings(*id));
+        let section_number = cx.playing_section.map_or(0, |(number, _)| number);
+        let choices = [
+            (
+                if line_take {
+                    "- This line".to_owned()
+                } else {
+                    "+ This line".to_owned()
+                },
+                table_slot::LINE,
+                line.map(|cue| vec![(cue.id, (!line_take).then_some(voice))]),
+                "No line is sung at the playhead: move it onto one",
+                line.map_or_else(String::new, |cue| {
+                    if line_take {
+                        format!("Take \"{}\" back from this voice", cue.text)
+                    } else {
+                        format!("Give \"{}\" to this voice", cue.text)
+                    }
+                }),
+                "line",
+            ),
+            (
+                format!(
+                    "{} Section {section_number}",
+                    if section_take { "-" } else { "+" }
+                ),
+                table_slot::SECTION,
+                (!section_lines.is_empty()).then(|| {
+                    section_lines
+                        .iter()
+                        .map(|id| (*id, (!section_take).then_some(voice)))
+                        .collect()
+                }),
+                "No line begins in the section under the playhead",
+                if section_take {
+                    format!(
+                        "Take the {} lines of section {section_number} back from this voice",
+                        section_lines.len()
+                    )
+                } else {
+                    format!(
+                        "Give the {} lines that begin in section {section_number} to this voice",
+                        section_lines.len()
+                    )
+                },
+                "section",
+            ),
+        ];
+        for (k, (label, slot, assignments, empty, hint, name)) in choices.into_iter().enumerate() {
+            let button = UiRect::new(rect.x + k as f32 * (half + 6.0), rect.y, half, rect.height);
+            let id = widgets::widget_id(widgets::id::LOOK_CARDS, first + slot);
+            match assignments {
+                Some(assignments) if cx.enabled => {
+                    let state = self.widgets.text_button(
+                        d,
+                        font,
+                        id,
+                        button,
+                        &label,
+                        false,
+                        widgets::ButtonStyle::Neutral,
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                    self.widgets.hint(d, state, id, button, &hint);
+                    cx.controls
+                        .push(format!("voice-{voice}-{name}@{}", rect_text(button)));
+                    if state.clicked {
+                        cx.edits.push(ScenePlanEdit::SetCueVoices(assignments));
+                    }
+                }
+                _ => {
+                    self.widgets.disabled_button(
+                        d,
+                        font,
+                        button,
+                        &label,
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                    let state = self.widgets.button(d, id, button);
+                    self.widgets.hint(
+                        d,
+                        state,
+                        id,
+                        button,
+                        if cx.enabled { empty } else { FOLLOWING },
+                    );
+                    cx.controls.push(format!(
+                        "voice-{voice}-{name}@disabled:{}",
+                        rect_text(button)
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// A new voice: `voice-N`, white ink, a glow and a hue as far as can be
+/// from every voice already there, so a duet reads as two at once.
+fn fresh_voice(voices: &[Voice]) -> Voice {
+    let taken: Vec<String> = voices.iter().map(|voice| voice.name.clone()).collect();
+    let hues: Vec<f32> = voices.iter().filter_map(|voice| voice.style.hue).collect();
+    let distance = |a: f32, b: f32| {
+        let d = (a - b).rem_euclid(360.0);
+        d.min(360.0 - d)
+    };
+    let far = |h: f32| {
+        hues.iter()
+            .map(|other| distance(h, *other))
+            .fold(360.0, f32::min)
+    };
+    // The first of the farthest, so the first voice is a warm 33.
+    let hue = (0..24)
+        .map(|step| (33.0 + step as f32 * 15.0).rem_euclid(360.0))
+        .fold((33.0, -1.0), |best, hue| {
+            if far(hue) > best.1 {
+                (hue, far(hue))
+            } else {
+                best
+            }
+        })
+        .0;
+    Voice {
+        name: fresh_name("voice", &taken),
+        style: musializer_core::project::lyrics::VoiceStyle {
+            hue: Some(hue),
+            text_rgba: Some(packed_rgba(INKS[0])),
+            glow_rgba: Some(packed_rgba(GLOWS[voices.len() % GLOWS.len()])),
+        },
+    }
+}
+
+/// A playhead time as a resting title row shows it: `1:02.5`.
+fn short_time(seconds: f64) -> String {
+    let tenths = (seconds.max(0.0) * 10.0).round() as u64;
+    format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
+}
+
+fn rgb_colour(rgb: u32) -> raylib::prelude::Color {
+    let [r, g, b] = musializer_core::project::look::rgb(rgb);
+    let channel = |value: f32| (value * 255.0).round() as u8;
+    raylib::prelude::Color::new(channel(r), channel(g), channel(b), 255)
+}
+
+/// A voice's hue as a swatch: the hue at the saturation and value a
+/// caption's ink is drawn near.
+fn hue_colour(hue: f32) -> raylib::prelude::Color {
+    raylib::prelude::Color::color_from_hsv(hue, 0.6, 0.95)
+}
+
+/// A small colour dot, or an empty ring where nothing is set.
+fn draw_dot(d: &mut RaylibDrawHandle<'_>, x: f32, y: f32, colour: Option<raylib::prelude::Color>) {
+    match colour {
+        Some(colour) => {
+            d.draw_circle_v(raylib::prelude::Vector2::new(x, y), 5.0, colour);
+            d.draw_circle_lines(x as i32, y as i32, 5.0, color::ui_control_edge());
+        }
+        None => d.draw_circle_lines(x as i32, y as i32, 5.0, color::ui_disabled()),
+    }
+}
+
+/// The fold mark: a chevron pointing right (resting) or down (open), two
+/// strokes, drawn from geometry.
+fn draw_fold(d: &mut RaylibDrawHandle<'_>, x: f32, y: f32, open: bool, strong: bool) {
+    use raylib::prelude::Vector2;
+    let ink = if strong {
+        color::ui_ink()
+    } else {
+        color::ui_muted()
+    };
+    let (a, b, c) = if open {
+        (
+            Vector2::new(x - 4.0, y - 2.0),
+            Vector2::new(x, y + 2.0),
+            Vector2::new(x + 4.0, y - 2.0),
+        )
+    } else {
+        (
+            Vector2::new(x - 2.0, y - 4.0),
+            Vector2::new(x + 2.0, y),
+            Vector2::new(x - 2.0, y + 4.0),
+        )
+    };
+    d.draw_line_ex(a, b, 1.5, ink);
+    d.draw_line_ex(b, c, 1.5, ink);
+}
+
+/// Where a style puts its line, as a 3x3 of cells with the anchored one
+/// filled: the frame in miniature. No anchor (the project's place) fills
+/// none.
+fn draw_anchor_mark(d: &mut RaylibDrawHandle<'_>, x: f32, y: f32, anchor: Option<CaptionAnchor>) {
+    let filled = anchor.and_then(|anchor| ANCHORS.iter().position(|(each, _)| *each == anchor));
+    let top = (y - 7.0).round();
+    for cell in 0..9 {
+        let (column, row) = ((cell % 3) as f32, (cell / 3) as f32);
+        let place = UiRect::new(x + column * 5.0, top + row * 5.0, 4.0, 4.0);
+        widgets::fill(
+            d,
+            place,
+            if Some(cell) == filled {
+                color::ui_ink()
+            } else {
+                color::ui_rule()
+            },
+        );
     }
 }
 
@@ -1024,6 +1604,30 @@ mod tests {
         assert!(!armed.is(2, 1, "4602678819172646912:Door"));
         assert!(!armed.is(0, 0, "4602678819172646912:Door"));
         assert_eq!(armed.name(), "title-0");
+    }
+
+    #[test]
+    fn a_new_voice_takes_a_free_name_and_a_hue_far_from_the_others() {
+        let first = fresh_voice(&[]);
+        assert_eq!(first.name, "voice-1");
+        assert_eq!(first.style.hue, Some(33.0));
+        let second = fresh_voice(&[first.clone()]);
+        assert_eq!(second.name, "voice-2");
+        // Opposite on the wheel: 33 + 180.
+        assert_eq!(second.style.hue, Some(213.0));
+        assert!(voices_ok(&[first, second]));
+    }
+
+    fn voices_ok(voices: &[Voice]) -> bool {
+        let mut lyrics = musializer_core::project::lyrics::LyricsDocument::new(10.0).unwrap();
+        lyrics.set_voices(voices.to_vec())
+    }
+
+    #[test]
+    fn a_resting_title_row_reads_its_start_short() {
+        assert_eq!(short_time(0.5), "0:00.5");
+        assert_eq!(short_time(62.46), "1:02.5");
+        assert_eq!(short_time(600.0), "10:00.0");
     }
 
     #[test]

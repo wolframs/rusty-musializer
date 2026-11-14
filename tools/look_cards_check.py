@@ -31,14 +31,20 @@ file):
  video
   11. intro and outro kinds by name, the outro's length, Film and None,
       a finish member, a toning swatch, a typed highlight colour.
- tables (look=captions)
+ tables (look=captions; `look-entry=` opens the entry a press works in)
   12. a voice's hue, ink and name (its lines keep it); removing a voice that
-      sings lines asks to confirm; Add a voice is drawn with why it waits; a
+      sings lines asks to confirm; a
       style's anchor, a rename that takes its line along, Remove disabled for
       a style in use and working for one that is not, Add a style; a title
       card's text, handle (gains its @), start time (and a refused one),
       style, Remove asking to confirm, Add at the playhead (and waiting
       while a card covers it).
+  19. every entry rests as one row; a press on one opens it alone, the gap
+      between two opens nothing, its fold lays it to rest; an added style
+      or card opens.
+  20. Add a voice adds voice-1, open; This line gives the line at the
+      playhead to a voice, and on a line it sings takes it back; the gap
+      between This line and Section N changes nothing.
  follow
   13. following a treatment, the cards are drawn disabled and a press
       changes nothing; Stop following stops following and the card is
@@ -105,6 +111,11 @@ and `git status` shown clean:
   18a (2 failures): the lane's show-on-select seek removed: section=2 and
     a real lane press both left the playhead at 7.000.
   18b (1 failure): Show N pressed but inert: the playhead played on to 5.53.
+  19/20a (3 failures): a resting row's press and This line made inert:
+    the voice did not open; alto did not take the line; tenor did not
+    give it back.
+  20b (1 failure): Add a voice adding a second "alto": the model refused
+    it and the table stayed alto, tenor.
   Found on the way: the first sequence ran 120 frames and passed against
   both perturbations, because autosave settles 1.5 s after an edit and the
   file was read before it; the control (no drop, must commit) caught that.
@@ -493,64 +504,113 @@ if only in ('all', 'tables'):
     WORDS = 'size=1280x1440,column=look,time=3,play=0,look=captions'
     w, saved0 = run('base-words', WORDS, frames=30, project='words')
     bw = cards(w)
-    check(field(bw, 'scope') == 'captions' and 'voice-name-0@' in bw and 'style-name-1@' in bw and 'title-text-0@' in bw,
-          'look=captions shows the three tables')
     styles0 = [entry['name'] for entry in original['words']['caption_style']['styles']]
+    shout = styles0.index('shout')
+    top = styles0.index('top')
+    # D2: every entry rests as one row; the open one shows its controls.
+    check(field(bw, 'scope') == 'captions' and field(bw, 'open') == 'none'
+          and all(f'entry-{name}@' in bw for name in ('voice-0', 'voice-1', f'style-{shout}', 'title-0'))
+          and 'voice-hue-0@' not in bw and 'title-text-0@' not in bw,
+          'look=captions shows the three tables, every entry resting as one row')
+    bases = {}
+
+    def entry(name):
+        """The captions card with entry NAME open, and the spec that opens it."""
+        if name not in bases:
+            log, _ = run(f'base-words-{name}', WORDS + f',look-entry={name}', frames=30, project='words')
+            bases[name] = cards(log)
+        return bases[name], WORDS + f',look-entry={name}'
 
     def words(saved):
         return saved['lyrics'], saved['caption_style']['styles'], saved['scene_switches'].get('titles', [])
 
     def same(saved):
         return words(saved) == words(original['words'])
-    bar = rect(bw, 'voice-hue-0')
+
+    # 19. a press on a resting row opens it (and only it); the gap between
+    #     two rows opens nothing; the fold closes it.
+    log, _ = run('entry-open', WORDS + click(centre(rect(bw, 'entry-voice-1'))), frames=30, project='words')
+    check(field(cards(log), 'open') == 'voice-1' and 'voice-hue-1@' in cards(log) and 'voice-hue-0@' not in cards(log),
+          'a press on a resting voice opens it, and only it')
+    r0, r1 = rect(bw, 'entry-voice-0'), rect(bw, 'entry-voice-1')
+    log, _ = run('entry-gap', WORDS + click((r0[0] + r0[2] // 2, (r0[1] + r0[3] + r1[1]) // 2)), frames=30, project='words')
+    check(field(cards(log), 'open') == 'none' and claimed_nothing(log), 'the gap between two resting rows opens nothing')
+    bv1, spec_v1 = entry('voice-1')
+    log, _ = run('entry-fold', spec_v1 + click(centre(rect(bv1, 'fold-voice-1'))), frames=30, project='words')
+    check(field(cards(log), 'open') == 'none' and 'entry-voice-1@' in cards(log), 'the fold on an open entry lays it to rest')
+
+    bv0, spec_v0 = entry('voice-0')
+    bar = rect(bv0, 'voice-hue-0')
     point, unit = at_fraction(bar, 0.5)
-    log, saved = run('voice-hue', WORDS + click(point), project='words')
+    log, saved = run('voice-hue', spec_v0 + click(point), project='words')
     check(abs(words(saved)[0]['voices'][0]['hue'] - round(unit * 360)) < 1e-6, f'voice hue track: exactly {round(unit * 360)} degrees, saved')
-    log, saved = run('voice-hue-gap', WORDS + click((point[0], bar[1] + bar[3] // 2 - 15 - 3)), project='words')
+    log, saved = run('voice-hue-gap', spec_v0 + click((point[0], bar[1] + bar[3] // 2 - 15 - 3)), project='words')
     check(same(saved), 'voice hue gap changes nothing')
-    log, saved = run('voice-ink', WORDS + click(centre(rect(bw, 'voice-ink-1-3'))), project='words')
+    log, saved = run('voice-ink', spec_v1 + click(centre(rect(bv1, 'voice-ink-1-3'))), project='words')
     check(words(saved)[0]['voices'][1].get('text_rgba') == 'c8f0ffff', f"a voice ink swatch, saved: {words(saved)[0]['voices'][1]}")
-    log, saved = run('voice-name', WORDS + click(centre(rect(bw, 'voice-name-0'))) + ',look-text=mezzo,look-action=commit', project='words')
+    log, saved = run('voice-name', spec_v0 + click(centre(rect(bv0, 'voice-name-0'))) + ',look-text=mezzo,look-action=commit', project='words')
     lyrics = words(saved)[0]
     check(lyrics['voices'][0]['name'] == 'mezzo' and lyrics['cues'][0].get('voice') == 'mezzo',
           'a renamed voice keeps its lines')
-    log, saved = run('voice-remove', WORDS + click(centre(rect(bw, 'voice-name-0-button'))), project='words')
+    log, saved = run('voice-remove', spec_v0 + click(centre(rect(bv0, 'voice-name-0-button'))), project='words')
     check(same(saved) and 'voice-0-armed:1-lines' in cards(log), 'removing a voice that sings lines first asks to confirm')
-    check('add-voice@disabled:' in bw, 'Add a voice is drawn with why it waits')
-    shout = styles0.index('shout')
-    top = styles0.index('top')
-    log, saved = run('style-anchor', WORDS + click(centre(rect(bw, f'style-{top}-top_left'))), project='words')
+    # 20. Add a voice (D2): a new voice with a hue of its own, open; at 3 s
+    #     the line sung is "the loud line" (tenor): alto's This line takes it,
+    #     tenor's (now "- This line") gives it back to no voice.
+    log, saved = run('voice-add', WORDS + click(centre(rect(bw, 'add-voice'))), project='words')
+    voices = words(saved)[0]['voices']
+    check([v['name'] for v in voices] == ['alto', 'tenor', 'voice-1'] and field(cards(log), 'open') == 'voice-2',
+          f"Add a voice adds voice-1, open for editing ({[v['name'] for v in voices]}, open={field(cards(log), 'open')})")
+    r = rect(bw, 'add-voice')
+    log, saved = run('voice-add-gap', WORDS + click((r[0] + r[2] + 4, r[1] + r[3] // 2)), project='words')
+    check(same(saved), 'the gap beside Add a voice changes nothing')
+    log, saved = run('voice-line-give', spec_v0 + click(centre(rect(bv0, 'voice-0-line'))), project='words')
+    check(words(saved)[0]['cues'][1].get('voice') == 'alto' and words(saved)[0]['cues'][0].get('voice') == 'alto',
+          f"alto's This line takes the line at the playhead ({words(saved)[0]['cues'][1].get('voice')})")
+    log, saved = run('voice-line-take', spec_v1 + click(centre(rect(bv1, 'voice-1-line'))), project='words')
+    check('voice' not in words(saved)[0]['cues'][1] and words(saved)[0]['cues'][1]['text'] == 'the loud line',
+          f"tenor's - This line takes the line back from it ({words(saved)[0]['cues'][1]})")
+    a_, b_ = rect(bv0, 'voice-0-line'), rect(bv0, 'voice-0-section')
+    log, saved = run('voice-line-gap', spec_v0 + click(((a_[0] + a_[2] + b_[0]) // 2, a_[1] + a_[3] // 2)), project='words')
+    check(same(saved), 'the gap between This line and Section N changes nothing')
+
+    bs, spec_s = entry(f'style-{top}')
+    log, saved = run('style-anchor', spec_s + click(centre(rect(bs, f'style-{top}-top_left'))), project='words')
     check(words(saved)[1][top].get('anchor') == 'top_left', 'a style anchor chip, saved')
-    r = rect(bw, f'style-{top}-top_left')
-    log, saved = run('style-anchor-gap', WORDS + click((r[0] + r[2] + 2, r[1] + r[3] // 2)), project='words')
+    r = rect(bs, f'style-{top}-top_left')
+    log, saved = run('style-anchor-gap', spec_s + click((r[0] + r[2] + 2, r[1] + r[3] // 2)), project='words')
     check(same(saved), 'style anchor gap changes nothing')
-    log, saved = run('style-rename', WORDS + click(centre(rect(bw, f'style-name-{shout}'))) + ',look-text=loud,look-action=commit', project='words')
-    names = [entry['name'] for entry in words(saved)[1]]
+    bsh, spec_sh = entry(f'style-{shout}')
+    log, saved = run('style-rename', spec_sh + click(centre(rect(bsh, f'style-name-{shout}'))) + ',look-text=loud,look-action=commit', project='words')
+    names = [entry_['name'] for entry_ in words(saved)[1]]
     check('loud' in names and 'shout' not in names and words(saved)[0]['cues'][1].get('style') == 'loud',
           'a renamed style takes the line that wore it along')
-    check(f'style-name-{shout}-button@disabled:' in bw, 'a style a line wears cannot be removed (drawn disabled)')
-    log, saved = run('style-remove-used', WORDS + click(centre(rect(bw, f'style-name-{shout}-button'))), project='words')
+    check(f'style-name-{shout}-button@disabled:' in bsh, 'a style a line wears cannot be removed (drawn disabled)')
+    log, saved = run('style-remove-used', spec_sh + click(centre(rect(bsh, f'style-name-{shout}-button'))), project='words')
     check(same(saved), 'a press on the disabled Remove changes nothing')
-    log, saved = run('style-remove', WORDS + click(centre(rect(bw, f'style-name-{top}-button'))), project='words')
-    check([entry['name'] for entry in words(saved)[1]] == [n for n in styles0 if n != 'top'], 'an unused style is removed')
+    log, saved = run('style-remove', spec_s + click(centre(rect(bs, f'style-name-{top}-button'))), project='words')
+    check([entry_['name'] for entry_ in words(saved)[1]] == [n for n in styles0 if n != 'top'], 'an unused style is removed')
     log, saved = run('style-add', WORDS + click(centre(rect(bw, 'add-style'))), project='words')
-    check([entry['name'] for entry in words(saved)[1]] == styles0 + ['style-1'], 'Add a style adds style-1')
-    log, saved = run('title-text', WORDS + click(centre(rect(bw, 'title-text-0'))) + ',look-text=Door Fixture,look-action=commit', project='words')
+    check([entry_['name'] for entry_ in words(saved)[1]] == styles0 + ['style-1'] and field(cards(log), 'open') == f'style-{len(styles0)}',
+          'Add a style adds style-1, open for editing')
+    bt, spec_t = entry('title-0')
+    log, saved = run('title-text', spec_t + click(centre(rect(bt, 'title-text-0'))) + ',look-text=Door Fixture,look-action=commit', project='words')
     check(words(saved)[2][0]['title'] == 'Door Fixture', 'a typed title, saved')
-    log, saved = run('title-handle', WORDS + click(centre(rect(bw, 'title-handle-0'))) + ',look-text=cats,look-action=commit', project='words')
+    log, saved = run('title-handle', spec_t + click(centre(rect(bt, 'title-handle-0'))) + ',look-text=cats,look-action=commit', project='words')
     check(words(saved)[2][0].get('handle') == '@cats', 'a typed handle gains its @, saved')
-    log, saved = run('title-from', WORDS + click(centre(rect(bw, 'title-start-0'))) + ',look-text=0:01.0,look-action=commit', project='words')
+    log, saved = run('title-from', spec_t + click(centre(rect(bt, 'title-start-0'))) + ',look-text=0:01.0,look-action=commit', project='words')
     check(words(saved)[2][0]['start_seconds'] == 1.0, 'a typed start time, saved')
-    log, saved = run('title-from-bad', WORDS + click(centre(rect(bw, 'title-start-0'))) + ',look-text=3,look-action=commit', project='words')
+    log, saved = run('title-from-bad', spec_t + click(centre(rect(bt, 'title-start-0'))) + ',look-text=3,look-action=commit', project='words')
     check(same(saved) and field(cards(log), 'refused') == 'title-start-0', 'a start after the end is refused and says so')
-    log, saved = run('title-style', WORDS + click(centre(rect(bw, 'title-0-style-top'))), project='words')
+    log, saved = run('title-style', spec_t + click(centre(rect(bt, 'title-0-style-top'))), project='words')
     check(words(saved)[2][0].get('style') == 'top', 'a title card style chip, saved')
-    log, saved = run('title-remove', WORDS + click(centre(rect(bw, 'title-text-0-button'))), project='words')
+    log, saved = run('title-remove', spec_t + click(centre(rect(bt, 'title-text-0-button'))), project='words')
     check(same(saved), 'removing a title card first asks to confirm')
     log, saved = run('title-add', WORDS + click(centre(rect(bw, 'add-title'))), project='words')
     titles = words(saved)[2]
     check(len(titles) == 2 and titles[1]['start_seconds'] == 3.0 and titles[1]['title'] == 'Look cards fixture'
-          and 'artist' not in titles[1], f'Add a title card at the playhead: the project title, its artist by default, saved ({titles[-1:]})')
+          and 'artist' not in titles[1] and field(cards(log), 'open') == 'title-1',
+          f'Add a title card at the playhead: the project title, its artist by default, saved, open ({titles[-1:]})')
     covered, _ = run('title-add-covered', WORDS.replace('time=3', 'time=1'), frames=30, project='words')
     check('add-title@disabled:' in cards(covered), 'with a card on screen at the playhead, Add waits and says why')
     log, saved = run('title-add-gap', WORDS + click((rect(bw, 'add-title')[0] + rect(bw, 'add-title')[2] + 4, rect(bw, 'add-title')[1] + 10)), project='words')
@@ -560,8 +620,9 @@ if only in ('all', 'sequence'):
     # The review's defects (D2, 2026-11-14): state a card holds must belong to
     # one project, and Play the cut must keep its promise off the Look view.
     WORDS = 'size=1280x1440,column=look,time=3,play=0,look=captions'
-    w, _ = run('seq-base', WORDS, frames=30, project='words')
-    bw = cards(w)
+    TITLE0, VOICE0 = WORDS + ',look-entry=title-0', WORDS + ',look-entry=voice-0'
+    bw = cards(run('seq-base', TITLE0, frames=30, project='words')[0])
+    bv = cards(run('seq-base-voice', VOICE0, frames=30, project='words')[0])
 
     def dropped(name):
         # Relative to the checkout, where headless_run.sh runs: the spec has
@@ -577,11 +638,11 @@ if only in ('all', 'sequence'):
     #     is applied (`stale=`), because the edit is addressed to its project.
     # The control: the same draft and Enter with no other project commits.
     # 240 frames: autosave settles 1.5 s after the edit at frame 60.
-    log, saved = run('seq-draft-control', WORDS + click(centre(rect(bw, 'title-text-0')))
+    log, saved = run('seq-draft-control', TITLE0 + click(centre(rect(bw, 'title-text-0')))
                      + ',look-text=STALE,look-action=draft,look-commit-at=60', frames=240, project='words')
     check(saved['scene_switches']['titles'][0]['title'] == 'STALE', 'control: with no project change the same draft and Enter commit')
     for name, commit in [('seq-draft-late', 60), ('seq-draft-same', 30)]:
-        log, saved = run(name, WORDS + click(centre(rect(bw, 'title-text-0')))
+        log, saved = run(name, TITLE0 + click(centre(rect(bw, 'title-text-0')))
                          + f',look-text=STALE,look-action=draft,drop={dropped(name)},drop-at=30,look-commit-at={commit}',
                          frames=240, project='words', also=('other',))
         other = titles_of(name, 'other')
@@ -599,12 +660,12 @@ if only in ('all', 'sequence'):
     #     the other dropped in, the other's card 0 and voice 0 are not armed
     #     (one press there would have removed them). The control, with no
     #     drop, is still armed at the end: the row stayed in view.
-    for button, armed in [('title-text-0-button', 'title-0'), ('voice-name-0-button', 'voice-0')]:
-        log, saved = run(f'seq-arm-control-{armed}', WORDS + click(centre(rect(bw, button))), frames=60, project='words')
+    for button, armed, spec, base in [('title-text-0-button', 'title-0', TITLE0, bw), ('voice-name-0-button', 'voice-0', VOICE0, bv)]:
+        log, saved = run(f'seq-arm-control-{armed}', spec + click(centre(rect(base, button))), frames=60, project='words')
         check(field(cards(log), 'armed') == armed and saved['scene_switches']['titles'] == original['words']['scene_switches']['titles'],
               f'control: a press on Remove ({armed}) arms it and removes nothing, and it stays armed while in view')
         name = f'seq-arm-{armed}'
-        log, _ = run(name, WORDS + click(centre(rect(bw, button))) + f',drop={dropped(name)},drop-at=30',
+        log, _ = run(name, spec + click(centre(rect(base, button))) + f',drop={dropped(name)},drop-at=30',
                      frames=60, project='words', also=('other',))
         check('current 1 "Other fixture"' in line(log, 'tracks') and field(cards(log), 'armed') == 'none',
               f'{name}: armed in one project, nothing is armed in the other (armed={field(cards(log), "armed")})')

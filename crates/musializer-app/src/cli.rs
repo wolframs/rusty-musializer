@@ -542,6 +542,11 @@ pub struct UiProbe {
     /// artist draft; refused and reported with no field focused.
     pub look_text: Option<String>,
     pub look_action: Option<crate::ui::panels::tune::CardProbeAction>,
+    /// `look-entry=voice-N|style-N|title-N` (D2): open that entry of the
+    /// captions card's tables, as a press on its row does. Invented for the
+    /// reason `section=` was: the press on a control inside it is the run's
+    /// one click.
+    pub look_entry: Option<(u8, usize)>,
     /// `drop-at=FRAME` (D2): hold `drop=`'s file back until this frame, so a
     /// look card can be left half-typed in one project before another opens.
     pub drop_at: Option<u64>,
@@ -1535,6 +1540,16 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             })
         }
         "look-text" => probe.look_text = Some(value.to_owned()),
+        "look-entry" => {
+            let (table, row) = value.rsplit_once('-')?;
+            let table = match table {
+                "voice" => 0,
+                "style" => 1,
+                "title" => 2,
+                _ => return None,
+            };
+            probe.look_entry = Some((table, row.parse().ok()?));
+        }
         "drop-at" => probe.drop_at = Some(value.parse().ok().filter(|frame: &u64| *frame > 0)?),
         "look-commit-at" => {
             probe.look_commit_at = Some(value.parse().ok().filter(|frame: &u64| *frame > 12)?)
@@ -1799,6 +1814,7 @@ Diagnostics:
                           draft|commit|cancel types into the card field a
                           click= focused (frame 12), drop-at=FRAME holds
                           drop= back, look-commit-at=FRAME presses Enter,
+                          look-entry=voice-N|style-N|title-N opens an entry,
                           column-width=PX, column-switch=VIEW (frame 40),
                           lyrics-pane=cues|style|effects,
                           assist-card=lyrics|scenes|feelings|full,
@@ -2610,6 +2626,9 @@ mod tests {
 
         // D2: a late drop and a late Enter; frame 0 and an Enter before the
         // frame-12 draft are refused rather than quietly reordered.
+        let probe = parse_ui_probe("look-entry=style-3").unwrap();
+        assert_eq!(probe.look_entry, Some((1, 3)));
+        assert!(parse_ui_probe("look-entry=lyric-0").is_none());
         let probe = parse_ui_probe("drop=b.musi,drop-at=30,look-commit-at=60").unwrap();
         assert_eq!((probe.drop_at, probe.look_commit_at), (Some(30), Some(60)));
         assert!(parse_ui_probe("drop=b.musi,drop-at=0").is_none());

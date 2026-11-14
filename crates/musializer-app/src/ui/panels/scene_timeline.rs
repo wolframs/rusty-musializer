@@ -119,6 +119,9 @@ pub enum ScenePlanEdit {
     /// Removes voice N; the lines sung in it are drawn plain, and the lines
     /// of the voices after it keep theirs.
     RemoveVoice(usize),
+    /// Lines given to a voice, or taken from one (`None`), by cue id: the
+    /// captions card's "This line" and "Section N" (D2). All or nothing.
+    SetCueVoices(Vec<(u64, Option<usize>)>),
     /// The caption styles table, with the rename it carries, if any: a
     /// renamed style keeps every line, section and card that names it.
     SetCaptionStyles {
@@ -159,6 +162,7 @@ impl ScenePlanEdit {
                 | Self::SetFinish(_)
                 | Self::SetVoices(_)
                 | Self::RemoveVoice(_)
+                | Self::SetCueVoices(_)
                 | Self::SetCaptionStyles { .. }
                 | Self::SetTitles(_)
         )

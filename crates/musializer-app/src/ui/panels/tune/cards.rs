@@ -387,6 +387,9 @@ pub(crate) struct CardState {
     refused: Option<String>,
     /// A removal waiting for its confirming press.
     armed: Option<Armed>,
+    /// The one entry of the captions card's tables that is open for
+    /// editing, as (table, row); every other entry rests as one row.
+    open_entry: Option<(u8, usize)>,
     /// The section the last frame's card edited, so a new selection takes the
     /// card back to the section scope and drops a half-typed value.
     shown: Option<u64>,
@@ -463,7 +466,9 @@ mod slot {
     pub const HIGHLIGHT: u32 = 270;
     /// Hover targets for rows drawn disabled, so their reason can be read:
     /// `+ CardField as u32`.
-    pub const DISABLED: u32 = 900;
+    /// Past every table row (the titles end at 1680), so a disabled row's
+    /// hover target can never share an id with a table's control.
+    pub const DISABLED: u32 = 2000;
 }
 
 /// One drawn part of a card, in drawing order.
@@ -677,6 +682,7 @@ impl CardState {
     /// Drops everything uncommitted: a half-typed value, a probe's text,
     /// a refusal, and the section the card last showed.
     fn forget(&mut self) {
+        self.open_entry = None;
         // A play-the-cut's stop belongs to the track it was pressed on: its
         // `until` would pause the next one at an unrelated moment.
         self.cut = None;
@@ -760,6 +766,12 @@ impl Shell {
             .and_then(|track| track.scene_switches.cues().get(number - 1))
             .map_or(0, |cue| cue.id);
         self.scene_lane.show_pending = true;
+    }
+
+    /// `--ui-probe look-entry=…`: opens that entry of the captions card, as
+    /// a press on its row does.
+    pub(crate) fn probe_look_entry(&mut self, entry: (u8, usize)) {
+        self.look_column.cards.open_entry = Some(entry);
     }
 
     /// `--ui-probe look=video|section`: which card the block shows.
@@ -876,7 +888,19 @@ impl Shell {
         }
         let cues = track.scene_switches.cues();
         if self.look_column.cards.scope == CardScope::Captions {
-            tables::plan(track, &mut parts);
+            // An entry that is gone (removed, or an add the model refused)
+            // is open no longer.
+            let rows = |table| match table {
+                tables::VOICES => track.lyrics.voices().len(),
+                tables::STYLES => track.caption_style.styles.len(),
+                _ => track.scene_switches.titles.len(),
+            };
+            if let Some((table, row)) = self.look_column.cards.open_entry {
+                if row >= rows(table) {
+                    self.look_column.cards.open_entry = None;
+                }
+            }
+            tables::plan(track, self.look_column.cards.open_entry, &mut parts);
             parts.push((Part::Space, Block::Gap(8.0)));
             parts.push((Part::Status, Block::Line));
             return CardsPlan {
@@ -1453,6 +1477,32 @@ impl Shell {
         let mut controls: Vec<String> = Vec::new();
         let mut edits: Vec<ScenePlanEdit> = Vec::new();
         let measure = |text: &str| widgets::measure(font, text, metric::UI_FONT_CAPTION);
+        // The open entry of a table sits on a surface of its own, so the
+        // rows it opened read as one thing among the resting rows.
+        let open: Vec<UiRect> = placed
+            .iter()
+            .filter(|(part, _)| {
+                matches!(part, Part::Table(row) if row.entry().is_some()
+                    && row.entry() == self.look_column.cards.open_entry)
+            })
+            .map(|(_, place)| place.rect)
+            .collect();
+        if let (Some(first), Some(last)) = (open.first(), open.last()) {
+            let backdrop = UiRect::new(
+                first.x - 6.0,
+                first.y - 6.0,
+                first.width + 12.0,
+                last.y + last.height - first.y + 12.0,
+            );
+            widgets::rounded_box(
+                d,
+                backdrop,
+                4.0,
+                color::ui_surface(),
+                color::ui_selected_edge(),
+                1.0,
+            );
+        }
         let draw_lines = |d: &mut RaylibDrawHandle<'_>, rect: UiRect, text: &str, tint| {
             for (line, words) in wrap(text, rect.width, &measure).iter().enumerate() {
                 if (line as f32 + 1.0) * look_cards::LINE_HEIGHT > rect.height + 0.5 {
@@ -2344,6 +2394,11 @@ impl Shell {
                         enabled,
                         label_width,
                         time_seconds: input.time_seconds,
+                        playing_section: cues
+                            .iter()
+                            .enumerate()
+                            .find(|(_, cue)| section_holds(cue, input.time_seconds))
+                            .map(|(index, cue)| (index + 1, cue)),
                         controls: &mut controls,
                         edits: &mut edits,
                     };
@@ -2438,7 +2493,7 @@ impl Shell {
             finish.highlight_rgb,
         );
         self.look_column.cards.report = format!(
-            "scope={} target={target_text} {video_text} follow={} editable={} cut={cut} typing={typing} refused={} stale={} armed={} area={} frame={} controls={}{probe}",
+            "scope={} target={target_text} {video_text} follow={} editable={} cut={cut} typing={typing} refused={} stale={} armed={} open={} area={} frame={} controls={}{probe}",
             self.look_column.cards.scope.name(),
             followed.as_deref().unwrap_or("none"),
             u8::from(enabled),
@@ -2449,6 +2504,10 @@ impl Shell {
                 .armed
                 .as_ref()
                 .map_or_else(|| "none".to_owned(), Armed::name),
+            self.look_column
+                .cards
+                .open_entry
+                .map_or_else(|| "none".to_owned(), tables::entry_name),
             rect_text(area),
             rect_text(frame),
             controls.join(";"),
