@@ -55,6 +55,7 @@ use raylib::prelude::*;
 
 mod cli;
 mod clips;
+mod generation;
 mod posters;
 mod project;
 mod recovery;

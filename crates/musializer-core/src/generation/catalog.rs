@@ -332,12 +332,17 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
+/// The two-model list the tests read, for the application's tests too.
+#[doc(hidden)]
+#[must_use]
+pub fn tests_live() -> &'static str {
+    tests_fixture::LIVE
+}
 
+#[doc(hidden)]
+mod tests_fixture {
     /// Two entries of the live list as it was on 2026-11-14, verbatim in the
-    /// fields this module reads, plus one it must drop.
+    /// fields this module reads, plus two it must drop.
     pub const LIVE: &str = r#"{ "data": [
       { "id": "google/veo-3.1-lite", "name": "Google: Veo 3.1 Lite",
         "supported_resolutions": ["720p","1080p"], "supported_aspect_ratios": ["16:9","9:16"],
@@ -356,6 +361,12 @@ pub(crate) mod tests {
       { "id": "", "supported_durations": [5] },
       { "id": "example/upscaler", "supported_durations": [] }
     ] }"#;
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    pub use super::tests_fixture::LIVE;
+    use super::*;
 
     #[test]
     fn the_live_list_is_normalized_to_what_a_request_needs() {
