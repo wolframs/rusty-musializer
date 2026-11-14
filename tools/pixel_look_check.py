@@ -39,8 +39,10 @@ def run(name, scope='video', click=None, size='1280x720', theme='dark', owned=Tr
         with (out/f'{name}-seed.log').open('w') as seed_log:
             subprocess.run(['tools/headless_run.sh',*source,'--save-project',str(named)],env=dict(env,MZ_STATE_DIR=str(out/f'state-{name}-seed')),stdout=seed_log,stderr=subprocess.STDOUT,check=True)
         source=['--project',str(named)]
+    # A typed run's driver waits 2 s past the window's mapping before its
+    # first key (pixel_look_input.py), so 360 frames (~6 s) outlast its keys.
     cmd=['tools/headless_run.sh',*source,'--ui-scale','100','--hud=0',
-         '--ui-probe',probe,'--probe-frames','180' if typed else '24','--probe-shot',str(out/f'{name}.png')]
+         '--ui-probe',probe,'--probe-frames','360' if typed else '24','--probe-shot',str(out/f'{name}.png')]
     if theme: cmd+=['--ui-theme',theme]
     run_env=dict(env,MZ_STATE_DIR=str(state or out/f'state-{name}'))
     if typed:

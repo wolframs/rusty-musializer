@@ -778,3 +778,26 @@ second review (H4c), 2026-11-14.
 (`ceil_thousandths`, `ceil_usd`, `ceil_cents`), with a tolerance for float
 noise so an exact 0.033 is not shown as 0.034; a ceiling the person typed is
 shown as given. Found by the second review (H4c), 2026-11-14.
+
+## A native-key driver that types on a clock races the first frame
+
+`tools/pixel_look_input.py` typed Ctrl+A, `216`, Enter and Ctrl+S 0.8 s
+after it launched the application, while the value chip it typed into is
+opened by a `--ui-probe click=` that resolves on frame 5. The window maps
+about 0.4 s after launch, but the first frame comes 0.72 to 0.99 s after it
+(measured 2026-11-15 on a loaded machine), so on a slow start Ctrl+A arrived
+before the field existed and selected nothing, `216` was appended to `144`,
+and the `u16` parse of `144216` failed without a word: `pixels=144
+typing=false`, nothing to save. Ten section runs each, both builds carrying
+a per-frame key trace: 4 of 10 lost at `2578329`, 1 of 10 at `e0770e5`; in
+the 12 traced commit runs kept, every loss had its Ctrl+A on frame 4 or earlier and
+every pass on frame 5 or later. It read as a regression of the section scope
+because the section pair happened to fail in the runs looked at; the video
+pair lost the same way. Symptom: a typed check that fails on some runs and
+passes alone, with the click probe's `claimed=` naming the right control.
+Drivers wait for the application, not for the clock: the mapped,
+window-sized child and then a settle well past the first frame (as
+`look_cards_check.py` does), or a painted ready mark (as
+`lyric_focus_check.py` does), and the run's `--probe-frames` must outlast the
+keys. A typed count is also read wide and clamped now, so the same loss would
+show as 720, not as nothing.

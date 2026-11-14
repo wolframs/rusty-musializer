@@ -23,12 +23,47 @@ try:
     x.XKeysymToKeycode.argtypes=[C.c_void_p,C.c_ulong]; x.XKeysymToKeycode.restype=C.c_uint
     x.XFlush.argtypes=[C.c_void_p]
     test.XTestFakeKeyEvent.argtypes=[C.c_void_p,C.c_uint,C.c_int,C.c_ulong]
-    time.sleep(.8)
+    # An X error (a window that went away, one not mapped yet) must not end
+    # the driver: Xlib's default handler exits the process (docs/TRAPS.md).
+    handler_type=C.CFUNCTYPE(C.c_int,C.c_void_p,C.c_void_p)
+    ignore=handler_type(lambda *_: 0)
+    x.XSetErrorHandler.argtypes=[handler_type]
+    x.XSetErrorHandler(ignore)
+    class Attributes(C.Structure):
+        _fields_=[('x',C.c_int),('y',C.c_int),('width',C.c_int),('height',C.c_int),
+                  ('border_width',C.c_int),('depth',C.c_int),('visual',C.c_void_p),
+                  ('root',C.c_ulong),('class_',C.c_int),('bit_gravity',C.c_int),
+                  ('win_gravity',C.c_int),('backing_store',C.c_int),('backing_planes',C.c_ulong),
+                  ('backing_pixel',C.c_ulong),('save_under',C.c_int),('colormap',C.c_ulong),
+                  ('map_installed',C.c_int),('map_state',C.c_int),('all_event_masks',C.c_long),
+                  ('your_event_mask',C.c_long),('do_not_propagate_mask',C.c_long),
+                  ('override_redirect',C.c_int),('screen',C.c_void_p)]
+    x.XGetWindowAttributes.argtypes=[C.c_void_p,C.c_ulong,C.POINTER(Attributes)]
     root=x.XDefaultRootWindow(display)
-    children=C.POINTER(C.c_ulong)(); count=C.c_uint(); parent=C.c_ulong(); returned_root=C.c_ulong()
-    assert x.XQueryTree(display,root,C.byref(returned_root),C.byref(parent),C.byref(children),C.byref(count))
-    assert count.value
-    x.XSetInputFocus(display,children[count.value-1],2,0)
+    window=None
+    # The app's own window: mapped (IsViewable) and window-sized.
+    for _ in range(150):
+        assert process.poll() is None, 'app ended before its window'
+        children=C.POINTER(C.c_ulong)(); count=C.c_uint(); parent=C.c_ulong(); returned_root=C.c_ulong()
+        if x.XQueryTree(display,root,C.byref(returned_root),C.byref(parent),C.byref(children),C.byref(count)):
+            for index in range(count.value):
+                attributes=Attributes()
+                if (x.XGetWindowAttributes(display,children[index],C.byref(attributes))
+                        and attributes.map_state==2 and attributes.width>=640):
+                    window=children[index]
+        if window: break
+        time.sleep(.1)
+    assert window, 'no mapped window'
+    # The window maps about 0.4 s before the first frame, and the probe's
+    # press resolves five frames after that, which is when the value chip
+    # opens its field. Keys sent earlier are lost: a Ctrl+A before the field
+    # exists selects nothing and "216" lands after "144". Typing 0.8 s after
+    # launch raced that and lost whenever the first frame came later than
+    # ~0.85 s, on any commit (2026-11-15). Wait well past it; the gate gives
+    # a typed run frames enough to outlast the keys.
+    time.sleep(2.0)
+    x.XSetInputFocus(display,window,2,0)
+    x.XFlush(display)
     def key(sym, down):
         test.XTestFakeKeyEvent(display,x.XKeysymToKeycode(display,sym),down,0); x.XFlush(display); time.sleep(.06)
     def chord(letter):
@@ -59,6 +94,6 @@ try:
         key(sym,1); key(sym,0)
         # The field has released focus: save through the workspace's real chord.
         key(0xffe3,1); key(ord('s'),1); key(ord('s'),0); key(0xffe3,0)
-    sys.exit(process.wait(timeout=15))
+    sys.exit(process.wait(timeout=20))
 finally:
     if process.poll() is None: process.terminate(); process.wait(timeout=5)
