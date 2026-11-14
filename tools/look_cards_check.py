@@ -53,6 +53,12 @@ file):
   17. Play the cut still pauses at its end with the column on Lyrics; it
       is let go when another project opens and when the user's own Right
       arrow seeks (`key=right`).
+ show
+  18. selecting a section (section=, a real press on its body) puts the
+      playhead where it has arrived (3.100 for section 2 from 7 s); a
+      playhead already inside stays; a boundary press does not move it;
+      played on past it, the card says whose picture it is and Show N
+      returns (the gap beside it does not).
  captures
   14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
@@ -96,6 +102,9 @@ and `git status` shown clean:
     was paused at 4.13, the first track's stop.
   17c (1 failure): the user's seek ignored: the cut paused at 4.13 after
     the Right arrow.
+  18a (2 failures): the lane's show-on-select seek removed: section=2 and
+    a real lane press both left the playhead at 7.000.
+  18b (1 failure): Show N pressed but inert: the playhead played on to 5.53.
   Found on the way: the first sequence ran 120 frames and passed against
   both perturbations, because autosave settles 1.5 s after an edit and the
   file was read before it; the control (no drop, must commit) caught that.
@@ -378,7 +387,8 @@ if only in ('all', 'section'):
     check(4.1 <= playhead <= 4.7 and 'playing=false' in line(log, 'resume') and field(cards(log), 'cut') == 'none',
           f'Play the cut seeks to 1.0, plays through the fade and pauses after 4.1: playhead {playhead:.3f}')
     log, _ = run('play-gap', 'size=1280x720,column=look,time=7,play=0,section=2' + click((play[0] - 3, play[1] + play[3] // 2)), frames=60)
-    check(abs(float(field(line(log, 'transport'), 'playhead')) - 7.0) < 0.01, 'the gap beside Play the cut leaves the playhead at 7')
+    # Selecting section 2 put the playhead at 3.1, where it has arrived (18).
+    check(abs(float(field(line(log, 'transport'), 'playhead')) - 3.1) < 0.01, 'the gap beside Play the cut leaves the playhead where the selection put it')
 
     # 8. done, invitation, scope
     log, _ = run('done', SECTION + ',section=2' + click(centre(rect(b2, 'done'))), frames=30)
@@ -626,6 +636,41 @@ if only in ('all', 'sequence'):
     playhead = float(field(line(log, 'transport'), 'playhead'))
     check(field(cards(log), 'cut') == 'none' and playhead > 5.0,
           f'Play the cut, then the user\'s own Right arrow: the cut lets go and playback runs on (playhead {playhead:.3f})')
+
+if only in ('all', 'show'):
+    # 18. One section at a time (D2): selecting a section puts the playhead
+    #     in it, once it has arrived, so the frame, Look's head and the
+    #     tuning under the card are the section the card edits. Section 2
+    #     starts at 2.5 and arrives by a 0.6 s fade: 3.100 exactly.
+    def playhead_of(log):
+        return float(field(line(log, 'transport'), 'playhead'))
+    log, _ = run('show-select', 'size=1280x720,column=look,time=7,play=0,section=2', frames=30)
+    now = re.search(r'now=run \S+ section (\d+)', line(log, 'scene runs'))
+    check(abs(playhead_of(log) - 3.1) < 0.0005 and now and now[1] == '2' and field(line(log, 'scene runs'), 'selected') == '2',
+          f"section=2 from 7 s: the playhead goes to 3.100, where section 2 has arrived, and the playhead's section is the selected one ({playhead_of(log):.3f}, {now and now[0]})")
+    log, _ = run('show-inside', 'size=1280x720,column=look,time=3,play=0,section=2', frames=30)
+    check(abs(playhead_of(log) - 3.0) < 0.0005, f'control: a playhead already in the section stays ({playhead_of(log):.3f})')
+    lane = tuple(map(int, re.search(r'lane=(\d+),(\d+),(\d+),(\d+)', line(log, 'scene runs')).groups()))
+
+    def lane_x(seconds):
+        return round(lane[0] + seconds / 8.0 * lane[2])
+    body = (lane_x(4.75), lane[1] + lane[3] // 2)
+    log, _ = run('show-lane-click', 'size=1280x720,column=look,time=7,play=0' + click(body), frames=30)
+    check(field(line(log, 'scene runs'), 'selected') == '3' and abs(playhead_of(log) - 4.0) < 0.0005,
+          f'a real press on section 3 in the lane selects it and puts the playhead at its cut, 4.000 ({playhead_of(log):.3f})')
+    log, _ = run('show-lane-boundary', 'size=1280x720,column=look,time=7,play=0' + click((lane_x(4.0), body[1])), frames=30)
+    check(field(line(log, 'scene runs'), 'selected') in ('2', '3') and abs(playhead_of(log) - 7.0) < 0.0005,
+          f"a press on a boundary (a retime) selects and leaves the playhead at 7 ({playhead_of(log):.3f}, selected={field(line(log, 'scene runs'), 'selected')})")
+    # Played on into section 3: the card says the picture is 3's, and Show 2
+    # puts it back (pressed on frame 120, while playing).
+    base, _ = run('show-elsewhere', 'size=1280x720,column=look,time=3,play=1,section=2', frames=120)
+    check('show@' in cards(base) and playhead_of(base) > 4.0,
+          f'played past section 2, the card says so and offers Show 2 ({playhead_of(base):.3f})')
+    log, _ = run('show-press', 'size=1280x720,column=look,time=3,play=1,section=2,click-after=120' + click(centre(rect(cards(base), 'show'))), frames=150)
+    check(playhead_of(log) < 4.0 and 'show@' not in cards(log), f'Show 2 puts the playhead back in section 2 ({playhead_of(log):.3f})')
+    r = rect(cards(base), 'show')
+    log, _ = run('show-gap', 'size=1280x720,column=look,time=3,play=1,section=2,click-after=120' + click((r[0] - 3, r[1] + r[3] // 2)), frames=150)
+    check(playhead_of(log) > 4.0 and 'show@' in cards(log), f'the gap beside Show changes nothing ({playhead_of(log):.3f})')
 
 if only in ('all', 'follow'):
     log, _ = run('follow-base', SECTION + ',section=2,follow=1', frames=40, follow=True)

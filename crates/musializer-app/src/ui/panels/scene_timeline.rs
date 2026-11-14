@@ -193,6 +193,35 @@ pub struct SceneLaneEditor {
     last_frame: RunFrame,
     /// What the lane head drew last frame, for the `lane head:` line.
     head_report: String,
+    /// A section was just selected by a press on its body (or `section=`):
+    /// on the next frame the playhead goes into it when it is elsewhere,
+    /// so the frame on screen, Look's head and the tuning under the cards
+    /// are that section's (D2).
+    pub(crate) show_pending: bool,
+}
+
+/// Where a selected section is shown: once it has arrived (its transition
+/// done), or at its middle when the transition is longer than half of it.
+#[must_use]
+pub(crate) fn section_rest_seconds(
+    cue: &musializer_core::project::scene_switch::SceneSwitchCue,
+) -> f64 {
+    let room = cue.end_seconds - cue.start_seconds;
+    let arrival = if cue.transition.is_cut() {
+        0.0
+    } else {
+        musializer_core::project::transition::fitted_seconds(cue.transition, room)
+    };
+    cue.start_seconds + arrival.min(room * 0.5).max(0.0)
+}
+
+/// Whether the playhead at `seconds` is in `cue`.
+#[must_use]
+pub(crate) fn section_holds(
+    cue: &musializer_core::project::scene_switch::SceneSwitchCue,
+    seconds: f64,
+) -> bool {
+    cue.start_seconds <= seconds && seconds < cue.end_seconds
 }
 
 /// How long two presses may be apart and still be one double-click, in
@@ -623,6 +652,21 @@ impl Shell {
                 .any(|cue| cue.id == self.scene_lane.selected_id)
         {
             self.scene_lane.selected_id = 0;
+        }
+        // A section selected is a section shown (D2): Look's card edits the
+        // selection while its head, the frame and the tuning below follow
+        // the playhead, so selecting puts the playhead in the section.
+        if std::mem::take(&mut self.scene_lane.show_pending) {
+            if let Some(cue) = track
+                .scene_switches
+                .cues()
+                .iter()
+                .find(|cue| cue.id == self.scene_lane.selected_id)
+            {
+                if !section_holds(cue, input.time_seconds) {
+                    commands.push(ShellCommand::Seek(section_rest_seconds(cue)));
+                }
+            }
         }
 
         let controls = UiRect::new(area.x, area.y, area.width, SCENE_CONTROLS_HEIGHT);
@@ -1478,6 +1522,9 @@ impl Shell {
                 return;
             };
             self.scene_lane.selected_id = hit.id;
+            // A press on a body shows its section; a boundary press is the
+            // start of a retime, which must not move the playhead.
+            self.scene_lane.show_pending = hit.zone != SceneLaneZone::Boundary;
             // A second press on a section body inside the double-click window
             // opens the run under it. Boundaries are excluded: two quick presses
             // on a cut are two drags, not an instruction to zoom.

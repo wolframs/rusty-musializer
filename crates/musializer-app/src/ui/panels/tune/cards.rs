@@ -8,7 +8,7 @@
 //! frame because they are drawn from the same plan. Geometry and the slider
 //! scales are `core::ui::tune_groups::look_cards`'.
 use super::*;
-use crate::ui::panels::scene_timeline::ScenePlanEdit;
+use crate::ui::panels::scene_timeline::{section_holds, section_rest_seconds, ScenePlanEdit};
 use musializer_core::project::caption_styles::StyleName;
 use musializer_core::project::look::{grade_bounds, Grade, Palette};
 use musializer_core::project::scene_switch::SceneSwitchCue;
@@ -432,6 +432,7 @@ mod slot {
     pub const INVITE: u32 = 11;
     pub const STOP_FOLLOW: u32 = 12;
     pub const DONE: u32 = 13;
+    pub const SHOW: u32 = 18;
     pub const KIND: u32 = 20;
     pub const LENGTH: u32 = 40;
     pub const GLIDE: u32 = 44;
@@ -474,6 +475,8 @@ enum Part {
     Empty,
     InviteButton,
     Title,
+    /// The section's scene and span, or, with the playhead in another
+    /// section, which one and a press back (D2).
     Sub,
     BeyondLabel,
     Beyond,
@@ -756,6 +759,7 @@ impl Shell {
             .current()
             .and_then(|track| track.scene_switches.cues().get(number - 1))
             .map_or(0, |cue| cue.id);
+        self.scene_lane.show_pending = true;
     }
 
     /// `--ui-probe look=video|section`: which card the block shows.
@@ -936,9 +940,11 @@ impl Shell {
             parts.push((Part::InviteButton, Block::Buttons));
             return CardsPlan { parts, framed };
         };
+        // The line under the title is a button row whatever it says, so the
+        // card does not jump as the playhead crosses in and out (Elsewhere).
         parts.extend([
             (Part::Title, Block::Buttons),
-            (Part::Sub, Block::Line),
+            (Part::Sub, Block::Buttons),
             (Part::Space, Block::Gap(look_cards::GROUP_GAP)),
         ]);
         if cue.scene_index == SceneId::Threshold.index() as u32 {
@@ -1641,8 +1647,63 @@ impl Shell {
                         self.play_span(input, from, until.min(input.duration_seconds), commands);
                     }
                 }
+                Part::Sub
+                    if selected.is_some_and(|(_, cue, _)| {
+                        !section_holds(cue, input.time_seconds) && self.look_column.cards.cut.is_none()
+                    }) =>
+                {
+                    // The playhead elsewhere (and not by this card's own
+                    // Play the cut): the frame, Look's head and the tuning
+                    // below are another section's. Say which, and offer the
+                    // way back.
+                    let Some((index, cue, _)) = selected else { continue };
+                    let playing = cues
+                        .iter()
+                        .position(|other| section_holds(other, input.time_seconds));
+                    let words = match playing {
+                        Some(at) => format!("The picture and the tuning below are section {}'s", at + 1),
+                        None => "The playhead is outside every section".to_owned(),
+                    };
+                    let label = format!("Show {}", index + 1);
+                    let width = (measure(&label) + 24.0).ceil();
+                    let button = UiRect::new(rect.x + rect.width - width, rect.y, width, rect.height);
+                    widgets::draw_text_faded(
+                        d,
+                        font,
+                        &words,
+                        rect.x,
+                        rect.y + (rect.height - metric::UI_FONT_CAPTION) * 0.5,
+                        (button.x - 8.0 - rect.x).max(0.0),
+                        16.0,
+                        metric::UI_FONT_CAPTION,
+                        color::ui_warning(),
+                    );
+                    let id = widgets::widget_id(widgets::id::LOOK_CARDS, slot::SHOW);
+                    let state = self.widgets.text_button(
+                        d,
+                        font,
+                        id,
+                        button,
+                        &label,
+                        false,
+                        widgets::ButtonStyle::Neutral,
+                        Some(metric::UI_FONT_CAPTION),
+                    );
+                    self.widgets.hint(
+                        d,
+                        state,
+                        id,
+                        button,
+                        &format!("{words}: put the playhead in section {} to see what this card changes", index + 1),
+                    );
+                    controls.push(format!("show@{}", rect_text(button)));
+                    if state.clicked {
+                        commands.push(ShellCommand::Seek(section_rest_seconds(cue)));
+                    }
+                }
                 Part::Sub => {
                     let Some((_, cue, _)) = selected else { continue };
+                    let rect = UiRect::new(rect.x, rect.y + (rect.height - 16.0) * 0.5, rect.width, 16.0);
                     let scene = SceneId::from_index(cue.scene_index as usize)
                         .map_or("Unknown scene", SceneId::display_name);
                     let text = format!(
