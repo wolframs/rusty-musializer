@@ -34,6 +34,9 @@
 #     been billed", never "nothing"; the next run sends nothing and says so,
 #     and --resend-unconfirmed sends it again only when the ceiling holds both
 #     estimates;
+#   - redownload (H4b): a finished job whose downloads come back cut short is
+#     kept, and the next run downloads it again without a new submit; an
+#     expired job is named and forgotten;
 #   - concurrent (H4b): two runs asking for one request while the first one's
 #     submit is in flight pay once (the provider's submit count), a run with
 #     --max-spend 0 sends nothing, and a job found in progress counts against
@@ -407,6 +410,36 @@ else
     fail "--resend-unconfirmed alone was not refused; see $OUT/lost-flag.log"
 fi
 fi # lost
+
+# --- 10. a finished clip that arrives cut short (H4b) ----------------------------
+if only redownload; then
+treatment "$OUT/cut.treatment.json" "a clip cut short [truncate-3]" ""
+submits="$(count submit)"
+contents="$(count content)"
+launch cut-1 --treatment "$OUT/cut.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/cut-1.musi"
+if [ "$(status_of cut-1)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] && [ "$(count content)" = $((contents + 3)) ] \
+    && has cut-1 'the finished clip was downloaded 3 times and refused each time' \
+    && has cut-1 'its job is kept, so Generate again downloads it again without paying again' \
+    && ls "$MUSIALIZER_GENERATED_DIR/jobs/"*.json >/dev/null 2>&1; then
+    pass "three cut-short downloads: named, bounded at 3, the paid job kept"
+else
+    fail "the cut-short clip was not retried and kept (status $(status_of cut-1)); see $OUT/cut-1.log"
+fi
+launch cut-2 --treatment "$OUT/cut.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/cut-2.musi"
+if [ "$(status_of cut-2)" = 0 ] && [ "$(count submit)" = $((submits + 1)) ] && has cut-2 'clip.generate picked up'; then
+    pass "the next run downloads the same job whole: no new submit"
+else
+    fail "the next run paid again or failed (status $(status_of cut-2), $(( $(count submit) - submits )) submits); see $OUT/cut-2.log"
+fi
+treatment "$OUT/expire.treatment.json" "a clip that expires [expire]" ""
+launch expire --treatment "$OUT/expire.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/expire.musi"
+if [ "$(status_of expire)" = 1 ] && has expire 'the job expired at OpenRouter before its clip was downloaded; Generate again asks (and pays) anew' \
+    && ! ls "$MUSIALIZER_GENERATED_DIR/jobs/"*.json >/dev/null 2>&1; then
+    pass "an expired job is named, with what asking again costs, and forgotten"
+else
+    fail "the expired job was not named or not forgotten; see $OUT/expire.log"
+fi
+fi # redownload
 
 # --- 6. the section card's Generate, pressed (tools/generate_card_check.py) -------
 if [ "${GENERATE_SKIP_CARD:-}" != 1 ] && only card; then

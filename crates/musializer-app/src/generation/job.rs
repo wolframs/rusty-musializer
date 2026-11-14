@@ -51,6 +51,10 @@ pub const MAX_DOWNLOAD_BYTES: u64 = 1024 * 1024 * 1024;
 /// How often a job is asked about: OpenRouter suggests every 10 to 30 s.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(10);
 
+/// How many times one ask downloads a finished clip that comes back cut
+/// short or refused before it stops and says so (the job is kept).
+pub const DOWNLOAD_ATTEMPTS: u32 = 3;
+
 /// How long a job may take before this application stops waiting for it.
 pub const DEADLINE: Duration = Duration::from_secs(30 * 60);
 
@@ -677,9 +681,15 @@ fn run_with(
     };
     let billing = state.cost_usd.map_or(possibly.clone(), Billing::Reported);
     if state.status != "completed" {
+        // The provider says the job is over without a clip: its record goes,
+        // and the next ask is a new request (and a new bill).
         store.forget_job(digest);
-        return Outcome::Failed {
-            reason: format!(
+        let reason = if state.status == "expired" {
+            "the job expired at OpenRouter before its clip was downloaded; Generate again asks \
+             (and pays) anew"
+                .to_owned()
+        } else {
+            format!(
                 "the job {}{}",
                 state.status,
                 state
@@ -687,38 +697,66 @@ fn run_with(
                     .as_deref()
                     .map(|error| format!(": {error}"))
                     .unwrap_or_default()
-            ),
-            billing,
+            )
         };
+        return Outcome::Failed { reason, billing };
     }
 
-    // 4. Download, verify, keep.
-    set_stage(shared, Stage::Downloading);
+    // 4. Download and verify, a few times: the job is finished and paid
+    // for, so a copy cut short or refused is fetched again, and the job's
+    // record stays until a copy is kept. Forgetting it here would make the
+    // next ask pay for a new generation of a clip that exists.
     let part = client.work.join("clip.part");
-    if let Err(error) = client.download(&job_id, &part, spec.max_bytes) {
-        let _ = std::fs::remove_file(&part);
-        return match error {
-            ClientError::Stopped => Outcome::Stopped { billing },
-            other => Outcome::Failed {
-                reason: format!("the clip could not be downloaded: {other}"),
-                billing,
-            },
-        };
-    }
-    set_stage(shared, Stage::Verifying);
     let record = spec
         .request
         .provenance(&now_utc(), spec.estimate_usd, state.cost_usd);
-    let verified = import(&part, record.clone(), &spec.name);
-    let clip = match verified {
-        Ok(clip) => clip,
-        Err(reason) => {
-            let _ = std::fs::remove_file(&part);
-            store.forget_job(digest);
+    let mut refused = Vec::new();
+    let clip = loop {
+        if refused.len() as u32 >= DOWNLOAD_ATTEMPTS {
             return Outcome::Failed {
-                reason: format!("the download is not a clip this application can play: {reason}"),
+                reason: format!(
+                    "the finished clip was downloaded {} times and refused each time (last: {}); \
+                     its job is kept, so Generate again downloads it again without paying again",
+                    refused.len(),
+                    refused.last().map_or("", String::as_str)
+                ),
                 billing,
             };
+        }
+        if !refused.is_empty() && !pause(spec.poll, stop) {
+            return Outcome::Stopped { billing };
+        }
+        set_stage(shared, Stage::Downloading);
+        match client.download(&job_id, &part, spec.max_bytes) {
+            Ok(_) => {}
+            Err(ClientError::Stopped) => {
+                let _ = std::fs::remove_file(&part);
+                return Outcome::Stopped { billing };
+            }
+            // Larger than allowed stays larger: fetching it again only costs
+            // the bandwidth. The job is kept all the same.
+            Err(error @ ClientError::TooLarge(_)) => {
+                let _ = std::fs::remove_file(&part);
+                return Outcome::Failed {
+                    reason: format!("the clip could not be downloaded: {error}"),
+                    billing,
+                };
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&part);
+                refused.push(format!("the clip could not be downloaded: {error}"));
+                continue;
+            }
+        }
+        set_stage(shared, Stage::Verifying);
+        match import(&part, record.clone(), &spec.name) {
+            Ok(clip) => break clip,
+            Err(reason) => {
+                let _ = std::fs::remove_file(&part);
+                refused.push(format!(
+                    "the download is not a clip this application can play: {reason}"
+                ));
+            }
         }
     };
     // Kept under the request's lock: two callers that polled the same job
@@ -821,6 +859,8 @@ pub(crate) mod tests {
         /// The first this many submits are read and accepted, and the
         /// connection then closes with no answer.
         pub drop_submits: usize,
+        /// The first this many downloads are the clip's first half.
+        pub truncated_downloads: usize,
         /// The submit's status and body, or `None` for a normal 202.
         pub submit: Option<(u16, String)>,
         /// Polls answered `in_progress` before the end.
@@ -966,7 +1006,16 @@ pub(crate) mod tests {
                 answer["id"] = "gen-vid-1-AAAAAAAAAAAAAAAAAAAA".into();
                 (200, "application/json".into(), answer.to_string().into_bytes())
             }
-            "content" => (200, script.content.0.clone(), script.content.1.clone()),
+            "content" => {
+                let seen = counts.lock().unwrap().get("content").copied().unwrap_or(0);
+                let bytes = &script.content.1;
+                let bytes = if seen <= script.truncated_downloads {
+                    bytes[..bytes.len() / 2].to_vec()
+                } else {
+                    bytes.clone()
+                };
+                (200, script.content.0.clone(), bytes)
+            }
             _ => (
                 200,
                 "application/json".into(),
@@ -1335,6 +1384,47 @@ pub(crate) mod tests {
         let (reason, billing) = failed(GenerationJob::spawn(job).wait(|_, _| {}));
         assert_eq!(billing, Billing::Nothing, "{reason}");
         assert!(Store::at(store).intent(&request().digest()).is_none());
+    }
+
+    #[test]
+    fn a_refused_download_keeps_its_job_and_the_next_ask_downloads_it_again() {
+        let folder = Scratch::new("job-redownload");
+        let video = tiny_mp4(folder.path());
+        let fake = Fake::start(Script {
+            truncated_downloads: DOWNLOAD_ATTEMPTS as usize,
+            polls: 0,
+            end: completed(0.12),
+            content: ("video/mp4".into(), video),
+            ..Script::default()
+        });
+        let store = folder.path().join("store");
+        let (reason, billing) =
+            failed(GenerationJob::spawn(spec(&fake, &store, request())).wait(|_, _| {}));
+        assert!(
+            reason.contains("downloaded 3 times and refused each time"),
+            "{reason}"
+        );
+        assert!(reason.contains("Generate again downloads it again without paying again"));
+        assert_eq!(billing, Billing::Reported(0.12));
+        assert_eq!(fake.count("content"), 3);
+        assert!(
+            Store::at(store.clone()).job(&request().digest()).is_some(),
+            "the paid job is kept"
+        );
+        // The next ask polls the same job and downloads it whole.
+        let outcome = GenerationJob::spawn(spec(&fake, &store, request())).wait(|_, _| {});
+        assert!(
+            matches!(
+                &outcome,
+                Outcome::Done(Generated {
+                    reused: Reuse::Resumed,
+                    ..
+                })
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(fake.count("submit"), 1, "paid once");
+        assert_eq!(fake.count("content"), 4);
     }
 
     #[test]
