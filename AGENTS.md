@@ -218,6 +218,9 @@ number disagrees, grep it there before debugging from scratch.
 - **Reaping the encoder does not close its pipe**: a process the child started still holds the read end. Stop the writer before the kill, join it only after the reap, and bound the join.
 - **A report's rect can be below the fold**: a `click=` past a scrolling view's `viewport=` is clipped and reads as a dead control. Check the viewport or make the window taller. See `docs/TRAPS.md`.
 - **An edit's autosave posts a notice over the preview**: mask the `notices:` cards from both runs before comparing preview pixels.
+- **FFmpeg's `-ss` counts from the container's start and drops frames before it**: seek to the midpoint between frames, plus the video's offset. See `docs/TRAPS.md`.
+- **A video FFmpeg must seek in can't be piped**: hand it the open file as stdin and read `/proc/self/fd/0`, with `-nostdin`. See `docs/TRAPS.md`.
+- **A still compared with FFmpeg's frame at another size measures two scalers**: compare at the source size. See `docs/TRAPS.md`.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe

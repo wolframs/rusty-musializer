@@ -96,9 +96,18 @@ commit that adds this block; the lead cherry-picks.
   style in the right column. Designer and critic as in WX-5.
 - [ ] **E — MiMo v2.5 benchmark** (row 2). Offline dry run first; the live run
   waits for the operator's go-ahead on the spend and on sending audio out.
-- [ ] **F — generated video as material** (VG), after D: design, then build
-  against a fake provider; any paid generation waits for the operator's
-  go-ahead.
+- [x] **F1 — video clips as material** (VG, first half; merged 2026-11-14):
+  the `clip` scene plays any video file as a section, bundled with the
+  project. Record and seam in `docs/VIDEO_GENERATION.md`.
+- [ ] **F1 follow-ups**: review by GPT-6.1-Sol; the Look section card's
+  controls for a clip section (which clip, `from`, `after`, `fit`).
+- [ ] **F2 — generating a clip** (VG, second half): provider call, price shown
+  first, consent through the Assist contracts, provenance on the clip asset,
+  a `generated` transition. Waits for the operator's go-ahead on spending.
+- [ ] **A flaky test to settle before the close**: `ui::chat_store::tests::two_windows_cannot_own_one_chat`
+  failed twice on 2026-11-14 while gates loaded the CPU and passed every time
+  alone. Find the race between the two savers' threads (or the assertion that
+  assumes an order) and fix it, or prove it harmless and say why.
 - [ ] **Close**: review, full verify, release build, queue and archive updated,
   worktrees and their branches removed.
 
