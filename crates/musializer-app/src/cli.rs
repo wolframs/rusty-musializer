@@ -380,6 +380,10 @@ pub struct UiProbe {
     /// `click-after=FRAME`: hold `click=`'s press back until this frame, for a
     /// press on something that takes frames to open.
     pub click_after: u64,
+    /// `click-hold=FRAMES`: keep `click=`'s button down this many frames
+    /// more before the release (G), so a press held across frames — the
+    /// start of every drag — can be photographed before it resolves.
+    pub click_hold: u32,
     /// `follow=1`: follow `--treatment` in a probe run too (WX-3). A batch
     /// run applies it once; this lets the gate edit the file mid-run.
     pub follow: bool,
@@ -1514,6 +1518,7 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         }
         "agent-press-at" => probe.agent_press_at = Some(value.parse().ok()?),
         "click-after" => probe.click_after = value.parse().ok()?,
+        "click-hold" => probe.click_hold = value.parse().ok()?,
         "agent-image" => {
             probe.agent_image = value.split('+').map(str::to_owned).collect();
             if probe.agent_image.iter().any(String::is_empty) {

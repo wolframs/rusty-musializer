@@ -1497,6 +1497,10 @@ fn run(
             .ui_probe
             .as_ref()
             .map_or(0, |probe| probe.click_after);
+        let click_hold = options
+            .ui_probe
+            .as_ref()
+            .map_or(0, |probe| probe.click_hold);
         if click_at.is_some() && report.frames >= click_after {
             app.shell.widgets.set_pointer_probe(match click_phase {
                 3 => Some(ui::widgets::PointerProbe {
@@ -1504,12 +1508,12 @@ fn run(
                     pressed: true,
                     released: false,
                 }),
-                4 => Some(ui::widgets::PointerProbe {
+                phase if phase >= 4 && phase < 5 + click_hold => Some(ui::widgets::PointerProbe {
                     down: true,
                     pressed: false,
                     released: false,
                 }),
-                5 => Some(ui::widgets::PointerProbe {
+                phase if phase == 5 + click_hold => Some(ui::widgets::PointerProbe {
                     down: false,
                     pressed: false,
                     released: true,

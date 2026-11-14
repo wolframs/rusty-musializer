@@ -67,6 +67,10 @@ file):
       playhead already inside stays; a boundary press does not move it;
       played on past it, the card says whose picture it is and Show N
       returns (the gap beside it does not).
+  39. (G) the seek belongs to a completed click while paused: a press held
+      across frames while playing, a click while playing, a drag from a
+      body and a press held during Play the cut never move the transport
+      (a held press is `click-hold=` and a native XTest press).
  keys (native XTest presses and keys, this file as MZ_BIN)
   22. a length typed with real keys saves and picks no scene; a title typed
       with T, space and 4 in it saves and moves neither the column, the
@@ -197,6 +201,14 @@ compared with `cmp`:
     and drew frame 1 where frame 2 had been, the record still 0.12.
   38 (1 failure): the card's Import dispatching the generic import: with the
     plan off, section 4 kept b.mp4 and the track's clip became c.mp4.
+  39 (3 failures): the lane of before the fix (show raised on the press):
+    a press held on section 4 while playing jumped to 6.29 (section 4's
+    rest and on), a click while playing to 6.62, and a press held during
+    Play the cut let the cut go (cut=none, 5.90). The drag check passed on
+    both binaries: the old seek on the press is overwritten by the scrub
+    before anything reports, and no perturbation of the release logic it
+    guards was caught (the threshold's clear is redundant with the press
+    re-arming it), so it pins behaviour, not this fix.
 """
 import json
 import os
@@ -297,6 +309,16 @@ def drive():
                 xt.XTestFakeButtonEvent(d, 1, 0, 0)
                 x.XFlush(d)
                 time.sleep(.25)
+            elif 'down' in step:
+                # A press held across frames (G): down here, up in its own step.
+                xt.XTestFakeMotionEvent(d, 0, *step['down'], 0)
+                x.XFlush(d)
+                time.sleep(.1)
+                xt.XTestFakeButtonEvent(d, 1, 1, 0)
+                x.XFlush(d)
+            elif 'up' in step:
+                xt.XTestFakeButtonEvent(d, 1, 0, 0)
+                x.XFlush(d)
             elif 'chord' in step:
                 key(0xffe3, 1)
                 press(ord(step['chord']))
@@ -991,6 +1013,35 @@ if only in ('all', 'show'):
     r = rect(cards(base), 'show')
     log, _ = run('show-gap', 'size=1280x720,column=look,time=3,play=1,section=2,click-after=120' + click((r[0] - 3, r[1] + r[3] // 2)), frames=150)
     check(playhead_of(log) > 4.0 and 'show@' in cards(log), f'the gap beside Show changes nothing ({playhead_of(log):.3f})')
+
+    # 39. (G) A press on a section's body shows it only once it is a click,
+    #     and only while paused: held across frames during playback the
+    #     transport goes on where it was (section 4's rest would be 5.550);
+    #     released as a click while playing it selects and the music goes on;
+    #     a drag from a body scrubs and never shows the section; a press held
+    #     during Play the cut leaves the cut running. The paused click and
+    #     the boundary press of check 18 are the controls.
+    body4 = (lane_x(6.0), lane[1] + lane[3] // 2)
+    log, _ = run('show-hold-playing', 'size=1280x720,column=look,time=0.5,play=1,click-after=20,click-hold=400'
+                 + click(body4), frames=70)
+    check(field(line(log, 'scene runs'), 'selected') == '4' and playhead_of(log) < 5.0
+          and 'playing=true' in line(log, 'resume'),
+          f"a press held on section 4 while playing selects it and moves nothing ({playhead_of(log):.3f}, {line(log, 'resume')})")
+    log, _ = run('show-click-playing', 'size=1280x720,column=look,time=0.5,play=1' + click(body4), frames=70)
+    check(field(line(log, 'scene runs'), 'selected') == '4' and playhead_of(log) < 5.0
+          and 'playing=true' in line(log, 'resume'),
+          f"a click on section 4 while playing selects it and the music goes on ({playhead_of(log):.3f})")
+    log, _ = run('show-drag', 'size=1280x720,column=look,time=7,play=0,hover=%dx%d' % body4
+                 + ',left-drag=%dx%d' % (lane_x(1.0), body4[1]), frames=40)
+    # The probe's drag commits where its last moved frame was, half way
+    # (3.5 s); what matters is that it is not section 4's rest, 5.550.
+    check(1.0 <= playhead_of(log) < 5.0 and 'gesture=none' in line(log, 'timeline'),
+          f"a drag from section 4's body scrubs and never shows section 4 ({playhead_of(log):.3f}, not 5.550)")
+    cut_base = cards(run('show-cut-base', 'size=1280x720,column=look,time=7,play=0,section=2', frames=30)[0])
+    log, _ = run('show-cut-hold', 'size=1280x720,column=look,time=7,play=0,section=2', frames=900,
+                 drive=[{'click': centre(rect(cut_base, 'play'))}, {'wait': 0.2}, {'down': body4}, {'wait': 0.4}])
+    check('native steps delivered' in log and field(cards(log), 'cut') not in (None, 'none') and playhead_of(log) < 4.2,
+          f"a press held on section 4 during Play the cut leaves the cut running (cut={field(cards(log), 'cut')}, {playhead_of(log):.3f})")
 
 if only in ('all', 'keys'):
     # 22. Real keys (D2): every check above types through the probe's text

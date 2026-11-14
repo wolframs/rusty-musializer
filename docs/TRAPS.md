@@ -584,3 +584,17 @@ probed), not read beside it. Symptom: `clip-at=` on `look cards:` disagrees
 with the `clip:` line's frame. Pinned by
 `own_start_pins_with_the_length_playback_folds_against` and the look cards
 gate's check 37. Found by the last review of the week, 2026-11-14.
+
+## A press is not yet a click
+
+The lane's body press selected a section and raised the show's seek for the
+next frame, while the same press could still turn into a scrub. Held before a
+drag during playback, the seek went out first: the transport jumped and an
+active Play the cut was let go (the cut lets go on any transport command it did
+not send) before the gesture was known. Anything a click does that a drag must
+not happen on the release, after the drag threshold was never crossed; the
+press may only select. A probe that presses and releases within three frames
+cannot see the difference, so `--ui-probe click-hold=FRAMES` keeps the button
+down and the photograph is taken mid-press. Symptom: a `transport:` playhead or
+a `cut=none` that changed during a press nobody released. Pinned by the look
+cards gate's check 39. Found by the last review of the week, 2026-11-14.

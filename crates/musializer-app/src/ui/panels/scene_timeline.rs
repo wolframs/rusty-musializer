@@ -209,8 +209,15 @@ pub struct SceneLaneEditor {
     /// A section was just selected by a press on its body (or `section=`):
     /// on the next frame the playhead goes into it when it is elsewhere,
     /// so the frame on screen, Look's head and the tuning under the cards
-    /// are that section's (D2).
+    /// are that section's (D2). Only while paused: a section selected while
+    /// the track plays is selected, and the music goes on (G).
     pub(crate) show_pending: bool,
+    /// A body press that may still become a click: [`Self::show_pending`]
+    /// is raised on its release when it never moved past the drag threshold
+    /// (G, 2026-11-14). A drag, a retime and a scrub never raise it: the seek
+    /// used to go out the frame after the press, before the gesture was known,
+    /// and jumped the transport and let go of Play the cut under a drag.
+    show_on_release: bool,
 }
 
 /// Where a selected section is shown: just after it has arrived (its
@@ -675,7 +682,7 @@ impl Shell {
         // A section selected is a section shown (D2): Look's card edits the
         // selection while its head, the frame and the tuning below follow
         // the playhead, so selecting puts the playhead in the section.
-        if std::mem::take(&mut self.scene_lane.show_pending) {
+        if std::mem::take(&mut self.scene_lane.show_pending) && !input.playing {
             if let Some(cue) = track
                 .scene_switches
                 .cues()
@@ -1504,10 +1511,14 @@ impl Shell {
         if let Some(origin_x) = self.scene_lane.scrub_origin_x {
             if !pointer.down {
                 self.scene_lane.scrub_origin_x = None;
+                // Pressed and released without a drag: a click, which shows
+                // its section (next frame, and only while paused).
+                self.scene_lane.show_pending = std::mem::take(&mut self.scene_lane.show_on_release);
                 return;
             }
             if (mouse.x - origin_x).abs() >= timed_lane::DRAG_THRESHOLD_PIXELS as f32 {
                 self.scene_lane.scrub_origin_x = None;
+                self.scene_lane.show_on_release = false;
                 if self.begin_timeline_scrub(input.playing, commands) {
                     self.update_timeline_scrub(
                         mouse.x,
@@ -1535,15 +1546,17 @@ impl Shell {
                 f64::from(mouse.x),
             );
             let Some(hit) = hit else {
+                self.scene_lane.show_on_release = false;
                 self.scene_lane.selected_id = 0;
                 self.scene_lane.scrub_origin_x = Some(mouse.x);
                 self.scene_lane.last_press = None;
                 return;
             };
             self.scene_lane.selected_id = hit.id;
-            // A press on a body shows its section; a boundary press is the
-            // start of a retime, which must not move the playhead.
-            self.scene_lane.show_pending = hit.zone != SceneLaneZone::Boundary;
+            // A click on a body shows its section once it is released as a
+            // click; a boundary press is the start of a retime, which must
+            // not move the playhead.
+            self.scene_lane.show_on_release = hit.zone != SceneLaneZone::Boundary;
             // A second press on a section body inside the double-click window
             // opens the run under it. Boundaries are excluded: two quick presses
             // on a cut are two drags, not an instruction to zoom.
@@ -1551,6 +1564,7 @@ impl Shell {
             let double = hit.zone != SceneLaneZone::Boundary
                 && is_double_click(self.scene_lane.last_press, now, mouse.x);
             if double {
+                self.scene_lane.show_on_release = false;
                 self.scene_lane.last_press = None;
                 let seconds = self.timeline.seconds_at(
                     f64::from(mouse.x),
