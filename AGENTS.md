@@ -221,6 +221,9 @@ number disagrees, grep it there before debugging from scratch.
 - **FFmpeg's `-ss` counts from the container's start and drops frames before it**: seek to the midpoint between frames, plus the video's offset. See `docs/TRAPS.md`.
 - **A video FFmpeg must seek in can't be piped**: hand it the open file as stdin and read `/proc/self/fd/0`, with `-nostdin`. See `docs/TRAPS.md`.
 - **A still compared with FFmpeg's frame at another size measures two scalers**: compare at the source size. See `docs/TRAPS.md`.
+- **A saved-file check must outlast autosave's 1.5 s settle**: give it the edit frame plus about 150 frames, and pair every "nothing was written" check with a control that writes.
+- **An XTest driver focuses the mapped, window-sized child and ignores X errors**: the last root child can be unmapped, and Xlib's default handler then exits the driver.
+- **Seek strictly inside a span, not onto its boundary**: a seek to a section's start can land a sample early, in the section before.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe

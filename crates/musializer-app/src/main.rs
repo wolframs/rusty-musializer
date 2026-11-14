@@ -3098,6 +3098,9 @@ fn run(
     if !assist.shutdown() {
         eprintln!("warning: the Assist helper could not be reaped promptly");
     }
+    // Read before the stream goes: `close_audio` takes it, and the `resume:`
+    // line would then say "not playing" of every run.
+    let was_playing = music.as_ref().is_some_and(|m| m.is_stream_playing());
     close_audio(&mut music, &mut app, &mut scratch);
     report.dock = dock.describe(app.shell.dock_open);
     {
@@ -3126,7 +3129,7 @@ fn run(
                     .project_metadata
                     .as_ref()
                     .map_or(0.0, |metadata| metadata.playhead_seconds),
-                music.as_ref().is_some_and(|m| m.is_stream_playing()),
+                was_playing,
             )
         },
     );

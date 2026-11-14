@@ -402,19 +402,6 @@ grade did nothing. Mask every card the `notices:` lines of *both* runs name
 before comparing preview pixels. Found by the look cards gate's negative
 control, 2026-11-14.
 
-## `resume: playing=` is false in every run
-
-The report line computes `playing=` from the music stream after the frame
-loop has ended, and `close_audio` has already taken the stream by then
-(`main.rs`, the report block after the loop), so it prints `false` whether or
-not playback was running. A check that reads `playing=false` as "it paused"
-passes on a build that never paused: the look cards' Play-the-cut checks
-did, until the playhead was the evidence. Found 2026-11-14 (D2) when a run
-whose playhead had advanced to 6.21 s in its last frames reported
-`playing=false`. Use the playhead (`transport: playhead=`, a value that has
-to land in a window), or move the line above `close_audio`, which changes
-what `top_bar_check.sh`'s resume cases prove.
-
 ## A saved-file check must outlast the autosave's settle
 
 A probe edit dirties the project and autosave writes it 1.5 s after the last
