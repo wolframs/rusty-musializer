@@ -198,3 +198,4 @@ source restored byte for byte (`cmp` against a saved copy):
 | A split copying the placement's `from` again | `splitting_a_clip_section_changes_no_moment_of_the_clip`, the section's own `from` (clip time 2 at 15 s, not 7) |
 | The track's `from` read as every section's own | the same test, the track's-clip case |
 | The old fallback restored (an unresolved clip path joined to the folder and used) | `a_clip_record_that_leaves_the_bundle_is_refused_not_read`: the symlink out of the bundle opened with no refusal |
+| The import target filtered to clip sections again (a selected Spectrum section falls through to the track) | `an_import_lands_in_the_section_pointed_at` and `the_notice_says_where_it_landed`. By hand, playhead at 4.5 s in the clip section of spectrum/clip/spectrum, section 1 selected, a clip dropped: before, the plan stayed `spectrum, clip, spectrum`; after, `clip, clip, spectrum` |

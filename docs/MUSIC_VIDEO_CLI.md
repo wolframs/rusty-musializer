@@ -357,7 +357,10 @@ clip frame drawn against the one asked for, or the placeholder and why.
 
 A clip can also be imported in the window (Scenes, Video Clip, "Import
 clip…", or drop the file): it plays in the section selected in the lane, or
-under the playhead. "Generate…" beside it is drawn disabled: generating a clip
+under the playhead when none is, and that section becomes Video Clip if it
+played another scene; with no plan driving, it is the track's own clip and the
+track's scene becomes Video Clip. The notice names which section it went to and
+why. "Generate…" beside it is drawn disabled: generating a clip
 is not built (`docs/VIDEO_GENERATION.md`).
 
 ### `transition` and `outro`

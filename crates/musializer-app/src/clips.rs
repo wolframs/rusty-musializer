@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use musializer_core::project::clip::{self, ClipAsset, ClipPlacement, ClipRef};
+use musializer_core::project::scene_switch::SceneSwitchTimeline;
 use musializer_core::scene::SceneId;
 use musializer_core::treatment::Treatment;
 use musializer_core::ui::notice::Severity;
@@ -159,20 +160,108 @@ pub fn attach_treatment_clips(
     Ok(entries)
 }
 
+/// Which section an imported clip goes to (VG, F1b): what the user pointed
+/// at, decided before anything changes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ImportTarget {
+    /// No plan drives the video: the clip becomes the track's own, and the
+    /// track's scene Video Clip.
+    Track,
+    /// One section of the plan plays it.
+    Section {
+        index: usize,
+        total: usize,
+        cue_id: u64,
+        start_seconds: f64,
+        end_seconds: f64,
+        /// Picked in the lane, or under the playhead (nothing picked).
+        selected: bool,
+        /// It plays another scene and becomes Video Clip first.
+        retarget: bool,
+    },
+}
+
+/// The section an import lands in, by the rule a scene tile press uses
+/// (`App::select_scene_interactive`): the section selected in the lane when
+/// there is one, else the one under the playhead. Whatever scene it plays,
+/// and whatever scene is under the playhead: a selected Spectrum section with
+/// the playhead in a clip section gets the clip, rather than the track.
+#[must_use]
+pub fn import_target(plan: &SceneSwitchTimeline, selected: u64, time_seconds: f64) -> ImportTarget {
+    if !plan.enabled || plan.is_empty() {
+        return ImportTarget::Track;
+    }
+    let cues = plan.cues();
+    let picked = cues.iter().position(|cue| cue.id == selected);
+    let index = picked
+        .or_else(|| {
+            cues.iter()
+                .position(|cue| cue.start_seconds <= time_seconds && time_seconds < cue.end_seconds)
+        })
+        .unwrap_or(cues.len() - 1);
+    let cue = cues[index];
+    ImportTarget::Section {
+        index,
+        total: cues.len(),
+        cue_id: cue.id,
+        start_seconds: cue.start_seconds,
+        end_seconds: cue.end_seconds,
+        selected: picked.is_some(),
+        retarget: cue.scene_index != SceneId::Clip.index() as u32,
+    }
+}
+
+/// Where the import's notice says the clip plays.
+#[must_use]
+pub fn import_place(target: ImportTarget) -> String {
+    match target {
+        ImportTarget::Track => {
+            "as the track's own clip (Video Clip is the track's scene; no plan drives the video)"
+                .to_owned()
+        }
+        ImportTarget::Section {
+            index,
+            total,
+            start_seconds,
+            end_seconds,
+            selected,
+            retarget,
+            ..
+        } => format!(
+            "in section {} of {total} ({} to {}), the one {}{}",
+            index + 1,
+            crate::ui::widgets::format_timestamp(start_seconds),
+            crate::ui::widgets::format_timestamp(end_seconds),
+            if selected {
+                "selected in the lane"
+            } else {
+                "under the playhead"
+            },
+            if retarget { ", now Video Clip" } else { "" }
+        ),
+    }
+}
+
 /// Import a clip picked or dropped in the window (VG): read it, put it in the
-/// track's library, and have it play — in the section the lane has selected,
-/// else the one under the playhead, when the plan drives; as the track's own
-/// clip otherwise. The scene becomes Video Clip there first, the way a tile
-/// press retargets that section.
+/// track's library, and have it play where [`import_target`] says — the
+/// section selected in the lane, else the one under the playhead, made Video
+/// Clip first when it plays another scene; with no plan driving, as the
+/// track's own clip, the track's scene becoming Video Clip. The notice names
+/// which.
 pub fn import_command(app: &mut crate::App, path: &Path, time_seconds: f64, now: f64) {
-    if app.workspace.current().is_none() {
+    let Some(track) = app.workspace.current() else {
         app.shell.notify(
             Severity::Warning,
             "Open a track first",
             "A clip plays in a section of a track's video.",
         );
         return;
-    }
+    };
+    let target = import_target(
+        &track.scene_switches,
+        app.shell.scene_lane.selected_id,
+        time_seconds,
+    );
     let entry = match import(path) {
         Ok(entry) => entry,
         Err(error) => {
@@ -184,10 +273,6 @@ pub fn import_command(app: &mut crate::App, path: &Path, time_seconds: f64, now:
             return;
         }
     };
-    if app.scene.id() != SceneId::Clip {
-        app.select_scene_interactive(SceneId::Clip, time_seconds, now);
-    }
-    let selected = app.shell.scene_lane.selected_id;
     let Some(track) = app.workspace.current_mut() else {
         return;
     };
@@ -205,38 +290,130 @@ pub fn import_command(app: &mut crate::App, path: &Path, time_seconds: f64, now:
         return;
     };
     let placement = ClipPlacement::new(clip);
-    let plan = &track.scene_switches;
-    let target = (plan.enabled && !plan.is_empty())
-        .then(|| {
-            let cues = plan.cues();
-            cues.iter()
-                .position(|cue| cue.id == selected)
-                .or_else(|| {
-                    cues.iter().position(|cue| {
-                        cue.start_seconds <= time_seconds && time_seconds < cue.end_seconds
-                    })
-                })
-                .map(|index| (index, cues[index]))
-        })
-        .flatten()
-        .filter(|(_, cue)| cue.scene_index == SceneId::Clip.index() as u32);
-    let place = match target {
-        Some((index, cue)) => {
-            track.scene_switches.set_clip(cue.id, Some(placement));
-            format!("section {} of {}", index + 1, track.scene_switches.len())
+    match target {
+        ImportTarget::Section {
+            cue_id, retarget, ..
+        } => {
+            if retarget {
+                if let Err(error) = track.retarget_scene_cue(cue_id, SceneId::Clip) {
+                    app.shell.notify(
+                        Severity::Warning,
+                        "Clip could not be placed",
+                        &format!("{name} is in the project, but the section could not become Video Clip: {error}."),
+                    );
+                    return;
+                }
+            }
+            track.scene_switches.set_clip(cue_id, Some(placement));
+            track.mark_dirty(now);
+            // A retarget rewinds the plan's cursor: this rebinds the live
+            // scene when the section is the one playing.
+            app.apply_auto_scene_switch(time_seconds);
         }
-        None => {
+        ImportTarget::Track => {
             track.base_clip = Some(placement);
-            "the Video Clip scene".to_owned()
+            track.mark_dirty(now);
+            app.select_scene(SceneId::Clip, now);
         }
-    };
-    track.mark_dirty(now);
+    }
     app.shell.notify(
         Severity::Info,
         "Clip imported",
         &format!(
-            "{name}, {}x{}, {seconds:.1} s, plays in {place}. Its sound is ignored; the track is the music.",
-            size.0, size.1
+            "{name}, {}x{}, {seconds:.1} s, plays {}. Its sound is ignored; the track is the music.",
+            size.0,
+            size.1,
+            import_place(target)
         ),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use musializer_core::project::scene_switch::SceneSwitchCue;
+    use musializer_core::scene::SCENE_COUNT;
+
+    fn cue(id: u64, start: f64, end: f64, scene: SceneId) -> SceneSwitchCue {
+        SceneSwitchCue {
+            id,
+            start_seconds: start,
+            end_seconds: end,
+            scene_index: scene.index() as u32,
+            strength: 0.5,
+            settings: Default::default(),
+            transition: musializer_core::project::transition::Transition::CUT,
+            grade: None,
+            glide: 0.0,
+            pixel: None,
+            caption_style: None,
+            clip: None,
+        }
+    }
+
+    /// Spectrum 0-10, Video Clip 10-20, Aurora 20-30.
+    fn plan(enabled: bool) -> SceneSwitchTimeline {
+        let mut plan = SceneSwitchTimeline::new();
+        plan.replace(
+            &[
+                cue(1, 0.0, 10.0, SceneId::Spectrum),
+                cue(2, 10.0, 20.0, SceneId::Clip),
+                cue(3, 20.0, 30.0, SceneId::AuroraVeil),
+            ],
+            30.0,
+            SCENE_COUNT as u32,
+        )
+        .unwrap();
+        plan.enabled = enabled;
+        plan
+    }
+
+    fn landed(target: ImportTarget) -> (u64, bool, bool) {
+        match target {
+            ImportTarget::Section {
+                cue_id,
+                selected,
+                retarget,
+                ..
+            } => (cue_id, selected, retarget),
+            ImportTarget::Track => (0, false, false),
+        }
+    }
+
+    /// F1b defect 8: every combination of playhead and selection lands where
+    /// the user pointed. The case the review found: the playhead in the clip
+    /// section and the Spectrum section selected put the clip on the track.
+    #[test]
+    fn an_import_lands_in_the_section_pointed_at() {
+        let on = plan(true);
+        // Nothing selected: the section under the playhead, whatever it plays.
+        assert_eq!(landed(import_target(&on, 0, 15.0)), (2, false, false));
+        assert_eq!(landed(import_target(&on, 0, 5.0)), (1, false, true));
+        // Selected: that section, wherever the playhead is.
+        assert_eq!(landed(import_target(&on, 1, 15.0)), (1, true, true));
+        assert_eq!(landed(import_target(&on, 2, 25.0)), (2, true, false));
+        assert_eq!(landed(import_target(&on, 3, 5.0)), (3, true, true));
+        // A selection that is not in the plan is no selection; past the end
+        // is the last section, as a tile press does.
+        assert_eq!(landed(import_target(&on, 99, 15.0)), (2, false, false));
+        assert_eq!(landed(import_target(&on, 0, 30.0)), (3, false, true));
+        // No plan driving: the track, selection or not.
+        assert_eq!(import_target(&plan(false), 1, 15.0), ImportTarget::Track);
+        assert_eq!(
+            import_target(&SceneSwitchTimeline::new(), 0, 0.0),
+            ImportTarget::Track
+        );
+    }
+
+    #[test]
+    fn the_notice_says_where_it_landed() {
+        let place = import_place(import_target(&plan(true), 1, 15.0));
+        assert!(place.contains("section 1 of 3"), "{place}");
+        assert!(place.contains("selected in the lane"), "{place}");
+        assert!(place.contains("now Video Clip"), "{place}");
+        let place = import_place(import_target(&plan(true), 0, 15.0));
+        assert!(place.contains("section 2 of 3") && place.contains("under the playhead"));
+        assert!(!place.contains("now Video Clip"), "{place}");
+        assert!(import_place(ImportTarget::Track).contains("track's own clip"));
+    }
 }
