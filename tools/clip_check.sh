@@ -254,4 +254,8 @@ for bad in truncated huge missing; do
 done
 
 python3 tools/clip_check.py "$OUT" $RENDERERS
+
+# VG H4: asking a video model for a clip, against a fake provider on loopback,
+# on this gate's display.
+GENERATE_BIN="${CLIP_BIN:-}" tools/generate_check.sh "$(dirname "$OUT")/generate-check"
 echo "PASS: clip frames, overruns, fit, a turned clip, release, response 0, export determinism, bundle, placeholder, refusals ($OUT)"

@@ -713,6 +713,13 @@ pub struct Cli {
     /// the treatment declared and `--resolution`/`--fps`/`--quality` override
     /// its `output` block.
     pub treatment: Option<PathBuf>,
+    /// `--generate-clips` (VG H4, additive): a batch treatment run may ask a
+    /// video model for the clips its sections say to generate. Never alone:
+    /// it needs `--max-spend`, and without both a run refuses by name.
+    pub generate_clips: bool,
+    /// `--max-spend USD`: the ceiling on what `--generate-clips` submits, in
+    /// dollars by the estimates shown before each request.
+    pub max_spend: Option<f64>,
     /// `--still SECONDS FILE`, repeatable: frames rendered through the export's
     /// own offline path and written as PNGs. All of them come out of one pass
     /// over the track.
@@ -1040,6 +1047,13 @@ where
                 None => cli.warn("Missing command-line protocol path"),
             },
 
+            // VG H4, additive. Spending is never implied: both or neither.
+            "--generate-clips" => cli.generate_clips = true,
+            "--max-spend" => match value_of(&argv, i).and_then(parse_seconds) {
+                Some(usd) if usd.is_finite() && usd <= 1000.0 => cli.max_spend = Some(usd),
+                _ => cli.warn("Invalid --max-spend; expected dollars, 0 to 1000"),
+            },
+
             "--auto-scenes" => cli.auto_scenes = true,
             "--reload-once" => cli.reload_once = true,
 
@@ -1108,6 +1122,14 @@ where
         i += 1;
     }
 
+    match (cli.generate_clips, cli.max_spend.is_some()) {
+        (true, false) => cli.warn(
+            "--generate-clips needs --max-spend USD: a run that may spend names its ceiling",
+        ),
+        (false, true) => cli.warn("--max-spend is the ceiling for --generate-clips, which is missing"),
+        _ => {}
+    }
+
     Outcome::Parsed(Box::new(cli))
 }
 
@@ -1130,6 +1152,7 @@ fn takes_one_value(flag: &str) -> bool {
             | "--project"
             | "--save-project"
             | "--treatment"
+            | "--max-spend"
             | "--contact-sheet"
             | "--sheet-at"
             | "--analysis-bridge"
@@ -1781,6 +1804,11 @@ Directing (no window needed to author; see docs/MUSIC_VIDEO_CLI.md):
                           this flag alone opens a whole video. Unknown names
                           and out-of-range values are refused, not ignored.
                           --save-project after it writes an ordinary .musi
+  --generate-clips        With --max-spend: ask a video model for the clips
+  --max-spend USD         the treatment's sections say to generate, up to
+                          USD by the estimates. Without both, a run with a
+                          missing generated clip prints each estimate and
+                          the total and exits 1; nothing is sent
   --vocabulary            Print every scene, setting (with bounds and
                           default), route source, curve and caption option a
                           treatment may name, as JSON, and exit. Opens no

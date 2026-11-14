@@ -292,6 +292,14 @@ impl AssistController {
         self.session = session;
     }
 
+    /// The session credential, for a clip generation (VG H4), which takes its
+    /// own copy for the job's lifetime when no key file holds one
+    /// (`generation::credential`). Never displayed.
+    #[must_use]
+    pub fn session_openrouter(&self) -> Option<&musializer_core::assist::secret::Secret> {
+        self.session.openrouter()
+    }
+
     /// The fingerprint of the session credential, for the AI settings dialog.
     /// Never the key.
     #[must_use]

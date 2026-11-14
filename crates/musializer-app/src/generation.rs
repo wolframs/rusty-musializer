@@ -9,6 +9,8 @@
 pub mod client;
 pub mod job;
 pub mod store;
+pub mod treatment;
+pub mod window;
 
 use musializer_core::assist::secret::Secret;
 use musializer_core::generation::catalog::Catalog;
@@ -67,6 +69,26 @@ pub fn prices(store: &store::Store, refresh: bool) -> (Option<Catalog>, String) 
         };
         return (cached, line);
     }
+    prices_now(store).map_cached(cached)
+}
+
+trait KeepCached {
+    fn map_cached(self, cached: Option<Catalog>) -> (Option<Catalog>, String);
+}
+
+impl KeepCached for (Option<Catalog>, String) {
+    /// A failed read keeps the cached list (stale, and said so by the price).
+    fn map_cached(self, cached: Option<Catalog>) -> (Option<Catalog>, String) {
+        match self {
+            (None, line) => (cached, line),
+            fresh => fresh,
+        }
+    }
+}
+
+/// Reads the price list now, whatever the cache holds, and keeps it.
+pub fn prices_now(store: &store::Store) -> (Option<Catalog>, String) {
+    let now = now_unix();
     let fetched = client::Endpoint::from_env().and_then(|endpoint| {
         let destination = store
             .work("prices")
@@ -86,9 +108,60 @@ pub fn prices(store: &store::Store, refresh: bool) -> (Option<Catalog>, String) 
             };
             (Some(catalog), line)
         }
-        Err(reason) => {
-            let line = format!("the price list could not be read: {reason}");
-            (cached, line)
-        }
+        Err(reason) => (None, format!("the price list could not be read: {reason}")),
     }
+}
+
+/// `--vocabulary`'s `video_models`: the five picks with what each accepts and
+/// what a second costs at 720p and 1080p without sound, from the price list
+/// (read now when missing or stale: a keyless GET that sends nothing).
+#[must_use]
+pub fn vocabulary_models() -> serde_json::Value {
+    use musializer_core::generation::price::{self, Price};
+    use serde_json::json;
+    let store = store::Store::from_env();
+    let (catalog, line) = match &store {
+        Ok(store) => prices(store, true),
+        Err(reason) => (None, reason.clone()),
+    };
+    let now = now_unix();
+    let models: Vec<serde_json::Value> = musializer_core::generation::PICKS
+        .iter()
+        .map(|pick| {
+            let offer = catalog.as_ref().and_then(|catalog| catalog.offer(pick.id));
+            let rate = |output: (u32, u32)| -> serde_json::Value {
+                let Some(offer) = offer else {
+                    return json!("price unknown: not on the price list");
+                };
+                let Ok(shape) = price::shape(offer, output) else {
+                    return json!(format!("does not make {}x{}", output.0, output.1));
+                };
+                match price::estimate(catalog.as_ref(), now, pick.id, 1, &shape, 0) {
+                    Price::Known(estimate) => json!({
+                        "usd_per_second": estimate.rate.usd_per_second,
+                        "approximate": estimate.rate.approximate,
+                        "resolution": shape.resolution,
+                    }),
+                    Price::Unknown(reason) => json!(reason.reason()),
+                }
+            };
+            json!({
+                "id": pick.id,
+                "label": pick.label,
+                "why": pick.why,
+                "seconds": offer.map(|offer| offer.durations.clone()),
+                "resolutions": offer.map(|offer| offer.resolutions.clone()),
+                "aspect_ratios": offer.map(|offer| offer.aspect_ratios.clone()),
+                "frames": offer.map(|offer| offer.frames_text()),
+                "per_second_1280x720": rate((1280, 720)),
+                "per_second_1920x1080": rate((1920, 1080)),
+            })
+        })
+        .collect();
+    json!({
+        "price_list": line,
+        "stale_after_days": musializer_core::generation::catalog::STALE_AFTER_DAYS,
+        "picks": models,
+        "other_models": "any id on OpenRouter's /api/v1/videos/models that takes the frames asked for",
+    })
 }

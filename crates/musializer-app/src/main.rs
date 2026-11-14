@@ -286,10 +286,13 @@ fn run(
             // Before the display check and before raylib, like the two arms
             // above: the caller asking what it may write is, by definition, one
             // that has not written anything yet and may have no display at all.
+            // VG H4: the video models with their prices, from the cached list
+            // (read now when missing or stale; keyless, it spends nothing).
+            let mut vocabulary = musializer_core::treatment::vocabulary();
+            vocabulary["video_models"] = generation::vocabulary_models();
             println!(
                 "{}",
-                serde_json::to_string_pretty(&musializer_core::treatment::vocabulary())
-                    .map_err(|error| error.to_string())?
+                serde_json::to_string_pretty(&vocabulary).map_err(|error| error.to_string())?
             );
             return Ok(std::process::ExitCode::SUCCESS);
         }
@@ -682,11 +685,41 @@ fn run(
     // the treatment already routes. `--resolution`, `--fps` and `--quality` run
     // later still and so override its `output` block.
     if let Some(path) = options.treatment.clone() {
+        // VG H4: a batch run finds or makes the treatment's generated clips
+        // first, rendering their frames; it spends only with the flag.
+        let prepared = if options.error || is_session_run(&options) {
+            Ok(None)
+        } else {
+            generation::treatment::prepare(
+                &path,
+                generation::treatment::Spending {
+                    ceiling_usd: options.max_spend.filter(|_| options.generate_clips),
+                },
+                assist.session_openrouter(),
+                options.resolution,
+                &mut rl,
+                &thread,
+                &audio,
+                &mut music,
+                &mut analysis,
+                &mut app,
+                &mut scratch,
+                &mut renderer,
+                &fonts,
+            )
+        };
         if options.error {
             eprintln!("warning: could not apply treatment {}", path.display());
+        } else if let Err(error) = prepared {
+            eprintln!(
+                "warning: could not apply treatment {}: {error}",
+                path.display()
+            );
+            options.error = true;
         } else {
-            match apply_treatment(
+            match apply_treatment_prepared(
                 &path,
+                prepared.unwrap_or(None),
                 &audio,
                 &mut analysis,
                 &mut music,
@@ -4236,11 +4269,41 @@ fn apply_treatment<'audio>(
     play: bool,
     at_seconds: f64,
 ) -> Result<String, String> {
+    apply_treatment_prepared(
+        path, None, audio, analysis, music, app, scratch, play, at_seconds,
+    )
+}
+
+/// [`apply_treatment`], with the treatment already parsed and its generated
+/// clips attached (VG H4, `generation::treatment::prepare`). Without one, a
+/// treatment with a generated section is refused by name.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "as `apply_treatment`, plus the prepared treatment"
+)]
+fn apply_treatment_prepared<'audio>(
+    path: &Path,
+    prepared: Option<generation::treatment::Prepared>,
+    audio: &'audio RaylibAudio,
+    analysis: &mut Analysis,
+    music: &mut Option<Music<'audio>>,
+    app: &mut App,
+    scratch: &mut [f32],
+    play: bool,
+    at_seconds: f64,
+) -> Result<String, String> {
     use musializer_core::project::model::Metadata;
     use musializer_core::treatment::{format_time, Treatment};
 
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    let mut treatment = Treatment::parse(&bytes).map_err(|error| error.to_string())?;
+    let (mut treatment, generated_entries) = match prepared {
+        Some(prepared) => (prepared.treatment, prepared.entries),
+        None => {
+            let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+            let treatment = Treatment::parse(&bytes).map_err(|error| error.to_string())?;
+            generation::treatment::refuse_unprepared(&treatment)?;
+            (treatment, Vec::new())
+        }
+    };
 
     if let Some(declared) = &treatment.audio {
         let declared_path = Path::new(&declared.path);
@@ -4329,7 +4392,8 @@ fn apply_treatment<'audio>(
 
     // The clip files its sections name (VG), read, hashed and probed
     // relative to the treatment, like its lyrics.
-    let clip_entries = clips::attach_treatment_clips(&mut treatment, path)?;
+    let mut clip_entries = clips::attach_treatment_clips(&mut treatment, path)?;
+    clip_entries.extend(generated_entries);
 
     let track = app
         .workspace

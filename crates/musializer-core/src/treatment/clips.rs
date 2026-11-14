@@ -11,6 +11,20 @@
 //! parsed treatment lists the files it names ([`super::Treatment::clip_files`])
 //! and compiles only once each has been read, hashed and probed into a
 //! [`ClipAsset`] and attached ([`super::Treatment::attach_clip`]).
+//!
+//! A clip can instead say how a model is to make it (VG H4):
+//!
+//! ```json
+//! { "at": 48, "scene": "clip", "clip": { "generate": {
+//!     "prompt": "the door opens onto fog", "model": "google/veo-3.1-lite",
+//!     "seconds": 4, "first": "previous", "last": "next" }, "after": "hold" } }
+//! ```
+//!
+//! Such a section is listed by [`super::Treatment::clip_generations`]; the
+//! application renders its frames, finds the clip it already has for the
+//! request or — only when the run carries `--generate-clips --max-spend` —
+//! asks for it, and attaches it under [`SegmentClip::path`], which for a
+//! generated clip is a key (`generate:segments[N]`), not a file.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -19,11 +33,46 @@ use super::{invalid, TreatmentError, MAX_PATH_BYTES};
 use crate::project::clip::{ClipAsset, ClipFit, ClipOverrun, ClipPlacement, MAX_CLIP_SECONDS};
 use crate::project::sha256;
 
+/// Where a generated clip's first or last frame comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FrameSource {
+    /// The last frame of the section before, as it is drawn (`"previous"`).
+    Previous,
+    /// The first frame of the section after (`"next"`).
+    Next,
+    /// An image file, PNG or JPEG, relative to the treatment.
+    File(String),
+}
+
+impl FrameSource {
+    /// The treatment's spelling.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Previous => "the previous section's last frame".into(),
+            Self::Next => "the next section's first frame".into(),
+            Self::File(path) => path.clone(),
+        }
+    }
+}
+
+/// A clip a model is to make, as a treatment asks for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GenerateSpec {
+    pub prompt: String,
+    pub model: String,
+    pub seconds: u32,
+    pub first: Option<FrameSource>,
+    pub last: Option<FrameSource>,
+}
+
 /// A segment's `clip`, as written.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct SegmentClip {
-    /// As written: relative to the treatment file.
+    /// As written: relative to the treatment file. For a generated clip, the
+    /// key it is attached under (`generate:segments[N]`).
     pub path: String,
+    pub generate: Option<GenerateSpec>,
     pub sha256: Option<String>,
     pub from: Option<f64>,
     pub after: ClipOverrun,
@@ -54,8 +103,23 @@ pub struct ClipFile {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct GenerateWire {
+    prompt: String,
+    model: String,
+    seconds: u32,
+    #[serde(default)]
+    first: Option<String>,
+    #[serde(default)]
+    last: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ClipWire {
-    path: String,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    generate: Option<GenerateWire>,
     #[serde(default)]
     sha256: Option<String>,
     #[serde(default)]
@@ -73,11 +137,82 @@ fn names<T: Copy>(all: &[T], name: fn(T) -> &'static str) -> String {
         .join(", ")
 }
 
+/// The key a generated clip is attached under, from its section's place.
+#[must_use]
+pub(super) fn generate_key(index: usize) -> String {
+    format!("generate:segments[{index}]")
+}
+
+fn frame_source(
+    place: &str,
+    text: Option<String>,
+    word: &'static str,
+) -> Result<Option<FrameSource>, TreatmentError> {
+    let Some(text) = text else {
+        return Ok(None);
+    };
+    if text == word {
+        return Ok(Some(if word == "previous" {
+            FrameSource::Previous
+        } else {
+            FrameSource::Next
+        }));
+    }
+    if matches!(text.as_str(), "previous" | "next" | "this") {
+        return Err(invalid(
+            place,
+            format!(
+                "{text:?} is not a frame here: a first frame is \"previous\" or an image file, \
+                 a last frame \"next\" or an image file (a clip section's own picture is the clip)"
+            ),
+        ));
+    }
+    if text.is_empty() || text.len() > MAX_PATH_BYTES || text.contains('\0') {
+        return Err(invalid(
+            place,
+            format!("an image path is 1..={MAX_PATH_BYTES} bytes"),
+        ));
+    }
+    Ok(Some(FrameSource::File(text)))
+}
+
+fn parse_generate(place: &str, wire: GenerateWire) -> Result<GenerateSpec, TreatmentError> {
+    crate::generation::request::check_prompt(&wire.prompt)
+        .map_err(|error| invalid(format!("{place}.prompt"), error.to_string()))?;
+    let slug = |c: char| c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | ':');
+    if wire.model.is_empty() || wire.model.len() > 128 || !wire.model.chars().all(slug) {
+        return Err(invalid(
+            format!("{place}.model"),
+            format!(
+                "a model is an OpenRouter video model id, such as {}",
+                crate::generation::PICKS[0].id
+            ),
+        ));
+    }
+    if !(1..=crate::generation::MAX_SECONDS).contains(&wire.seconds) {
+        return Err(invalid(
+            format!("{place}.seconds"),
+            format!(
+                "a generated clip lasts 1 to {} seconds; the model's own lengths are in --vocabulary",
+                crate::generation::MAX_SECONDS
+            ),
+        ));
+    }
+    Ok(GenerateSpec {
+        prompt: wire.prompt,
+        model: wire.model,
+        seconds: wire.seconds,
+        first: frame_source(&format!("{place}.first"), wire.first, "previous")?,
+        last: frame_source(&format!("{place}.last"), wire.last, "next")?,
+    })
+}
+
 /// Parses a segment's `clip`: a path, or an object.
 pub(super) fn parse(place: &str, value: &Value) -> Result<SegmentClip, TreatmentError> {
     let wire = match value {
         Value::String(path) => ClipWire {
-            path: path.clone(),
+            path: Some(path.clone()),
+            generate: None,
             sha256: None,
             from: None,
             after: None,
@@ -89,16 +224,53 @@ pub(super) fn parse(place: &str, value: &Value) -> Result<SegmentClip, Treatment
             return Err(invalid(
                 place,
                 "a clip is the path of a video file, or { \"path\", \"sha256\", \"from\", \
-                 \"after\", \"fit\" }",
+                 \"after\", \"fit\" }, or { \"generate\": { \"prompt\", \"model\", \
+                 \"seconds\", \"first\", \"last\" } }",
             ));
         }
     };
-    if wire.path.is_empty() || wire.path.len() > MAX_PATH_BYTES || wire.path.contains('\0') {
-        return Err(invalid(
-            format!("{place}.path"),
-            format!("a clip's path is 1..={MAX_PATH_BYTES} bytes"),
-        ));
-    }
+    let (path, generate) = match (wire.path, wire.generate) {
+        (Some(_), Some(_)) => {
+            return Err(invalid(
+                place,
+                "a clip is a file (`path`) or generated (`generate`), not both",
+            ));
+        }
+        (None, None) => {
+            return Err(invalid(
+                place,
+                "a clip names its file (`path`) or says how to generate it (`generate`)",
+            ));
+        }
+        (Some(path), None) => {
+            if path.is_empty() || path.len() > MAX_PATH_BYTES || path.contains('\0') {
+                return Err(invalid(
+                    format!("{place}.path"),
+                    format!("a clip's path is 1..={MAX_PATH_BYTES} bytes"),
+                ));
+            }
+            if path.starts_with("generate:") {
+                return Err(invalid(
+                    format!("{place}.path"),
+                    "a path beginning `generate:` is reserved; name the file `./generate:…`",
+                ));
+            }
+            (path, None)
+        }
+        (None, Some(generate)) => {
+            if wire.sha256.is_some() {
+                return Err(invalid(
+                    format!("{place}.sha256"),
+                    "a generated clip has no file to pin; its request is its identity",
+                ));
+            }
+            // The key is set by the caller, which knows the section's index.
+            (
+                String::new(),
+                Some(parse_generate(&format!("{place}.generate"), generate)?),
+            )
+        }
+    };
     let sha256 = match wire.sha256 {
         Some(digest) if sha256::is_hex_digest(&digest.to_ascii_lowercase()) => {
             Some(digest.to_ascii_lowercase())
@@ -149,7 +321,8 @@ pub(super) fn parse(place: &str, value: &Value) -> Result<SegmentClip, Treatment
         })?,
     };
     Ok(SegmentClip {
-        path: wire.path,
+        path,
+        generate,
         sha256,
         from,
         after,
@@ -162,7 +335,20 @@ pub(super) fn vocabulary() -> Value {
     serde_json::json!({
         "scene": "clip",
         "member": "clip",
-        "forms": ["\"path/to/clip.mp4\"", "{ \"path\", \"sha256\", \"from\", \"after\", \"fit\" }"],
+        "forms": [
+            "\"path/to/clip.mp4\"",
+            "{ \"path\", \"sha256\", \"from\", \"after\", \"fit\" }",
+            "{ \"generate\": { \"prompt\", \"model\", \"seconds\", \"first\", \"last\" }, \"from\", \"after\", \"fit\" }"
+        ],
+        "generate": {
+            "prompt": format!("what the clip shows, 1..={} bytes; no names or handles needed", crate::generation::MAX_PROMPT_BYTES),
+            "model": "an OpenRouter video model id; the picks, with what each accepts and costs, are under video_models",
+            "seconds": "one of the model's lengths",
+            "first": "\"previous\" (the section before's last frame, as drawn) or a PNG/JPEG file",
+            "last": "\"next\" (the section after's first frame, as drawn) or a PNG/JPEG file",
+            "spending": "a run never spends by itself: without --generate-clips --max-spend USD it prints the estimate of each missing clip and exits 1; with them it asks for what is missing up to the ceiling. A clip made once is found again by its request (model, prompt, seconds, shape and the frames' bytes) and never paid twice",
+            "frames_leave_the_machine": "the prompt and the frame images go to OpenRouter and the model's provider; nothing else",
+        },
         "path": "relative to the treatment file; any video FFmpeg reads; its sound is ignored",
         "from": "seconds into the clip the section starts at; absent continues the section before when it plays the same clip, else 0",
         "after": names(&ClipOverrun::ALL, ClipOverrun::name),
@@ -314,5 +500,130 @@ pub(super) mod tests {
             .unwrap_err()
             .to_string();
         assert!(message.contains("10.000 s long"), "{message}");
+    }
+
+    const GENERATE: &str = r#"{ "generate": { "prompt": "fog rolls in", "model": "google/veo-3.1-lite",
+                                 "seconds": 4, "first": "previous", "last": "next" }, "after": "loop" }"#;
+
+    #[test]
+    fn a_generated_clip_is_listed_keyed_and_compiles_once_attached() {
+        let mut parsed = treatment(&format!(
+            r#"{{ "at": 0, "scene": "spectrum" }},
+               {{ "at": 4, "scene": "clip", "clip": {GENERATE} }},
+               {{ "at": 8, "scene": "clip", "clip": "take.mp4" }}"#
+        ))
+        .unwrap();
+        assert_eq!(parsed.clip_files().len(), 1, "a generated clip is no file to read");
+        let generations = parsed.clip_generations();
+        assert_eq!(generations.len(), 1);
+        let generation = &generations[0];
+        assert_eq!(generation.key, "generate:segments[1]");
+        assert_eq!((generation.at, generation.next_at, generation.previous_at), (4.0, Some(8.0), Some(0.0)));
+        assert_eq!(generation.spec.first, Some(super::FrameSource::Previous));
+        assert_eq!(generation.spec.last, Some(super::FrameSource::Next));
+        assert_eq!(generation.spec.seconds, 4);
+        assert!(!generation.attached);
+        parsed.attach_clip("take.mp4", asset()).unwrap();
+        let refused = parsed.compile(20.0).unwrap_err().to_string();
+        assert!(refused.contains("generate:segments[1]") && refused.contains("not been read"), "{refused}");
+        let mut generated = asset();
+        generated.sha256 = sha256::digest_hex(b"generated");
+        parsed.attach_clip("generate:segments[1]", generated.clone()).unwrap();
+        assert!(parsed.clip_generations()[0].attached);
+        let compiled = parsed.compile(20.0).unwrap();
+        assert_eq!(compiled.summary.clip_sections, 2);
+        let cue = compiled.scene_switches.cues()[1];
+        assert_eq!(cue.clip.unwrap().clip, generated.clip_ref().unwrap());
+        assert_eq!(cue.clip.unwrap().after, ClipOverrun::Loop);
+    }
+
+    #[test]
+    fn a_stand_in_draws_the_neighbours_and_a_cut_into_a_section_is_plain() {
+        let mut parsed = treatment(&format!(
+            r#"{{ "at": 0, "scene": "spectrum" }},
+               {{ "at": 4, "scene": "clip", "clip": {GENERATE}, "transition": "fade" }},
+               {{ "at": 8, "scene": "pulse", "transition": {{ "kind": "fade", "seconds": 1 }} }}"#
+        ))
+        .unwrap();
+        parsed.stand_in(1);
+        parsed.cut_into(2);
+        let compiled = parsed.compile(20.0).unwrap();
+        let cues = compiled.scene_switches.cues();
+        let stand_in = crate::scene::SceneId::from_index(cues[1].scene_index as usize).unwrap();
+        assert!(
+            stand_in != crate::scene::SceneId::Spectrum && stand_in.index() != cues[2].scene_index as usize,
+            "{stand_in:?}"
+        );
+        assert_eq!(cues[1].clip, None);
+        assert_eq!(cues[2].transition, crate::project::transition::Transition::CUT);
+    }
+
+    #[test]
+    fn a_generated_clip_that_cannot_have_its_frames_is_refused_by_name() {
+        let generate = |first: &str, last: &str| {
+            format!(
+                r#"{{ "generate": {{ "prompt": "p", "model": "google/veo-3.1-lite", "seconds": 4{first}{last} }} }}"#
+            )
+        };
+        for (segments, expect) in [
+            (
+                format!(r#"{{ "at": 0, "scene": "clip", "clip": {} }}"#, generate(r#", "first": "previous""#, "")),
+                "the first section has no section before it",
+            ),
+            (
+                format!(
+                    r#"{{ "at": 0, "scene": "spectrum" }}, {{ "at": 4, "scene": "clip", "clip": {} }}"#,
+                    generate("", r#", "last": "next""#)
+                ),
+                "the last section has no section after it",
+            ),
+            (
+                format!(
+                    r#"{{ "at": 0, "scene": "clip", "clip": {} }}, {{ "at": 4, "scene": "clip", "clip": {} }}"#,
+                    generate("", r#", "last": "next""#),
+                    generate("", "")
+                ),
+                "the next section is generated too",
+            ),
+            (
+                format!(r#"{{ "at": 0, "scene": "clip", "clip": {} }}"#, generate(r#", "first": "this""#, "")),
+                "a clip section's own picture is the clip",
+            ),
+            (
+                format!(r#"{{ "at": 0, "scene": "clip", "clip": {} }}"#, generate(r#", "first": "next""#, "")),
+                "is not a frame here",
+            ),
+            (
+                r#"{ "at": 0, "scene": "clip", "clip": { "path": "a.mp4", "generate": { "prompt": "p", "model": "m/x", "seconds": 4 } } }"#.to_owned(),
+                "not both",
+            ),
+            (
+                r#"{ "at": 0, "scene": "clip", "clip": { "from": 1 } }"#.to_owned(),
+                "names its file",
+            ),
+            (
+                r#"{ "at": 0, "scene": "clip", "clip": { "generate": { "prompt": " ", "model": "m/x", "seconds": 4 } } }"#.to_owned(),
+                "the prompt is empty",
+            ),
+            (
+                r#"{ "at": 0, "scene": "clip", "clip": { "generate": { "prompt": "p", "model": "m x", "seconds": 4 } } }"#.to_owned(),
+                "an OpenRouter video model id",
+            ),
+            (
+                r#"{ "at": 0, "scene": "clip", "clip": { "generate": { "prompt": "p", "model": "m/x", "seconds": 31 } } }"#.to_owned(),
+                "1 to 30 seconds",
+            ),
+            (
+                r#"{ "at": 0, "scene": "clip", "clip": { "generate": { "prompt": "p", "model": "m/x", "seconds": 4, "audio": true } } }"#.to_owned(),
+                "unknown field",
+            ),
+            (
+                r#"{ "at": 0, "scene": "clip", "clip": { "path": "generate:x" } }"#.to_owned(),
+                "reserved",
+            ),
+        ] {
+            let message = reason(treatment(&segments));
+            assert!(message.contains(expect), "{segments}: {message}");
+        }
     }
 }

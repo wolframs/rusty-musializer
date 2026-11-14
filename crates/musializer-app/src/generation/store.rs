@@ -156,7 +156,7 @@ impl Store {
 
     /// Removes a job's scratch.
     pub fn clear_work(&self, request: &str) {
-        if is_digest(request) || request == "prices" {
+        if !request.is_empty() && request.chars().all(|c| c.is_ascii_alphanumeric()) {
             let _ = std::fs::remove_dir_all(self.root.join("work").join(request));
         }
     }

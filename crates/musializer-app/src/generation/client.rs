@@ -571,14 +571,20 @@ pub fn base64(bytes: &[u8]) -> String {
 ///
 /// Bytes that are neither PNG nor JPEG.
 pub fn data_url(bytes: &[u8]) -> Result<String, String> {
-    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        "image/png"
-    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        "image/jpeg"
-    } else {
-        return Err("a frame image is a PNG or a JPEG".into());
-    };
+    let mime = image_mime(bytes).ok_or("a frame image is a PNG or a JPEG")?;
     Ok(format!("data:{mime};base64,{}", base64(bytes)))
+}
+
+/// An image's MIME type by its magic number: PNG or JPEG, else `None`.
+#[must_use]
+pub fn image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

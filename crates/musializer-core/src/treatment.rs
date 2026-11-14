@@ -73,7 +73,7 @@ use crate::ui::tune_explore;
 
 mod clips;
 use crate::project::clip::{ClipAsset, ClipPlacement};
-pub use clips::ClipFile;
+pub use clips::{ClipFile, FrameSource, GenerateSpec};
 
 /// The treatment file's `schema` value. Versioned so a later shape can add
 /// fields without this parser guessing at them.
@@ -542,6 +542,24 @@ pub struct Treatment {
     clip_assets: BTreeMap<String, ClipAsset>,
 }
 
+/// A section whose clip a model is to make (VG H4).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipGeneration {
+    /// What [`Treatment::attach_clip`] attaches its clip under.
+    pub key: String,
+    pub segment: usize,
+    /// For a refusal or a report line.
+    pub place: String,
+    pub at: f64,
+    /// The next section's start, if there is one.
+    pub next_at: Option<f64>,
+    /// The previous section's start, if there is one.
+    pub previous_at: Option<f64>,
+    pub spec: clips::GenerateSpec,
+    /// Its clip is attached already.
+    pub attached: bool,
+}
+
 /// What [`Treatment::compile`] hands the application: the same pieces a `.musi`
 /// hydrates into, already validated against one track's duration.
 #[derive(Clone, Debug)]
@@ -854,6 +872,46 @@ impl Treatment {
                 clip,
             });
         }
+        // VG H4: a generated clip is attached under its section's key, and its
+        // neighbours must exist for the frames it names.
+        let generated: Vec<usize> = segments
+            .iter()
+            .enumerate()
+            .filter(|(_, segment)| segment.clip.as_ref().is_some_and(|clip| clip.generate.is_some()))
+            .map(|(index, _)| index)
+            .collect();
+        for &index in &generated {
+            let place = format!("segments[{index}] ({}).clip.generate", format_time(segments[index].at));
+            let spec = segments[index]
+                .clip
+                .as_ref()
+                .and_then(|clip| clip.generate.clone())
+                .expect("filtered above");
+            if spec.first == Some(clips::FrameSource::Previous) && index == 0 {
+                return Err(invalid(
+                    format!("{place}.first"),
+                    "\"previous\": the first section has no section before it",
+                ));
+            }
+            if spec.last == Some(clips::FrameSource::Next) {
+                if index + 1 >= segments.len() {
+                    return Err(invalid(
+                        format!("{place}.last"),
+                        "\"next\": the last section has no section after it",
+                    ));
+                }
+                if generated.contains(&(index + 1)) {
+                    return Err(invalid(
+                        format!("{place}.last"),
+                        "\"next\": the next section is generated too, and its first frame does \
+                         not exist until it does; end on an image file, or leave `last` out",
+                    ));
+                }
+            }
+            if let Some(clip) = segments[index].clip.as_mut() {
+                clip.path = clips::generate_key(index);
+            }
+        }
         let outro = match &wire.outro {
             Some(value) => parse_transition("outro", value)?,
             None => Transition::CUT,
@@ -1008,6 +1066,9 @@ impl Treatment {
         let mut files: Vec<ClipFile> = Vec::new();
         for (index, segment) in self.segments.iter().enumerate() {
             let Some(clip) = &segment.clip else { continue };
+            if clip.generate.is_some() {
+                continue;
+            }
             if files.iter().any(|file| file.path == clip.path) {
                 continue;
             }
@@ -1018,6 +1079,56 @@ impl Treatment {
             });
         }
         files
+    }
+
+    /// The sections whose clip a model is to make (VG H4), in time order.
+    #[must_use]
+    pub fn clip_generations(&self) -> Vec<ClipGeneration> {
+        self.segments
+            .iter()
+            .enumerate()
+            .filter_map(|(index, segment)| {
+                let clip = segment.clip.as_ref()?;
+                Some(ClipGeneration {
+                    key: clip.path.clone(),
+                    segment: index,
+                    place: format!("segments[{index}] ({}).clip.generate", format_time(segment.at)),
+                    at: segment.at,
+                    next_at: self.segments.get(index + 1).map(|next| next.at),
+                    previous_at: index.checked_sub(1).map(|before| self.segments[before].at),
+                    spec: clip.generate.clone()?,
+                    attached: self.clip_assets.contains_key(&clip.path),
+                })
+            })
+            .collect()
+    }
+
+    /// For rendering a generated section's frames before its clip exists:
+    /// the section plays a stand-in scene instead (one that is neither of
+    /// its neighbours', so no scene runs on across the cut), and its clip is
+    /// dropped. The frames taken are outside it, so its picture never shows.
+    pub fn stand_in(&mut self, segment: usize) {
+        let neighbours: Vec<SceneId> = [segment.checked_sub(1), Some(segment + 1)]
+            .into_iter()
+            .flatten()
+            .filter_map(|index| self.segments.get(index).map(|segment| segment.scene))
+            .collect();
+        let scene = [SceneId::Spectrum, SceneId::PulseField, SceneId::OrbitalLattice]
+            .into_iter()
+            .find(|scene| !neighbours.contains(scene))
+            .unwrap_or(SceneId::Spectrum);
+        if let Some(target) = self.segments.get_mut(segment) {
+            target.scene = scene;
+            target.clip = None;
+        }
+    }
+
+    /// Makes the cut into `segment` a plain cut, so a frame at its start is
+    /// its own picture rather than a blend (for a generated clip's frames).
+    pub fn cut_into(&mut self, segment: usize) {
+        if let Some(target) = self.segments.get_mut(segment) {
+            target.transition = Transition::CUT;
+        }
     }
 
     /// Hands over a clip file the application read, hashed and probed (VG).
