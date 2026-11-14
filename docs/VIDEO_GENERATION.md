@@ -470,6 +470,26 @@ it as spent.**
   …/spending.tsv." — in the window's notice and card and on the command line.
   Agreeing to send again names the newest send by its id: a send lost after
   the warning was shown makes the next press warn again instead of sending.
+- **The plan comes first.** A treatment run discovered a held send only when
+  it reached its section: with a new $0.12 request in section 1, a held $0.12
+  send in section 2 and `--max-spend 0.12`, section 1 went out first — $0.24
+  against $0.12. Now a run looks at every generated section before it sends
+  anything (frames rendered, request built; found, a job to pick up, sends
+  never answered, new), adds up what is committed or possibly billed, decides
+  in time order what the ceiling still admits, and prints the plan:
+  > generate:        segments[1] (0:03.000).clip.generate refused: it would
+  > pass the ceiling: $0.12 committed or possibly billed, $0.12 more, $0.12
+  > allowed
+  > generate:        plan: $0.12 possibly billed already, $0.00 to send or pick
+  > up, $0.12 of $0.12 allowed; nothing has been sent yet
+
+  and admitted sections as "plan: … is sent, $0.12", "picks up the job sent
+  before, counting $0.12", "is sent again after 1 unanswered send, $0.12
+  more", "waits for … to be made, counting $0.12". A section whose frames
+  show a generated section made earlier in the run cannot have its request
+  known before that one is made: it is counted at its estimate and looked at
+  again then, as is any section a clip made since may show in, and every send
+  is checked once more with what is known at that moment.
 - **The ledger** (`spending.tsv`) gets a line before each request leaves
   ("sending, billed if accepted") and one when the job ends, marked ", possibly
   billed" or ", answer lost, possibly billed" where no cost was reported. A
@@ -487,6 +507,7 @@ byte (`cmp` against a saved copy), 2026-11-14:
 | Perturbation | What failed |
 | --- | --- |
 | `forget_job_held` removing whatever record is there (the job id not compared, as before) | gate stale: "the late poller removed job 2's record", and run D submitted again (3 submits, not 2) |
+| The plan not counting held sends (`possibly_billed` left at 0, as when a held send was found only on reaching its section) | gate plan: "the plan did not count the held send before sending" — under `--max-spend 0.12` section 1 was submitted beside section 2's held $0.12 (1 submit, the review's defect) |
 | `add_attempt` replacing the earlier sends (as before: one intent per request) | gate lost: "the earlier lost sends were not both counted" — the third send went out under `--max-spend 0.24` (3 submits, status 0); `every_unconfirmed_send_stays_and_counts` and `two_lost_answers_both_stay_until_the_clip_is_in_hand` |
 | `write_private` without the folder's sync after the rename | `every_record_is_synced_with_its_folder`: the intent's folder `store/intents` missing from what was synced. A power loss itself cannot be staged in a test; the test shows the folder is opened and synced, not that the disk keeps it |
 

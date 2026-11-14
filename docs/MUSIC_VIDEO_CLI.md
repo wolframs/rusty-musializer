@@ -406,9 +406,14 @@ tools/headless_run.sh --treatment door.treatment.json --save-project door.musi
 tools/headless_run.sh --treatment door.treatment.json --generate-clips --max-spend 1.00 --save-project door.musi
 ```
 
-With `--generate-clips --max-spend USD` it asks for what is missing, one job at
-a time, while the estimates of the jobs it submitted stay within the ceiling,
-and refuses the rest by name (exit 1). An unknown price (no price list, one
+With `--generate-clips --max-spend USD` it first looks at every generated
+section — frames rendered, request built, what the project and the store hold
+for it — adds up what is committed or possibly billed already, decides in time
+order what the ceiling still admits, and prints that plan (`generate: plan:
+…`, ending "nothing has been sent yet"); only then does it ask for what the
+plan admits, one job at a time, and it refuses the rest by name (exit 1). A
+section whose frames show a generated section made earlier in the run is
+counted at its estimate and looked at again once that one is made. An unknown price (no price list, one
 older than a week, a model not on it) is refused under a ceiling. The saved
 project bundles the clips like any other, so the next run needs no flag and no
 network; a changed prompt, model, length or frame is a new request. Failures
@@ -420,10 +425,10 @@ and nothing of them is imported. Prices, the API and what a clip cost in fact:
 A job already submitted for the same request, or being sent by another run or
 window right now, is picked up rather than sent again, and it counts against
 the ceiling at its estimate; `--max-spend 0` sends nothing. A request whose
-earlier send lost its answer (the provider may have accepted and billed it,
-and has no way to find the job) is refused by name, counted against the
-ceiling, until the run also carries `--resend-unconfirmed`; sending it again
-then counts a second estimate. Under `--resolution`, `--fps` and `--quality`
+earlier sends lost their answers (the provider may have accepted and billed
+each, and has no way to find the jobs) is refused by name, every such send
+counted against the ceiling, until the run also carries `--resend-unconfirmed`;
+sending it again then counts one estimate more. Under `--resolution`, `--fps` and `--quality`
 the frames sent are the export's frames at those cuts.
 
 ### `transition` and `outro`

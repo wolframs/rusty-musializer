@@ -11,7 +11,7 @@
 # GENERATE_BIN names another binary, for a negative control without replacing
 # the build. GENERATE_SKIP_CARD=1 leaves out the window card's half.
 # GENERATE_ONLY="NAME ..." runs only those groups (base, concurrent, lost,
-# redownload, order, fps, stale, card, canary), for a negative control.
+# redownload, order, fps, stale, plan, card, canary), for a negative control.
 #
 # What it asserts:
 #   - the estimate is printed before any request, and without the flag (or with
@@ -48,6 +48,10 @@
 #     submit is in flight pay once (the provider's submit count), a run with
 #     --max-spend 0 sends nothing, and a job found in progress counts against
 #     a ceiling at its estimate;
+#   - plan (H4c): a run reads every request's state before it sends any: with
+#     a new $0.12 request in section 1 and an earlier lost $0.12 send held for
+#     section 2, --max-spend 0.12 sends nothing (the plan, printed first,
+#     refuses section 1), and --max-spend 0.24 sends section 1 only;
 #   - stale (H4c): two runs poll one recorded job and learn it expired at
 #     different times; between the two answers a third run submits a new job
 #     for the request. The late poller leaves the new job's record alone, and
@@ -270,7 +274,7 @@ EOF
 launch ceiling --treatment "$OUT/two.treatment.json" --generate-clips --max-spend 0.15 \
     --save-project "$OUT/ceiling.musi"
 if [ "$(status_of ceiling)" = 1 ] && has ceiling 'segments[1] (0:03.000).clip.generate generated' \
-    && has ceiling 'refused: it would pass the ceiling: $0.12 committed this run, $0.12 more, $0.15 allowed' \
+    && has ceiling 'refused: it would pass the ceiling: $0.12 committed or possibly billed, $0.12 more, $0.15 allowed' \
     && [ "$(count submit)" = 3 ] && [ ! -e "$OUT/ceiling.musi" ]; then
     pass "the ceiling: the first clip made, the second refused by name, exit 1"
 else
@@ -380,7 +384,7 @@ else
     fail "--max-spend 0 did not refuse (status $status_z); see $OUT/twice-z.log"
 fi
 if [ "$(status_of twice-w)" = 1 ] \
-    && has twice-w 'refused: it would pass the ceiling: $0.00 committed this run, $0.12 more, $0.10 allowed'; then
+    && has twice-w 'refused: it would pass the ceiling: $0.00 committed or possibly billed, $0.12 more, $0.10 allowed'; then
     pass "a job found in progress counts against a \$0.10 ceiling at its \$0.12 estimate"
 else
     fail "a job in progress was not counted at its estimate (status $(status_of twice-w)); see $OUT/twice-w.log"
@@ -412,7 +416,7 @@ fi
 launch lost-3 --treatment "$OUT/lost.treatment.json" --generate-clips --max-spend 0.20 --resend-unconfirmed \
     --save-project "$OUT/lost-3.musi"
 if [ "$(status_of lost-3)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] \
-    && has lost-3 'refused: it would pass the ceiling: $0.12 committed this run, $0.12 more, $0.20 allowed'; then
+    && has lost-3 'refused: it would pass the ceiling: $0.12 committed or possibly billed, $0.12 more, $0.20 allowed'; then
     pass "sending it again counts both estimates: refused under a \$0.20 ceiling"
 else
     fail "--resend-unconfirmed did not count the earlier send (status $(status_of lost-3)); see $OUT/lost-3.log"
@@ -604,6 +608,59 @@ else
     fail "run D paid again or failed ($(( $(count submit) - submits )) submits, status $(status_of stale-c), $(status_of stale-d)); see $OUT/stale-d.log"
 fi
 fi # stale
+
+# --- 14. the plan comes first (H4c) ----------------------------------------------
+# Section 2's request (no frames, so its digest does not depend on section 1)
+# is sent once by a treatment of its own and its answer is lost: a held send,
+# possibly billed $0.12. A treatment with a new section 1 before it, under a
+# $0.12 ceiling, must find that before sending section 1: $0.24 against $0.12.
+if only plan; then
+plan_treatment() {
+    # $1 file, $2 the first generated section (or nothing)
+    cat >"$1" <<EOF
+{ "schema": "musializer.treatment/v1", "audio": { "path": "fixture.wav" },
+  "output": { "resolution": "640x360", "fps": 24, "quality": "balanced" }, "seed": 7,
+  "segments": [ { "at": 0, "scene": "spectrum" },$2
+                { "at": 6, "scene": "pulse" },
+                { "at": 9, "scene": "clip", "clip": { "generate": {
+                    "prompt": "the plan: held [lost-answer-once]", "model": "google/veo-3.1-lite",
+                    "seconds": 4 } } } ] }
+EOF
+}
+plan_treatment "$OUT/plan-held.treatment.json" ""
+plan_treatment "$OUT/plan.treatment.json" '
+                { "at": 3, "scene": "clip", "clip": { "generate": {
+                    "prompt": "the plan: new", "model": "google/veo-3.1-lite", "seconds": 4,
+                    "first": "previous" } } },'
+submits="$(count submit)"
+launch plan-0 --treatment "$OUT/plan-held.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/plan-0.musi"
+if [ "$(status_of plan-0)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] && has plan-0 'may have been billed (about $0.12)'; then
+    pass "the held section's request was sent once and its answer lost"
+else
+    fail "the held send was not made (status $(status_of plan-0)); see $OUT/plan-0.log"
+fi
+launch plan-1 --treatment "$OUT/plan.treatment.json" --generate-clips --max-spend 0.12 --save-project "$OUT/plan-1.musi"
+refusal='segments[1] (0:03.000).clip.generate refused: it would pass the ceiling: $0.12 committed or possibly billed, $0.12 more, $0.12 allowed'
+summary='plan: $0.12 possibly billed already, $0.00 to send or pick up, $0.12 of $0.12 allowed; nothing has been sent yet'
+if [ "$(status_of plan-1)" = 1 ] && [ "$(count submit)" = $((submits + 1)) ] && has plan-1 "$refusal" \
+    && has plan-1 "$summary" && has plan-1 'segments[3] (0:09.000).clip.generate refused: This exact request was sent on'; then
+    pass "under \$0.12 with \$0.12 held: nothing sent, section 1 refused by the plan before any request"
+else
+    fail "the plan did not count the held send before sending (status $(status_of plan-1), $(( $(count submit) - submits - 1 )) submits); see $OUT/plan-1.log"
+fi
+launch plan-2 --treatment "$OUT/plan.treatment.json" --generate-clips --max-spend 0.24 --save-project "$OUT/plan-2.musi"
+first_plan="$(grep -n 'plan: \$' "$OUT/plan-2.log" | head -1 | cut -d: -f1)"
+first_send="$(grep -n 'sending the request' "$OUT/plan-2.log" | head -1 | cut -d: -f1)"
+if [ "$(status_of plan-2)" = 1 ] && [ "$(count submit)" = $((submits + 2)) ] \
+    && has plan-2 'plan: segments[1] (0:03.000).clip.generate is sent, $0.12' \
+    && has plan-2 'plan: $0.12 possibly billed already, $0.12 to send or pick up, $0.24 of $0.24 allowed' \
+    && has plan-2 'segments[1] (0:03.000).clip.generate generated' \
+    && [ -n "$first_plan" ] && [ -n "$first_send" ] && [ "$first_plan" -lt "$first_send" ]; then
+    pass "under \$0.24: the plan, printed before the first request, sends section 1 only (\$0.12 held + \$0.12)"
+else
+    fail "the \$0.24 plan was not kept or not printed first (status $(status_of plan-2)); see $OUT/plan-2.log"
+fi
+fi # plan
 
 # --- 6. the section card's Generate, pressed (tools/generate_card_check.py) -------
 if [ "${GENERATE_SKIP_CARD:-}" != 1 ] && only card; then

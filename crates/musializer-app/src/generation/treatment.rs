@@ -1,7 +1,7 @@
 //! A treatment's generated clips, in a batch run (VG H4).
 //!
 //! Before the treatment is applied, each section whose clip a model is to
-//! make is resolved in time order: its frames are rendered through the
+//! make is looked at in time order: its frames are rendered through the
 //! export's own still path from a draft of the treatment (the section and any
 //! other unmade one standing in, the cut into the framed section plain), the
 //! request is built and identified, and the clip it names is looked for — in
@@ -10,10 +10,17 @@
 //!
 //! **A run never spends by itself.** What is missing is refused by name with
 //! its estimate and the total, and the run exits 1, unless it carries
-//! `--generate-clips --max-spend USD`. Then what is missing is asked for, one
-//! job at a time, while the estimates of the jobs submitted stay within the
-//! ceiling; the rest are refused by name. An unknown price is refused under
-//! a ceiling, since no ceiling can be kept with it.
+//! `--generate-clips --max-spend USD`.
+//!
+//! **The plan comes before the first request** (H4c). Every section's state
+//! is read first (found, a job to pick up, sends never answered, new); what
+//! is already committed or possibly billed is added up; the ceiling decides,
+//! in time order, what may still be sent; and the plan is printed. Only then
+//! is anything sent. A section whose frames show a generated section this run
+//! makes first is counted at its estimate and looked at again once that one
+//! is made, and so is one a clip attached since may show in; each send is
+//! checked against the ceiling again with what is known then. An unknown
+//! price is refused under a ceiling, since no ceiling can be kept with it.
 //!
 //! **A request whose earlier sends lost their answers** (an intent left in
 //! the store, H4b) may have been billed for each of them. Every one counts
@@ -117,74 +124,124 @@ enum Resolution {
     },
 }
 
-/// Resolves every generated section of the treatment at `path`.
-///
-/// Returns `None` when it has none. Prints one `generate:` line per section.
-///
-/// # Errors
-///
-/// A section that cannot be resolved, or missing clips the run may not (or
-/// could not) pay for — after every section has been looked at, so the
-/// refusal lists them all with the total.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the composition root's resources one offline frame needs, as `export_stills`"
-)]
-pub fn prepare<'audio>(
-    path: &Path,
-    spending: Spending,
-    session_key: Option<&musializer_core::assist::secret::Secret>,
+/// A generated section's request, built from its rendered frames.
+struct Ready {
+    request: GenerationRequest,
+    digest: String,
+    estimate: Price,
+    first_png: Option<Vec<u8>>,
+    last_png: Option<Vec<u8>>,
+}
+
+/// What is known of a request before anything is sent (H4c).
+enum State {
+    /// Nothing of it was sent before.
+    New,
+    /// A job submitted before and not downloaded, or one another window or
+    /// run is sending now: picked up, and counted at its estimate.
+    PickUp,
+    /// Sent before and never answered: each send may have been billed.
+    Held(super::store::Intent),
+}
+
+/// Where a section stands when it is looked at.
+enum Look {
+    Found(Box<TrackClip>),
+    Ready(Box<Ready>, State),
+    /// Its frames show a generated section this run has yet to make, so its
+    /// request is known only once that one is made.
+    Waits {
+        on: usize,
+        on_place: String,
+        estimate: Price,
+    },
+    Refused {
+        estimate: Price,
+        why: String,
+    },
+}
+
+/// What the plan does with a section.
+enum Step {
+    /// Found, or refused: nothing to send.
+    Settled(Option<String>),
+    /// Send it, pick it up or send it again, counting `cost`.
+    Send(f64),
+    /// Counted at `cost` until its request is known.
+    Reserve(f64),
+}
+
+/// One section in the plan.
+struct Entry {
+    generation: ClipGeneration,
+    look: Option<Look>,
+    /// How many clips were attached when it was looked at: one attached
+    /// since may show in its frames, so it is looked at again.
+    seen: usize,
+    step: Step,
+}
+
+/// What rendering a section's frames needs: the composition root's
+/// resources, as `export_stills`.
+struct Frames<'r, 'audio> {
+    path: &'r Path,
     overrides: Overrides,
-    rl: &mut RaylibHandle,
-    thread: &RaylibThread,
+    rl: &'r mut RaylibHandle,
+    thread: &'r RaylibThread,
     audio: &'audio RaylibAudio,
-    music: &mut Option<raylib::prelude::Music<'audio>>,
-    analysis: &mut crate::Analysis,
-    app: &mut crate::App,
-    scratch: &mut [f32],
-    renderer: &mut SceneRenderer,
-    fonts: &Faces,
-) -> Result<Option<Prepared>, String> {
-    let resolution_override = overrides.resolution;
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
-    let mut treatment = Treatment::parse(&bytes).map_err(|error| error.to_string())?;
-    if treatment.clip_generations().is_empty() {
-        return Ok(None);
-    }
-    let store = Store::from_env()?;
-    let (catalog, prices_line) = super::prices(&store, true);
-    println!(
-        "generate:        {prices_line}; clips kept in {}",
-        store.root().display()
-    );
+    music: &'r mut Option<raylib::prelude::Music<'audio>>,
+    analysis: &'r mut crate::Analysis,
+    app: &'r mut crate::App,
+    scratch: &'r mut [f32],
+    renderer: &'r mut SceneRenderer,
+    fonts: &'r Faces,
+    catalog: Option<&'r Catalog>,
+    prices_line: &'r str,
+    frames_dir: &'r Path,
+    store: &'r Store,
+}
 
-    let mut entries: Vec<(String, TrackClip)> = Vec::new();
-    let mut committed = 0.0f64;
-    let mut outcomes: Vec<(ClipGeneration, Resolution)> = Vec::new();
-    let mut blocked: Vec<usize> = Vec::new();
-    let (frames_name, frames_dir) = store.private_work("frames")?;
-
-    for generation in treatment.clip_generations() {
-        // A section whose previous one is still missing has no frame to start on.
-        if generation.spec.first == Some(FrameSource::Previous)
-            && blocked.contains(&(generation.segment - 1))
-        {
-            let estimate =
-                estimate_without_frames(&generation, catalog.as_ref(), app, resolution_override);
-            println!(
-                "generate:        {} waits for the section before it, which is missing ({})",
-                generation.place,
-                estimate.short()
-            );
-            blocked.push(generation.segment);
-            outcomes.push((
-                generation,
-                Resolution::Missing {
+impl Frames<'_, '_> {
+    /// Renders the section's frames from a draft (every unmade generated
+    /// section standing in), builds its request and reads what the project
+    /// and the store hold for it. Sends nothing. `blocked`: generated
+    /// sections this run will not make.
+    fn look(
+        &mut self,
+        generation: &ClipGeneration,
+        treatment: &Treatment,
+        entries: &[(String, TrackClip)],
+        blocked: &[usize],
+    ) -> Result<Look, String> {
+        let resolution_override = self.overrides.resolution;
+        let unmade = |segment: usize| {
+            treatment
+                .clip_generations()
+                .into_iter()
+                .find(|other| other.segment == segment && !other.attached)
+        };
+        // A section whose previous one is a generated section not made has
+        // no frame to start on yet.
+        if generation.spec.first == Some(FrameSource::Previous) {
+            if let Some(before) = generation.segment.checked_sub(1).and_then(unmade) {
+                let estimate = estimate_without_frames(
+                    generation,
+                    self.catalog,
+                    self.app,
+                    resolution_override,
+                );
+                if blocked.contains(&before.segment) {
+                    return Ok(Look::Refused {
+                        estimate,
+                        why: "its first frame is the section before's, which is missing".into(),
+                    });
+                }
+                return Ok(Look::Waits {
+                    on: before.segment,
+                    on_place: before.place,
                     estimate,
-                    why: "its first frame is the section before's, which is missing".into(),
-                },
-            ));
-            continue;
+                });
+            }
         }
 
         // The frames, from a draft: every unmade section standing in.
@@ -201,16 +258,16 @@ pub fn prepare<'audio>(
             draft.cut_into(generation.segment + 1);
         }
         crate::apply_treatment_prepared(
-            path,
+            self.path,
             Some(Prepared {
                 treatment: draft,
-                entries: entries.clone(),
+                entries: entries.to_vec(),
             }),
-            audio,
-            analysis,
-            music,
-            app,
-            scratch,
+            self.audio,
+            self.analysis,
+            self.music,
+            self.app,
+            self.scratch,
             false,
             0.0,
         )
@@ -218,20 +275,21 @@ pub fn prepare<'audio>(
         // The export applies the command line's output flags after the
         // treatment's; so do the frames, or a 24 fps treatment rendered at
         // 30 sends the picture at 95/24 s for a cut the export shows at 119/30.
-        if let Some(track) = app.workspace.current_mut() {
-            if let Some((width, height)) = overrides.resolution {
+        if let Some(track) = self.app.workspace.current_mut() {
+            if let Some((width, height)) = self.overrides.resolution {
                 track.render_config.width = width;
                 track.render_config.height = height;
             }
-            if let Some(fps) = overrides.fps {
+            if let Some(fps) = self.overrides.fps {
                 track.render_config.fps = fps;
             }
-            if let Some(quality) = overrides.quality {
+            if let Some(quality) = self.overrides.quality {
                 track.render_config.set_quality(quality);
             }
         }
         let (output, fps) = {
-            let track = app
+            let track = self
+                .app
                 .workspace
                 .current()
                 .ok_or("a treatment directs a track: name one in its audio block")?;
@@ -241,13 +299,13 @@ pub fn prepare<'audio>(
                 track.render_config.fps,
             )
         };
-        let Some(offer) = catalog
-            .as_ref()
+        let Some(offer) = self
+            .catalog
             .and_then(|catalog| catalog.offer(&generation.spec.model))
         else {
             return Err(format!(
-                "{}: {} is not on the price list ({prices_line}); `--vocabulary` lists the models",
-                generation.place, generation.spec.model
+                "{}: {} is not on the price list ({}); `--vocabulary` lists the models",
+                generation.place, generation.spec.model, self.prices_line
             ));
         };
         let shape = price::shape(offer, output)
@@ -261,11 +319,13 @@ pub fn prepare<'audio>(
                 let (before, _) = frames_around(generation.at, fps);
                 let index = before
                     .ok_or_else(|| format!("{}.first: no frame before 0:00", generation.place))?;
-                let file = frames_dir.join(format!("{}-first.png", generation.segment));
+                let file = self
+                    .frames_dir
+                    .join(format!("{}-first.png", generation.segment));
                 stills.push((frame_middle(index, fps), file.clone()));
                 first = Some(file);
             }
-            Some(FrameSource::File(name)) => first = Some(resolve(path, name)),
+            Some(FrameSource::File(name)) => first = Some(resolve(self.path, name)),
             Some(FrameSource::Next) | None => {}
         }
         match &generation.spec.last {
@@ -274,28 +334,44 @@ pub fn prepare<'audio>(
                     .next_at
                     .ok_or_else(|| format!("{}.last: no section after it", generation.place))?;
                 let (_, index) = frames_around(next_at, fps);
-                let file = frames_dir.join(format!("{}-last.png", generation.segment));
+                let file = self
+                    .frames_dir
+                    .join(format!("{}-last.png", generation.segment));
                 stills.push((frame_middle(index, fps), file.clone()));
                 last = Some(file);
             }
-            Some(FrameSource::File(name)) => last = Some(resolve(path, name)),
+            Some(FrameSource::File(name)) => last = Some(resolve(self.path, name)),
             Some(FrameSource::Previous) | None => {}
         }
         // A frame inside a transition shows both sides of its cut. A side that
         // is a generated section not made yet is a stand-in, and a stand-in
-        // is never sent (a section shorter than the blend into it, after a
-        // generated one this run could not make).
-        if let Some(why) = stand_in_in_frame(&stills, app, &treatment) {
+        // is never sent: the section waits for that one, or, when this run
+        // will not make it, is refused (a section shorter than the blend into
+        // it, after a generated one this run could not make).
+        if let Some((segment, place, why)) = stand_in_in_frame(&stills, self.app, treatment) {
             let estimate =
-                estimate_without_frames(&generation, catalog.as_ref(), app, resolution_override);
-            println!("generate:        {} refused: {why}", generation.place);
-            blocked.push(generation.segment);
-            outcomes.push((generation, Resolution::Missing { estimate, why }));
-            continue;
+                estimate_without_frames(generation, self.catalog, self.app, resolution_override);
+            if blocked.contains(&segment) {
+                return Ok(Look::Refused { estimate, why });
+            }
+            return Ok(Look::Waits {
+                on: segment,
+                on_place: place,
+                estimate,
+            });
         }
         if !stills.is_empty() {
             render_frames(
-                rl, thread, audio, music, app, analysis, renderer, fonts, &stills, shape.size,
+                self.rl,
+                self.thread,
+                self.audio,
+                self.music,
+                self.app,
+                self.analysis,
+                self.renderer,
+                self.fonts,
+                &stills,
+                shape.size,
             )
             .map_err(|error| format!("{}: its frames: {error}", generation.place))?;
         }
@@ -328,7 +404,7 @@ pub fn prepare<'audio>(
             .map_err(|error| format!("{}: {error}", generation.place))?;
         let digest = request.digest();
         let estimate = price::estimate(
-            catalog.as_ref(),
+            self.catalog,
             super::now_unix(),
             &offer.id,
             request.seconds,
@@ -337,7 +413,7 @@ pub fn prepare<'audio>(
         );
 
         // Found: in the open project, or in the store.
-        let in_project = app.workspace.current().and_then(|track| {
+        let in_project = self.app.workspace.current().and_then(|track| {
             track.clips.iter().find(|entry| {
                 entry.unusable.is_none()
                     && entry
@@ -349,7 +425,7 @@ pub fn prepare<'audio>(
         });
         let found = match in_project {
             Some(entry) => Some((entry.clone(), "the project")),
-            None => store.find(&digest).and_then(|(file, record)| {
+            None => self.store.find(&digest).and_then(|(file, record)| {
                 let mut entry = crate::clips::import(&file).ok()?;
                 entry.asset.name = super::job::clip_name(&request);
                 entry.asset.generated = Some(record);
@@ -362,16 +438,19 @@ pub fn prepare<'audio>(
                 generation.place,
                 &digest[..12]
             );
-            attach(&mut treatment, &mut entries, &generation, entry)?;
-            outcomes.push((generation, Resolution::Found));
-            continue;
+            return Ok(Look::Found(Box::new(entry)));
         }
-
-        // A job submitted before, or one another caller is sending now: it is
-        // picked up rather than sent again, and it counts against the ceiling
-        // at its estimate all the same — the money is this request's.
-        let resumable = store.job(&digest).is_some() || store.in_flight(&digest);
-        let leftover = store.leftover_intent(&digest);
+        // What the store says of it, read before anything is sent: a job
+        // submitted before or in flight now is picked up and counts at its
+        // estimate (the money is this request's); sends never answered count
+        // at theirs, whether or not this run sends again.
+        let state = if self.store.job(&digest).is_some() || self.store.in_flight(&digest) {
+            State::PickUp
+        } else if let Some(intent) = self.store.leftover_intent(&digest) {
+            State::Held(intent)
+        } else {
+            State::New
+        };
         println!(
             "generate:        {} missing: {} s of {} at {} {}, {}{} — {}",
             generation.place,
@@ -380,7 +459,7 @@ pub fn prepare<'audio>(
             shape.resolution,
             shape.aspect_ratio,
             estimate.short(),
-            if resumable {
+            if matches!(state, State::PickUp) {
                 " (submitted before, or being sent by another window or run: it is picked up, \
                  not sent again, and counts against the ceiling at its estimate)"
             } else {
@@ -388,81 +467,413 @@ pub fn prepare<'audio>(
             },
             request.leaves()
         );
-        let earlier = leftover.as_ref().map(|intent| {
-            let words = super::job::unconfirmed_words(intent, &store);
-            println!("generate:        {} {words}", generation.place);
-            (intent.clone(), words)
+        if let State::Held(intent) = &state {
+            println!(
+                "generate:        {} {}",
+                generation.place,
+                super::job::unconfirmed_words(intent, self.store)
+            );
+        }
+        Ok(Look::Ready(
+            Box::new(Ready {
+                digest,
+                estimate,
+                first_png: first.map(|(bytes, _)| bytes),
+                last_png: last.map(|(bytes, _)| bytes),
+                request,
+            }),
+            state,
+        ))
+    }
+}
+
+/// "it would pass the ceiling: …", in one place.
+fn past_the_ceiling(committed: f64, more: f64, ceiling: f64) -> String {
+    format!(
+        "it would pass the ceiling: ${:.2} committed or possibly billed, ${:.2} more, {} allowed",
+        price::ceil_cents(committed),
+        price::ceil_cents(more),
+        ceiling_words(ceiling)
+    )
+}
+
+/// Resolves every generated section of the treatment at `path`.
+///
+/// Returns `None` when it has none. **Plans before it sends** (H4c): every
+/// section is looked at first — its frames rendered, its request built, and
+/// what the project and the store hold for it read (found, picked up, sent
+/// before and never answered, new). What is already committed or possibly
+/// billed is added up, the ceiling decides what may still be sent, and the
+/// plan is printed; only then does anything leave. A section whose frames
+/// show a generated section this run makes first is counted at its estimate
+/// and looked at again once that one is made, as is any section a clip made
+/// in between may show in.
+///
+/// # Errors
+///
+/// A section that cannot be resolved, or missing clips the run may not (or
+/// could not) pay for — after every section has been looked at, so the
+/// refusal lists them all with the total.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the composition root's resources one offline frame needs, as `export_stills`; \
+              the plan's three passes read best in one place"
+)]
+pub fn prepare<'audio>(
+    path: &Path,
+    spending: Spending,
+    session_key: Option<&musializer_core::assist::secret::Secret>,
+    overrides: Overrides,
+    rl: &mut RaylibHandle,
+    thread: &RaylibThread,
+    audio: &'audio RaylibAudio,
+    music: &mut Option<raylib::prelude::Music<'audio>>,
+    analysis: &mut crate::Analysis,
+    app: &mut crate::App,
+    scratch: &mut [f32],
+    renderer: &mut SceneRenderer,
+    fonts: &Faces,
+) -> Result<Option<Prepared>, String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let mut treatment = Treatment::parse(&bytes).map_err(|error| error.to_string())?;
+    if treatment.clip_generations().is_empty() {
+        return Ok(None);
+    }
+    let store = Store::from_env()?;
+    let (catalog, prices_line) = super::prices(&store, true);
+    println!(
+        "generate:        {prices_line}; clips kept in {}",
+        store.root().display()
+    );
+    let (frames_name, frames_dir) = store.private_work("frames")?;
+    let mut frames = Frames {
+        path,
+        overrides,
+        rl,
+        thread,
+        audio,
+        music,
+        analysis,
+        app,
+        scratch,
+        renderer,
+        fonts,
+        catalog: catalog.as_ref(),
+        prices_line: &prices_line,
+        frames_dir: &frames_dir,
+        store: &store,
+    };
+    let mut entries: Vec<(String, TrackClip)> = Vec::new();
+
+    // 1. Look at every section; send nothing.
+    let mut plan: Vec<Entry> = Vec::new();
+    for generation in treatment.clip_generations() {
+        let look = frames.look(&generation, &treatment, &entries, &[])?;
+        if let Look::Found(entry) = &look {
+            attach(&mut treatment, &mut entries, &generation, (**entry).clone())?;
+        }
+        plan.push(Entry {
+            generation,
+            look: Some(look),
+            seen: entries.len(),
+            step: Step::Settled(None),
         });
-        let Some(ceiling) = spending.ceiling_usd else {
+    }
+
+    // 2. What is committed or possibly billed already, and what may still
+    // be sent under the ceiling, in time order.
+    let mut possibly_billed = 0.0f64;
+    let mut unknown_held: Option<String> = None;
+    let mut counted_held: Vec<String> = Vec::new();
+    for entry in &plan {
+        if let Some(Look::Ready(ready, State::Held(intent))) = &entry.look {
+            counted_held.push(ready.digest.clone());
+            match intent.total_usd() {
+                Some(usd) => possibly_billed += usd,
+                None => unknown_held = Some(entry.generation.place.clone()),
+            }
+        }
+    }
+    let mut running = possibly_billed;
+    let mut wont_make: Vec<usize> = Vec::new();
+    for entry in &mut plan {
+        let segment = entry.generation.segment;
+        let (estimate, held, waits_on) = match &entry.look {
+            Some(Look::Found(..)) | None => continue,
+            Some(Look::Refused { why, .. }) => {
+                println!("generate:        {} refused: {why}", entry.generation.place);
+                wont_make.push(segment);
+                entry.step = Step::Settled(Some(why.clone()));
+                continue;
+            }
+            Some(Look::Ready(ready, state)) => (
+                ready.estimate.clone(),
+                match state {
+                    State::Held(intent) => Some(intent),
+                    _ => None,
+                },
+                None,
+            ),
+            Some(Look::Waits {
+                on,
+                on_place,
+                estimate,
+                ..
+            }) => (estimate.clone(), None, Some((*on, on_place.clone()))),
+        };
+        let words = held.map(|intent| super::job::unconfirmed_words(intent, &store));
+        let refusal = match spending.ceiling_usd {
+            None => Some(match &words {
+                Some(words) => format!("the run has no --generate-clips --max-spend. {words}"),
+                None => "the run has no --generate-clips --max-spend".into(),
+            }),
+            Some(ceiling) if ceiling <= 0.0 => Some("--max-spend 0 sends nothing".to_owned()),
+            Some(_) if unknown_held.is_some() => Some(match &words {
+                Some(words) if unknown_held.as_deref() == Some(entry.generation.place.as_str()) => {
+                    format!("{words} Its price is unknown, so no ceiling can count it")
+                }
+                _ => format!(
+                    "an earlier send of {} may have been billed at an unknown price, so no \
+                     ceiling can count what is spent; nothing was sent",
+                    unknown_held.as_deref().unwrap_or("a section")
+                ),
+            }),
+            Some(_)
+                if waits_on
+                    .as_ref()
+                    .is_some_and(|(on, _)| wont_make.contains(on)) =>
+            {
+                Some(format!(
+                    "it waits for {}, which this run will not make",
+                    waits_on.as_ref().map_or("", |(_, place)| place.as_str())
+                ))
+            }
+            Some(_) if words.is_some() && !spending.resend_unconfirmed => Some(format!(
+                "{} It counts against the ceiling. To send it again, which is a second request \
+                 ({} more), add --resend-unconfirmed",
+                words.as_deref().unwrap_or_default(),
+                estimate.short()
+            )),
+            Some(ceiling) => match estimate.usd() {
+                None => Some(format!(
+                    "{}; a run with a ceiling cannot pay an unknown price",
+                    match &estimate {
+                        Price::Unknown(reason) => reason.reason(),
+                        Price::Known(_) => String::new(),
+                    }
+                )),
+                Some(usd) if running + usd > ceiling + 1.0e-9 => {
+                    Some(past_the_ceiling(running, usd, ceiling))
+                }
+                Some(usd) => {
+                    running += usd;
+                    entry.step = if waits_on.is_some() {
+                        Step::Reserve(usd)
+                    } else {
+                        Step::Send(usd)
+                    };
+                    None
+                }
+            },
+        };
+        if let Some(why) = refusal {
+            if spending.ceiling_usd.is_some() {
+                println!("generate:        {} refused: {why}", entry.generation.place);
+            }
+            wont_make.push(segment);
+            entry.step = Step::Settled(Some(why));
+        }
+    }
+    if let Some(ceiling) = spending.ceiling_usd {
+        for entry in &plan {
+            let place = &entry.generation.place;
+            match (&entry.step, &entry.look) {
+                (Step::Send(usd), Some(Look::Ready(_, State::PickUp))) => println!(
+                    "generate:        plan: {place} picks up the job sent before, counting ${:.2}",
+                    price::ceil_cents(*usd)
+                ),
+                (Step::Send(usd), Some(Look::Ready(_, State::Held(intent)))) => println!(
+                    "generate:        plan: {place} is sent again after {} unanswered send{}, \
+                     ${:.2} more",
+                    intent.attempts.len(),
+                    if intent.attempts.len() == 1 { "" } else { "s" },
+                    price::ceil_cents(*usd)
+                ),
+                (Step::Send(usd), _) => println!(
+                    "generate:        plan: {place} is sent, ${:.2}",
+                    price::ceil_cents(*usd)
+                ),
+                (Step::Reserve(usd), Some(Look::Waits { on_place, .. })) => println!(
+                    "generate:        plan: {place} waits for {on_place} to be made, counting \
+                     ${:.2}",
+                    price::ceil_cents(*usd)
+                ),
+                _ => {}
+            }
+        }
+        println!(
+            "generate:        plan: ${:.2} possibly billed already, ${:.2} to send or pick up, \
+             ${:.2} of {} allowed; nothing has been sent yet",
+            price::ceil_cents(possibly_billed),
+            price::ceil_cents(running - possibly_billed),
+            price::ceil_cents(running),
+            ceiling_words(ceiling)
+        );
+    }
+
+    // 3. Send, in time order, what the plan admits.
+    let mut committed = possibly_billed;
+    let mut outcomes: Vec<(ClipGeneration, Resolution)> = Vec::new();
+    let mut blocked: Vec<usize> = wont_make.clone();
+    for index in 0..plan.len() {
+        let reserved_after: f64 = plan[index + 1..]
+            .iter()
+            .map(|entry| match entry.step {
+                Step::Send(usd) | Step::Reserve(usd) => usd,
+                Step::Settled(_) => 0.0,
+            })
+            .sum();
+        let entry = &mut plan[index];
+        let generation = entry.generation.clone();
+        match &entry.step {
+            Step::Settled(None) => {
+                outcomes.push((generation, Resolution::Found));
+                continue;
+            }
+            Step::Settled(Some(why)) => {
+                let estimate = match &entry.look {
+                    Some(Look::Ready(ready, _)) => ready.estimate.clone(),
+                    Some(Look::Waits { estimate, .. } | Look::Refused { estimate, .. }) => {
+                        estimate.clone()
+                    }
+                    _ => Price::Unknown(price::UnknownPrice::NotListed),
+                };
+                blocked.push(generation.segment);
+                outcomes.push((
+                    generation,
+                    Resolution::Missing {
+                        estimate,
+                        why: why.clone(),
+                    },
+                ));
+                continue;
+            }
+            Step::Send(_) | Step::Reserve(_) => {}
+        }
+        let ceiling = spending.ceiling_usd.unwrap_or(0.0);
+        // Looked at again when a clip attached since may show in its frames,
+        // or when it waited for one.
+        let stale = entry.seen != entries.len() || matches!(entry.look, Some(Look::Waits { .. }));
+        let planned_digest = match &entry.look {
+            Some(Look::Ready(ready, _)) => Some(ready.digest.clone()),
+            _ => None,
+        };
+        let look = if stale {
+            frames.look(&generation, &treatment, &entries, &blocked)?
+        } else {
+            entry.look.take().expect("a planned section was looked at")
+        };
+        let (ready, state) = match look {
+            Look::Found(found) => {
+                attach(&mut treatment, &mut entries, &generation, *found)?;
+                outcomes.push((generation, Resolution::Found));
+                continue;
+            }
+            Look::Refused { estimate, why } => {
+                println!("generate:        {} refused: {why}", generation.place);
+                blocked.push(generation.segment);
+                outcomes.push((generation, Resolution::Missing { estimate, why }));
+                continue;
+            }
+            Look::Waits {
+                on_place, estimate, ..
+            } => {
+                let why = format!("it waits for {on_place}, which was not made");
+                println!("generate:        {} refused: {why}", generation.place);
+                blocked.push(generation.segment);
+                outcomes.push((generation, Resolution::Missing { estimate, why }));
+                continue;
+            }
+            Look::Ready(ready, state) => (ready, state),
+        };
+        // Sends found unanswered only now (its request was not known at the
+        // plan) are money possibly spent: counted, and the request refused
+        // unless the run agreed to send such a request again.
+        let mut refusal = None;
+        if let State::Held(intent) = &state {
+            if !counted_held.contains(&ready.digest) {
+                counted_held.push(ready.digest.clone());
+                match intent.total_usd() {
+                    Some(usd) => committed += usd,
+                    None => {
+                        refusal = Some(format!(
+                            "{} Its price is unknown, so no ceiling can count it",
+                            super::job::unconfirmed_words(intent, &store)
+                        ));
+                    }
+                }
+            }
+            if refusal.is_none() && !spending.resend_unconfirmed {
+                refusal = Some(format!(
+                    "{} It counts against the ceiling. To send it again, which is a second \
+                     request ({} more), add --resend-unconfirmed",
+                    super::job::unconfirmed_words(intent, &store),
+                    ready.estimate.short()
+                ));
+            }
+        }
+        if stale && planned_digest.as_deref() != Some(ready.digest.as_str()) {
+            println!(
+                "generate:        {} looked at again now that the sections before it are made",
+                generation.place
+            );
+        }
+        let cost_now = ready.estimate.usd();
+        if refusal.is_none() {
+            refusal = match cost_now {
+                None => Some(format!(
+                    "{}; a run with a ceiling cannot pay an unknown price",
+                    match &ready.estimate {
+                        Price::Unknown(reason) => reason.reason(),
+                        Price::Known(_) => String::new(),
+                    }
+                )),
+                Some(usd) if committed + usd + reserved_after > ceiling + 1.0e-9 => {
+                    Some(past_the_ceiling(committed + reserved_after, usd, ceiling))
+                }
+                Some(_) => None,
+            };
+        }
+        if let Some(why) = refusal {
+            println!("generate:        {} refused: {why}", generation.place);
             blocked.push(generation.segment);
             outcomes.push((
                 generation,
                 Resolution::Missing {
-                    estimate,
-                    why: match &earlier {
-                        Some((_, words)) => {
-                            format!("the run has no --generate-clips --max-spend. {words}")
-                        }
-                        None => "the run has no --generate-clips --max-spend".into(),
-                    },
+                    estimate: ready.estimate.clone(),
+                    why,
                 },
             ));
             continue;
-        };
-        // An earlier send that may have been billed is money this run
-        // counts as spent, whether or not it sends again.
-        let mut earlier_refusal = None;
-        if let Some((intent, words)) = &earlier {
-            match intent.total_usd() {
-                Some(usd) => committed += usd,
-                None => {
-                    earlier_refusal = Some(format!(
-                        "{words} Its price is unknown, so no ceiling can count it"
-                    ))
-                }
-            }
-            if earlier_refusal.is_none() && !spending.resend_unconfirmed {
-                earlier_refusal = Some(format!(
-                    "{words} It counts against the ceiling. To send it again, which is a second \
-                     request ({} more), add --resend-unconfirmed",
-                    estimate.short()
-                ));
-            }
         }
-        let cost_now = estimate.usd();
-        let refusal = match cost_now {
-            _ if earlier_refusal.is_some() => earlier_refusal,
-            _ if ceiling <= 0.0 => Some("--max-spend 0 sends nothing".to_owned()),
-            None => Some(format!(
-                "{}; a run with a ceiling cannot pay an unknown price",
-                match &estimate {
-                    Price::Unknown(reason) => reason.reason(),
-                    Price::Known(_) => String::new(),
-                }
-            )),
-            Some(usd) if committed + usd > ceiling + 1.0e-9 => Some(format!(
-                "it would pass the ceiling: ${:.2} committed this run, ${:.2} more, {} allowed",
-                price::ceil_cents(committed),
-                price::ceil_cents(usd),
-                ceiling_words(ceiling)
-            )),
-            Some(_) => None,
-        };
-        if let Some(why) = refusal {
-            println!("generate:        {} refused: {why}", generation.place);
-            blocked.push(generation.segment);
-            outcomes.push((generation, Resolution::Missing { estimate, why }));
-            continue;
-        }
+        let cost_now = cost_now.unwrap_or(0.0);
         let secret = super::credential(session_key)
             .map_err(|error| format!("{}: {error}", generation.place))?;
         let endpoint = super::client::Endpoint::from_env()?;
         let (poll, deadline, max_bytes) = JobSpec::timings_from_env();
-        committed += cost_now.unwrap_or(0.0);
+        committed += cost_now;
+        let Ready {
+            request,
+            estimate,
+            first_png,
+            last_png,
+            ..
+        } = *ready;
         let job = GenerationJob::spawn(JobSpec {
             name: super::job::clip_name(&request),
-            first_png: first.map(|(bytes, _)| bytes),
-            last_png: last.map(|(bytes, _)| bytes),
+            first_png,
+            last_png,
             estimate_usd: estimate.usd(),
             request,
             secret,
@@ -471,7 +882,10 @@ pub fn prepare<'audio>(
             poll,
             deadline,
             max_bytes,
-            resend: earlier.map(|(intent, _)| intent.latest().id.clone()),
+            resend: match &state {
+                State::Held(intent) => Some(intent.latest().id.clone()),
+                _ => None,
+            },
         });
         let place = generation.place.clone();
         let outcome = job.wait(|stage, elapsed| {
@@ -512,6 +926,10 @@ pub fn prepare<'audio>(
                 ));
             }
             Outcome::Failed { reason, billing } => {
+                if billing == super::job::Billing::Nothing {
+                    // Refused or never sent: nothing was spent.
+                    committed -= cost_now;
+                }
                 let why = match billing.sentence() {
                     Some(text) => format!("{}. {text}", reason.trim_end_matches('.')),
                     None => reason,
@@ -521,6 +939,12 @@ pub fn prepare<'audio>(
                 outcomes.push((generation, Resolution::Missing { estimate, why }));
             }
             Outcome::Unconfirmed(intent) => {
+                // Another caller's send was lost since the plan: nothing was
+                // sent now, and its sends count as possibly billed.
+                committed -= cost_now;
+                if !counted_held.contains(&intent.request_sha256) {
+                    committed += intent.total_usd().unwrap_or(0.0);
+                }
                 let why = format!(
                     "{} Nothing was sent now; add --resend-unconfirmed to send it again",
                     super::job::unconfirmed_words(&intent, &store)
@@ -530,6 +954,9 @@ pub fn prepare<'audio>(
                 outcomes.push((generation, Resolution::Missing { estimate, why }));
             }
             Outcome::Stopped { billing } => {
+                if billing == super::job::Billing::Nothing {
+                    committed -= cost_now;
+                }
                 let why = format!(
                     "stopped{}",
                     billing
@@ -621,8 +1048,8 @@ pub fn prepare<'audio>(
     ))
 }
 
-/// Why a request may not be sent because a frame it would send shows a
-/// generated section that is not made yet (a stand-in), if one does: the
+/// Which generated section not made yet (a stand-in) a frame the request
+/// would send shows, and why it may not be sent, if one does: the
 /// frame lies inside a transition, and the side of its cut that shows is
 /// such a section. A dip's falling half shows only the section before its
 /// cut; a blend from the held previous picture shows both sides.
@@ -630,7 +1057,7 @@ fn stand_in_in_frame(
     stills: &[(f64, PathBuf)],
     app: &crate::App,
     treatment: &Treatment,
-) -> Option<String> {
+) -> Option<(usize, String, String)> {
     use musializer_core::project::transition::Source;
     use musializer_core::treatment::format_time;
     let track = app.workspace.current()?;
@@ -664,13 +1091,18 @@ fn stand_in_in_frame(
             .iter()
             .find(|generation| sides.contains(&generation.segment))
         {
-            return Some(format!(
-                "its frame at {} lies inside the transition at {}, which shows {}, a generated \
-                 section not made yet; the frame would be a stand-in, so nothing was sent for it. \
-                 Make that section first, or give this one an image file for the frame",
-                format_time(*time),
-                format_time(active.cut_seconds),
-                missing.place
+            return Some((
+                missing.segment,
+                missing.place.clone(),
+                format!(
+                    "its frame at {} lies inside the transition at {}, which shows {}, a \
+                     generated section not made yet; the frame would be a stand-in, so nothing \
+                     was sent for it. Make that section first, or give this one an image file for \
+                     the frame",
+                    format_time(*time),
+                    format_time(active.cut_seconds),
+                    missing.place
+                ),
             ));
         }
     }
