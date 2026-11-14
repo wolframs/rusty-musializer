@@ -195,13 +195,29 @@ impl Store {
         &self.root
     }
 
+    /// The store's folder `name`, made `0700` if it is not there. A folder
+    /// made now is synced into its parent (and the store's root into its
+    /// own), so an intent written into a fresh `intents/` survives a power
+    /// loss with the folder that holds it.
     fn folder(&self, name: &str) -> Result<PathBuf, String> {
         let folder = self.root.join(name);
+        let made_root = !self.root.is_dir();
+        let made = !folder.is_dir();
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(&folder)
             .map_err(|error| format!("{}: {error}", folder.display()))?;
+        let mut synced = Vec::new();
+        if made_root {
+            synced.extend(self.root.parent().map(Path::to_path_buf));
+        }
+        if made {
+            synced.extend(folder.parent().map(Path::to_path_buf));
+        }
+        for parent in synced {
+            sync_dir(&parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+        }
         Ok(folder)
     }
 
@@ -303,8 +319,12 @@ impl Store {
         // the person's alone.
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(download, std::fs::Permissions::from_mode(0o600));
+        // curl wrote it and never synced it: a paid clip reaches the disk
+        // before its name moves into the store, and the name with the folder.
+        sync_file(download).map_err(|error| format!("{}: {error}", download.display()))?;
         std::fs::rename(download, &destination)
             .map_err(|error| format!("{}: {error}", destination.display()))?;
+        sync_dir(&clips).map_err(|error| format!("{}: {error}", clips.display()))?;
         let receipt = Receipt {
             schema: RECEIPT_SCHEMA.to_owned(),
             provider: record.provider.clone(),
@@ -517,6 +537,12 @@ impl Store {
             .map(|cell| cell.replace(['\t', '\n', '\r'], " "))
             .collect();
         let _ = writeln!(file, "{}", cells.join("\t"));
+        // The person's record of what may have cost money: on the disk with
+        // the line, and a new file with its folder.
+        let _ = file.sync_data();
+        if fresh {
+            let _ = sync_dir(&self.root);
+        }
     }
 }
 
@@ -529,11 +555,37 @@ fn read_bounded_large(path: &Path) -> Option<Vec<u8>> {
     (bytes.len() as u64 <= cap).then_some(bytes)
 }
 
-/// Writes a file `0600` through a sibling and a rename.
+#[cfg(test)]
+thread_local! {
+    /// Every folder and file this thread synced, for the tests: a power loss
+    /// cannot be staged in a unit test, but whether the folder was synced
+    /// after the rename can be seen.
+    static SYNCED: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// `fsync` on a folder: a rename into it, or a file made in it, is durable
+/// only once the folder's own entry list is on the disk.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    SYNCED.with(|synced| synced.borrow_mut().push(dir.to_path_buf()));
+    File::open(dir)?.sync_all()
+}
+
+/// `fsync` on a file someone else wrote (curl's download).
+fn sync_file(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    SYNCED.with(|synced| synced.borrow_mut().push(path.to_path_buf()));
+    std::fs::OpenOptions::new().write(true).open(path)?.sync_all()
+}
+
+/// Writes a file `0600` through a sibling and a rename, durably: the bytes
+/// are synced before the rename and the folder after it, so a power loss
+/// right after the provider accepted a request keeps the intent or the job
+/// that says so (H4c).
 ///
 /// # Errors
 ///
-/// The write or the rename fails.
+/// The write, the rename or a sync fails.
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let temporary = path.with_extension("partial");
     let result = (|| {
@@ -545,7 +597,8 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
             .open(&temporary)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        std::fs::rename(&temporary, path)
+        std::fs::rename(&temporary, path)?;
+        sync_dir(path.parent().unwrap_or(Path::new(".")))
     })();
     result.map_err(|error| {
         let _ = std::fs::remove_file(&temporary);
@@ -624,6 +677,84 @@ pub(crate) mod tests {
             "a swapped file is not the clip"
         );
         assert!(store.find("../../etc").is_none());
+    }
+
+    fn synced() -> Vec<PathBuf> {
+        SYNCED.with(|synced| std::mem::take(&mut *synced.borrow_mut()))
+    }
+
+    /// What a test can show of durability: every record's folder is opened
+    /// and synced after the rename, a folder made for it is synced into its
+    /// parent, and a kept clip's bytes are synced before their name moves.
+    /// Whether the disk then keeps them through a power loss is the kernel's
+    /// and cannot be staged here.
+    #[test]
+    fn every_record_is_synced_with_its_folder() {
+        let folder = Scratch::new("durable");
+        let root = folder.path().join("store");
+        let store = Store::at(root.clone());
+        let request = sha256::digest_hex(b"durable");
+        synced();
+        store
+            .record_intent(&Intent {
+                schema: String::new(),
+                request_sha256: request.clone(),
+                model: "m/x".into(),
+                seconds: 4,
+                sent_utc: "2026-11-14T20:00:00Z".into(),
+                estimate_usd: Some(0.12),
+            })
+            .unwrap();
+        let seen = synced();
+        // The fresh root into its parent, `intents/` into the root, the
+        // intent into `intents/`.
+        assert_eq!(
+            seen,
+            vec![folder.path().to_path_buf(), root.clone(), root.join("intents")],
+            "{seen:?}"
+        );
+        store
+            .record_job(&JobRecord {
+                schema: String::new(),
+                request_sha256: request.clone(),
+                job_id: "gen-vid-1-abc".into(),
+                model: "m/x".into(),
+                seconds: 4,
+                submitted_utc: "2026-11-14T20:00:00Z".into(),
+                estimate_usd: Some(0.12),
+            })
+            .unwrap();
+        assert_eq!(synced(), vec![root.clone(), root.join("jobs")]);
+        // A second record in an existing folder syncs only that folder.
+        store
+            .record_job(&JobRecord {
+                schema: String::new(),
+                request_sha256: request.clone(),
+                job_id: "gen-vid-2-abc".into(),
+                model: "m/x".into(),
+                seconds: 4,
+                submitted_utc: "2026-11-14T20:00:01Z".into(),
+                estimate_usd: Some(0.12),
+            })
+            .unwrap();
+        assert_eq!(synced(), vec![root.join("jobs")]);
+        let download = folder.path().join("clip.part");
+        std::fs::write(&download, b"video bytes").unwrap();
+        store
+            .keep(
+                &download,
+                &record(&request),
+                &sha256::digest_hex(b"video bytes"),
+            )
+            .unwrap();
+        let clips = root.join("clips");
+        assert_eq!(
+            synced(),
+            vec![root.clone(), download, clips.clone(), clips.clone()],
+            "the clip's bytes, then its name, then its receipt's"
+        );
+        store.log_spending(&["a", "b"]);
+        assert_eq!(synced(), vec![root.clone()], "a new ledger with its folder");
     }
 
     #[test]

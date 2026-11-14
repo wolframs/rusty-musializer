@@ -711,3 +711,16 @@ nothing pressed. A long absolute path in `drop=` (a gate's output folder)
 is the usual cause. Pass a path relative to the repository and short
 prompts. Symptom: a probe run whose report lines show the defaults. Found in
 the generation card check (H4b), 2026-11-14.
+
+## A rename is atomic, not durable
+
+`write_private` synced the temporary file and renamed it over the record, so
+no reader ever saw half an intent. But the rename lives in the folder's entry
+list, and until the folder itself is synced a power loss can undo it: the
+intent written just before a paid POST, or the job record written just after
+OpenRouter accepted it, is gone, and the next press pays again silently. A
+folder made for the record (the first `intents/`) needs the same sync into its
+parent, and a file another program wrote (curl's download) needs its own
+`fsync` before it is renamed into a store. Symptom: none until a power loss;
+grep the write path for `rename` without a `sync_dir` after it. Found by the
+second review of the generation store (H4c), 2026-11-14.

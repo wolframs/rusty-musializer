@@ -424,6 +424,33 @@ Not pinned by a check of its own: the armed Send's request key (the card
 already disarms on each control that changes the request; the key is the
 second guard), and the window's Cancel of only the current project's job.
 
+### The second review's fixes (H4c, 2026-11-14)
+
+A review of H4b confirmed seven more defects, five of them here. The rule
+since: **the application never sends a paid request the person has not
+agreed to at a stated price; a ceiling the person set is never exceeded by
+what the application knowingly commits, counting everything that may already
+have been billed; and where the truth cannot be known, it says so and counts
+it as spent.**
+
+- **Durable records.** Every store record (intent, job, receipt, price list)
+  is written through a sibling, synced, renamed and then its folder synced; a
+  folder made for it is synced into its parent; a kept clip's bytes (curl
+  never syncs them) are synced before the rename; each `spending.tsv` line is
+  synced. A power loss right after OpenRouter accepted a request keeps the
+  intent or the job that says so.
+- **Maxima round up.** A run prints `--max-spend` as given ("$0.125
+  allowed") and what it has committed rounded up to the cent.
+
+### The second review's checks and their negative controls (H4c)
+
+Each control was run on a perturbed source and the source restored byte for
+byte (`cmp` against a saved copy), 2026-11-14:
+
+| Perturbation | What failed |
+| --- | --- |
+| `write_private` without the folder's sync after the rename | `every_record_is_synced_with_its_folder`: the intent's folder `store/intents` missing from what was synced. A power loss itself cannot be staged in a test; the test shows the folder is opened and synced, not that the disk keeps it |
+
 ### What is not built
 
 - **A `generated` transition** (a bridge across a cut as a transition kind).
