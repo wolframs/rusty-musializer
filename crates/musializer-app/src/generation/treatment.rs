@@ -15,10 +15,11 @@
 //! ceiling; the rest are refused by name. An unknown price is refused under
 //! a ceiling, since no ceiling can be kept with it.
 //!
-//! **A request whose earlier send lost its answer** (an intent left in the
-//! store, H4b) may have been billed. It counts against the ceiling at its
-//! estimate, and it is refused by name unless the run also carries
-//! `--resend-unconfirmed`; then sending it again counts a second estimate.
+//! **A request whose earlier sends lost their answers** (an intent left in
+//! the store, H4b) may have been billed for each of them. Every one counts
+//! against the ceiling at its estimate (H4c), and the request is refused by
+//! name unless the run also carries `--resend-unconfirmed`; then sending it
+//! again counts one estimate more.
 
 use std::path::{Path, PathBuf};
 
@@ -388,7 +389,7 @@ pub fn prepare<'audio>(
             request.leaves()
         );
         let earlier = leftover.as_ref().map(|intent| {
-            let words = super::job::unconfirmed_words(intent);
+            let words = super::job::unconfirmed_words(intent, &store);
             println!("generate:        {} {words}", generation.place);
             (intent.clone(), words)
         });
@@ -412,7 +413,7 @@ pub fn prepare<'audio>(
         // counts as spent, whether or not it sends again.
         let mut earlier_refusal = None;
         if let Some((intent, words)) = &earlier {
-            match intent.estimate_usd {
+            match intent.total_usd() {
                 Some(usd) => committed += usd,
                 None => {
                     earlier_refusal = Some(format!(
@@ -470,7 +471,7 @@ pub fn prepare<'audio>(
             poll,
             deadline,
             max_bytes,
-            resend: earlier.map(|(intent, _)| intent.sent_utc),
+            resend: earlier.map(|(intent, _)| intent.latest().id.clone()),
         });
         let place = generation.place.clone();
         let outcome = job.wait(|stage, elapsed| {
@@ -522,7 +523,7 @@ pub fn prepare<'audio>(
             Outcome::Unconfirmed(intent) => {
                 let why = format!(
                     "{} Nothing was sent now; add --resend-unconfirmed to send it again",
-                    super::job::unconfirmed_words(&intent)
+                    super::job::unconfirmed_words(&intent, &store)
                 );
                 println!("generate:        {} refused: {why}", generation.place);
                 blocked.push(generation.segment);

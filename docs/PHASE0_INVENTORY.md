@@ -1699,6 +1699,19 @@ Not files in `schemas/`; the helper writes them and the tests pin them.
 
 No environment variable was added.
 
+### 6.7b The generation store's records (VG H4, H4b, H4c; 2026-11-14)
+
+Under `MUSIALIZER_GENERATED_DIR` (§ environment). Each JSON record is written
+`0600` through a sibling, synced, renamed and its folder synced (H4c). Not
+in `schemas/`; `generation::store` reads and writes them and its tests pin them.
+
+| Name | Where | Contents |
+| --- | --- | --- |
+| `musializer.video-job/v1` | `jobs/<request sha256>.json` | `request_sha256`, `job_id`, `model`, `seconds`, `submitted_utc`, `estimate_usd` (optional). Removed only while it still names the job the remover polled (H4c) |
+| `musializer.video-intent/v2` | `intents/<request sha256>.json` | `request_sha256`, `model`, `seconds`, `attempts`: every send of the request not yet answered, oldest first, each `{id, sent_utc, estimate_usd}` (H4c). An answered, refused or never-sent attempt is taken off; all go when the request's clip is in hand. `musializer.video-intent/v1` (H4b: one send in `sent_utc` and `estimate_usd`) still reads, as one attempt whose id is its time; it is rewritten as v2 on the next send |
+| `musializer.video-clip/v1` | `clips/<request sha256>.json` beside the `.mp4` | the provenance (`provider`, `model`, `prompt`, `seconds`, `resolution`, `aspect_ratio`, `first_sha256`, `last_sha256`, `request_sha256`, `generated_utc`, `estimate_usd`, `cost_usd`) and `clip_sha256` |
+| `spending.tsv` | the store's root, append-only | header `utc request_sha256 job_id model seconds estimate_usd cost_usd outcome`; since H4c a line as each request leaves (`job_id` `-`, outcome `sending, billed if accepted`) and one when its job ends: `generated`, `resumed`, `failed`, `stopped`, with `, possibly billed` when the job may be billed without a reported cost and `, answer lost, possibly billed` when the submit's answer never arrived. No key, no prompt |
+
 ### 6.8 `musializer.assist-settings/v1` — `assist.json` (tranche AP1)
 
 Authority: `docs/ASSIST_PROVIDER_CONTRACTS.md` §2, which carries the full field

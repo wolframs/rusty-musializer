@@ -244,8 +244,10 @@ the store and the card are `musializer-app/src/generation/` and
   name, and what OpenRouter reported for it when it did.
 - **The store**: `$XDG_DATA_HOME/musializer/generated-clips/` — paid clips
   with a receipt each (their provenance and their bytes' digest), job records,
-  intents (a request written down before it is sent), one lock file per
-  request, the price list and `spending.tsv` (one line per job sent). Saving a
+  intents (every send of a request not yet answered), one lock file per
+  request, the price list and `spending.tsv`, the ledger: a line as each
+  request leaves and one when its job ends, the possibly billed ones marked
+  (`docs/PHASE0_INVENTORY.md` 6.7b). Saving a
   project bundles a placed clip like any other; a save writes only clips a
   section plays, so a clip left unplaced lives in the store.
 
@@ -328,7 +330,8 @@ been billed.**
   estimate; `--max-spend 0` sends nothing ("refused: --max-spend 0 sends
   nothing").
 - **An intent before the POST.** `intents/<digest>.json` (digest, model,
-  seconds, the time, the estimate) is written before the request leaves,
+  seconds, the time, the estimate; since H4c every unanswered send, see
+  *The second review's fixes*) is written before the request leaves,
   replaced by the job record when the id arrives, and removed when the
   provider refused it (a 4xx other than 408) or the call never wrote a byte of
   it (curl's `size_request` is 0: no such host, connection refused). Anything
@@ -400,7 +403,8 @@ been billed.**
 and `fps` (`GENERATE_ONLY="…"` runs some), the card check's steps 4b, 5b and
 6b, and unit tests in `generation::{job,client,window}` and the look cards.
 The fake provider's markers: `[slow-submit]`, `[hold]`, `[lost-answer-once]`
-(accepted, the connection dropped without an answer), `[truncate-N]`,
+(accepted, the connection dropped without an answer; `[lost-answers-N]` for the
+first N, H4c), `[truncate-N]`,
 `[expire]`, `[polls-N]`, and since H4c `[stale-poller]` (two pollers of one job hear
 it expire at different times; release files `release-stale`, `-2`, `-3`). Every spending check asserts the provider's submit
 count. Each control was a scratch binary or test run on a perturbed source,
@@ -447,6 +451,31 @@ it as spent.**
   have forgotten it already and a third submitted and recorded a new, paid
   one, which a blind removal lost — and the next Generate then paid a third
   time with no warning. The same after a kept clip (`forget_job_held`).
+- **Every unanswered send stays, and counts** (`intents/<digest>.json` v2:
+  every attempt with its time and estimate). A send agreed after a lost one
+  used to replace it, so two lost $0.12 sends and `--resend-unconfirmed
+  --max-spend 0.24` admitted a third, $0.36 against a count of $0.24. Now a
+  send is added beside the earlier ones; it is taken off when its job id
+  arrives, the provider refused it or it never left; all go only when the
+  request's clip is in hand. A run counts their sum against the ceiling, and
+  the words name them all:
+  > This exact request was sent 2 times, first on 2026-11-14 22:29:38 UTC and
+  > last on 2026-11-14 22:29:40 UTC, and no answer arrived, so OpenRouter may
+  > have accepted and billed each of them (about $0.24 in all). OpenRouter has
+  > no way to find a job whose id was lost; your activity page at
+  > openrouter.ai/activity shows which were billed. Every send is in
+  > …/generated-clips/spending.tsv.
+
+  One send keeps the H4b sentence, and both end with "Every send is in
+  …/spending.tsv." — in the window's notice and card and on the command line.
+  Agreeing to send again names the newest send by its id: a send lost after
+  the warning was shown makes the next press warn again instead of sending.
+- **The ledger** (`spending.tsv`) gets a line before each request leaves
+  ("sending, billed if accepted") and one when the job ends, marked ", possibly
+  billed" or ", answer lost, possibly billed" where no cost was reported. A
+  crash mid-submit leaves the first line alone, which reads as what it is.
+  The ceiling arithmetic reads the intents, not the ledger: they hold what is
+  unresolved now, the ledger everything that ever left.
 - **Maxima round up.** A run prints `--max-spend` as given ("$0.125
   allowed") and what it has committed rounded up to the cent.
 
@@ -458,6 +487,7 @@ byte (`cmp` against a saved copy), 2026-11-14:
 | Perturbation | What failed |
 | --- | --- |
 | `forget_job_held` removing whatever record is there (the job id not compared, as before) | gate stale: "the late poller removed job 2's record", and run D submitted again (3 submits, not 2) |
+| `add_attempt` replacing the earlier sends (as before: one intent per request) | gate lost: "the earlier lost sends were not both counted" — the third send went out under `--max-spend 0.24` (3 submits, status 0); `every_unconfirmed_send_stays_and_counts` and `two_lost_answers_both_stay_until_the_clip_is_in_hand` |
 | `write_private` without the folder's sync after the rename | `every_record_is_synced_with_its_folder`: the intent's folder `store/intents` missing from what was synced. A power loss itself cannot be staged in a test; the test shows the folder is opened and synced, not that the disk keeps it |
 
 ### What is not built

@@ -142,17 +142,50 @@ fn about(usd: Option<f64>) -> String {
     )
 }
 
-/// What a person reads when a request they ask for was sent before and its
-/// answer never arrived. The caller adds how to send it again.
+/// What a person reads when a request they ask for was sent before and no
+/// answer arrived: every such send, their sum, and where each is recorded.
+/// The caller adds how to send it again.
 #[must_use]
-pub fn unconfirmed_words(intent: &super::store::Intent) -> String {
-    format!(
-        "This exact request was sent on {} and its answer never arrived, so OpenRouter may have \
-         accepted and billed it ({}). OpenRouter has no way to find a job whose id was lost; \
-         your activity page at openrouter.ai/activity shows whether it was billed.",
-        intent.sent_utc.replace('T', " ").replace('Z', " UTC"),
-        about(intent.estimate_usd)
-    )
+pub fn unconfirmed_words(intent: &super::store::Intent, store: &Store) -> String {
+    let when = |utc: &str| utc.replace('T', " ").replace('Z', " UTC");
+    let ledger = store.root().join("spending.tsv");
+    match intent.attempts.as_slice() {
+        [only] => format!(
+            "This exact request was sent on {} and its answer never arrived, so OpenRouter may \
+             have accepted and billed it ({}). OpenRouter has no way to find a job whose id was \
+             lost; your activity page at openrouter.ai/activity shows whether it was billed. Every \
+             send is in {}.",
+            when(&only.sent_utc),
+            about(only.estimate_usd),
+            ledger.display()
+        ),
+        attempts => format!(
+            "This exact request was sent {} times, first on {} and last on {}, and no answer \
+             arrived, so OpenRouter may have accepted and billed each of them ({}). OpenRouter \
+             has no way to find a job whose id was lost; your activity page at \
+             openrouter.ai/activity shows which were billed. Every send is in {}.",
+            attempts.len(),
+            when(&attempts[0].sent_utc),
+            when(&intent.latest().sent_utc),
+            intent.total_usd().map_or_else(
+                || "price unknown".to_owned(),
+                |usd| format!(
+                    "about ${:.2} in all",
+                    musializer_core::generation::price::ceil_cents(usd)
+                )
+            ),
+            ledger.display()
+        ),
+    }
+}
+
+/// A fresh attempt's id: its time to the nanosecond and this process, so two
+/// sends of one request never share one.
+fn attempt_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    format!("{nanos}p{}", std::process::id())
 }
 
 /// A clip that is ready to import.
@@ -212,9 +245,10 @@ pub struct JobSpec {
     pub max_bytes: u64,
     /// A name for the clip in the library.
     pub name: String,
-    /// The `sent_utc` of a left-over intent the person agreed to send
-    /// again after being told it may have been billed. Any other left-over
-    /// intent stops the job before anything is sent.
+    /// The id of the newest unconfirmed send the person agreed to send
+    /// again after, told every earlier one may have been billed. Any other
+    /// state of the request's unconfirmed sends stops the job before anything
+    /// is sent.
     pub resend: Option<String>,
 }
 
@@ -472,7 +506,14 @@ fn run(spec: &JobSpec, stop: &AtomicBool, shared: &Mutex<Shared>) -> Outcome {
         }
         | Outcome::Stopped {
             billing: Billing::Unconfirmed(_),
-        } => format!("{verdict}, unconfirmed"),
+        } => format!("{verdict}, answer lost, possibly billed"),
+        Outcome::Failed {
+            billing: Billing::Possibly(_),
+            ..
+        }
+        | Outcome::Stopped {
+            billing: Billing::Possibly(_),
+        } => format!("{verdict}, possibly billed"),
         _ => verdict,
     };
     if !matches!(
@@ -522,10 +563,10 @@ fn run_with(
         claim.release();
         (record.job_id, true)
     } else {
-        // An earlier send whose answer never arrived: nothing goes out unless
-        // the person agreed to send it again, knowing it may be billed.
+        // Earlier sends whose answers never arrived: nothing goes out unless
+        // the person agreed to send it again, told of every one of them.
         if let Some(intent) = store.intent(digest) {
-            if spec.resend.as_deref() != Some(intent.sent_utc.as_str()) {
+            if spec.resend.as_deref() != Some(intent.latest().id.as_str()) {
                 claim.release();
                 return Outcome::Unconfirmed(intent);
             }
@@ -562,17 +603,23 @@ fn run_with(
                 billing: Billing::Nothing,
             };
         }
-        // Written down before it leaves: if the answer is lost, the next
-        // ask finds this and says the request may have been billed.
-        let intent = super::store::Intent {
-            schema: String::new(),
-            request_sha256: digest.to_owned(),
-            model: spec.request.model.clone(),
-            seconds: spec.request.seconds,
+        // Written down before it leaves, beside any earlier send still
+        // unanswered: if this answer is lost too, the next ask finds both
+        // and says each may have been billed.
+        let attempt = super::store::Attempt {
+            id: attempt_id(),
             sent_utc: now_utc(),
             estimate_usd: spec.estimate_usd,
         };
-        if let Err(reason) = store.record_intent(&intent) {
+        let sending = attempt.id.clone();
+        let sent_utc = attempt.sent_utc.clone();
+        if let Err(reason) = store.add_attempt(
+            &claim,
+            digest,
+            &spec.request.model,
+            spec.request.seconds,
+            attempt,
+        ) {
             return Outcome::Failed {
                 reason: format!(
                     "the request could not be written down before sending ({reason}), so it was \
@@ -581,12 +628,26 @@ fn run_with(
                 billing: Billing::Nothing,
             };
         }
+        // The person's ledger has the send before it leaves: a crash in the
+        // submit leaves this line and no outcome, which reads as what it is.
+        store.log_spending(&[
+            &sent_utc,
+            digest,
+            "-",
+            &spec.request.model,
+            &spec.request.seconds.to_string(),
+            &money(spec.estimate_usd),
+            "unknown",
+            "sending, billed if accepted",
+        ]);
         let unconfirmed = Billing::Unconfirmed(spec.estimate_usd);
         let state = match client.submit(&body_path) {
             Ok(state) => state,
             Err(failed) if !failed.may_be_billed => {
                 // Refused by the provider, or never sent: no job exists.
-                store.forget_intent(digest);
+                if let Err(reason) = store.resolve_attempt(&claim, digest, &sending) {
+                    eprintln!("warning: a refused send could not be taken off the record: {reason}");
+                }
                 return Outcome::Failed {
                     reason: failed.error.to_string(),
                     billing: Billing::Nothing,
@@ -618,8 +679,13 @@ fn run_with(
             estimate_usd: spec.estimate_usd,
         };
         match store.record_job(&record) {
-            Ok(()) => store.forget_intent(digest),
-            // The intent stays, so a lost record still stops the next ask
+            Ok(()) => {
+                // This send is the job now; earlier unanswered ones stay.
+                if let Err(reason) = store.resolve_attempt(&claim, digest, &sending) {
+                    eprintln!("warning: an answered send stays on the record: {reason}");
+                }
+            }
+            // The attempt stays, so a lost record still stops the next ask
             // from paying again silently.
             Err(reason) => eprintln!("warning: the job could not be recorded: {reason}"),
         }
@@ -795,6 +861,9 @@ fn run_with(
         }
     };
     store.forget_job_held(&claim, digest, &job_id);
+    // The clip is in hand: no earlier unanswered send can make the person pay
+    // for it again (each stays in the ledger).
+    store.clear_intent_held(&claim, digest);
     claim.release();
     Outcome::Done(Generated {
         clip: TrackClip {
@@ -1169,8 +1238,10 @@ pub(crate) mod tests {
         );
         assert_eq!(fake.count("submit"), 2);
         let spending = std::fs::read_to_string(store.join("spending.tsv")).unwrap();
-        // A header and the two jobs that were sent; the stored hit spent nothing.
-        assert_eq!(spending.lines().count(), 3, "{spending}");
+        // A header, and for each of the two jobs sent a line as it left and
+        // one when it ended; the stored hit spent nothing.
+        assert_eq!(spending.lines().count(), 5, "{spending}");
+        assert_eq!(spending.matches("sending, billed if accepted").count(), 2);
         assert!(!spending.contains(KEY));
     }
 
@@ -1352,11 +1423,12 @@ pub(crate) mod tests {
             panic!("{held:?}")
         };
         assert_eq!(seen, intent);
-        assert!(unconfirmed_words(&seen).contains("may have accepted and billed it (about $0.12)"));
+        assert!(unconfirmed_words(&seen, &Store::at(store.clone()))
+            .contains("may have accepted and billed it (about $0.12)"));
         assert_eq!(fake.count("submit"), 1, "nothing resent silently");
         // Agreed: sent anew, and the intent becomes the job.
         let mut agreed = spec(&fake, &store, request());
-        agreed.resend = Some(intent.sent_utc.clone());
+        agreed.resend = Some(intent.latest().id.clone());
         let outcome = GenerationJob::spawn(agreed).wait(|_, _| {});
         assert!(
             matches!(
@@ -1370,6 +1442,59 @@ pub(crate) mod tests {
         );
         assert_eq!(fake.count("submit"), 2);
         assert!(Store::at(store).intent(&digest).is_none());
+    }
+
+    /// H4c: a send agreed after a lost one is lost too. Both stay on record,
+    /// the words name both and their sum, and only a clip in hand clears them.
+    #[test]
+    fn two_lost_answers_both_stay_until_the_clip_is_in_hand() {
+        let folder = Scratch::new("job-lost-twice");
+        let video = tiny_mp4(folder.path());
+        let fake = Fake::start(Script {
+            drop_submits: 2,
+            polls: 0,
+            end: completed(0.12),
+            content: ("video/mp4".into(), video),
+            ..Script::default()
+        });
+        let store = folder.path().join("store");
+        let digest = request().digest();
+        let (_, billing) =
+            failed(GenerationJob::spawn(spec(&fake, &store, request())).wait(|_, _| {}));
+        assert_eq!(billing, Billing::Unconfirmed(Some(0.12)));
+        let first = Store::at(store.clone()).intent(&digest).unwrap();
+        let mut again = spec(&fake, &store, request());
+        again.resend = Some(first.latest().id.clone());
+        let (_, billing) = failed(GenerationJob::spawn(again).wait(|_, _| {}));
+        assert_eq!(billing, Billing::Unconfirmed(Some(0.12)));
+        let both = Store::at(store.clone()).intent(&digest).unwrap();
+        assert_eq!(both.attempts.len(), 2, "the second send did not replace the first");
+        assert_eq!(both.attempts[0], first.attempts[0]);
+        // Agreeing to the first one only is not agreeing to both.
+        let mut stale = spec(&fake, &store, request());
+        stale.resend = Some(first.latest().id.clone());
+        let held = GenerationJob::spawn(stale).wait(|_, _| {});
+        let Outcome::Unconfirmed(seen) = held else {
+            panic!("{held:?}")
+        };
+        let words = unconfirmed_words(&seen, &Store::at(store.clone()));
+        assert!(words.contains("was sent 2 times"), "{words}");
+        assert!(words.contains("(about $0.24 in all)"), "{words}");
+        assert!(words.contains("spending.tsv"), "{words}");
+        assert_eq!(fake.count("submit"), 2);
+        let mut agreed = spec(&fake, &store, request());
+        agreed.resend = Some(both.latest().id.clone());
+        let outcome = GenerationJob::spawn(agreed).wait(|_, _| {});
+        assert!(matches!(&outcome, Outcome::Done(_)), "{outcome:?}");
+        assert_eq!(fake.count("submit"), 3);
+        assert!(Store::at(store.clone()).intent(&digest).is_none());
+        let ledger = std::fs::read_to_string(store.join("spending.tsv")).unwrap();
+        assert_eq!(
+            ledger.matches("failed, answer lost, possibly billed").count(),
+            2,
+            "{ledger}"
+        );
+        assert_eq!(ledger.matches("sending, billed if accepted").count(), 3);
     }
 
     #[test]

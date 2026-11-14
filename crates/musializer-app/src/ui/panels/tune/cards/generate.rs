@@ -884,7 +884,7 @@ impl Shell {
                                 first: form.first && takes_first && own_picture,
                                 last: form.last && takes_last && next.is_some(),
                                 shown: estimate.usd(),
-                                resend: unconfirmed.as_ref().map(|held| held.digest.clone()),
+                                resend: unconfirmed.as_ref().map(|held| held.attempt.clone()),
                             }));
                         }
                         form.armed = false;

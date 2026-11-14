@@ -431,6 +431,40 @@ if [ "$(status_of lost-flag)" = 1 ] && has lost-flag '--resend-unconfirmed sends
 else
     fail "--resend-unconfirmed alone was not refused; see $OUT/lost-flag.log"
 fi
+# H4c: a resend whose answer is lost too. Both sends stay on record and count:
+# $0.24 possibly billed, so a $0.24 ceiling admits no third ($0.36), and the
+# words name both sends and their sum.
+treatment "$OUT/lost2.treatment.json" "lost twice [lost-answers-2]" ""
+submits="$(count submit)"
+launch lost2-1 --treatment "$OUT/lost2.treatment.json" --generate-clips --max-spend 1.00 --save-project "$OUT/lost2-1.musi"
+launch lost2-2 --treatment "$OUT/lost2.treatment.json" --generate-clips --max-spend 1.00 --resend-unconfirmed \
+    --save-project "$OUT/lost2-2.musi"
+if [ "$(status_of lost2-1)" = 1 ] && [ "$(status_of lost2-2)" = 1 ] && [ "$(count submit)" = $((submits + 2)) ] \
+    && has lost2-2 'The request was sent and its answer never arrived, so it may have been billed (about $0.12)'; then
+    pass "a resend agreed after a lost answer is lost too: two submits, each possibly billed"
+else
+    fail "the second lost answer was not reported (status $(status_of lost2-1), $(status_of lost2-2), $(( $(count submit) - submits )) submits); see $OUT/lost2-2.log"
+fi
+launch lost2-3 --treatment "$OUT/lost2.treatment.json" --generate-clips --max-spend 0.24 --resend-unconfirmed \
+    --save-project "$OUT/lost2-3.musi"
+if [ "$(status_of lost2-3)" = 1 ] && [ "$(count submit)" = $((submits + 2)) ] \
+    && has lost2-3 'This exact request was sent 2 times' && has lost2-3 'may have accepted and billed each of them (about $0.24 in all)' \
+    && has lost2-3 'spending.tsv' && has lost2-3 '$0.24 committed'; then
+    pass "both lost sends count: a \$0.24 ceiling admits no third (\$0.36); the words name 2 sends, \$0.24 in all, and the ledger"
+else
+    fail "the earlier lost sends were not both counted (status $(status_of lost2-3), $(( $(count submit) - submits )) submits); see $OUT/lost2-3.log"
+fi
+launch lost2-4 --treatment "$OUT/lost2.treatment.json" --generate-clips --max-spend 0.36 --resend-unconfirmed \
+    --save-project "$OUT/lost2-4.musi"
+digest2="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["clips"][0]["generated"]["request_sha256"])' "$OUT/lost2-4.musi" 2>/dev/null || true)"
+if [ "$(status_of lost2-4)" = 0 ] && [ "$(count submit)" = $((submits + 3)) ] && [ -n "$digest2" ] \
+    && [ ! -e "$MUSIALIZER_GENERATED_DIR/intents/$digest2.json" ] \
+    && [ "$(grep -aF "$digest2" "$MUSIALIZER_GENERATED_DIR/spending.tsv" | grep -cF 'answer lost, possibly billed')" = 2 ] \
+    && [ "$(grep -aF "$digest2" "$MUSIALIZER_GENERATED_DIR/spending.tsv" | grep -cF 'sending, billed if accepted')" = 3 ]; then
+    pass "with room for all three it is sent and made; the intent is cleared and the ledger keeps both lost sends"
+else
+    fail "the third send did not generate, or the record is wrong (status $(status_of lost2-4)); see $OUT/lost2-4.log and the store's spending.tsv"
+fi
 fi # lost
 
 # --- 10. a finished clip that arrives cut short (H4b) ----------------------------

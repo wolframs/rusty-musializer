@@ -23,6 +23,7 @@ What a job does is chosen by a marker in its prompt:
     [lost-answer-once]  the first submit of this prompt creates the job and
                     closes the connection without an answer (a dropped
                     connection after the provider accepted); later ones answer
+    [lost-answers-N]    the same for the first N submits of this prompt (H4c)
     [truncate-N]    the first N downloads are the clip's first half, with an
                     honest Content-Length (a cut-short file the importer refuses)
     [expire]        ends `expired`
@@ -62,7 +63,7 @@ EXPECT = os.environ.get("FAKE_EXPECT_KEY", "")
 LOCK = threading.Lock()
 COUNTS = {"models": 0, "submit": 0, "poll": 0, "content": 0}
 JOBS: dict[str, dict] = {}
-LOST: set[str] = set()
+LOST: dict[str, int] = {}
 STALE: dict[str, int] = {}
 DOWNLOADS: dict[str, int] = {}
 
@@ -260,9 +261,10 @@ class Handler(BaseHTTPRequestHandler):
         JOBS[job_id] = job
         if "[slow-submit]" in prompt:
             time.sleep(8)
-        if "[lost-answer-once]" in prompt and prompt not in LOST:
+        lost = 1 if "[lost-answer-once]" in prompt else (marker(prompt, "lost-answers") or 0)
+        if LOST.get(prompt, 0) < lost:
             # Accepted, and the answer never arrives: the connection drops.
-            LOST.add(prompt)
+            LOST[prompt] = LOST.get(prompt, 0) + 1
             with LOCK:
                 with open(os.path.join(STATE, "requests.log"), "a") as log:
                     log.write(f"LOST {job_id}\n")

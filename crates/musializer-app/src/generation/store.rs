@@ -11,12 +11,13 @@
 //! clips/<request sha256>.mp4    the verified download
 //! clips/<request sha256>.json   its provenance (model, prompt, cost, …)
 //! jobs/<request sha256>.json    a job submitted and not yet downloaded
-//! intents/<request sha256>.json a request about to be sent, or sent and
-//!                               never answered: it may have been billed
+//! intents/<request sha256>.json every send of a request not yet answered:
+//!                               each may have been billed (H4c)
 //! locks/<request sha256>.lock   held by the one caller asking for a request
 //! work/<name>/                  one caller's scratch (body, answers, partial)
 //! prices.json                   the price list, with when it was read
-//! spending.tsv                  one line per job: when, what, estimate, cost
+//! spending.tsv                  the ledger: a line as each request leaves and
+//!                               one when its job ends, possibly billed marked
 //! ```
 //!
 //! The folder is created `0700` and every file `0600`: the request body is a
@@ -43,7 +44,8 @@ use musializer_core::project::sha256;
 use serde::{Deserialize, Serialize};
 
 const JOB_SCHEMA: &str = "musializer.video-job/v1";
-const INTENT_SCHEMA: &str = "musializer.video-intent/v1";
+const INTENT_SCHEMA: &str = "musializer.video-intent/v2";
+const INTENT_SCHEMA_V1: &str = "musializer.video-intent/v1";
 const RECEIPT_SCHEMA: &str = "musializer.video-clip/v1";
 const MAX_RECORD_BYTES: u64 = 64 * 1024;
 
@@ -98,23 +100,92 @@ pub struct JobRecord {
     pub estimate_usd: Option<f64>,
 }
 
-/// A request written down before it is sent (H4b). It becomes the job's
-/// record when the job id arrives, and goes when the provider refused it or
-/// it never left. One that is still here with nobody sending it means: a
-/// request may have been accepted, and its job id is unknown. OpenRouter has
+/// The sends of one request whose answers have not arrived (H4b, H4c). An
+/// attempt is added before the request leaves, and goes when its job id
+/// arrives (it is then the job's record), when the provider refused it, or
+/// when it never left. One still here with nobody sending it means: that send
+/// may have been accepted and billed, and its job id is unknown. OpenRouter has
 /// no way to find such a job (`docs/VIDEO_GENERATION.md`, read 2026-11-14), so
 /// the next ask for it says so and waits for the person's agreement.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// **Every** unconfirmed attempt stays, and counts, until a clip for the
+/// request is in hand (H4c): a send agreed after one was lost may be lost too,
+/// and replacing the first with the second erased a possible charge.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Intent {
-    pub schema: String,
     pub request_sha256: String,
     pub model: String,
     pub seconds: u32,
+    /// Oldest first; never empty.
+    pub attempts: Vec<Attempt>,
+}
+
+/// One send whose answer has not arrived.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Attempt {
+    /// Unique among the request's attempts: what a person agrees to send
+    /// again after (the newest one's) is named by it.
+    pub id: String,
     /// When it was sent, UTC.
     pub sent_utc: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimate_usd: Option<f64>,
+}
+
+impl Intent {
+    /// The newest attempt.
+    #[must_use]
+    pub fn latest(&self) -> &Attempt {
+        // `attempts` is never empty: a file without one is not read.
+        &self.attempts[self.attempts.len() - 1]
+    }
+
+    /// What every attempt may have cost, or `None` when one has no price.
+    #[must_use]
+    pub fn total_usd(&self) -> Option<f64> {
+        self.attempts
+            .iter()
+            .map(|attempt| attempt.estimate_usd)
+            .sum()
+    }
+}
+
+/// `intents/<digest>.json` as written: v2 holds the attempts; v1 (H4b) held
+/// one send in `sent_utc` and `estimate_usd` and still reads, as one attempt.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IntentFile {
+    schema: String,
+    request_sha256: String,
+    model: String,
+    seconds: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sent_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    estimate_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    attempts: Vec<Attempt>,
+}
+
+impl IntentFile {
+    fn read(self) -> Option<Intent> {
+        let attempts = match (self.schema.as_str(), self.sent_utc) {
+            (INTENT_SCHEMA, None) if !self.attempts.is_empty() => self.attempts,
+            (INTENT_SCHEMA_V1, Some(sent_utc)) if self.attempts.is_empty() => vec![Attempt {
+                id: sent_utc.clone(),
+                sent_utc,
+                estimate_usd: self.estimate_usd,
+            }],
+            _ => return None,
+        };
+        Some(Intent {
+            request_sha256: self.request_sha256,
+            model: self.model,
+            seconds: self.seconds,
+            attempts,
+        })
+    }
 }
 
 /// The provenance beside a stored clip, as plain JSON.
@@ -380,21 +451,25 @@ impl Store {
         )
     }
 
-    /// The intent written for a request, if any.
+    /// The unconfirmed sends of a request, if any.
     #[must_use]
     pub fn intent(&self, request: &str) -> Option<Intent> {
         if !is_digest(request) {
             return None;
         }
-        let intent: Intent = serde_json::from_slice(&read_bounded(
-            &self.root.join("intents").join(format!("{request}.json")),
-        )?)
-        .ok()?;
-        (intent.schema == INTENT_SCHEMA && intent.request_sha256 == request).then_some(intent)
+        let file: IntentFile = serde_json::from_slice(&read_bounded(&self.intent_path(request))?).ok()?;
+        if file.request_sha256 != request {
+            return None;
+        }
+        file.read()
     }
 
-    /// An intent nobody is sending now: a request that may have been
-    /// accepted and whose job id is unknown.
+    fn intent_path(&self, request: &str) -> PathBuf {
+        self.root.join("intents").join(format!("{request}.json"))
+    }
+
+    /// Unconfirmed sends nobody is sending now: requests that may have been
+    /// accepted and whose job ids are unknown.
     #[must_use]
     pub fn leftover_intent(&self, request: &str) -> Option<Intent> {
         if self.in_flight(request) {
@@ -403,26 +478,79 @@ impl Store {
         self.intent(request)
     }
 
-    /// Writes the intent, before the request leaves.
-    ///
-    /// # Errors
-    ///
-    /// The folder or file cannot be written.
-    pub fn record_intent(&self, intent: &Intent) -> Result<(), String> {
+    fn write_intent(&self, intent: &Intent) -> Result<(), String> {
         let intents = self.folder("intents")?;
-        let mut intent = intent.clone();
-        intent.schema = INTENT_SCHEMA.to_owned();
+        let file = IntentFile {
+            schema: INTENT_SCHEMA.to_owned(),
+            request_sha256: intent.request_sha256.clone(),
+            model: intent.model.clone(),
+            seconds: intent.seconds,
+            sent_utc: None,
+            estimate_usd: None,
+            attempts: intent.attempts.clone(),
+        };
         write_private(
             &intents.join(format!("{}.json", intent.request_sha256)),
-            serde_json::to_string_pretty(&intent)
+            serde_json::to_string_pretty(&file)
                 .map_err(|error| error.to_string())?
                 .as_bytes(),
         )
     }
 
-    pub fn forget_intent(&self, request: &str) {
+    /// Adds a send to the request's unconfirmed ones, before it leaves, and
+    /// returns them all. The caller holds the request (`_held`).
+    ///
+    /// # Errors
+    ///
+    /// The folder or file cannot be written: then nothing may be sent.
+    pub fn add_attempt(
+        &self,
+        _held: &Claim,
+        request: &str,
+        model: &str,
+        seconds: u32,
+        attempt: Attempt,
+    ) -> Result<Intent, String> {
+        let mut intent = self.intent(request).unwrap_or_else(|| Intent {
+            request_sha256: request.to_owned(),
+            model: model.to_owned(),
+            seconds,
+            attempts: Vec::new(),
+        });
+        intent.attempts.push(attempt);
+        self.write_intent(&intent)?;
+        Ok(intent)
+    }
+
+    /// Takes one send off the unconfirmed ones: its job id arrived, the
+    /// provider refused it, or it never left. The others stay.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be rewritten or removed.
+    pub fn resolve_attempt(&self, _held: &Claim, request: &str, id: &str) -> Result<(), String> {
+        let Some(mut intent) = self.intent(request) else {
+            return Ok(());
+        };
+        intent.attempts.retain(|attempt| attempt.id != id);
+        if intent.attempts.is_empty() {
+            let path = self.intent_path(request);
+            match std::fs::remove_file(&path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!("{}: {error}", path.display())),
+            }
+        } else {
+            self.write_intent(&intent)
+        }
+    }
+
+    /// Forgets every unconfirmed send of a request whose clip is now in hand:
+    /// they may have been billed (the ledger keeps them), but none can make
+    /// the person pay again for a clip they have.
+    pub fn clear_intent_held(&self, _held: &Claim, request: &str) {
         if is_digest(request) {
-            let _ = std::fs::remove_file(self.root.join("intents").join(format!("{request}.json")));
+            let _ = std::fs::remove_file(self.intent_path(request));
         }
     }
 
@@ -701,6 +829,67 @@ pub(crate) mod tests {
         assert!(store.find("../../etc").is_none());
     }
 
+    fn attempt(id: &str, usd: f64) -> Attempt {
+        Attempt {
+            id: id.into(),
+            sent_utc: format!("2026-11-14T20:00:0{}Z", id.len() % 10),
+            estimate_usd: Some(usd),
+        }
+    }
+
+    /// Every unconfirmed send stays until a clip is in hand (H4c): a second
+    /// lost send is added beside the first, not over it; a resolved one goes
+    /// alone; an H4b (v1) intent still reads, as one attempt.
+    #[test]
+    fn every_unconfirmed_send_stays_and_counts() {
+        let folder = Scratch::new("attempts");
+        let store = Store::at(folder.path().to_path_buf());
+        let request = sha256::digest_hex(b"attempts");
+        let stop = AtomicBool::new(false);
+        let claim = store.claim(&request, &stop, || {}).unwrap().unwrap();
+        store
+            .add_attempt(&claim, &request, "m/x", 4, attempt("first", 0.12))
+            .unwrap();
+        let both = store
+            .add_attempt(&claim, &request, "m/x", 4, attempt("second", 0.12))
+            .unwrap();
+        assert_eq!(both.attempts.len(), 2);
+        assert_eq!(store.intent(&request), Some(both.clone()));
+        assert_eq!(store.intent(&request).unwrap().latest().id, "second");
+        assert!((both.total_usd().unwrap() - 0.24).abs() < 1e-12);
+        // A third whose job id arrived goes; the two lost ones stay.
+        store
+            .add_attempt(&claim, &request, "m/x", 4, attempt("third", 0.12))
+            .unwrap();
+        store.resolve_attempt(&claim, &request, "third").unwrap();
+        assert_eq!(store.intent(&request), Some(both));
+        // An unknown price makes the sum unknown.
+        let mut unknown = store.intent(&request).unwrap();
+        unknown.attempts[0].estimate_usd = None;
+        assert_eq!(unknown.total_usd(), None);
+        // The clip in hand clears them all.
+        store.clear_intent_held(&claim, &request);
+        assert!(store.intent(&request).is_none());
+        drop(claim);
+        // H4b's file: one send, read as one attempt named by its time.
+        std::fs::write(
+            folder.path().join("intents").join(format!("{request}.json")),
+            format!(
+                r#"{{"schema":"musializer.video-intent/v1","request_sha256":"{request}","model":"m/x","seconds":4,"sent_utc":"2026-11-14T21:13:16Z","estimate_usd":0.12}}"#
+            ),
+        )
+        .unwrap();
+        let old = store.intent(&request).unwrap();
+        assert_eq!(
+            old.attempts,
+            vec![Attempt {
+                id: "2026-11-14T21:13:16Z".into(),
+                sent_utc: "2026-11-14T21:13:16Z".into(),
+                estimate_usd: Some(0.12)
+            }]
+        );
+    }
+
     fn synced() -> Vec<PathBuf> {
         SYNCED.with(|synced| std::mem::take(&mut *synced.borrow_mut()))
     }
@@ -717,24 +906,17 @@ pub(crate) mod tests {
         let store = Store::at(root.clone());
         let request = sha256::digest_hex(b"durable");
         synced();
+        let stop = AtomicBool::new(false);
+        let claim = store.claim(&request, &stop, || {}).unwrap().unwrap();
+        // The fresh root into its parent, `locks/` into the root.
+        assert_eq!(synced(), vec![folder.path().to_path_buf(), root.clone()]);
         store
-            .record_intent(&Intent {
-                schema: String::new(),
-                request_sha256: request.clone(),
-                model: "m/x".into(),
-                seconds: 4,
-                sent_utc: "2026-11-14T20:00:00Z".into(),
-                estimate_usd: Some(0.12),
-            })
+            .add_attempt(&claim, &request, "m/x", 4, attempt("a1", 0.12))
             .unwrap();
+        drop(claim);
         let seen = synced();
-        // The fresh root into its parent, `intents/` into the root, the
-        // intent into `intents/`.
-        assert_eq!(
-            seen,
-            vec![folder.path().to_path_buf(), root.clone(), root.join("intents")],
-            "{seen:?}"
-        );
+        // `intents/` into the root, the intent into `intents/`.
+        assert_eq!(seen, vec![root.clone(), root.join("intents")], "{seen:?}");
         store
             .record_job(&JobRecord {
                 schema: String::new(),

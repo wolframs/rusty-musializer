@@ -53,9 +53,10 @@ pub struct GenerateOrder {
     pub last: bool,
     /// The price the button showed, which the request must still have.
     pub shown: Option<f64>,
-    /// The request digest the card warned about: sent before, its answer
-    /// lost, so it may have been billed. Sending it again needs this to be
-    /// the request's own digest (the card showed the warning for it).
+    /// The newest unconfirmed send the card warned about, by its id: the
+    /// request was sent before and no answer arrived, so each send may have
+    /// been billed. Sending it again needs this to be the request's newest
+    /// unconfirmed send still (the card showed the warning for exactly those).
     pub resend: Option<String>,
 }
 
@@ -64,6 +65,8 @@ pub struct GenerateOrder {
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnconfirmedView {
     pub digest: String,
+    /// The newest unconfirmed send's id, which a second Send agrees to.
+    pub attempt: String,
     pub words: String,
 }
 
@@ -530,10 +533,20 @@ impl Generations {
         // is the agreement to send it again.
         let key = (running.target.owner.clone(), order.cue_id);
         if lost {
+            // The send just lost is the newest; an unreadable store leaves
+            // no id, so the next Send is held again with fresh words.
+            let attempt = self
+                .store
+                .as_ref()
+                .ok()
+                .and_then(|store| store.intent(&running.digest))
+                .map(|intent| intent.latest().id.clone())
+                .unwrap_or_default();
             self.unconfirmed.insert(
                 key.clone(),
                 UnconfirmedView {
                     digest: running.digest.clone(),
+                    attempt,
                     words: format!("{words} {AGAIN}"),
                 },
             );
@@ -545,11 +558,16 @@ impl Generations {
     /// Holds a request whose earlier send may have been billed: the card
     /// shows why, and its next Send agrees to send it again.
     fn hold(&mut self, key: (Owner, u64), digest: &str, intent: &super::store::Intent) -> String {
-        let words = format!("{} {AGAIN}", super::job::unconfirmed_words(intent));
+        let words = match self.store.as_ref() {
+            Ok(store) => super::job::unconfirmed_words(intent, store),
+            Err(_) => String::new(),
+        };
+        let words = format!("{words} {AGAIN}");
         self.unconfirmed.insert(
             key,
             UnconfirmedView {
                 digest: digest.to_owned(),
+                attempt: intent.latest().id.clone(),
                 words: words.clone(),
             },
         );
@@ -817,8 +835,8 @@ impl Generations {
         // Sent before and never answered: held until the person, told it may
         // have been billed, presses Send again for this very request.
         let resend = match store.leftover_intent(&digest) {
-            Some(intent) if order.resend.as_deref() == Some(digest.as_str()) => {
-                Some(intent.sent_utc)
+            Some(intent) if order.resend.as_deref() == Some(intent.latest().id.as_str()) => {
+                Some(intent.latest().id.clone())
             }
             Some(intent) => {
                 return Err(NotStarted::Held(self.hold(
@@ -1069,6 +1087,7 @@ mod tests {
             (owner(), 2),
             UnconfirmedView {
                 digest: "d".repeat(64),
+                attempt: "1p1".into(),
                 words: "held".into(),
             },
         );
