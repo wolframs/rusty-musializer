@@ -585,6 +585,16 @@ mod tests {
         assert_eq!(parse_scene("phosphor"), Some(SceneId::PhosphorDream));
         let planner = include_str!("../../../../tools/external_analysis.py");
         for scene in SceneId::ALL {
+            // A clip section plays a file the planner has never seen, so an
+            // analysis run may not recommend one (VG): it would draw the
+            // missing-clip placeholder. The one scene asserted absent.
+            if scene == SceneId::Clip {
+                assert!(
+                    !planner.contains("\"clip\""),
+                    "the planner recommends clips"
+                );
+                continue;
+            }
             assert!(
                 planner.contains(&format!("\"{}\"", scene.stable_name())),
                 "{} is missing from external_analysis.py's SCENES vocabulary, so \

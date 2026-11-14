@@ -424,6 +424,24 @@ pub mod index {
         pub const SATURATION: usize = 10;
         pub const RESPONSE: usize = 11;
     }
+    /// Video Clip (post-legacy, 2026-11-14, VG): persisted order, append only.
+    /// The clip's time and fit are the section's (`project::clip`), not
+    /// settings: a route or a glide on a clock would scrub the picture.
+    pub mod clip {
+        /// A short zoom in on each kick.
+        pub const PUNCH: usize = 0;
+        /// The picture brightens with each kick and swells with the loudness.
+        pub const PULSE: usize = 1;
+        /// A slow push in and sideways drift, faster when the track is loud.
+        pub const DRIFT: usize = 2;
+        /// A sideways jolt on the hardest hits.
+        pub const SHAKE: usize = 3;
+        /// The colour of the clip's highlights warms with the bass, cools with
+        /// the treble.
+        pub const TINT: usize = 4;
+        /// Scales everything the music does; 0 is the clip as it is.
+        pub const RESPONSE: usize = 5;
+    }
     /// OpenAI Knot: the persisted control order; new finish controls are appended.
     pub mod knot {
         pub const SIZE: usize = 0;
@@ -827,6 +845,17 @@ const GLYPHS: &[SettingDescriptor] = &[
     D::slider("settings.glyphs.response", "Music response", 0.0, 2.0, 1.0, 2),
 ];
 
+/// Low by default: the clip is the picture, and the music should touch it, not
+/// wreck it. A director turns them up per section.
+const CLIP: &[SettingDescriptor] = &[
+    D::slider("settings.clip.punch", "Kick punch", 0.0, 1.0, 0.25, 2),
+    D::slider("settings.clip.pulse", "Light pulse", 0.0, 1.0, 0.2, 2),
+    D::slider("settings.clip.drift", "Drift", 0.0, 1.0, 0.3, 2),
+    D::slider("settings.clip.shake", "Shake", 0.0, 1.0, 0.0, 2),
+    D::slider("settings.clip.tint", "Tint", 0.0, 1.0, 0.15, 2),
+    D::slider("settings.clip.response", "Music response", 0.0, 2.0, 1.0, 2),
+];
+
 const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     SPECTRUM,
     PULSE,
@@ -857,6 +886,7 @@ const TABLES: [&[SettingDescriptor]; SCENE_COUNT] = [
     PIXEL_CHAPEL,
     PIXEL_RAVE,
     GLYPHS,
+    CLIP,
 ];
 
 /// Descriptors for one scene.
@@ -1111,7 +1141,8 @@ pub fn count_is_legacy(scene: SceneId, count: usize) -> bool {
         | SceneId::PixelQuartet
         | SceneId::PixelChapel
         | SceneId::PixelRave
-        | SceneId::GlyphLattice => false,
+        | SceneId::GlyphLattice
+        | SceneId::Clip => false,
     }
 }
 

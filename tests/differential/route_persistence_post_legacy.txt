@@ -1,4 +1,4 @@
-post-constant-count 190
+post-constant-count 196
 post-constant 0 settings.cadence.hue 0 0 0 1 108 108 1 1
 post-constant-is-constant 0 1
 post-constant 1 settings.cadence.saturation 0 0 0 1 2 2 1 1
@@ -379,7 +379,19 @@ post-constant 188 settings.glyphs.saturation 0 0 0 1 1 1 1 1
 post-constant-is-constant 188 1
 post-constant 189 settings.glyphs.response 0 0 0 1 1 1 1 1
 post-constant-is-constant 189 1
-post-routed-count 190
+post-constant 190 settings.clip.punch 0 0 0 1 0.25 0.25 1 1
+post-constant-is-constant 190 1
+post-constant 191 settings.clip.pulse 0 0 0 1 0.200000003 0.200000003 1 1
+post-constant-is-constant 191 1
+post-constant 192 settings.clip.drift 0 0 0 1 0.300000012 0.300000012 1 1
+post-constant-is-constant 192 1
+post-constant 193 settings.clip.shake 0 0 0 1 0 0 1 1
+post-constant-is-constant 193 1
+post-constant 194 settings.clip.tint 0 0 0 1 0.150000006 0.150000006 1 1
+post-constant-is-constant 194 1
+post-constant 195 settings.clip.response 0 0 0 1 1 1 1 1
+post-constant-is-constant 195 1
+post-routed-count 196
 post-routed 0 settings.cadence.hue 0 0 0 1 108 108 1 1
 post-routed 1 settings.cadence.saturation 0 0 0 1 2 2 1 1
 post-routed 2 settings.cadence.halo 0 0 0 1 0.200000003 0.200000003 1 1
@@ -570,6 +582,12 @@ post-routed 186 settings.glyphs.flicker 0 0 0 1 0.5 0.5 1 1
 post-routed 187 settings.glyphs.hue 0 0 0 1 0 0 1 1
 post-routed 188 settings.glyphs.saturation 0 0 0 1 1 1 1 1
 post-routed 189 settings.glyphs.response 0 0 0 1 1 1 1 1
+post-routed 190 settings.clip.punch 0 0 0 1 0.25 0.25 1 1
+post-routed 191 settings.clip.pulse 0 0 0 1 0.200000003 0.200000003 1 1
+post-routed 192 settings.clip.drift 0 0 0 1 0.300000012 0.300000012 1 1
+post-routed 193 settings.clip.shake 0 0 0 1 0 0 1 1
+post-routed 194 settings.clip.tint 0 0 0 1 0.150000006 0.150000006 1 1
+post-routed 195 settings.clip.response 0 0 0 1 1 1 1 1
 post-import-value 7 7 108
 post-import-value 7 8 2
 post-import-value 7 9 0.200000003
@@ -760,3 +778,9 @@ post-import-value 28 8 0.5
 post-import-value 28 9 0
 post-import-value 28 10 1
 post-import-value 28 11 1
+post-import-value 29 0 0.25
+post-import-value 29 1 0.200000003
+post-import-value 29 2 0.300000012
+post-import-value 29 3 0
+post-import-value 29 4 0.150000006
+post-import-value 29 5 1

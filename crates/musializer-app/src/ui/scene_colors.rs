@@ -71,6 +71,9 @@ pub(crate) fn scene_color(scene: SceneId, alpha: u8) -> Color {
         SceneId::PixelRave => (240, 110, 200),
         // The lattice's own aqua.
         SceneId::GlyphLattice => (96, 222, 200),
+        // Silver screen, so a clip section reads as footage in the lane. Not
+        // film amber: that reads as the dark accent.
+        SceneId::Clip => (176, 188, 220),
     };
     Color::new(r, g, b, alpha)
 }

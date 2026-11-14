@@ -187,6 +187,11 @@ pub struct Track {
     /// retried every frame.
     pub song_atlas_map_attempted: bool,
     pub ascii: Option<AsciiImage>,
+    /// The video clips this track's sections play (post-legacy, VG), and the
+    /// track's own: what the `clip` scene plays as the base scene or in a
+    /// section that places none.
+    pub clips: Vec<crate::clips::TrackClip>,
+    pub base_clip: Option<musializer_core::project::clip::ClipPlacement>,
     /// Robust per-track loudness bounds (post-legacy, 2026-08-26), profiled in
     /// the same eager decode that builds the timeline waveform. Rides every
     /// [`SceneFrame`](musializer_core::scene::SceneFrame) so a scene can gate
@@ -467,6 +472,8 @@ impl Track {
             song_atlas_map: None,
             song_atlas_map_attempted: false,
             ascii: None,
+            clips: Vec::new(),
+            base_clip: None,
             track_dynamics: None,
             poster_audio: None,
             caption_style: CaptionStyle::default(),

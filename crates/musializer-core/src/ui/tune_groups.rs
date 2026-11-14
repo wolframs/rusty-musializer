@@ -155,6 +155,8 @@ const TABLE: &[(&str, &[(&str, Group)])] = &[
     ("glyphs", &[("solid", S), ("words", T), ("spin", M), ("size", H), ("density", H),
                  ("stroke", H), ("glow", L), ("ghosts", L), ("flicker", M), ("hue", C),
                  ("saturation", C), ("response", M)]),
+    ("clip", &[("punch", M), ("pulse", L), ("drift", M), ("shake", M), ("tint", C),
+               ("response", M)]),
 ];
 
 /// The group a descriptor key belongs to, or `None` for a key the table does
@@ -693,11 +695,11 @@ mod tests {
             );
             total += descriptors.len();
         }
-        // The count the design was written against (§3.3): 29 scenes, 271
-        // descriptors. A new scene or parameter moves it, and must move it
-        // with its table row.
-        assert_eq!(SceneId::ALL.len(), 29);
-        assert_eq!(total, 271);
+        // The count the design was written against (§3.3) was 29 scenes and
+        // 271 descriptors; the Video Clip (VG) added one and six. A new scene
+        // or parameter moves it, and must move it with its table row.
+        assert_eq!(SceneId::ALL.len(), 30);
+        assert_eq!(total, 277);
     }
 
     #[test]
@@ -713,7 +715,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(seen.len(), 271);
+        assert_eq!(seen.len(), 277);
     }
 
     #[test]

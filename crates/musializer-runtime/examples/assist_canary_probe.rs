@@ -327,6 +327,7 @@ fn canary_project() -> Result<Project, String> {
             opacity: 1.0,
             blend_mode: BlendMode::Normal,
             mappings: Vec::new(),
+            clip: None,
         }],
         ..Project::default()
     };

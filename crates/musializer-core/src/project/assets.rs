@@ -1,4 +1,5 @@
-//! Content-addressed bundling for the `audio`, `images` and `fonts` categories.
+//! Content-addressed bundling for the `audio`, `images`, `fonts` and `clips`
+//! categories.
 //!
 //! **Owner: Agent B.** Port of the asset-bundling paths in
 //! `../musializer/src/project_io.c` (`musi_project_asset_category_directory`,
@@ -35,13 +36,16 @@ pub enum AssetCategory {
     Audio,
     Image,
     Font,
+    /// Post-legacy (2026-11-14, VG): the video clips sections play.
+    Clip,
 }
 
 impl AssetCategory {
-    pub const ALL: [AssetCategory; 3] = [
+    pub const ALL: [AssetCategory; 4] = [
         AssetCategory::Audio,
         AssetCategory::Image,
         AssetCategory::Font,
+        AssetCategory::Clip,
     ];
 
     /// The `<stem>.assets/` subdirectory a category is stored under
@@ -55,6 +59,7 @@ impl AssetCategory {
             AssetCategory::Audio => "audio",
             AssetCategory::Image => "images",
             AssetCategory::Font => "fonts",
+            AssetCategory::Clip => "clips",
         }
     }
 }
@@ -376,6 +381,7 @@ mod tests {
         assert_eq!(AssetCategory::Audio.directory(), "audio");
         assert_eq!(AssetCategory::Image.directory(), "images");
         assert_eq!(AssetCategory::Font.directory(), "fonts");
+        assert_eq!(AssetCategory::Clip.directory(), "clips");
         let mut seen: Vec<&str> = AssetCategory::ALL
             .iter()
             .map(|category| category.directory())

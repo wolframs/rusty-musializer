@@ -79,6 +79,9 @@ pub enum SceneId {
     PixelRave = 27,
     /// A wireframe solid lit on a honeycomb of tiny glyphs (2026-10-24).
     GlyphLattice = 28,
+    /// A video file as a section's picture (2026-11-14, VG): generated
+    /// elsewhere, shot, or exported from here. `project::clip`.
+    Clip = 29,
 }
 
 /// Number of scenes.
@@ -104,7 +107,7 @@ pub enum SceneId {
 /// Nothing here is visible to a `.musi` file written before 2026-08-08: a
 /// project stores per-scene data by token (`settings.loom.weight`), not by
 /// count, so a shorter table is simply a table with no `phosphor` rows in it.
-pub const SCENE_COUNT: usize = SceneId::GlyphLattice as usize + 1;
+pub const SCENE_COUNT: usize = SceneId::Clip as usize + 1;
 
 /// The scenes the frozen C had, which is the prefix every differential harness
 /// compares against (`scene.h:17-29`).
@@ -146,6 +149,7 @@ impl SceneId {
         SceneId::PixelChapel,
         SceneId::PixelRave,
         SceneId::GlyphLattice,
+        SceneId::Clip,
     ];
 
     /// The C-era prefix of [`Self::ALL`], for the differential harnesses.
@@ -215,6 +219,7 @@ impl SceneId {
             SceneId::PixelChapel => "Rose Window",
             SceneId::PixelRave => "Gabber Tunnel",
             SceneId::GlyphLattice => "Glyph Lattice",
+            SceneId::Clip => "Video Clip",
         }
     }
 
@@ -261,6 +266,7 @@ impl SceneId {
             SceneId::PixelChapel => "pixel-chapel",
             SceneId::PixelRave => "pixel-rave",
             SceneId::GlyphLattice => "glyphs",
+            SceneId::Clip => "clip",
         }
     }
 
@@ -804,6 +810,8 @@ mod tests {
         assert_eq!(SceneId::NeonTunnel as u32, 19);
         assert_eq!(SceneId::VoronoiBloom as u32, 20);
         assert_eq!(SceneId::IridescentPool as u32, 21);
+        assert_eq!(SceneId::GlyphLattice as u32, 28);
+        assert_eq!(SceneId::Clip as u32, 29);
         assert_eq!(SceneId::ALL.len(), SCENE_COUNT);
         assert_eq!(SceneId::ORACLE_ALL.len(), ORACLE_SCENE_COUNT);
         assert_eq!(SceneId::ALL[..ORACLE_SCENE_COUNT], SceneId::ORACLE_ALL);

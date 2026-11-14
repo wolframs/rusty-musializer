@@ -9,6 +9,8 @@ pub mod cadence;
 pub mod caption;
 /// Post-legacy (2026-08-24), no oracle. See its core module for its evidence.
 pub mod clawd;
+/// Post-legacy (2026-11-14, VG): a video file as a section's picture.
+pub mod clip;
 pub mod constellation;
 pub mod loom;
 pub mod orbital_lattice;

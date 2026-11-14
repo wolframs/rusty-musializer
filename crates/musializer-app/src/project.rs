@@ -30,6 +30,7 @@
 
 use std::path::{Path, PathBuf};
 
+use musializer_core::project::clip::ClipAsset;
 use musializer_core::project::io;
 use musializer_core::project::model::{
     AsciiImageAsset, AssetMode, AudioAsset, Metadata, OutputQuality, OutputSettings, Project,
@@ -117,6 +118,10 @@ pub enum OpenWarning {
 ///
 /// The C reads sample rate and channels off the live `Music` handle; here they
 /// come from the caller for the same reason the track model has no `Music`.
+///
+/// The track's clips (VG) are written with the paths their bytes are at now,
+/// which is what a recovery snapshot wants; a save hands the bundled paths to
+/// [`build_project_with_clips`] instead.
 #[allow(clippy::too_many_arguments)]
 pub fn build_project(
     track: &Track,
@@ -126,6 +131,46 @@ pub fn build_project(
     stored_licence: Option<&str>,
     sample_rate: u32,
     channels: u16,
+) -> Result<Project, ProjectError> {
+    let clips = referenced_clips(track)
+        .into_iter()
+        .map(|entry| ClipAsset {
+            path: entry.source.to_string_lossy().into_owned(),
+            ..entry.asset.clone()
+        })
+        .collect();
+    build_project_with_clips(
+        track,
+        stored_audio,
+        stored_ascii_image,
+        stored_font,
+        stored_licence,
+        sample_rate,
+        channels,
+        clips,
+    )
+}
+
+/// The clips a save writes: those a placement names (VG).
+fn referenced_clips(track: &Track) -> Vec<&crate::clips::TrackClip> {
+    crate::clips::referenced(
+        &track.clips,
+        track.base_clip,
+        track.scene_switches.cues().iter().map(|cue| cue.clip),
+    )
+}
+
+/// [`build_project`] with the clip library as it will be stored.
+#[allow(clippy::too_many_arguments)]
+pub fn build_project_with_clips(
+    track: &Track,
+    stored_audio: &str,
+    stored_ascii_image: Option<&str>,
+    stored_font: Option<&str>,
+    stored_licence: Option<&str>,
+    sample_rate: u32,
+    channels: u16,
+    clips: Vec<ClipAsset>,
 ) -> Result<Project, ProjectError> {
     if stored_audio.is_empty() {
         return Err(ProjectError::Build("the audio asset has no path".into()));
@@ -210,8 +255,10 @@ pub fn build_project(
         end_seconds: duration,
         opacity: 1.0,
         mappings,
+        clip: track.base_clip,
         ..SceneEntry::default()
     }];
+    project.clips = clips;
 
     project.caption_style = track.caption_style.clone();
     if let Some(asset) = project.caption_style.font.as_mut() {
@@ -261,6 +308,7 @@ pub fn build_project(
                 glide: cue.glide,
                 pixel: cue.pixel,
                 caption_style: cue.caption_style,
+                clip: cue.clip,
             })
             .collect(),
         outro: track.scene_switches.outro,
@@ -376,7 +424,33 @@ pub fn save_to_path(
         _ => None,
     };
 
-    let project = build_project(
+    // The clips a placement names (VG), bundled like the audio. A clip whose
+    // bytes are gone is kept as it was recorded when this is the project it
+    // was recorded in, so an autosave does not fail over a deleted take; it
+    // cannot be bundled into a different one.
+    let mut clips = Vec::new();
+    let mut adopted = Vec::new();
+    for entry in referenced_clips(track) {
+        let same_project = track.project_path.as_deref() == Some(path);
+        if !entry.source.is_file() && same_project && !entry.asset.path.is_empty() {
+            clips.push(entry.asset.clone());
+            continue;
+        }
+        let published = project_files::bundle_asset(
+            path,
+            AssetCategory::Clip,
+            &entry.source,
+            &entry.asset.sha256,
+            reuse_published,
+        )?;
+        clips.push(ClipAsset {
+            path: published.stored.clone(),
+            ..entry.asset.clone()
+        });
+        adopted.push((entry.asset.sha256.clone(), published));
+    }
+
+    let project = build_project_with_clips(
         track,
         &audio.stored,
         ascii.as_ref().map(|a| a.stored.as_str()),
@@ -384,6 +458,7 @@ pub fn save_to_path(
         licence.as_ref().map(|l| l.stored.as_str()),
         sample_rate,
         channels,
+        clips,
     )?;
     let json = io::serialize(&project)?;
 
@@ -405,6 +480,16 @@ pub fn save_to_path(
     }
     if let Some(published) = &licence {
         track.caption_licence_path = Some(published.runtime.clone());
+    }
+    for (sha256, published) in adopted {
+        if let Some(entry) = track
+            .clips
+            .iter_mut()
+            .find(|entry| entry.asset.sha256 == sha256)
+        {
+            entry.asset.path = published.stored;
+            entry.source = published.runtime;
+        }
     }
     track.project_path = Some(path.to_path_buf());
     track.project_metadata = Some(project.metadata);
@@ -535,6 +620,14 @@ pub fn open_recovery_json(
         }
         None => (None, None),
     };
+    // Clips are not checked here (VG): the decoder checks each one's digest
+    // from its own handle before drawing it, and one that is gone draws a
+    // placeholder naming it rather than refusing the whole recovery.
+    let clip_sources = project
+        .clips
+        .iter()
+        .map(|asset| PathBuf::from(&asset.path))
+        .collect();
     let duration = duration_for(&audio_path).map_err(ProjectError::Build)?;
     hydrate_track(
         project,
@@ -542,6 +635,7 @@ pub fn open_recovery_json(
         ascii_path,
         font_path,
         licence_path,
+        clip_sources,
         duration,
         None,
     )
@@ -620,6 +714,19 @@ pub fn open_path(
         }
     }
 
+    // Each clip resolves inside the bundle (VG). Not refused when it is not
+    // there or its digest changed: the decoder checks the bytes from its own
+    // handle, and a clip that is gone draws a placeholder naming it, where a
+    // refusal would lose the whole project over one take. A path that cannot
+    // be resolved keeps its spelling, which the placeholder then shows.
+    let clip_sources = project
+        .clips
+        .iter()
+        .map(|asset| {
+            project_files::resolve_bundled_asset_path(path, &asset.path)
+                .unwrap_or_else(|_| path.parent().unwrap_or(Path::new(".")).join(&asset.path))
+        })
+        .collect();
     let duration = duration_for(&audio_path).map_err(ProjectError::Build)?;
     hydrate_track(
         project,
@@ -627,6 +734,7 @@ pub fn open_path(
         ascii_path,
         caption_font_path,
         caption_licence_path,
+        clip_sources,
         duration,
         Some(path.to_path_buf()),
     )
@@ -643,6 +751,7 @@ fn hydrate_track(
     ascii_path: Option<PathBuf>,
     caption_font_path: Option<PathBuf>,
     caption_licence_path: Option<PathBuf>,
+    clip_sources: Vec<PathBuf>,
     duration: f64,
     project_path: Option<PathBuf>,
 ) -> Result<OpenedProject, ProjectError> {
@@ -652,6 +761,7 @@ fn hydrate_track(
         .ok_or_else(|| ProjectError::Build("the project has no scene".into()))?;
     let base_scene = SceneId::from_stable_name(&entry.scene_type)
         .ok_or_else(|| ProjectError::UnknownScene(entry.scene_type.clone()))?;
+    let entry_clip = entry.clip;
     let (scene_settings, scene_routes) =
         routes::import_mappings(&entry.mappings).ok_or(ProjectError::Mappings)?;
     let scene_switches = hydrate_scene_switches(&project.scene_switches, &project.audio)?;
@@ -711,6 +821,16 @@ fn hydrate_track(
             sha256: asset.sha256.clone(),
         });
     }
+    track.base_clip = entry_clip;
+    track.clips = project
+        .clips
+        .iter()
+        .zip(clip_sources)
+        .map(|(asset, source)| crate::clips::TrackClip {
+            asset: asset.clone(),
+            source,
+        })
+        .collect();
     track.analysis_lanes = project.analysis_lanes;
     // C4: seeded from the file the project recorded, so a track opened into a
     // background slot — one that never gets a bound stream — is still saveable.
@@ -770,6 +890,7 @@ fn hydrate_scene_switches(
             glide: suggestion.glide,
             pixel: suggestion.pixel,
             caption_style: suggestion.caption_style,
+            clip: suggestion.clip,
         });
     }
     timeline

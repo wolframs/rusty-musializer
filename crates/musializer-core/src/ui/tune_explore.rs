@@ -776,7 +776,8 @@ mod tests {
         //
         // The C-era prefix stays fixed; all registered controls, including
         // Fluid Ink's eight, the six Pixel Cats scenes' ten each and Glyph
-        // Lattice's twelve, participate in the full exploration sweep.
+        // Lattice's twelve and the Video Clip's six, participate in the full
+        // exploration sweep.
         let oracle: usize = SceneId::ORACLE_ALL
             .into_iter()
             .map(settings::oracle_count)
@@ -785,7 +786,7 @@ mod tests {
             oracle, 81,
             "the C-era descriptor count is a frozen contract"
         );
-        assert_eq!(all_descriptors().len(), 271);
+        assert_eq!(all_descriptors().len(), 277);
     }
 
     // -- conform / step / parse ------------------------------------------------

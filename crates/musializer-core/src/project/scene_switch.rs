@@ -115,6 +115,9 @@ pub struct SceneSwitchCue {
     /// unless they name their own (post-legacy, MV2). `None`, the default and
     /// never written, is the base style.
     pub caption_style: Option<StyleName>,
+    /// The clip a `clip` section plays (post-legacy, 2026-11-14, VG). `None`
+    /// plays the track's.
+    pub clip: Option<ClipPlacement>,
 }
 
 impl Default for SceneSwitchCue {
@@ -131,6 +134,7 @@ impl Default for SceneSwitchCue {
             glide: 0.0,
             pixel: None,
             caption_style: None,
+            clip: None,
         }
     }
 }
@@ -158,6 +162,7 @@ pub struct SceneSwitchTimeline {
 }
 
 use crate::project::caption_styles::{StyleName, TitleCard};
+use crate::project::clip::{ClipMoment, ClipPlacement};
 
 impl SceneSwitchTimeline {
     /// `scene_switch_init` (`scene_switch.c:11-16`).
@@ -260,6 +265,48 @@ impl SceneSwitchTimeline {
     pub fn caption_style_at(&self, start_seconds: f64) -> Option<StyleName> {
         self.cue_covering(start_seconds)
             .and_then(|cue| cue.caption_style)
+    }
+
+    /// The clip on screen at `time_seconds` and where its clock started (VG):
+    /// the covering `clip` section's placement, else the track's (`base`)
+    /// from that section's start; with the plan off, the track's from zero.
+    ///
+    /// A section that names no `from` continues the section before it when
+    /// that one played the same clip, so splitting a clip section to change
+    /// its tuning does not restart the picture; the walk back stops at the
+    /// first section that says where it starts.
+    #[must_use]
+    pub fn clip_at(&self, time_seconds: f64, base: Option<ClipPlacement>) -> Option<ClipMoment> {
+        let clip_scene = SceneId::Clip.index() as u32;
+        let Some(index) = self.covering_index(time_seconds) else {
+            return base.map(ClipMoment::from_start);
+        };
+        let placement_of = |cue: &SceneSwitchCue| {
+            (cue.scene_index == clip_scene)
+                .then(|| cue.clip.or(base))
+                .flatten()
+        };
+        let Some(placement) = placement_of(&self.cues[index]) else {
+            return base.map(ClipMoment::from_start);
+        };
+        let mut origin = index;
+        let mut from = placement.from_seconds;
+        while from.is_none() && origin > 0 {
+            match placement_of(&self.cues[origin - 1]) {
+                Some(earlier) if earlier.clip == placement.clip => {
+                    origin -= 1;
+                    from = earlier.from_seconds;
+                }
+                _ => break,
+            }
+        }
+        Some(ClipMoment {
+            clip: placement.clip,
+            after: placement.after,
+            fit: placement.fit,
+            from_seconds: from.unwrap_or(0.0),
+            origin_seconds: self.cues[origin].start_seconds,
+        })
     }
 
     /// The title card on screen at `time_seconds` (MV2), plan on or off.
@@ -677,6 +724,7 @@ impl SceneSwitchTimeline {
                 glide: 0.0,
                 pixel: None,
                 caption_style: None,
+                clip: None,
             });
         } else {
             let selected = staged
@@ -872,6 +920,7 @@ mod tests {
             glide: 0.0,
             pixel: None,
             caption_style: None,
+            clip: None,
         }
     }
 

@@ -81,7 +81,11 @@ impl SceneFamily {
             | SceneId::PhosphorDream
             | SceneId::Cadence
             | SceneId::Stage
-            | SceneId::Threshold => Self::TypeStage,
+            | SceneId::Threshold
+            // Beside ASCII Field, the other scene that draws a file the user
+            // brings (VG). Not a family of its own: an eighth row does not
+            // fit the flyout's smallest column (`every_tile_is_reachable…`).
+            | SceneId::Clip => Self::TypeStage,
             SceneId::PixelBoot
             | SceneId::PixelShell
             | SceneId::PixelRunner

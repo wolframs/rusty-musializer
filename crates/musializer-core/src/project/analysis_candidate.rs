@@ -1168,6 +1168,7 @@ impl AnalysisCandidate {
                     glide: 0.0,
                     pixel: None,
                     caption_style: None,
+                    clip: None,
                 })
                 .collect();
             candidate
@@ -1488,6 +1489,7 @@ mod tests {
                     glide: 0.0,
                     pixel: None,
                     caption_style: None,
+                    clip: None,
                 }],
                 DURATION,
                 SCENES,

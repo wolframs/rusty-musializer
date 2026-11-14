@@ -45,6 +45,9 @@ use crate::project::caption_styles::{
     CAPTION_STYLE_CAPACITY, HANDLE_MAX_BYTES, STYLE_NAME_MAX_BYTES, TITLE_CAPACITY,
     TITLE_TEXT_MAX_BYTES,
 };
+use crate::project::clip::{
+    ClipAsset, ClipFit, ClipOverrun, ClipPlacement, ClipRef, CLIP_NAME_MAX_BYTES, MAX_CLIPS,
+};
 use crate::project::lyrics::{LyricCue, LyricsDocument, CUE_CAPACITY as LYRIC_CUE_CAPACITY};
 use crate::project::model::{
     capacity, AnalysisLaneKind, AnalysisLaneReference, AsciiImageAsset, AssetMode, AudioAsset,
@@ -468,7 +471,13 @@ fn write_project(out: &mut String, project: &Project) {
             }
             write_mapping(out, mapping);
         }
-        out.push_str("]}");
+        out.push(']');
+        // Post-legacy (VG): the track's clip, only when there is one.
+        if let Some(placement) = &scene.clip {
+            out.push_str(",\"clip\":");
+            write_clip_placement(out, placement);
+        }
+        out.push('}');
     }
 
     out.push_str("],\"cues\":[");
@@ -641,6 +650,11 @@ fn write_project(out: &mut String, project: &Project) {
             out.push_str(",\"caption_style\":");
             write_string(out, style.as_str());
         }
+        // Post-legacy (VG): the clip a `clip` section plays.
+        if let Some(placement) = &cue.clip {
+            out.push_str(",\"clip\":");
+            write_clip_placement(out, placement);
+        }
         out.push('}');
     }
     out.push(']');
@@ -683,7 +697,128 @@ fn write_project(out: &mut String, project: &Project) {
     write_events(out, &project.semantic_events);
     out.push_str(",\"manual_events\":");
     write_events(out, &project.manual_events);
+    // Post-legacy (VG): the clip library, last and only when it holds one, so
+    // a project with no clip is the file it always was.
+    if !project.clips.is_empty() {
+        out.push_str(",\"clips\":[");
+        for (index, asset) in project.clips.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            write_clip_asset(out, asset);
+        }
+        out.push(']');
+    }
     out.push('}');
+}
+
+/// A section's or the base scene's clip (VG). Only the clip is required; a
+/// member at its default — no `from`, `hold`, `cover` — is left out.
+fn write_clip_placement(out: &mut String, placement: &ClipPlacement) {
+    out.push_str("{\"clip\":");
+    write_string(out, &placement.clip.to_hex());
+    if let Some(from) = placement.from_seconds {
+        out.push_str(",\"from\":");
+        write_f64(out, from);
+    }
+    if placement.after != ClipOverrun::default() {
+        out.push_str(",\"after\":");
+        write_string(out, placement.after.name());
+    }
+    if placement.fit != ClipFit::default() {
+        out.push_str(",\"fit\":");
+        write_string(out, placement.fit.name());
+    }
+    out.push('}');
+}
+
+fn write_clip_asset(out: &mut String, asset: &ClipAsset) {
+    out.push_str("{\"path\":");
+    write_string(out, &asset.path);
+    out.push_str(",\"sha256\":");
+    write_string(out, &asset.sha256);
+    out.push_str(",\"name\":");
+    write_string(out, &asset.name);
+    out.push_str(&format!(
+        ",\"width\":{},\"height\":{},\"frames\":{},\"duration_seconds\":",
+        asset.width, asset.height, asset.frames
+    ));
+    write_f64(out, asset.duration_seconds);
+    out.push('}');
+}
+
+fn parse_clip_placement(parser: &mut Parser<'_>) -> Parsed<ClipPlacement> {
+    const NAMES: [&str; 4] = ["clip", "from", "after", "fit"];
+    let mut clip = None;
+    let mut placement = None::<ClipPlacement>;
+    let (mut from, mut after, mut fit) = (None, ClipOverrun::default(), ClipFit::default());
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        match field {
+            0 => {
+                let text = parser.string(capacity::ID)?;
+                clip = Some(ClipRef::from_hex(&text).ok_or(ProjectIoError::String)?);
+            }
+            1 => from = Some(parser.f64()?),
+            2 => {
+                after = parser.enum_value(ClipOverrun::from_name)?;
+                // The default is spelled by leaving it out.
+                if after == ClipOverrun::default() {
+                    return Err(ProjectIoError::MissingField);
+                }
+            }
+            _ => {
+                fit = parser.enum_value(ClipFit::from_name)?;
+                if fit == ClipFit::default() {
+                    return Err(ProjectIoError::MissingField);
+                }
+            }
+        }
+        Ok(())
+    })?;
+    if let Some(clip) = clip {
+        placement = Some(ClipPlacement {
+            clip,
+            from_seconds: from,
+            after,
+            fit,
+        });
+    }
+    placement.ok_or(ProjectIoError::MissingField)
+}
+
+fn parse_clip_asset(parser: &mut Parser<'_>) -> Parsed<ClipAsset> {
+    const NAMES: [&str; 7] = [
+        "path",
+        "sha256",
+        "name",
+        "width",
+        "height",
+        "frames",
+        "duration_seconds",
+    ];
+    let mut asset = ClipAsset::default();
+    let mut seen = Seen::default();
+    parser.object(|parser, key| {
+        let field = field_index(key, &NAMES)?;
+        seen.mark(field)?;
+        match field {
+            0 => asset.path = parser.string(capacity::PATH)?,
+            1 => asset.sha256 = parser.string(capacity::ID)?,
+            2 => asset.name = parser.string(CLIP_NAME_MAX_BYTES)?,
+            3 => asset.width = parser.bounded_u32()?,
+            4 => asset.height = parser.bounded_u32()?,
+            5 => asset.frames = parser.bounded_u32()?,
+            _ => asset.duration_seconds = parser.f64()?,
+        }
+        Ok(())
+    })?;
+    if !seen.has_all(0x7f) {
+        return Err(ProjectIoError::MissingField);
+    }
+    Ok(asset)
 }
 
 /// `musi_project_json_serialize` (`project_io.c:308-316`).
@@ -1114,7 +1249,7 @@ fn parse_mapping(parser: &mut Parser<'_>) -> Parsed<ParameterMapping> {
 }
 
 fn parse_scene(parser: &mut Parser<'_>) -> Parsed<SceneEntry> {
-    const NAMES: [&str; 8] = [
+    const NAMES: [&str; 9] = [
         "instance_id",
         "scene_type",
         "enabled",
@@ -1123,6 +1258,7 @@ fn parse_scene(parser: &mut Parser<'_>) -> Parsed<SceneEntry> {
         "opacity",
         "blend_mode",
         "mappings",
+        "clip",
     ];
     let mut scene = SceneEntry::default();
     let mut seen = Seen::default();
@@ -1137,6 +1273,7 @@ fn parse_scene(parser: &mut Parser<'_>) -> Parsed<SceneEntry> {
             4 => scene.end_seconds = parser.f64()?,
             5 => scene.opacity = parser.f64()?,
             6 => scene.blend_mode = parser.enum_value(BlendMode::from_canonical_name)?,
+            8 => scene.clip = Some(parse_clip_placement(parser)?),
             _ => {
                 let mappings = &mut scene.mappings;
                 parser.array(MAX_MAPPINGS_PER_SCENE, |parser, _| {
@@ -1539,7 +1676,7 @@ fn parse_f32_array(parser: &mut Parser<'_>, capacity: usize) -> Parsed<Vec<f32>>
 /// `parse_switch` (`project_io.c:224-225`): `settings` is optional and defaults to
 /// empty, which is how early v1 projects are spelled.
 fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
-    const NAMES: [&str; 11] = [
+    const NAMES: [&str; 12] = [
         "id",
         "start_seconds",
         "end_seconds",
@@ -1551,6 +1688,7 @@ fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
         "glide",
         "pixel",
         "caption_style",
+        "clip",
     ];
     let mut cue = SceneSwitchSuggestion::default();
     let mut seen = Seen::default();
@@ -1568,6 +1706,7 @@ fn parse_switch(parser: &mut Parser<'_>) -> Parsed<SceneSwitchSuggestion> {
             7 => cue.grade = Some(parse_grade(parser)?),
             9 => cue.pixel = Some(parse_section_pixel(parser)?),
             10 => cue.caption_style = Some(parse_style_name(parser)?),
+            11 => cue.clip = Some(parse_clip_placement(parser)?),
             _ => {
                 cue.glide = parser.f32()?;
                 // Zero is spelled by leaving the member out, like a cut.
@@ -2370,7 +2509,7 @@ fn parse_title(parser: &mut Parser<'_>) -> Parsed<TitleCard> {
 /// `ascii_image` null, `caption_style` the shipped style, the workspace lanes
 /// empty. That is the whole of this format's forward compatibility.
 fn parse_project(parser: &mut Parser<'_>) -> Parsed<Project> {
-    const NAMES: [&str; 15] = [
+    const NAMES: [&str; 16] = [
         "schema_version",
         "metadata",
         "audio",
@@ -2386,6 +2525,7 @@ fn parse_project(parser: &mut Parser<'_>) -> Parsed<Project> {
         "scene_presets",
         "ascii_image",
         "caption_style",
+        "clips",
     ];
     let mut project = Project::default();
     let mut manual_events = Vec::new();
@@ -2443,6 +2583,17 @@ fn parse_project(parser: &mut Parser<'_>) -> Parsed<Project> {
                 })?;
             }
             13 => project.ascii_image = parse_ascii_image(parser)?,
+            15 => {
+                let clips = &mut project.clips;
+                parser.array(MAX_CLIPS, |parser, _| {
+                    clips.push(parse_clip_asset(parser)?);
+                    Ok(())
+                })?;
+                // Empty is spelled by leaving the member out.
+                if clips.is_empty() {
+                    return Err(ProjectIoError::MissingField);
+                }
+            }
             _ => project.caption_style = parse_caption_style(parser)?,
         }
         Ok(())
@@ -2858,7 +3009,136 @@ mod tests {
         assert_eq!(reparsed.lyrics, project.lyrics);
     }
 
-    /// The resume position (PXF-7): never written at the start, so every
+    /// A project with clips (VG): the library last, the base scene's and a
+    /// section's placement each with only what differs from the defaults,
+    /// read back exactly; a project with none is the file it was; the
+    /// spellings this writer never produces are refused.
+    #[test]
+    fn clips_round_trip_and_nothing_is_written_without_them() {
+        use crate::project::clip::{ClipAsset, ClipFit, ClipOverrun, ClipPlacement, ClipRef};
+        let plain_project = valid_project();
+        let plain = serialize(&plain_project).unwrap();
+        assert!(!plain.contains("clip"), "{plain}");
+
+        let digest = sha256::digest_hex(b"clip");
+        let clip = ClipRef::from_hex(&digest).unwrap();
+        let mut project = valid_project();
+        project.clips = vec![ClipAsset {
+            path: format!("fixture.assets/clips/{digest}.mp4"),
+            sha256: digest.clone(),
+            name: "door title.mp4".into(),
+            width: 1920,
+            height: 1080,
+            frames: 300,
+            duration_seconds: 10.0,
+        }];
+        project.scenes[0].scene_type = "clip".into();
+        project.scenes[0].clip = Some(ClipPlacement::new(clip));
+        project.scene_switches.enabled = true;
+        project.scene_switches.cues = vec![
+            SceneSwitchSuggestion {
+                id: 1,
+                start_seconds: 0.0,
+                end_seconds: 30.0,
+                scene_name: "clip".into(),
+                strength: 1.0,
+                ..SceneSwitchSuggestion::default()
+            },
+            SceneSwitchSuggestion {
+                id: 2,
+                start_seconds: 30.0,
+                end_seconds: 60.0,
+                scene_name: "clip".into(),
+                strength: 1.0,
+                clip: Some(ClipPlacement {
+                    clip,
+                    from_seconds: Some(2.5),
+                    after: ClipOverrun::Bounce,
+                    fit: ClipFit::Contain,
+                }),
+                ..SceneSwitchSuggestion::default()
+            },
+        ];
+        let text = serialize(&project).unwrap();
+        assert!(
+            text.contains(&format!(
+                "\"mappings\":[],\"clip\":{{\"clip\":\"{digest}\"}}}}"
+            )),
+            "the base placement, defaults left out: {text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "\"clip\":{{\"clip\":\"{digest}\",\"from\":2.5,\"after\":\"bounce\",\"fit\":\"contain\"}}"
+            )),
+            "{text}"
+        );
+        assert!(text.ends_with(&format!(
+            "\"clips\":[{{\"path\":\"fixture.assets/clips/{digest}.mp4\",\"sha256\":\"{digest}\",\
+             \"name\":\"door title.mp4\",\"width\":1920,\"height\":1080,\"frames\":300,\
+             \"duration_seconds\":10}}]}}"
+        )));
+        assert!(text.starts_with("{\"schema_version\":\"musializer.project/v1\""));
+        let reparsed = deserialize(text.as_bytes()).unwrap();
+        assert_eq!(reparsed.clips, project.clips);
+        assert_eq!(reparsed.scenes, project.scenes);
+        assert_eq!(reparsed.scene_switches, project.scene_switches);
+        assert_eq!(serialize(&reparsed).unwrap(), text, "byte-stable");
+
+        for (from, to, error) in [
+            // Empty and default spellings this writer never produces.
+            (
+                format!(",\"clips\":[{{\"path\""),
+                ",\"clips\":[],\"x\":[{\"path\"".to_owned(),
+                ProjectIoError::MissingField,
+            ),
+            (
+                "\"after\":\"bounce\"".to_owned(),
+                "\"after\":\"hold\"".to_owned(),
+                ProjectIoError::MissingField,
+            ),
+            (
+                "\"fit\":\"contain\"".to_owned(),
+                "\"fit\":\"cover\"".to_owned(),
+                ProjectIoError::MissingField,
+            ),
+            (
+                "\"after\":\"bounce\"".to_owned(),
+                "\"after\":\"pingpong\"".to_owned(),
+                ProjectIoError::Schema,
+            ),
+            (
+                format!("{{\"clip\":\"{digest}\"}}}}"),
+                "{\"clip\":\"nope\"}}".to_owned(),
+                ProjectIoError::String,
+            ),
+            (
+                "\"frames\":300,".to_owned(),
+                String::new(),
+                ProjectIoError::MissingField,
+            ),
+        ] {
+            assert!(text.contains(&from), "{from}");
+            let broken = text.replacen(&from, &to, 1);
+            assert_eq!(deserialize(broken.as_bytes()).unwrap_err(), error, "{to}");
+        }
+
+        // A placement naming a clip the library lacks, or starting past its
+        // end, is a project nobody can play.
+        let mut orphan = project.clone();
+        orphan.clips.clear();
+        assert!(orphan.validate().is_err());
+        let mut late = project.clone();
+        late.scene_switches.cues[1]
+            .clip
+            .as_mut()
+            .unwrap()
+            .from_seconds = Some(10.0);
+        assert!(late.validate().is_err());
+        let mut twice = project.clone();
+        twice.clips.push(twice.clips[0].clone());
+        assert!(twice.validate().is_err());
+    }
+
     /// project from before it is byte-identical; written last in `metadata`
     /// otherwise, read back exactly, and refused where this codec would never
     /// have written it. It does not move the version.
@@ -3799,6 +4079,7 @@ mod tests {
             glide: 0.0,
             pixel: None,
             caption_style: None,
+            clip: None,
         };
         project.scene_switches = SceneSwitchSuggestions {
             enabled: true,
@@ -3849,6 +4130,7 @@ mod tests {
             glide,
             pixel: None,
             caption_style: None,
+            clip: None,
         };
         project.scene_switches = SceneSwitchSuggestions {
             enabled: true,
@@ -3919,6 +4201,7 @@ mod tests {
             glide: 0.0,
             pixel,
             caption_style: None,
+            clip: None,
         };
         project.scene_switches = SceneSwitchSuggestions {
             enabled: true,
@@ -4222,6 +4505,7 @@ mod tests {
                 glide: 0.0,
                 pixel: None,
                 caption_style: None,
+                clip: None,
             }],
             outro: Transition::CUT,
             finish: crate::project::look::Finish::NONE,

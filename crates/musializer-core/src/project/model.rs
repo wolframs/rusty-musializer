@@ -770,6 +770,10 @@ pub struct SceneEntry {
     pub opacity: f64,
     pub blend_mode: BlendMode,
     pub mappings: Vec<ParameterMapping>,
+    /// The track's clip (post-legacy, 2026-11-14, VG): what the `clip` scene
+    /// plays when it is the base scene, or in a section that places none.
+    /// `None` is never written.
+    pub clip: Option<super::clip::ClipPlacement>,
 }
 
 /// One automation cue (`Musi_Parameter_Cue`, `project.h:235-244`).
@@ -842,6 +846,9 @@ pub struct SceneSwitchSuggestion {
     /// The named caption style lines beginning in this section wear
     /// (post-legacy, MV2). `None` is never written.
     pub caption_style: Option<super::caption_styles::StyleName>,
+    /// The clip a `clip` section plays (post-legacy, 2026-11-14, VG). `None`
+    /// is never written.
+    pub clip: Option<super::clip::ClipPlacement>,
 }
 
 /// The imported switch plan (`Musi_Scene_Switch_Suggestions`, `project.h:273-277`).
@@ -893,6 +900,9 @@ pub struct Project {
     /// must never be copied here as if manually authored — that is one of the
     /// evidence-lane separations the rewrite preserves.
     pub manual_events: EventTimeline,
+    /// The video clips the project's sections play (post-legacy, 2026-11-14,
+    /// VG), bundled like its audio. Empty is never written.
+    pub clips: Vec<super::clip::ClipAsset>,
 }
 
 impl Default for Project {
@@ -917,6 +927,7 @@ impl Default for Project {
             scene_presets: Vec::new(),
             semantic_events: EventTimeline::new(),
             manual_events: EventTimeline::new(),
+            clips: Vec::new(),
         }
     }
 }
@@ -966,6 +977,10 @@ pub enum ProjectError {
     ManualEvent,
     #[error("invalid semantic event")]
     SemanticEvent,
+    /// Post-legacy (VG): a clip asset, or a placement naming a clip the
+    /// project does not hold or a start past its end.
+    #[error("invalid video clip")]
+    Clip,
 }
 
 /// A validation failure and where it is (`Musi_Project_Validation`,
@@ -1073,7 +1088,34 @@ impl Project {
         }
         self.validate_scene_switches()?;
         self.validate_scene_presets()?;
-        self.validate_event_lanes()
+        self.validate_event_lanes()?;
+        self.validate_clips()
+    }
+
+    /// Post-legacy (VG): the library, and every placement against it — the
+    /// base scene's first, then each section's.
+    fn validate_clips(&self) -> Result<(), ProjectValidation> {
+        use super::clip;
+        if !clip::library_is_valid(&self.clips) {
+            return Err(fail(ProjectError::Clip, 0, 0));
+        }
+        for (index, scene) in self.scenes.iter().enumerate() {
+            if scene
+                .clip
+                .is_some_and(|placement| !clip::placement_fits(&self.clips, &placement))
+            {
+                return Err(fail(ProjectError::Clip, index, 1));
+            }
+        }
+        for (index, cue) in self.scene_switches.cues.iter().enumerate() {
+            if cue
+                .clip
+                .is_some_and(|placement| !clip::placement_fits(&self.clips, &placement))
+            {
+                return Err(fail(ProjectError::Clip, index, 2));
+            }
+        }
+        Ok(())
     }
 
     fn validate_metadata(&self) -> Result<(), ProjectValidation> {
@@ -1598,6 +1640,7 @@ pub(crate) mod tests_support {
                 opacity: 1.0,
                 blend_mode: BlendMode::Normal,
                 mappings: Vec::new(),
+                clip: None,
             }],
             ..Project::default()
         };
@@ -2073,6 +2116,7 @@ mod tests {
             glide: 0.0,
             pixel: None,
             caption_style: None,
+            clip: None,
         };
         project.scene_switches.cues = vec![switch(1, 0.0, 30.0), switch(2, 30.0, 60.0)];
         assert_eq!(project.validate(), Ok(()));

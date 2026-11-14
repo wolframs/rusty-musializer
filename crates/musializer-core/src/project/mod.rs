@@ -9,6 +9,7 @@ pub mod assets;
 pub mod caption_effects;
 pub mod caption_layout;
 pub mod caption_styles;
+pub mod clip;
 pub mod editor_draft;
 pub mod event_timeline;
 pub mod frame_lanes;

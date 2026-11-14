@@ -54,6 +54,7 @@ use musializer_runtime::project_files;
 use raylib::prelude::*;
 
 mod cli;
+mod clips;
 mod posters;
 mod project;
 mod recovery;
@@ -1957,6 +1958,9 @@ fn run(
                         caption_style: Some(&track.caption_style),
                         scene_plan: Some(&track.scene_switches),
                         artist: track.project_artist(),
+                        clips: &track.clips,
+                        base_clip: track.base_clip,
+                        clip_role: crate::scenes::clip::ClipRole::Preview,
                     }
                 });
 
@@ -4231,6 +4235,10 @@ fn apply_treatment<'audio>(
         }
     }
 
+    // The clip files its sections name (VG), read, hashed and probed
+    // relative to the treatment, like its lyrics.
+    let clip_entries = clips::attach_treatment_clips(&mut treatment, path)?;
+
     let track = app
         .workspace
         .current_mut()
@@ -4291,7 +4299,22 @@ fn apply_treatment<'audio>(
         )
         .map_err(|error| error.to_string())?;
 
+    // Room for the clips, checked before anything changes (VG).
+    let mut track_clips = track.clips.clone();
+    for (file, entry) in clip_entries {
+        clips::add(&mut track_clips, entry).ok_or_else(|| {
+            format!(
+                "{file}: the project already holds {} clips",
+                musializer_core::project::clip::MAX_CLIPS
+            )
+        })?;
+    }
+
     // Nothing below this line can fail.
+    track.clips = track_clips;
+    if compiled.base_clip.is_some() {
+        track.base_clip = compiled.base_clip;
+    }
     if let Some(seed) = treatment.seed {
         track.scene_seed = seed;
     }
@@ -4387,7 +4410,14 @@ fn apply_treatment<'audio>(
             String::new()
         },
         lane(summary.events, "events"),
-        captions.report,
+        if summary.clip_sections > 0 {
+            format!(
+                "{}, {} clip sections ({} clips)",
+                captions.report, summary.clip_sections, summary.clips
+            )
+        } else {
+            captions.report.clone()
+        },
         path.display()
     );
     app.shell.notify(
@@ -6610,6 +6640,9 @@ impl Report {
         // and ghosts, and the line it is setting. A dead pulse, a lattice with
         // no core and a line that never drew are each a plausible frame.
         println!("glyphs: {}", renderer.describe_glyphs());
+        // Video Clip: which clip frame drew against the one asked for, or the
+        // placeholder and why, and the run's exact/inexact/placeholder counts.
+        println!("clip:            {}", renderer.describe_clip());
         println!("scene picker:    {}", app.shell.describe_scene_picker());
         println!(
             "chrome: {}",

@@ -208,3 +208,10 @@ scene 28 count 12
 28 9 settings.glyphs.hue|Hue (deg)|-180|180|0|0|0
 28 10 settings.glyphs.saturation|Saturation|0|1.5|1|2|0
 28 11 settings.glyphs.response|Music response|0|2|1|2|0
+scene 29 count 6
+29 0 settings.clip.punch|Kick punch|0|1|0.25|2|0
+29 1 settings.clip.pulse|Light pulse|0|1|0.200000003|2|0
+29 2 settings.clip.drift|Drift|0|1|0.300000012|2|0
+29 3 settings.clip.shake|Shake|0|1|0|2|0
+29 4 settings.clip.tint|Tint|0|1|0.150000006|2|0
+29 5 settings.clip.response|Music response|0|2|1|2|0

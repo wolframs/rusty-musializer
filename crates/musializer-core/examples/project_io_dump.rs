@@ -309,6 +309,51 @@ fn dump_named_style(prefix: &str, entry: &NamedCaptionStyle) {
     }
 }
 
+/// The fixture with clips (VG, post-legacy): a library of two — one named in
+/// non-ASCII with quotes, one with a computed, non-decimal length — the base
+/// scene's placement at every default, and two sections' placements, one with
+/// every member set and one with only `after`.
+fn add_clips(project: &mut Project) {
+    use musializer_core::project::clip::{ClipAsset, ClipFit, ClipOverrun, ClipPlacement, ClipRef};
+    use musializer_core::project::sha256;
+    let first = sha256::digest_hex(b"first clip");
+    let second = sha256::digest_hex(b"second clip");
+    project.clips = vec![
+        ClipAsset {
+            path: format!("fixture.assets/clips/{first}.mp4"),
+            sha256: first.clone(),
+            name: "Tür \"eins\" — 門.mp4".to_owned(),
+            width: 1920,
+            height: 1080,
+            frames: 300,
+            duration_seconds: 10.0,
+        },
+        ClipAsset {
+            path: format!("fixture.assets/clips/{second}.webm"),
+            sha256: second.clone(),
+            name: "b".to_owned(),
+            width: 1080,
+            height: 1920,
+            frames: 1,
+            duration_seconds: f64::from_bits(0x3FA1_1111_1111_1111),
+        },
+    ];
+    let clip = |hex: &str| ClipRef::from_hex(hex).expect("a digest");
+    project.scenes[0].clip = Some(ClipPlacement::new(clip(&first)));
+    project.scene_switches.cues[1].clip = Some(ClipPlacement {
+        clip: clip(&first),
+        from_seconds: Some(f64::from_bits(0x400B_3333_3333_3333)),
+        after: ClipOverrun::Loop,
+        fit: ClipFit::Contain,
+    });
+    project.scene_switches.cues[2].clip = Some(ClipPlacement {
+        clip: clip(&second),
+        from_seconds: None,
+        after: ClipOverrun::Bounce,
+        fit: ClipFit::Cover,
+    });
+}
+
 /// The fixture with every MV2 member (post-legacy): a full named style, a
 /// partial one and an empty one, a line and a section naming styles, and two
 /// title cards — one with its own artist and style, one with neither.
@@ -584,6 +629,47 @@ fn dump_project(project: &Project) {
     for (index, cue) in switches.cues.iter().enumerate() {
         if let Some(style) = cue.caption_style {
             dump_string(&format!("switches.{index}.caption_style"), style.as_str());
+        }
+    }
+    // VG (post-legacy, no oracle): printed only when present, like MV2's.
+    // `build-clips` is the fixture that has them.
+    let placement = |prefix: &str, placement: &musializer_core::project::clip::ClipPlacement| {
+        dump_string(&format!("{prefix}.clip"), &placement.clip.to_hex());
+        dump_bool(
+            &format!("{prefix}.has_from"),
+            placement.from_seconds.is_some(),
+        );
+        dump_real(
+            &format!("{prefix}.from"),
+            placement.from_seconds.unwrap_or(0.0),
+        );
+        dump_enum(&format!("{prefix}.after"), placement.after.name());
+        dump_enum(&format!("{prefix}.fit"), placement.fit.name());
+    };
+    for (index, scene) in project.scenes.iter().enumerate() {
+        if let Some(clip) = &scene.clip {
+            placement(&format!("scene.{index}.clip"), clip);
+        }
+    }
+    for (index, cue) in switches.cues.iter().enumerate() {
+        if let Some(clip) = &cue.clip {
+            placement(&format!("switches.{index}.clip"), clip);
+        }
+    }
+    if !project.clips.is_empty() {
+        dump_uint("clips.count", project.clips.len() as u64);
+        for (index, asset) in project.clips.iter().enumerate() {
+            let prefix = format!("clips.{index}");
+            dump_string(&format!("{prefix}.path"), &asset.path);
+            dump_string(&format!("{prefix}.sha256"), &asset.sha256);
+            dump_string(&format!("{prefix}.name"), &asset.name);
+            dump_uint(&format!("{prefix}.width"), u64::from(asset.width));
+            dump_uint(&format!("{prefix}.height"), u64::from(asset.height));
+            dump_uint(&format!("{prefix}.frames"), u64::from(asset.frames));
+            dump_real(
+                &format!("{prefix}.duration_seconds"),
+                asset.duration_seconds,
+            );
         }
     }
     if !switches.titles.is_empty() {
@@ -877,6 +963,7 @@ fn build_fixture() -> Project {
                     false,
                 ),
             ],
+            clip: None,
         },
         SceneEntry {
             instance_id: 2002,
@@ -901,6 +988,7 @@ fn build_fixture() -> Project {
                 Interpolation::Smoothstep,
                 false,
             )],
+            clip: None,
         },
         SceneEntry {
             instance_id: 3003,
@@ -911,6 +999,7 @@ fn build_fixture() -> Project {
             opacity: 0.0,
             blend_mode: BlendMode::Screen,
             mappings: Vec::new(),
+            clip: None,
         },
     ];
 
@@ -1039,6 +1128,7 @@ fn build_fixture() -> Project {
                 glide: 0.0,
                 pixel: None,
                 caption_style: None,
+                clip: None,
             },
             SceneSwitchSuggestion {
                 id: 22,
@@ -1064,6 +1154,7 @@ fn build_fixture() -> Project {
                 glide: 0.0,
                 pixel: None,
                 caption_style: None,
+                clip: None,
             },
             SceneSwitchSuggestion {
                 id: 33,
@@ -1077,6 +1168,7 @@ fn build_fixture() -> Project {
                 glide: 0.0,
                 pixel: None,
                 caption_style: None,
+                clip: None,
             },
         ],
         outro: musializer_core::project::transition::Transition::CUT,
@@ -1152,6 +1244,7 @@ fn build_fixture() -> Project {
         scene_presets,
         semantic_events,
         manual_events,
+        clips: Vec::new(),
     };
 
     if let Err(validation) = project.validate() {
@@ -1232,6 +1325,13 @@ fn main() -> ExitCode {
         "build-captions" => {
             let mut fixture = build_fixture();
             add_caption_styles(&mut fixture);
+            serialize_to(&fixture, &arguments[2]);
+            dump_project(&fixture);
+        }
+        // VG: a clip library and placements, the same way.
+        "build-clips" => {
+            let mut fixture = build_fixture();
+            add_clips(&mut fixture);
             serialize_to(&fixture, &arguments[2]);
             dump_project(&fixture);
         }

@@ -269,6 +269,50 @@ if ! cmp -s "$OUT_DIR/rust_mv2.musi" "$OUT_DIR/rust_mv2_again.musi"; then
     exit 1
 fi
 
+# VG (2026-11-14): the clip library and the base scene's and the sections'
+# placements. Post-legacy and written only when used, like MV2's members, so
+# steps 1-8 are again the proof older files stay byte-identical; this fixture
+# carries all of them and is pinned the same way.
+echo "=== step 18: Rust writes the fixture with clips ==="
+step "Rust could not build or write its clips fixture" \
+    "$RUST" build-clips "$OUT_DIR/rust_clips.musi" >"$OUT_DIR/rust_clips_wrote.txt"
+for member in '"clips":[' '"after":"loop","fit":"contain"' '"after":"bounce"}'; do
+    if ! grep -qF "$member" "$OUT_DIR/rust_clips.musi"; then
+        echo "FAIL: the clips fixture does not carry $member" >&2
+        exit 1
+    fi
+done
+# The base scene's placement and both sections': three, each spelled alike.
+if [ "$(grep -oF '"clip":{"clip":"' "$OUT_DIR/rust_clips.musi" | wc -l)" -ne 3 ]; then
+    echo "FAIL: the clips fixture does not carry three placements" >&2
+    exit 1
+fi
+if grep -qF '"clip' "$OUT_DIR/rust.musi"; then
+    echo "FAIL: the plain fixture carries a clip member; it must write nothing it does not use" >&2
+    exit 1
+fi
+
+echo "=== step 19: the C refuses it, by a field it does not know ==="
+if "$ORACLE" read "$OUT_DIR/rust_clips.musi" >/dev/null 2>"$OUT_DIR/c_read_clips.err"; then
+    echo "FAIL: the frozen C read a project with clips; it cannot know them" >&2
+    exit 1
+fi
+if ! grep -q "failed: unknown field" "$OUT_DIR/c_read_clips.err"; then
+    echo "FAIL: the C refused the clips file for another reason:" >&2
+    cat "$OUT_DIR/c_read_clips.err" >&2
+    exit 1
+fi
+echo "    expected refusal: $(cat "$OUT_DIR/c_read_clips.err")"
+
+echo "=== step 20: Rust re-writes its own clips file ==="
+step "Rust refused its own clips project" \
+    "$RUST" rewrite "$OUT_DIR/rust_clips.musi" "$OUT_DIR/rust_clips_again.musi" \
+    >"$OUT_DIR/rust_read_clips.txt"
+if ! cmp -s "$OUT_DIR/rust_clips.musi" "$OUT_DIR/rust_clips_again.musi"; then
+    echo "FAIL: Rust re-wrote its clips project into different bytes" >&2
+    exit 1
+fi
+
 echo "=== comparing ==="
 python3 - "$OUT_DIR" "$TOLERANCE" <<'PY'
 import os
@@ -453,6 +497,9 @@ comparisons = [
     # Post-legacy, no oracle (MV2): caption styles and titles, the same way.
     Comparison("7. Rust writes caption styles -> Rust reads (the C refuses it, step 16)",
                "rust_mv2_wrote.txt", "rust_read_mv2.txt"),
+    # Post-legacy, no oracle (VG): clips and their placements, the same way.
+    Comparison("8. Rust writes clips -> Rust reads (the C refuses it, step 19)",
+               "rust_clips_wrote.txt", "rust_read_clips.txt"),
 ]
 
 ok = True

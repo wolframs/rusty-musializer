@@ -229,6 +229,7 @@ mod tests {
                 glide: 0.0,
                 pixel: None,
                 caption_style: None,
+                clip: None,
             },
             SceneSwitchCue {
                 id: 20,
@@ -242,6 +243,7 @@ mod tests {
                 glide: 0.0,
                 pixel: None,
                 caption_style: None,
+                clip: None,
             },
         ];
         let mut plan = SceneSwitchTimeline::new();

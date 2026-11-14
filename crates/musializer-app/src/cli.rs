@@ -826,7 +826,7 @@ pub fn scene_from_cli_name(name: &str) -> Option<SceneId> {
 /// Every spelling `--scene` accepts, for the help text.
 pub const SCENE_NAME_HELP: &str = "spectrum, pulse, orbital, ascii, atlas, terrarium, \
 constellation, cadence, loom, pentagram, phosphor, clawd, knot, stage, threshold, fluid, chrome, aurora, metaballs, tunnel, voronoi, iridescent, \
-pixel-boot, pixel-shell, pixel-run, pixel-quartet, pixel-chapel, pixel-rave, glyphs (also pulse-field, \
+pixel-boot, pixel-shell, pixel-run, pixel-quartet, pixel-chapel, pixel-rave, glyphs, clip (also pulse-field, \
 orbital-lattice, ascii-field, song-atlas, spectral-terrarium, pentagram-orbits, \
 phosphor-dream, claude, openai-knot, door, fluid-ink, liquid-chrome, aurora-veil, \
 metaball-garden, neon-tunnel, voronoi-bloom, iridescent-pool, pixel-runner, pixel-scroller, \

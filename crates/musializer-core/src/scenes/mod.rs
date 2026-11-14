@@ -12,6 +12,8 @@ pub mod ascii_field;
 pub mod cadence;
 /// Post-legacy (2026-08-24), no oracle. See its module docs for its evidence.
 pub mod clawd;
+/// Post-legacy (2026-11-14, VG): a video file as a section's picture.
+pub mod clip;
 pub mod constellation;
 pub mod loom;
 pub mod orbital_lattice;
@@ -97,5 +99,6 @@ pub fn descriptor(id: SceneId) -> SceneDescriptor {
             None => unreachable!("every pixel scene id names a staging"),
         },
         SceneId::GlyphLattice => glyph_lattice::descriptor(),
+        SceneId::Clip => clip::descriptor(),
     }
 }

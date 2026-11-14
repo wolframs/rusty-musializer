@@ -118,6 +118,7 @@ fn stateless(id: SceneId) -> SceneDescriptor {
             SceneId::PixelChapel => |_| Box::new(StatelessScene::new(SceneId::PixelChapel)),
             SceneId::PixelRave => |_| Box::new(StatelessScene::new(SceneId::PixelRave)),
             SceneId::GlyphLattice => |_| Box::new(StatelessScene::new(SceneId::GlyphLattice)),
+            SceneId::Clip => |_| Box::new(StatelessScene::new(SceneId::Clip)),
         },
     }
 }
@@ -181,6 +182,7 @@ pub fn oracle_source(id: SceneId) -> &'static str {
         | SceneId::PixelChapel
         | SceneId::PixelRave => "(no oracle: post-legacy addition)",
         SceneId::GlyphLattice => "(no oracle: post-legacy addition)",
+        SceneId::Clip => "(no oracle: post-legacy addition)",
     }
 }
 
@@ -222,6 +224,13 @@ pub struct TrackAssets<'a> {
     /// The project's artist (WX-5c), for a title card that names none of its
     /// own (MV2). `None` when the project has none.
     pub artist: Option<&'a str>,
+    /// The track's video clips and its own placement (VG), for the `clip`
+    /// scene. Empty with no track.
+    pub clips: &'a [crate::clips::TrackClip],
+    pub base_clip: Option<musializer_core::project::clip::ClipPlacement>,
+    /// Who is drawing: the preview draws the clip frame it has, an export, a
+    /// still and a poster wait for the exact one.
+    pub clip_role: scenes::clip::ClipRole,
 }
 
 pub struct SceneRenderer {
@@ -313,6 +322,8 @@ pub struct SceneRenderer {
     pixel: scenes::pixel_cats::PixelResources,
     /// Glyph Lattice's atlas, field buffers, shader and report.
     glyphs: scenes::glyph_lattice::Resources,
+    /// Video Clip's decoders, textures, shader and report (VG).
+    clip: scenes::clip::ClipResources,
     /// Where the threshold's doorway scene is drawn each frame.
     beyond: Canvas,
 }
@@ -378,6 +389,7 @@ impl SceneRenderer {
             iridescent: scenes::iridescent_pool::Resources::load(rl, thread),
             pixel: scenes::pixel_cats::PixelResources::load(rl, thread),
             glyphs: scenes::glyph_lattice::Resources::load(rl, thread),
+            clip: scenes::clip::ClipResources::load(rl, thread),
             beyond: Canvas::new(),
             circle: scenes::spectrum::CircleShader::load(rl, thread)?,
             atlas: scenes::song_atlas::AtlasRenderer::default(),
@@ -618,6 +630,16 @@ impl SceneRenderer {
     #[must_use]
     pub fn describe_glyphs(&self) -> String {
         self.glyphs.describe()
+    }
+
+    /// One line naming what the last Video Clip frame drew: which clip frame
+    /// against the one asked for, the placement, who drew and the music's
+    /// touch — or the placeholder and why — and the run's counts of exact,
+    /// inexact and placeholder frames. A clip frame and a neighbouring one,
+    /// or a black card and a dark clip, are each a plausible picture.
+    #[must_use]
+    pub fn describe_clip(&self) -> String {
+        self.clip.describe()
     }
 
     /// Whether Fluid Ink uploaded its dye and drew through its display shader.
@@ -1050,6 +1072,19 @@ impl SceneRenderer {
                         scenes::glyph_lattice::draw(d, &mut self.glyphs, state, frame, boundary);
                     }
                 }
+                SceneId::Clip => {
+                    if let Some(state) = state_of(instance, id) {
+                        scenes::clip::draw(
+                            d,
+                            fonts,
+                            &mut self.clip,
+                            state,
+                            frame,
+                            assets,
+                            boundary,
+                        );
+                    }
+                }
                 SceneId::Threshold => {
                     if let Some(state) = state_of(instance, id) {
                         scenes::threshold::draw(
@@ -1392,6 +1427,7 @@ mod tests {
                 "pixel-chapel",
                 "pixel-rave",
                 "glyphs",
+                "clip",
             ]
         );
     }
@@ -1440,6 +1476,7 @@ mod tests {
                     .downcast_ref::<cs::pixel_cats::PixelCatsState>()
                     .is_some_and(|state| state.staging().scene() == id),
                 SceneId::GlyphLattice => any.is::<cs::glyph_lattice::GlyphLatticeState>(),
+                SceneId::Clip => any.is::<cs::clip::ClipState>(),
             };
             assert!(
                 recovered,

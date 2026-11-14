@@ -205,6 +205,9 @@ impl Job {
             caption_style: Some(&track.caption_style),
             scene_plan: Some(&track.scene_switches),
             artist: track.project_artist(),
+            clips: &track.clips,
+            base_clip: track.base_clip,
+            clip_role: crate::scenes::clip::ClipRole::Poster,
         };
         let scene = &mut self.scene;
         let drew = canvas.draw_into(

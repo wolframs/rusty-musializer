@@ -71,6 +71,10 @@ use crate::timing::render_export::Quality;
 use crate::ui::lyric_lane_edit::parse_cue_timestamp;
 use crate::ui::tune_explore;
 
+mod clips;
+use crate::project::clip::{ClipAsset, ClipPlacement};
+pub use clips::ClipFile;
+
 /// The treatment file's `schema` value. Versioned so a later shape can add
 /// fields without this parser guessing at them.
 pub const TREATMENT_SCHEMA: &str = "musializer.treatment/v1";
@@ -277,6 +281,10 @@ struct SegmentWire {
     /// unless they name their own (MV2).
     #[serde(default)]
     caption_style: Option<String>,
+    /// The video file a `clip` section plays (VG): a path, or an object with
+    /// its timing.
+    #[serde(default)]
+    clip: Option<Value>,
     #[serde(default)]
     #[allow(dead_code)]
     note: Option<Value>,
@@ -468,6 +476,7 @@ struct Segment {
     /// `None` wears the finish's.
     pixel: Option<Pixel>,
     caption_style: Option<StyleName>,
+    clip: Option<clips::SegmentClip>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -529,6 +538,8 @@ pub struct Treatment {
     /// The title lane (MV2). `None` leaves the project's cards.
     titles: Option<Vec<TitleEntry>>,
     events: Option<Vec<EventMark>>,
+    /// The clips read so far, by the path the treatment wrote (VG).
+    clip_assets: BTreeMap<String, ClipAsset>,
 }
 
 /// What [`Treatment::compile`] hands the application: the same pieces a `.musi`
@@ -562,6 +573,13 @@ pub struct CompiledTreatment {
     /// The title lane (MV2), closed against the duration. `None` leaves the
     /// project's cards; `Some` of nothing removes them.
     pub titles: Option<Vec<TitleCard>>,
+    /// The clips the sections play (VG), each with the path the treatment
+    /// wrote, in first-use order. The application keeps their source paths
+    /// to bundle them at the next save.
+    pub clips: Vec<(String, ClipAsset)>,
+    /// The first clip section's placement from its start, for the track's own
+    /// clip: what the `clip` scene shows with the plan switched off.
+    pub base_clip: Option<ClipPlacement>,
     pub summary: Summary,
 }
 
@@ -600,6 +618,9 @@ pub struct Summary {
     pub events: Option<usize>,
     /// Sections naming a caption style (MV2).
     pub styled_sections: usize,
+    /// Sections playing a clip, and the distinct clips they play (VG).
+    pub clip_sections: usize,
+    pub clips: usize,
 }
 
 impl Treatment {
@@ -800,6 +821,27 @@ impl Treatment {
                     )
                 })
                 .transpose()?;
+            let clip = match (&segment.clip, scene) {
+                (Some(value), SceneId::Clip) => {
+                    Some(clips::parse(&format!("{place}.clip"), value)?)
+                }
+                (Some(_), _) => {
+                    return Err(invalid(
+                        format!("{place}.clip"),
+                        format!(
+                            "only a `clip` section plays a clip; this one is {:?}",
+                            scene.stable_name()
+                        ),
+                    ));
+                }
+                (None, SceneId::Clip) => {
+                    return Err(invalid(
+                        &place,
+                        "a `clip` section names its video file: \"clip\": \"take.mp4\"",
+                    ));
+                }
+                (None, _) => None,
+            };
             segments.push(Segment {
                 at,
                 scene,
@@ -809,6 +851,7 @@ impl Treatment {
                 glide,
                 pixel,
                 caption_style,
+                clip,
             });
         }
         let outro = match &wire.outro {
@@ -951,7 +994,70 @@ impl Treatment {
             caption_styles,
             titles,
             events: wire.events.is_some().then_some(events),
+            clip_assets: BTreeMap::new(),
         })
+    }
+
+    /// The video files the clip sections name (VG), each once, in the order
+    /// they are first named, with the digest the treatment pins.
+    ///
+    /// A file named twice with two different pins is the first refusal
+    /// [`Treatment::attach_clip`] makes, not this list's.
+    #[must_use]
+    pub fn clip_files(&self) -> Vec<ClipFile> {
+        let mut files: Vec<ClipFile> = Vec::new();
+        for (index, segment) in self.segments.iter().enumerate() {
+            let Some(clip) = &segment.clip else { continue };
+            if files.iter().any(|file| file.path == clip.path) {
+                continue;
+            }
+            files.push(ClipFile {
+                path: clip.path.clone(),
+                sha256: clip.sha256.clone(),
+                place: format!("segments[{index}] ({}).clip", format_time(segment.at)),
+            });
+        }
+        files
+    }
+
+    /// Hands over a clip file the application read, hashed and probed (VG).
+    ///
+    /// # Errors
+    ///
+    /// A digest a section pins that is not the file's, or a `from` at or past
+    /// the clip's end, named by the section.
+    pub fn attach_clip(&mut self, path: &str, asset: ClipAsset) -> Result<(), TreatmentError> {
+        for (index, segment) in self.segments.iter().enumerate() {
+            let Some(clip) = &segment.clip else { continue };
+            if clip.path != path {
+                continue;
+            }
+            let place = format!("segments[{index}] ({}).clip", format_time(segment.at));
+            if let Some(pinned) = &clip.sha256 {
+                if !pinned.eq_ignore_ascii_case(&asset.sha256) {
+                    return Err(invalid(
+                        format!("{place}.sha256"),
+                        format!(
+                            "the treatment expects {pinned}, the file is {}",
+                            asset.sha256
+                        ),
+                    ));
+                }
+            }
+            if let Some(from) = clip.from {
+                if from >= asset.duration_seconds {
+                    return Err(invalid(
+                        format!("{place}.from"),
+                        format!(
+                            "starts at {from} s, but {} is {:.3} s long",
+                            asset.name, asset.duration_seconds
+                        ),
+                    ));
+                }
+            }
+        }
+        self.clip_assets.insert(path.to_owned(), asset);
+        Ok(())
     }
 
     /// The aligned-lyrics file the treatment's `lyrics` names, relative to the
@@ -1026,6 +1132,8 @@ impl Treatment {
             ));
         }
         let end = format_time(duration_seconds);
+        let mut clips: Vec<(String, ClipAsset)> = Vec::new();
+        let mut base_clip = None;
 
         let mut cues = Vec::with_capacity(self.segments.len());
         for (index, segment) in self.segments.iter().enumerate() {
@@ -1047,6 +1155,25 @@ impl Treatment {
                 .settings
                 .capture(segment.scene)
                 .ok_or_else(|| invalid(&place, "its tuning is outside the scene's bounds"))?;
+            let clip = match &segment.clip {
+                None => None,
+                Some(clip) => {
+                    let asset = self.clip_assets.get(&clip.path).ok_or_else(|| {
+                        invalid(
+                            format!("{place}.clip"),
+                            format!("names {:?}, which has not been read", clip.path),
+                        )
+                    })?;
+                    if !clips.iter().any(|(path, _)| path == &clip.path) {
+                        clips.push((clip.path.clone(), asset.clone()));
+                    }
+                    let placement = clip.placement(asset).ok_or_else(|| {
+                        invalid(format!("{place}.clip"), "the clip has no usable digest")
+                    })?;
+                    base_clip.get_or_insert(placement);
+                    Some(placement)
+                }
+            };
             cues.push(SceneSwitchCue {
                 id: index as u64 + 1,
                 start_seconds: segment.at,
@@ -1059,6 +1186,7 @@ impl Treatment {
                 glide: segment.glide,
                 pixel: segment.pixel,
                 caption_style: segment.caption_style,
+                clip,
             });
         }
         let mut scene_switches = SceneSwitchTimeline::new();
@@ -1237,7 +1365,15 @@ impl Treatment {
                     .iter()
                     .filter(|segment| segment.caption_style.is_some())
                     .count(),
+                clip_sections: self
+                    .segments
+                    .iter()
+                    .filter(|segment| segment.clip.is_some())
+                    .count(),
+                clips: clips.len(),
             },
+            clips,
+            base_clip,
             lyrics: self.lyrics.is_some().then_some(document),
             manual_events: self.events.is_some().then_some(manual_events),
             caption_styles: self.caption_styles.clone(),
@@ -2596,6 +2732,9 @@ pub fn scene_look(scene: SceneId) -> &'static str {
         SceneId::GlyphLattice => {
             "A wireframe solid turning in the dark, drawn on a fixed honeycomb of tiny glyphs: cells inside its thick strokes light, dots at a stroke's edge, rings and forks in its body, discs at its core, sparks where light collects, and a warm bloom where strokes cross. Kicks run comets of light along the edges and lurch the spin; the lower edges carry the bass and the upper the treble; bass swells the bloom, treble flickers the glyphs, hat ticks ripple out from the centre and turn the glyphs over. Ghosts behind: the pose a moment ago, the solid it just was, two giants at the frame's ends. solid picks it per section (0 cycles on its own at drops: 1 cube, 2 octahedron, 3 dodecahedron, 4 icosahedron, 5 tesseract turning inside out, 6 trefoil knot) and a change morphs; words (on by default) sets the sung line in glowing stroke capitals that stand in place dim and light word by word as they are sung, the solid stepping back behind it, and the caption overlay is not drawn over it. density is cells across the short side, stroke the line weight, ghosts the echoes, hue and saturation the palette (aqua with amber heat at 0)."
         }
+        SceneId::Clip => {
+            "A video file as the picture: a clip generated elsewhere, shot, or exported from here, played from the section's start (`clip` names the file; `from` where in it to start, `after` hold, loop or bounce when the section outlasts it, `fit` cover or contain). Its own sound is ignored; the track is the music. The music touches it lightly: kicks punch in a few percent (punch) and lift its light (pulse), the camera drifts slowly and hurries when the track is loud (drift), the hardest hits can jolt it (shake, off by default), and its highlights warm with the bass and cool with the treble (tint). Grades, the finish, the pixel look, transitions and captions work over it like over any scene. response 0 plays the clip as it is, drifting on its own clock."
+        }
         SceneId::IridescentPool => {
             "An oil slick on dark, deep water seen from above, banded magenta, blue, green and gold. Kicks tear holes in the oil with ring trains and caustics on the floor, other transients are rain, bass rolls a slow swell. scale sets the marbling, shimmer the film, light the reflections."
         }
@@ -2806,6 +2945,7 @@ pub fn vocabulary() -> Value {
         "treatment_schema": TREATMENT_SCHEMA,
         "time": "seconds as a number (73.5), or a string \"m:ss.fff\" (\"1:13.5\")",
         "scenes": scenes,
+        "clips": clips::vocabulary(),
         "transitions": {
             "where": "a section's \"transition\" is how that section arrives; on the first \
                       section it plays out of black and is the video's intro. The \
@@ -3022,6 +3162,8 @@ mod tests {
                 lyrics_fully_shadowed: 0,
                 events: None,
                 styled_sections: 0,
+                clip_sections: Default::default(),
+                clips: 0,
             }
         );
         // Silent about lyrics and events, so it does not speak for them.
@@ -3154,18 +3296,28 @@ mod tests {
                 if descriptor.kind == SettingKind::Toggle {
                     continue;
                 }
+                // A clip section names its file, which a test attaches.
+                let clip = if scene == SceneId::Clip {
+                    r#", "clip": "take.mp4""#
+                } else {
+                    ""
+                };
                 for bound in [descriptor.minimum, descriptor.maximum] {
                     let text = format!(
                         r#"{{ "schema": "musializer.treatment/v1",
-                             "segments": [ {{ "at": 0, "scene": "{}",
+                             "segments": [ {{ "at": 0, "scene": "{}"{clip},
                                               "settings": {{ "{}": {bound} }} }} ] }}"#,
                         scene.stable_name(),
                         descriptor.key,
                     );
-                    let compiled = parse(&text)
-                        .unwrap_or_else(|error| panic!("{}={bound}: {error}", descriptor.key))
-                        .compile(5.0)
-                        .unwrap();
+                    let mut treatment = parse(&text)
+                        .unwrap_or_else(|error| panic!("{}={bound}: {error}", descriptor.key));
+                    if scene == SceneId::Clip {
+                        treatment
+                            .attach_clip("take.mp4", clips::tests::asset())
+                            .unwrap();
+                    }
+                    let compiled = treatment.compile(5.0).unwrap();
                     let (_, index, _) = settings::descriptor_by_key(descriptor.key).unwrap();
                     let stored = compiled.scene_switches.cues()[0].settings.values[index];
                     assert!(

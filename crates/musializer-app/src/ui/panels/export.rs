@@ -3607,6 +3607,9 @@ fn draw_offline_frame(
                 caption_style: Some(&track.caption_style),
                 scene_plan: Some(&track.scene_switches),
                 artist: track.project_artist(),
+                clips: &track.clips,
+                base_clip: track.base_clip,
+                clip_role: crate::scenes::clip::ClipRole::Export,
             }
         });
     renderer.draw(
