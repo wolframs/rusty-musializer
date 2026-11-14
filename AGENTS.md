@@ -228,6 +228,8 @@ number disagrees, grep it there before debugging from scratch.
 - **A worker's drop must reach its start-up**: the hash and the probe check `stop`, and every child registers its group where the drop can kill it. See `docs/TRAPS.md`.
 - **Release per-clip resources from the hook that runs after every frame, and bound their sum per process**: a count that only one scene advances stops when the video moves on. See `docs/TRAPS.md`.
 - **Give a `flock` back with `File::unlock` before dropping the file**: a child mid-spawn on another thread holds the lock until it execs. See `docs/TRAPS.md`.
+- **A poster's recipe must hold everything its replay reads**: the clip was missing from it, so lane posters did not go stale after a clip edit. See `docs/TRAPS.md`.
+- **Own start pins the exact clip time**: rounding it to the readout moves the picture a frame. See `docs/TRAPS.md`.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe

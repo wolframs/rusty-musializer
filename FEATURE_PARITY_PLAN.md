@@ -101,8 +101,8 @@ commit that adds this block; the lead cherry-picks.
   project. Record and seam in `docs/VIDEO_GENERATION.md`.
 - [x] **F1 review**: GPT-6.1-Sol's eight findings fixed and merged
   (2026-11-14), each with its check.
-- [ ] **F1 follow-up**: the Look section card's controls for a clip section
-  (which clip, `from`, `after`, `fit`).
+- [x] **F1 follow-up**: the Look section card's controls for a clip section
+  (merged 2026-11-14).
 - [ ] **F2 — generating a clip** (VG, second half): provider call, price shown
   first, consent through the Assist contracts, provenance on the clip asset,
   a `generated` transition. Waits for the operator's go-ahead on spending.
