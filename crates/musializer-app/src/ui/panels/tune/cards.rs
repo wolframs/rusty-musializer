@@ -15,6 +15,9 @@ use musializer_core::project::scene_switch::SceneSwitchCue;
 use musializer_core::project::transition::{Transition, TransitionKind, DEFAULT_SECONDS};
 use musializer_core::ui::tune_groups::look_cards::{self, Block, Placed};
 
+// `cards.rs` is itself loaded by path from `tune.rs`, so a child resolves
+// against `tune/`; the path puts the file where a module's children live.
+#[path = "cards/tables.rs"]
 mod tables;
 pub(crate) use tables::apply_table_edit;
 
