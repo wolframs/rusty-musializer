@@ -524,6 +524,7 @@ generated build output, fixtures, and media assets are intentionally excluded.
 | [`tests/test_lyrics_fixed_reference.py`](../tests/test_lyrics_fixed_reference.py) | `py` |
 | [`tests/test_lyrics_timing.py`](../tests/test_lyrics_timing.py) | `py` |
 | [`tests/test_mimo_bench.py`](../tests/test_mimo_bench.py) | `py` |
+| [`tests/test_mimo_truth_session.py`](../tests/test_mimo_truth_session.py) | `py` |
 | [`tests/test_observed_audio_occurrences.py`](../tests/test_observed_audio_occurrences.py) | `py` |
 | [`tests/test_performance_inventory.py`](../tests/test_performance_inventory.py) | `py` |
 | [`tests/test_performed_reference.py`](../tests/test_performed_reference.py) | `py` |

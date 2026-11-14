@@ -80,10 +80,20 @@ verified; delete the block when done, with the record in the archive.
   What it leaves: under the film finish Balanced flattens the grain into
   blocks and only High keeps it, and the window does not say so. A line in
   the Render view when the finish is on and the quality is Balanced would.
-- [ ] **H3 — MiMo v2.5 benchmark** (row 2): the live run (at most 0.60 USD),
-  and a listening session in the operator's own tooling that collects key,
-  meter and instruments for the two excerpts and writes them into the
-  benchmark's ground truth. Scoring of those three waits for his answers.
+- [x] **H3 — MiMo v2.5 benchmark, first live run** (2026-11-14): 60 calls,
+  0.49 to 0.63 USD (the 0.60 ceiling may have been passed by up to 0.03: two
+  billed calls came back empty before the harness kept such responses).
+  Results and what they mean: `docs/MIMO_BENCHMARK_RESULTS.md`.
+- [ ] **H3, waiting for the operator's ears**: the listening session for key,
+  count and instruments is built (two sessions in the Listening Lab; commands
+  in the results doc). After he has answered, run the converter, commit the
+  ground-truth file and re-score.
+- [ ] **H3 follow-ups in the application's MiMo lane**, from the results doc's
+  list: send a completion cap and treat a cut-off or empty answer as a failed
+  run (one uncapped call emitted 65,536 tokens and cost 0.13 USD); estimate
+  cost from completion tokens, not audio seconds; define the numeric scales in
+  the schema. Not to build: MiMo tempo in the interface, a lyric field, a
+  separate reformatter model. Repeats 2 and 3 of most cells are not run.
 - [ ] **H4 — generating a clip** (F2, second half of VG): provider call, price
   shown first, consent, provenance, a real test clip (at most 3.50 USD in all).
 - [ ] **Close**: one review by GPT-6.1-Sol per stream before its release
