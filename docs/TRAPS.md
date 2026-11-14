@@ -600,3 +600,18 @@ click jumps playing or paused, and Shift + click only selects; the seek still
 waits for the release.) Symptom: a `transport:` playhead or
 a `cut=none` that changed during a press nobody released. Pinned by the look
 cards gate's check 39. Found by the last review of the week, 2026-11-14.
+
+## The gate's gradient measure reads grain as detail
+
+The blur-residual (a 7 px box blur minus a 31 px one, RMS of luma) finds
+contour steps only where the source is smooth. Under the film finish the source
+is grain, so the residual of the frames handed to FFmpeg is already high
+(0.29 Y codes on "Door, No Room"), and an encoder that flattens the grain into
+blocks *lowers* it: x264 Balanced measured 0.247 against High's 0.296 on the
+same frames, which reads as Balanced being smoother while the stretched crop
+shows a patchwork of flat blocks where High kept the grain. Measure the
+encoding error instead, blurred to drop the per-pixel grain (`blotch` in
+`tools/encoder_matrix.py`: RMS of a 7 px blur of decoded minus source), or pick
+material without a finish. Symptom: a "gradient" number for an encode that is
+lower than the source's own. Found by the H2 encoder matrix, 2026-11-14
+(`docs/archive/BALANCED_ENCODER_2026-11.md`).
