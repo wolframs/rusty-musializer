@@ -268,6 +268,12 @@ fn packed_rgba(rgb: u32) -> u32 {
     (rgb << 8) | 0xff
 }
 
+/// What a title card row holds, for its removal's arm: its start and its
+/// title.
+fn title_holds(card: &TitleCard) -> String {
+    format!("{}:{}", card.start_seconds.to_bits(), card.title)
+}
+
 /// A unique `stem-N` name not yet in `taken`.
 fn fresh_name(stem: &str, taken: &[String]) -> String {
     (1..)
@@ -395,24 +401,47 @@ impl Shell {
     }
 
     /// The two-press arm for a removal that loses something: the first
-    /// press arms, the second removes. Returns whether this press removes.
-    fn arm_removal(&mut self, kind: u8, index: usize, pressed: bool, needs_confirm: bool) -> bool {
+    /// press arms, the second removes. `holds` names what the row holds, so
+    /// the second press confirms only the row the first one armed. Returns
+    /// whether this press removes.
+    fn arm_removal(
+        &mut self,
+        kind: u8,
+        index: usize,
+        holds: &str,
+        pressed: bool,
+        needs_confirm: bool,
+    ) -> bool {
         if !pressed {
             return false;
         }
-        if !needs_confirm || self.look_column.cards.armed == Some((kind, index)) {
-            self.look_column.cards.armed = None;
+        let cards = &mut self.look_column.cards;
+        let confirming = cards
+            .armed
+            .as_ref()
+            .is_some_and(|armed| armed.is(kind, index, holds));
+        if !needs_confirm || confirming {
+            cards.armed = None;
             return true;
         }
-        self.look_column.cards.armed = Some((kind, index));
+        cards.armed = Some(Armed {
+            table: kind,
+            row: index,
+            holds: holds.to_owned(),
+            seen: true,
+        });
         false
     }
 
-    fn removal_label(&self, kind: u8, index: usize) -> &'static str {
-        if self.look_column.cards.armed == Some((kind, index)) {
-            "Confirm remove"
-        } else {
-            "Remove"
+    /// The row's removal button's words, drawn every frame the row is: an
+    /// armed row is seen, and stays armed for the next frame.
+    fn removal_label(&mut self, kind: u8, index: usize, holds: &str) -> &'static str {
+        match self.look_column.cards.armed.as_mut() {
+            Some(armed) if armed.is(kind, index, holds) => {
+                armed.seen = true;
+                "Confirm remove"
+            }
+            _ => "Remove",
         }
     }
 
@@ -452,7 +481,7 @@ impl Shell {
             ),
             TablePart::VoiceName(i) => {
                 let Some(voice) = voices.get(i) else { return };
-                let label = self.removal_label(0, i);
+                let label = self.removal_label(0, i, &voice.name);
                 let uses = track.lyrics.voice_uses(i);
                 let first = table_slot::VOICE + i as u32 * table_slot::STRIDE;
                 let (typed, remove) = self.text_row(
@@ -473,10 +502,16 @@ impl Shell {
                     next[i].name = name;
                     cx.edits.push(ScenePlanEdit::SetVoices(next));
                 }
-                if self.arm_removal(0, i, remove, uses > 0) {
+                if self.arm_removal(0, i, &voice.name, remove, uses > 0) {
                     cx.edits.push(ScenePlanEdit::RemoveVoice(i));
                 }
-                if self.look_column.cards.armed == Some((0, i)) {
+                if self
+                    .look_column
+                    .cards
+                    .armed
+                    .as_ref()
+                    .is_some_and(|armed| armed.is(0, i, &voice.name))
+                {
                     cx.controls.push(format!("voice-{i}-armed:{uses}-lines"));
                 }
             }
@@ -716,12 +751,13 @@ impl Shell {
             TablePart::TitleText(i) | TablePart::TitleArtist(i) | TablePart::TitleHandle(i) => {
                 let Some(card) = titles.get(i) else { return };
                 let first = table_slot::TITLE + i as u32 * table_slot::STRIDE;
+                let holds = title_holds(card);
                 let (field, value, placeholder, button, offset) = match row {
                     TablePart::TitleText(_) => (
                         CardField::TitleText(i as u8),
                         card.title.clone(),
                         "title".to_owned(),
-                        Some((self.removal_label(2, i), None)),
+                        Some((self.removal_label(2, i, &holds), None)),
                         0,
                     ),
                     TablePart::TitleArtist(_) => (
@@ -781,7 +817,7 @@ impl Shell {
                         cx.edits.push(ScenePlanEdit::SetTitles(next));
                     }
                 }
-                if self.arm_removal(2, i, remove, true) {
+                if self.arm_removal(2, i, &holds, remove, true) {
                     let mut next = titles.clone();
                     next.remove(i);
                     cx.edits.push(ScenePlanEdit::SetTitles(next));
@@ -973,6 +1009,22 @@ pub(super) fn draw_wrapped(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_armed_removal_confirms_only_the_row_it_names() {
+        let armed = Armed {
+            table: 2,
+            row: 0,
+            holds: "4602678819172646912:Door".to_owned(),
+            seen: true,
+        };
+        assert!(armed.is(2, 0, "4602678819172646912:Door"));
+        // Another project's card 0, or this card after an edit moved it.
+        assert!(!armed.is(2, 0, "4602678819172646912:Other"));
+        assert!(!armed.is(2, 1, "4602678819172646912:Door"));
+        assert!(!armed.is(0, 0, "4602678819172646912:Door"));
+        assert_eq!(armed.name(), "title-0");
+    }
 
     #[test]
     fn a_fresh_name_skips_the_taken_ones() {

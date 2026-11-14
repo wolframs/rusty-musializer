@@ -48,6 +48,8 @@ file):
       Enter a frame later: the draft died with its project; Enter in the
       frame the other opens: refused where it is applied (`stale=1`). The
       control (no drop) commits the same draft.
+  16. a removal armed in one project (a title card's, a voice's) is not
+      armed in the other; the control, with no drop, stays armed in view.
  captures
   14. both appearances at 1280x720 (section and video) and at the column's
       minimum width: the card lies inside the list, the faces loaded.
@@ -77,6 +79,14 @@ and `git status` shown clean:
     (the review's defect 1 reproduced).
   15b (2 failures): the composition root's owner check made `true ||`: the
     same-frame Enter wrote STALE into the other project (`stale=0`).
+  16 (2 failures, title and voice armed=…-0 in the other project): every
+    guard off at once, which is what it took: the arm is cleared by the
+    project change directly and again through the section-change reset
+    `forget()` triggers, it names its row by what it holds, and it lapses a
+    frame its row is not drawn. Any one of the first two alone kept the
+    check green; with only the row's contents left the stored arm survived
+    (reported `armed=title-0`) although the other project's row read
+    Remove, so the check pins the stored state, not the label.
   Found on the way: the first sequence ran 120 frames and passed against
   both perturbations, because autosave settles 1.5 s after an edit and the
   file was read before it; the control (no drop, must commit) caught that.
@@ -565,6 +575,20 @@ if only in ('all', 'sequence'):
             check('probe=refused-no-focus' in cards(log), f'{name}: the late Enter finds no field (the draft died with its project)')
         else:
             check(field(cards(log), 'stale') == '1', f'{name}: the same-frame edit was refused as addressed to the other project (stale={field(cards(log), "stale")})')
+
+    # 16. an armed removal belongs to one row of one project: armed in one,
+    #     the other dropped in, the other's card 0 and voice 0 are not armed
+    #     (one press there would have removed them). The control, with no
+    #     drop, is still armed at the end: the row stayed in view.
+    for button, armed in [('title-text-0-button', 'title-0'), ('voice-name-0-button', 'voice-0')]:
+        log, saved = run(f'seq-arm-control-{armed}', WORDS + click(centre(rect(bw, button))), frames=60, project='words')
+        check(field(cards(log), 'armed') == armed and saved['scene_switches']['titles'] == original['words']['scene_switches']['titles'],
+              f'control: a press on Remove ({armed}) arms it and removes nothing, and it stays armed while in view')
+        name = f'seq-arm-{armed}'
+        log, _ = run(name, WORDS + click(centre(rect(bw, button))) + f',drop={dropped(name)},drop-at=30',
+                     frames=60, project='words', also=('other',))
+        check('current 1 "Other fixture"' in line(log, 'tracks') and field(cards(log), 'armed') == 'none',
+              f'{name}: armed in one project, nothing is armed in the other (armed={field(cards(log), "armed")})')
 
 if only in ('all', 'follow'):
     log, _ = run('follow-base', SECTION + ',section=2,follow=1', frames=40, follow=True)

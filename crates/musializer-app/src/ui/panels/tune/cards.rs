@@ -381,11 +381,43 @@ pub(crate) struct CardState {
     report: String,
     /// The last typed value the model's rules refused, until the next edit.
     refused: Option<String>,
-    /// A removal waiting for its confirming press: (table, row).
-    armed: Option<(u8, usize)>,
+    /// A removal waiting for its confirming press.
+    armed: Option<Armed>,
     /// The section the last frame's card edited, so a new selection takes the
     /// card back to the section scope and drops a half-typed value.
     shown: Option<u64>,
+}
+
+/// A removal waiting for its confirming press (D2 review, defect 2). It
+/// names its row by what the row holds as well as by its index, so it can
+/// confirm only that row of this project, and it lasts only while the user
+/// is looking at it: a frame the row is not drawn, another card edit, a new
+/// section, another card or another project disarms it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Armed {
+    table: u8,
+    row: usize,
+    /// What the row held when it was armed: a voice's name, a card's start
+    /// and title.
+    holds: String,
+    /// Drawn this frame.
+    seen: bool,
+}
+
+impl Armed {
+    fn is(&self, table: u8, row: usize, holds: &str) -> bool {
+        self.table == table && self.row == row && self.holds == holds
+    }
+
+    /// The report's name for it: `voice-0`, `title-2`.
+    fn name(&self) -> String {
+        let table = match self.table {
+            0 => "voice",
+            1 => "style",
+            _ => "title",
+        };
+        format!("{table}-{}", self.row)
+    }
 }
 
 /// Slots in [`widgets::id::LOOK_CARDS`]. Sliders stride by
@@ -638,6 +670,7 @@ impl CardState {
     /// Drops everything uncommitted: a half-typed value, a probe's text,
     /// a refusal, and the section the card last showed.
     fn forget(&mut self) {
+        self.armed = None;
         self.typing = None;
         self.probe_text = None;
         self.refused = None;
@@ -653,6 +686,13 @@ impl Shell {
     pub(crate) fn look_cards_frame(&mut self, workspace: &Workspace) {
         let owner = CardOwner::of(workspace);
         let cards = &mut self.look_column.cards;
+        // An armed removal whose row was not drawn last frame was looked
+        // away from (another view, another card, scrolled off).
+        match cards.armed.as_mut() {
+            Some(armed) if armed.seen => armed.seen = false,
+            Some(_) => cards.armed = None,
+            None => {}
+        }
         if cards.owner == owner {
             return;
         }
@@ -793,6 +833,7 @@ impl Shell {
         if self.look_column.cards.shown != Some(selected) {
             self.look_column.cards.shown = Some(selected);
             self.look_column.cards.typing = None;
+            self.look_column.cards.armed = None;
             if selected != 0 {
                 self.look_column.cards.scope = CardScope::Section;
             }
@@ -1426,6 +1467,7 @@ impl Shell {
                             _ => CardScope::Captions,
                         };
                         self.look_column.cards.typing = None;
+                        self.look_column.cards.armed = None;
                     }
                 }
                 Part::Follow => {
@@ -2229,6 +2271,9 @@ impl Shell {
         }
         if !edits.is_empty() {
             self.look_column.cards.refused = None;
+            // Another edit is looking away from an armed removal too; a
+            // confirmed one has already disarmed itself.
+            self.look_column.cards.armed = None;
         }
         // Addressed to the project they were made in: a project opened by a
         // command earlier in this frame's list must not receive them.
@@ -2307,12 +2352,17 @@ impl Shell {
             finish.highlight_rgb,
         );
         self.look_column.cards.report = format!(
-            "scope={} target={target_text} {video_text} follow={} editable={} cut={cut} typing={typing} refused={} stale={} area={} frame={} controls={}{probe}",
+            "scope={} target={target_text} {video_text} follow={} editable={} cut={cut} typing={typing} refused={} stale={} armed={} area={} frame={} controls={}{probe}",
             self.look_column.cards.scope.name(),
             followed.as_deref().unwrap_or("none"),
             u8::from(enabled),
             self.look_column.cards.refused.as_deref().unwrap_or("none"),
             self.look_column.cards.stale_refused,
+            self.look_column
+                .cards
+                .armed
+                .as_ref()
+                .map_or_else(|| "none".to_owned(), Armed::name),
             rect_text(area),
             rect_text(frame),
             controls.join(";"),
