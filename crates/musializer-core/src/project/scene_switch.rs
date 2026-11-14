@@ -274,7 +274,9 @@ impl SceneSwitchTimeline {
     /// A section that names no `from` continues the section before it when
     /// that one played the same clip, so splitting a clip section to change
     /// its tuning does not restart the picture; the walk back stops at the
-    /// first section that says where it starts.
+    /// first section that says where it starts. A section playing the
+    /// track's clip has no `from` of its own: the track's `from` is where a
+    /// run of such sections starts, not where each one restarts.
     #[must_use]
     pub fn clip_at(&self, time_seconds: f64, base: Option<ClipPlacement>) -> Option<ClipMoment> {
         let clip_scene = SceneId::Clip.index() as u32;
@@ -289,17 +291,26 @@ impl SceneSwitchTimeline {
         let Some(placement) = placement_of(&self.cues[index]) else {
             return base.map(ClipMoment::from_start);
         };
+        // The section's own `from`; one that plays the track's clip has none.
+        let own_from = |cue: &SceneSwitchCue| cue.clip.and_then(|own| own.from_seconds);
         let mut origin = index;
-        let mut from = placement.from_seconds;
+        let mut from = own_from(&self.cues[index]);
         while from.is_none() && origin > 0 {
             match placement_of(&self.cues[origin - 1]) {
                 Some(earlier) if earlier.clip == placement.clip => {
                     origin -= 1;
-                    from = earlier.from_seconds;
+                    from = own_from(&self.cues[origin]);
                 }
                 _ => break,
             }
         }
+        let from = from.or_else(|| {
+            self.cues[origin]
+                .clip
+                .is_none()
+                .then(|| base.and_then(|base| base.from_seconds))
+                .flatten()
+        });
         Some(ClipMoment {
             clip: placement.clip,
             after: placement.after,
@@ -756,6 +767,12 @@ impl SceneSwitchTimeline {
                 let id = self.next_id().ok_or(SceneSwitchError::DuplicateId)?;
                 let mut next = staged[selected];
                 staged[selected].end_seconds = time_seconds;
+                // A split must not change what is on screen: the new section
+                // continues the clip's clock rather than restarting it where
+                // the section it came from started (VG, F1b).
+                if let Some(placement) = next.clip.as_mut() {
+                    placement.from_seconds = None;
+                }
                 next.id = id;
                 next.start_seconds = time_seconds;
                 next.scene_index = scene_index;
@@ -1432,6 +1449,56 @@ mod tests {
         assert_eq!(timeline.cues()[1].end_seconds, 60.0);
         assert_eq!(timeline.cues()[1].scene_index, 4);
         assert_ne!(timeline.cues()[0].id, timeline.cues()[1].id);
+    }
+
+    /// F1b defect 6: a same-scene cue at 15 inside a clip section that
+    /// starts at 10 with `from: 2` splits it, and every moment shows the clip
+    /// time it showed before the split — the new section continues at 7
+    /// rather than restarting at 2. Also when the section plays the track's
+    /// clip and the track's `from` is the one in force.
+    #[test]
+    fn splitting_a_clip_section_changes_no_moment_of_the_clip() {
+        use crate::project::clip::{ClipPlacement, ClipRef};
+        let clip_scene = SceneId::Clip.index() as u32;
+        let take = ClipRef::from_hex(&"ab".repeat(32)).unwrap();
+        let restart = ClipPlacement {
+            from_seconds: Some(2.0),
+            ..ClipPlacement::new(take)
+        };
+        let local = |timeline: &SceneSwitchTimeline, base, t: f64| {
+            timeline
+                .clip_at(t, base)
+                .map(|moment| moment.local_seconds(t))
+        };
+        for (own, base) in [(Some(restart), None), (None, Some(restart))] {
+            let mut clip_cue = cue(2, 10.0, 40.0, clip_scene);
+            clip_cue.clip = own;
+            let mut timeline = SceneSwitchTimeline::new();
+            timeline
+                .replace(
+                    &[cue(1, 0.0, 10.0, 0), clip_cue, cue(3, 40.0, 60.0, 0)],
+                    DURATION,
+                    SCENES,
+                )
+                .unwrap();
+            timeline.enabled = true;
+            let times = [10.0, 12.5, 14.99, 15.0, 15.01, 20.0, 39.9];
+            let before: Vec<_> = times.iter().map(|&t| local(&timeline, base, t)).collect();
+            assert_eq!(before[3], Some(7.0), "clip time 7 at 15 before the split");
+            timeline
+                .cue_at(
+                    15.0,
+                    DURATION,
+                    clip_scene,
+                    SCENES,
+                    0.5,
+                    &snapshot(SceneId::Clip),
+                )
+                .unwrap();
+            assert_eq!(timeline.len(), 4, "the clip section split");
+            let after: Vec<_> = times.iter().map(|&t| local(&timeline, base, t)).collect();
+            assert_eq!(after, before, "own={own:?} base={base:?}");
+        }
     }
 
     #[test]
