@@ -1069,8 +1069,11 @@ fn run(
                 app.shell.probe_select_section(&app.workspace, number);
             }
             if let Some(mode) = probe.generate.as_deref() {
-                app.shell
-                    .probe_generate(mode, probe.generate_prompt.as_deref());
+                app.shell.probe_generate(
+                    mode,
+                    probe.generate_prompt.as_deref(),
+                    probe.generate_frames,
+                );
             }
             if let Some(entry) = probe.look_entry {
                 app.shell.probe_look_entry(entry);
@@ -2404,18 +2407,23 @@ fn run(
         for command in commands {
             match command {
                 // VG H4: the generate block's work.
-                ShellCommand::GenerateClip(order) => generations.start(
-                    order,
-                    &mut rl,
-                    &thread,
-                    &audio,
-                    &music,
-                    &mut app,
-                    &mut analysis,
-                    &mut renderer,
-                    &fonts,
-                    assist.session_openrouter(),
-                ),
+                ShellCommand::GenerateClip(order) => {
+                    let now = rl.get_time();
+                    generations.start(
+                        order,
+                        &mut rl,
+                        &thread,
+                        &audio,
+                        &music,
+                        &mut app,
+                        &mut analysis,
+                        &mut renderer,
+                        &fonts,
+                        assist.session_openrouter(),
+                        time_seconds,
+                        now,
+                    )
+                }
                 ShellCommand::CancelGeneration(cue_id) => generations.cancel(cue_id),
                 ShellCommand::ReadVideoPrices => generations.refresh_prices(),
                 ShellCommand::OpenGenerate => {

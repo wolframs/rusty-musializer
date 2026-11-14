@@ -17,6 +17,8 @@ asserts:
      (Send, Back); a press beside it arms nothing;
   4. Send generates: the fake gets one submit, the clip lands in section 2
      and the autosaved project carries it with the card's prompt;
+     a project that holds the clip for the request, opened with an empty
+     store, places it and sends nothing (H4b);
   5. Cancel stops waiting: the card and the notice say it may still be billed,
      nothing is placed; Generate again picks the same job up (no new submit);
      a Send whose answer is lost says it may have been billed, the next Send
@@ -55,12 +57,14 @@ def count(name: str) -> int:
 
 
 def run(name: str, probe: str, frames: int = 90, theme: str = 'dark', key: bool = True,
-        follow: Path | None = None, project: str = 'made') -> tuple[str, dict]:
+        follow: Path | None = None, project: str = 'made', source: Path | None = None,
+        store: Path | None = None) -> tuple[str, dict]:
     work = out / f'card-{name}'
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir()
-    shutil.copy(out / f'{project}.musi', work / f'{project}.musi')
-    shutil.copytree(out / f'{project}.assets', work / f'{project}.assets')
+    source = source or out
+    shutil.copy(source / f'{project}.musi', work / f'{project}.musi')
+    shutil.copytree(source / f'{project}.assets', work / f'{project}.assets')
     state = work / 'state'
     if key:
         shutil.copytree(out / 'state' / 'config', state / 'config')
@@ -71,7 +75,8 @@ def run(name: str, probe: str, frames: int = 90, theme: str = 'dark', key: bool 
         source += ['--treatment', str(follow)]
     command = ['tools/headless_run.sh', *source, '--ui-scale', '100', '--hud=0', '--ui-theme', theme,
                '--ui-probe', probe, '--probe-frames', str(frames), '--probe-shot', str(work / 'shot.png')]
-    result = subprocess.run(command, env=dict(env, MZ_STATE_DIR=str(state)), stdout=subprocess.PIPE,
+    extra = {'MUSIALIZER_GENERATED_DIR': str(store)} if store is not None else {}
+    result = subprocess.run(command, env=dict(env, MZ_STATE_DIR=str(state), **extra), stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True)
     (work / 'log.txt').write_text(result.stdout)
     if result.returncode:
@@ -176,6 +181,30 @@ check(record is not None and record['prompt'] == PROMPT.replace('+', ' ') and re
       'the clip plays in section 2 and the autosaved project carries its provenance')
 check('last=2:Info:' in line(log, 'generate') and 'Estimated $0.12, OpenRouter reported $0.1200' in line(log, 'generate'),
       'the card says it was generated, with the estimate and the reported cost')
+
+# 4b. A project that already holds the clip for the request (H4b), opened
+# with an empty store (another machine): placed, and nothing is sent.
+TEXT = 'a+text+only+shot+of+a+harbour'
+submits = count('submit')
+log, saved = run('text', f'{SECTION},generate=send,generate-frames=none,generate-prompt={TEXT}', frames=900)
+text_clip = saved['scene_switches']['cues'][1].get('clip', {}).get('clip')
+check(count('submit') == submits + 1 and text_clip is not None and text_clip != placed,
+      'a text-only Send generates and places its clip')
+bundled = out / 'card-text'
+project = json.loads((bundled / 'made.musi').read_text())
+project['scene_switches']['cues'][1]['clip'] = json.loads((out / 'made.musi').read_text())['scene_switches']['cues'][1]['clip']
+(bundled / 'made.musi').write_text(json.dumps(project))
+empty = out / 'card-empty-store'
+shutil.rmtree(empty, ignore_errors=True)
+empty.mkdir()
+# Another machine that has read today's prices and made no clips.
+shutil.copy(out / 'store' / 'prices.json', empty / 'prices.json')
+log, saved = run('bundled', f'{SECTION},generate=send,generate-frames=none,generate-prompt={TEXT}', frames=300,
+                 source=bundled, store=empty)
+words = line(log, 'generate')
+check(count('submit') == submits + 1 and saved['scene_switches']['cues'][1].get('clip', {}).get('clip') == text_clip
+      and 'The project already holds the clip made for exactly this request, so nothing was sent.' in words,
+      'with no store, the same Send finds the clip the project holds, places it in section 2 and sends nothing')
 
 # 5. Cancel: may still be billed, nothing placed; the next press picks it up.
 SLOW = 'a+field+at+night+[slow]'

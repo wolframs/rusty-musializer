@@ -1070,10 +1070,19 @@ impl Shell {
 impl Shell {
     /// `generate=` (a probe, VG H4): the selected section's block open, with
     /// `prompt`, and armed or sent as `mode` says.
-    pub(crate) fn probe_generate(&mut self, mode: &str, prompt: Option<&str>) {
+    pub(crate) fn probe_generate(
+        &mut self,
+        mode: &str,
+        prompt: Option<&str>,
+        frames: Option<(bool, bool)>,
+    ) {
         let mut form = GenerateForm::new(self.scene_lane.selected_id);
         if let Some(prompt) = prompt {
             form.prompt.bind(prompt);
+        }
+        if let Some((first, last)) = frames {
+            form.first = first;
+            form.last = last;
         }
         form.armed = matches!(mode, "armed" | "send" | "send-twice");
         form.probe_send = matches!(mode, "send" | "send-twice");

@@ -138,6 +138,13 @@ struct Running {
     digest: String,
 }
 
+/// What [`Generations::prepare`] did.
+enum Started {
+    Job,
+    /// The project held the clip; the words say where it now plays.
+    Found(String),
+}
+
 /// Why [`Generations::prepare`] started nothing.
 enum NotStarted {
     /// By name, as any refusal.
@@ -426,13 +433,38 @@ impl Generations {
         renderer: &mut SceneRenderer,
         fonts: &Faces,
         session: Option<&Secret>,
+        time_seconds: f64,
+        now: f64,
     ) {
         let cue_id = order.cue_id;
         match self.prepare(
-            order, rl, thread, audio, music, app, analysis, renderer, fonts, session,
+            order,
+            rl,
+            thread,
+            audio,
+            music,
+            app,
+            analysis,
+            renderer,
+            fonts,
+            session,
+            time_seconds,
+            now,
         ) {
-            Ok(()) => {
+            Ok(Started::Job) => {
                 self.last.remove(&cue_id);
+            }
+            Ok(Started::Found(words)) => {
+                self.unconfirmed.remove(&cue_id);
+                app.shell
+                    .notify(Severity::Info, "Clip found in the project", &words);
+                self.last.insert(
+                    cue_id,
+                    LastOutcome {
+                        severity: Severity::Info,
+                        words,
+                    },
+                );
             }
             Err(NotStarted::Held(words)) => {
                 app.shell.notify(Severity::Warning, HELD_TITLE, &words);
@@ -471,7 +503,9 @@ impl Generations {
         renderer: &mut SceneRenderer,
         fonts: &Faces,
         session: Option<&Secret>,
-    ) -> Result<(), NotStarted> {
+        time_seconds: f64,
+        now: f64,
+    ) -> Result<Started, NotStarted> {
         if self
             .jobs
             .iter()
@@ -577,6 +611,32 @@ impl Generations {
         request.first = first.as_ref().map(|(_, image)| image.clone());
         request.last = last.as_ref().map(|(_, image)| image.clone());
         request.check(offer).map_err(|error| error.to_string())?;
+        let digest = request.digest();
+        // The project already holds the clip made for exactly this request
+        // (a bundled project on a machine without the store that made it):
+        // it is placed, and nothing is sent.
+        let held = app.workspace.current().and_then(|track| {
+            track
+                .clips
+                .iter()
+                .find(|entry| {
+                    entry.unusable.is_none()
+                        && entry
+                            .asset
+                            .generated
+                            .as_ref()
+                            .is_some_and(|record| record.request_sha256 == digest)
+                })
+                .cloned()
+        });
+        if let Some(entry) = held {
+            let name = entry.asset.name.clone();
+            let place = place(app, &order, &audio_sha256, entry, time_seconds, now)?;
+            return Ok(Started::Found(format!(
+                "{name} plays {place}. The project already holds the clip made for exactly this \
+                 request, so nothing was sent."
+            )));
+        }
         let estimate = price::estimate(
             catalog.as_deref(),
             super::now_unix(),
@@ -597,7 +657,6 @@ impl Generations {
         }
         // Sent before and never answered: held until the person, told it may
         // have been billed, presses Send again for this very request.
-        let digest = request.digest();
         let resend = match store.leftover_intent(&digest) {
             Some(intent) if order.resend.as_deref() == Some(digest.as_str()) => {
                 Some(intent.sent_utc)
@@ -630,7 +689,7 @@ impl Generations {
             audio_sha256,
             digest,
         });
-        Ok(())
+        Ok(Started::Job)
     }
 
     /// The `generate:` report line.

@@ -560,6 +560,9 @@ pub struct UiProbe {
     pub generate: Option<String>,
     /// `generate-prompt=WORDS` (VG H4), `+` for a space: the block's prompt.
     pub generate_prompt: Option<String>,
+    /// `generate-frames=none|first|last|both` (H4b): which of the two frames
+    /// the block starts with (both by default).
+    pub generate_frames: Option<(bool, bool)>,
     /// `look-entry=voice-N|style-N|title-N` (D2): open that entry of the
     /// captions card's tables, as a press on its row does. Invented for the
     /// reason `section=` was: the press on a control inside it is the run's
@@ -1598,6 +1601,15 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             probe.generate.as_ref()?;
         }
         "generate-prompt" => probe.generate_prompt = Some(value.replace('+', " ")),
+        "generate-frames" => {
+            probe.generate_frames = Some(match value {
+                "none" => (false, false),
+                "first" => (true, false),
+                "last" => (false, true),
+                "both" => (true, true),
+                _ => return None,
+            });
+        }
         "look-entry" => {
             let (table, row) = value.rsplit_once('-')?;
             let table = match table {
