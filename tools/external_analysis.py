@@ -1650,6 +1650,70 @@ def _mimo_failure(cache_path: Path, audio_sha: str) -> str | None:
     return " ".join(receipt["message"].split())[:300] or None
 
 
+def _utc_words(value: Any) -> str | None:
+    """`2026-11-14 21:13 UTC` from a receipt's ISO time or a provider's Unix
+    `created`, or None."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+        return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(value))
+    if isinstance(value, str) and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d)?Z", value):
+        return f"{value[:10]} {value[11:16]} UTC"
+    return None
+
+
+def _mimo_latest_failure(cache_path: Path, audio_sha: str,
+                         envelope: dict[str, Any]) -> dict[str, Any] | None:
+    """The failed attempt recorded beside a cache this run is reusing (H4c).
+
+    The helper removes the receipt as an attempt starts and writes one only
+    when it fails, so a receipt beside an accepted cache means the latest
+    attempt failed after the answer in the cache was made: a regeneration that
+    cost money (or may have) and produced nothing. The earlier answer is still
+    this request's answer — same audio, same identity, validated when it was
+    made — so it is staged; the person reads, beside it, that the latest
+    attempt failed, when, why, what it may have cost, and which answer they are
+    looking at. The receipt stays until the next attempt, so every reuse says it.
+    """
+    path = mimo_adapter.failure_receipt_path(cache_path)
+    try:
+        if path.stat().st_size > 1 << 20:
+            return None
+        receipt = read_json(path)
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(receipt, dict)
+            or receipt.get("schema_version") != mimo_adapter.FAILED_RUN_SCHEMA_VERSION
+            or receipt.get("audio_sha256") != audio_sha
+            or not isinstance(receipt.get("message"), str)):
+        return None
+    message = " ".join(receipt["message"].split())[:300]
+    failed = _utc_words(receipt.get("failed_utc"))
+    generation = (((envelope.get("normalized") or {}).get("provenance") or {})
+                  .get("generation") or {})
+    made = _utc_words(generation.get("created")
+                      or (envelope.get("raw_response") or {}).get("created"))
+    request = {key: value for key, value in (envelope.get("request") or {}).items()
+               if key != "audio_sha256"}
+    same_request = receipt.get("request") == request
+    estimate = receipt.get("estimate") if isinstance(receipt.get("estimate"), dict) else {}
+    words = (
+        f"The latest MiMo attempt{' (with other settings)' if not same_request else ''} "
+        f"failed{f' on {failed}' if failed else ''}: {message} "
+        f"The feelings staged here are the earlier answer"
+        f"{f', made on {made}' if made else ''}, which was kept.")
+    return {
+        "failed_utc": receipt.get("failed_utc"),
+        "reason": receipt.get("reason"),
+        "message": message,
+        "may_be_billed": bool(receipt.get("may_be_billed")),
+        "reported_cost_usd": receipt.get("reported_cost_usd"),
+        "usd_max": estimate.get("usd_max"),
+        "same_request": same_request,
+        "answer_in_use": {"created": generation.get("created"),
+                          "generation_id": generation.get("id")},
+        "words": words,
+    }
+
+
 def _mimo_cache_accepts(
     envelope: dict[str, Any], *, request_identity: dict[str, Any],
     execution_route: dict[str, Any] | None = None,
@@ -2251,6 +2315,7 @@ def run_assist(
                     lyrics_lane_path = timing_source_path
 
     semantic: dict[str, Any] | None = None
+    semantic_failure: dict[str, Any] | None = None
     if mode in {"mimo", "all"}:
         request_identity = _mimo_request_identity(
             audio, audio_sha=audio_sha, measured_duration=measured_duration, zdr=zdr,
@@ -2301,7 +2366,11 @@ def run_assist(
                     stamps["TC-SEMANTIC"]
                 atomic_write_json(paths["semantic"], envelope)
             cache_status["semantic"] = "generated"
-        else: cache_status["semantic"] = "reused"
+        else:
+            cache_status["semantic"] = "reused"
+            semantic_failure = _mimo_latest_failure(paths["semantic"], audio_sha, envelope)
+            if semantic_failure is not None:
+                print(f"warning: {semantic_failure['words']}", file=sys.stderr)
         semantic = _semantic_document(envelope)
 
     plan = build_scene_plan(
@@ -2313,7 +2382,7 @@ def run_assist(
     manifest = build_assist_manifest(
         mode=mode, audio_sha=audio_sha, measured_duration=measured_duration,
         cache_status=cache_status, paths=paths, plan=plan, lyrics=lyrics, semantic=semantic,
-        performed_lyrics=use_performed_lyrics,
+        performed_lyrics=use_performed_lyrics, semantic_latest_failure=semantic_failure,
         execution_snapshot=observe_execution(
             snapshot,
             whisper=whisper_lane if mode in {"lyrics", "all", "sections"} else None,
@@ -2400,6 +2469,7 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
                           semantic: dict[str, Any] | None,
                           execution_snapshot: dict[str, Any] | None = None,
                           performed_lyrics: bool = False,
+                          semantic_latest_failure: dict[str, Any] | None = None,
                           ) -> dict[str, Any]:
     """`assist-manifest.json`, as the Assist panel reads it.
 
@@ -2459,6 +2529,10 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
             "prompt_tokens": usage.get("prompt_tokens"),
             "billed_this_run": cache_status.get("semantic") == "generated",
         }
+    # A failed attempt after the answer being staged was made (H4c): written
+    # only when there is one, so its absence is the plain case.
+    if semantic and semantic_latest_failure is not None:
+        manifest["semantic_latest_failure"] = semantic_latest_failure
     # Same rule for the localization block, and the same reason: it is the third
     # LT1 marker, so a run without a lyrics lane must not carry the key at all
     # rather than carry it as null (review LT1-R, R1).

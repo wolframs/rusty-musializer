@@ -272,6 +272,20 @@ and three guards it found missing:
   "OpenRouter answered HTTP 502 after the request was sent; it may have been
   billed (at most 0.033 USD). Nothing was saved or sent again." Whether to run
   it again is the person's call, so the displayed maximum stays one call's.
+- **A failed regeneration beside a kept answer** (H4c). A receipt beside an
+  accepted cache means the latest attempt failed after that answer was made
+  (the helper removes the receipt as an attempt starts). Decided by the trust
+  policy above: the earlier answer is still this request's answer — the same
+  audio, the same request identity and route, validated when it was made —
+  so it is staged, and discarding it would only make the person pay again.
+  It is never staged silently: the manifest carries `semantic_latest_failure`
+  and the Assist panel raises a warning, "The latest MiMo attempt failed",
+  with the helper's words, e.g. "The latest MiMo attempt failed on 2026-11-14
+  22:37 UTC: MiMo's answer was cut off at the 16000-token cap. Nothing was
+  saved; OpenRouter billed 0.1312 USD for it. The feelings staged here are the
+  earlier answer, made on 2026-11-14 18:53 UTC, which was kept." A receipt for
+  other settings says "(with other settings)". It stays until the next attempt,
+  so every reuse says it.
 - **Stated scales.** The prompt and the model's schema give energy, tension
   (0–1), valence (−1–1) and confidence (0–1) a range and a meaning. A value
   outside its range fails the run, naming the field, rather than being clamped
@@ -294,6 +308,7 @@ the source restored byte for byte (`cmp` against a saved copy):
 | --- | --- |
 | The confirmation's maximum formatted unrounded again (`{:.3}` of `usd_max`) | `at_most_is_rounded_up_never_down`: "at most 0.032 USD" for 100 s |
 | The helper's failure clause without `ceil_usd` | `test_a_failed_run_without_a_reported_cost_names_the_ceiling` and `test_at_most_is_rounded_up_as_the_rust_side_rounds_it` |
+| The reuse path not reading the receipt (`semantic_failure = None`) | `test_the_earlier_answer_is_staged_with_the_failure_named` and `test_a_gateway_failure_on_regeneration_says_it_may_have_been_billed`: no `semantic_latest_failure` in the manifest. The panel's reader is pinned by `an_earlier_semantic_answer_staged_after_a_failure_says_so`; that `stage_finished_job` chains its notice is not pinned by a test of its own |
 | 502 and 503 retried again, and no status counted as possibly billed | `test_a_gateway_failure_after_sending_is_one_call_that_may_be_billed`, every status: two sends where one was confirmed, or "request failed with HTTP 504" with no word on cost |
 
 ### Local performed-phrase recovery (2026-09-08)

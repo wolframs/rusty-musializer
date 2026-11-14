@@ -677,6 +677,10 @@ impl AssistController {
                 // as observed ones. So the unreadable case says so, in the report
                 // line and in a notice, rather than reading as a clean run
                 // (`ASSIST_AUDIT_2026-08-29.md`, protocol map row 2b).
+                // The semantic answer staged may be an earlier one, kept
+                // after the latest MiMo attempt failed (H4c): said here,
+                // where the result is read.
+                let semantic_failure = latest_semantic_failure(&output_dir);
                 let read_back = staged_execution_snapshot(&output_dir);
                 let observed_token = match &read_back {
                     Ok(Some(_)) => "yes".to_string(),
@@ -741,6 +745,7 @@ impl AssistController {
                         mode.empty_result(),
                     )]
                     .into_iter()
+                    .chain(semantic_failure)
                     .chain(provenance_notice)
                     .collect();
                 }
@@ -754,6 +759,7 @@ impl AssistController {
                     format!("Validated suggestions for {name} are staged in the Assist panel."),
                 )]
                 .into_iter()
+                .chain(semantic_failure)
                 .chain(provenance_notice)
                 .collect()
             }
@@ -1393,6 +1399,27 @@ fn report_routing(line: &str) {
             last.push_str(line);
         }
     });
+}
+
+/// The notice a finished job's manifest asks for when the semantic answer it
+/// staged is an earlier one, kept because the latest MiMo attempt failed after
+/// it (`semantic_latest_failure`, H4c): when, why, what it may have cost, and
+/// which answer is staged, in the helper's words. `None` in the plain case.
+fn latest_semantic_failure(output_dir: &str) -> Option<AssistNotice> {
+    if output_dir.is_empty() {
+        return None;
+    }
+    let bytes = read_bounded(&Path::new(output_dir).join(ASSIST_MANIFEST_NAME))?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let words = manifest
+        .get("semantic_latest_failure")?
+        .get("words")?
+        .as_str()?
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!words.is_empty())
+        .then(|| AssistNotice::new(Severity::Warning, "The latest MiMo attempt failed", words))
 }
 
 /// The execution snapshot a finished job's manifest embedded, if any.
@@ -4852,6 +4879,40 @@ mod tests {
         assert_eq!(kept, diagnosis::UNDIAGNOSED_SENTENCE);
         assert_eq!(notice.title, diagnosis::UNDIAGNOSED_HEADLINE);
         assert!(!titles.contains(&notice.title), "and it is a fifth title");
+    }
+
+    /// H4c: the manifest of a run that staged an earlier MiMo answer after a
+    /// failed attempt makes a warning with the helper's words, within the
+    /// tray's capacity; a manifest without the key makes none.
+    #[test]
+    fn an_earlier_semantic_answer_staged_after_a_failure_says_so() {
+        let scratch = Scratch::new("semantic-failure");
+        let words = "The latest MiMo attempt failed on 2026-11-14 22:37 UTC: MiMo's answer was \
+                     cut off at the 16000-token cap. Nothing was saved; OpenRouter billed 0.1312 \
+                     USD for it. The feelings staged here are the earlier answer, made on \
+                     2026-11-14 18:53 UTC, which was kept.";
+        std::fs::write(
+            scratch.join(ASSIST_MANIFEST_NAME),
+            serde_json::json!({
+                "schema_version": "musializer.assist-manifest/v1",
+                "semantic_latest_failure": {"words": words, "may_be_billed": false},
+            })
+            .to_string(),
+        )
+        .expect("manifest");
+        let folder = scratch.0.display().to_string();
+        let notice = latest_semantic_failure(&folder).expect("a notice");
+        assert_eq!(notice.severity, Severity::Warning);
+        assert_eq!(notice.title, "The latest MiMo attempt failed");
+        assert_eq!(notice.detail, words);
+        assert!(notice.detail.len() < musializer_core::ui::notice::DETAIL_CAPACITY);
+        std::fs::write(
+            scratch.join(ASSIST_MANIFEST_NAME),
+            r#"{"schema_version":"musializer.assist-manifest/v1"}"#,
+        )
+        .expect("manifest");
+        assert_eq!(latest_semantic_failure(&folder), None);
+        assert_eq!(latest_semantic_failure(""), None);
     }
 
     struct Scratch(PathBuf);

@@ -725,6 +725,9 @@ def _write_failure_receipt(
     content = _raw_content(response)
     receipt = {
         "schema_version": FAILED_RUN_SCHEMA_VERSION,
+        # When it failed: an earlier answer still in the cache is staged with
+        # this receipt named beside it (H4c), and "when" is half of that.
+        "failed_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "reason": reason,
         "message": message or failure_message(reason, response, estimate),
         # The request left and nothing says whether the model ran: counted as

@@ -421,6 +421,92 @@ class NumericScales(LaneTestCase):
         self.assertEqual(external_analysis._semantic_document(old)["segments"][0]["energy"], 0.5)
 
 
+class AFailedRegenerationIsSaid(LaneTestCase):
+    """H4c: an earlier answer staged after a later attempt failed says so.
+
+    A success, then a regeneration of the same request that fails (its
+    receipt beside the earlier cache), then an Assist run that reuses the
+    cache: the manifest the panel reads names the failure, when, why and what
+    it may have cost, and which answer is staged.
+    """
+
+    def run_assist_to_manifest(self, runner) -> dict:  # noqa: ANN001
+        def cache(path, *_args, **kwargs):  # noqa: ANN001
+            if path.name == "measured.json":
+                return {"audio": {"duration_seconds": DURATION}}
+            if path.exists():
+                value = json.loads(path.read_text())
+                return value if kwargs["accept"](value) else None
+            return None
+
+        with patch.object(external_analysis, "_cache_matches", side_effect=cache), \
+             patch.object(external_analysis, "build_scene_plan",
+                          return_value={"sections": []}), \
+             patch.object(external_analysis, "build_bridge", return_value=""):
+            return external_analysis.run_assist(
+                self.ws.audio, self.ws.root, audio_duration=DURATION, mode="mimo",
+                semantic_cache=self.ws.cache, allow_dotenv=False, runner=runner)
+
+    def helper(self, body: object):
+        def runner(argv, **_kwargs):  # noqa: ANN001
+            try:
+                mimo_openrouter.analyze_to_cache(
+                    Path(argv[2]), Path(argv[3]), audio_duration=float(argv[5]),
+                    transport=FakeOpenRouter(body), sleeper=lambda _s: None)
+            except mimo_openrouter.FailedRun as error:
+                return subprocess.CompletedProcess(argv, 1, "", f"MiMo analysis failed: {error}\n")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return runner
+
+    def never(self, argv, **_kwargs):  # noqa: ANN001
+        self.fail(f"the cached answer was not reused: {argv}")
+
+    def test_the_earlier_answer_is_staged_with_the_failure_named(self) -> None:
+        first = self.run_assist_to_manifest(self.helper(response(answer())))
+        self.assertEqual(first["cache_status"]["semantic"], "generated")
+        self.assertNotIn("semantic_latest_failure", first)
+        # A regeneration of exactly this request and cache fails, billed.
+        with self.assertRaises(mimo_openrouter.FailedRun):
+            mimo_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                transport=FakeOpenRouter(CUT_OFF), sleeper=lambda _s: None)
+        self.assertTrue(self.ws.receipt.exists())
+        failed_utc = json.loads(self.ws.receipt.read_text())["failed_utc"]
+        manifest = self.run_assist_to_manifest(self.never)
+        self.assertEqual(manifest["cache_status"]["semantic"], "reused")
+        failure = manifest["semantic_latest_failure"]
+        self.assertTrue(failure["same_request"])
+        self.assertEqual(failure["reported_cost_usd"], 0.1312484)
+        self.assertEqual(failure["answer_in_use"]["generation_id"], "gen-test")
+        when = f"{failed_utc[:10]} {failed_utc[11:16]} UTC"
+        self.assertEqual(
+            failure["words"],
+            f"The latest MiMo attempt failed on {when}: MiMo's answer was cut off at the "
+            "16000-token cap. Nothing was saved; OpenRouter billed 0.1312 USD for it. The "
+            "feelings staged here are the earlier answer, made on 2026-11-14 18:53 UTC, which "
+            "was kept.")
+        # Said on every reuse until an attempt succeeds.
+        again = self.run_assist_to_manifest(self.never)
+        self.assertEqual(again["semantic_latest_failure"]["words"], failure["words"])
+
+    def test_a_gateway_failure_on_regeneration_says_it_may_have_been_billed(self) -> None:
+        self.run_assist_to_manifest(self.helper(response(answer())))
+        gateway = urllib.error.HTTPError(
+            mimo_openrouter.OPENROUTER_URL, 502, "gateway", {}, io.BytesIO(b""))
+        with self.assertRaises(mimo_openrouter.FailedRun):
+            mimo_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                transport=FakeOpenRouter(gateway), sleeper=lambda _s: None)
+        failure = self.run_assist_to_manifest(self.never)["semantic_latest_failure"]
+        self.assertTrue(failure["may_be_billed"])
+        self.assertIn("it may have been billed (at most 0.033 USD)", failure["words"])
+
+    def test_no_receipt_no_word(self) -> None:
+        self.run_assist_to_manifest(self.helper(response(answer())))
+        manifest = self.run_assist_to_manifest(self.never)
+        self.assertNotIn("semantic_latest_failure", manifest)
+
+
 class FailedRunReachesTheUser(LaneTestCase):
     """Through `run_assist`, the sentence the job log's last line carries."""
 
