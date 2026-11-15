@@ -66,7 +66,23 @@ needs a schema bump or an updated harness and a recorded reason:
 **The operator's, from the 2026-11-14 follow-up** (record in the archive,
 "The 2026-11-14 follow-up"):
 
-- **The benchmark's truth waits for his ears**: row 2.
+- **MiMo is the wrong model for this lane** (operator, 2026-11-15, while answering
+  the truth session, verbatim): "I'm also ONLY JUST remembering that Mimo
+  V2.5's perception of audio is worse than the newer gemini flash models' is,
+  so the entire 'use mimo for this task' setup is outdated. It started that
+  way because Mimo V2.5 was the first model that had *any* usable *music*
+  training for something like this, but the gemini flash series has since
+  superseded it in usefulness by a lot..." So the semantic lane's model is to
+  be reconsidered before more is built on MiMo; the benchmark harness, the
+  lane's cap, failed-run and estimate handling, and the truth session are not
+  specific to MiMo. Not yet decided by him: whether to measure a Gemini Flash
+  model with the same harness first, and through which route (OpenRouter, or
+  the Antigravity route the lyrics work already uses).
+- **The benchmark's truth waits for his ears**: row 2. He started the session
+  on 2026-11-15 and found the key question hard ("both eb minor and F# fit parts of
+  this track"); those two are relative keys with the same notes, which the
+  session should not ask a listener to tell apart and the scorer should not
+  count as a miss.
 - **The lead's ceiling rule, his to overrule** (2026-11-15): `--max-spend N`
   is the most a treatment run may newly send; what earlier runs may already
   have spent is reported on its own line, not counted. Reason: counting prior
