@@ -868,3 +868,17 @@ the Gemini confirmation first showed "No eligible endpoint", from a catalog of
 fetches), but a capture that must not depend on the operator's cache sets its
 own `XDG_CACHE_HOME`, absolute (a relative one is ignored), as
 `tools/headless_check.sh` does for its route captures. Found 2026-11-15.
+
+## A temporary folder outlives a helper that is killed
+
+`tempfile.TemporaryDirectory` cleans up when Python unwinds, and a helper the
+parent kills by process group at its deadline never unwinds. The listening
+helper wrote a private copy of the whole track into the cache folder for
+FFmpeg to read, and a conversion that ran into the 600-second limit left it
+there. Symptom: `semantic-encode-*/source.*` beside the caches. A private copy
+that must not survive has no name: `os.memfd_create`, handed to the child as
+its standard input and read through `/proc/self/fd/0`, which is seekable and
+disappears with the processes. The same review found the copy's reader
+inheriting the helper's whole environment, key included: a child that only
+decodes gets a short allowlist. Found 2026-11-15 (review of the Gemini lane).
+

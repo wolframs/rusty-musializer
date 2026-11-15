@@ -253,6 +253,7 @@ number disagrees, grep it there before debugging from scratch.
 - **A parameter one provider lists can leave a ZDR route with no endpoint**: Gemini's Vertex endpoints do not list `temperature`, so keep a model's quirks in its row, not in the shared request. See `docs/TRAPS.md`.
 - **A cached catalog older than a model cannot say the model is gone**: its absence there is "not looked since", not a refusal. See `docs/TRAPS.md`.
 - **`headless_run.sh` isolates config, not cache**: a probe reads the operator's `~/.cache/musializer`, so set an absolute `XDG_CACHE_HOME` when a capture must not depend on it. See `docs/TRAPS.md`.
+- **A temporary folder outlives a helper that is killed**: a private copy that must not survive has no name (`os.memfd_create`, read through `/proc/self/fd/0`), and a child that only decodes gets an allowlisted environment. See `docs/TRAPS.md`.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe

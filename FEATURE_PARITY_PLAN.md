@@ -81,8 +81,8 @@ needs a schema bump or an updated harness and a recorded reason:
   `google/gemini-3.8-flash` with audio input (2026-11-15: 0.825 USD per million
   input and audio tokens, 4.125 per million output), so the application's
   existing hosted lane takes it and no second route is needed.
-- **The listening lane runs on Gemini 3.8 Flash** (merged 2026-11-15; review and
-  release build pending at the time of writing): default and recommended on
+- **The listening lane runs on Gemini 3.8 Flash** (merged, reviewed, fully
+  verified and in the release build, 2026-11-15): default and recommended on
   the operator's word, MiMo selectable as experimental, three real calls for
   0.0475 USD. Record: `docs/ASSIST_PIPELINE.md`, "Gemini 3.8 Flash through
   OpenRouter", and `docs/DIVERGENCES.md`, "The listening lane's model". What

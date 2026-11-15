@@ -936,6 +936,70 @@ class RealEncoding(unittest.TestCase):
         self.assertEqual(sent[0], 0xFF, "an MPEG audio frame comes first")
         self.assertGreater(len(sent), 10_000)
 
+    def _tone(self, folder: Path, name: str, seconds: int, *extra: str) -> Path:
+        ffmpeg = semantic_openrouter.ffmpeg_executable()
+        path = folder / name
+        subprocess.run(
+            [ffmpeg, "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+             f"sine=frequency=440:duration={seconds}", *extra, str(path)],
+            check=True, timeout=120)
+        return path
+
+    def test_an_encoding_past_the_limit_stops_and_says_nothing_was_sent(self) -> None:
+        try:
+            semantic_openrouter.ffmpeg_executable()
+        except RuntimeError:
+            self.skipTest("FFmpeg is not installed")
+        encoding = semantic_openrouter.model_profile(GEMINI).audio_encoding
+        with tempfile.TemporaryDirectory() as folder:
+            tone = self._tone(Path(folder), "long.flac", 120)
+            # 120 s at 128 kbit/s is about 1.9 MB of MP3.
+            with self.assertRaises(RuntimeError) as caught:
+                semantic_openrouter.encode_audio(
+                    tone.read_bytes(), "flac", encoding, max_bytes=200_000)
+            self.assertIn("encodes to more than 0.2 MB", str(caught.exception))
+            self.assertIn("nothing was sent", str(caught.exception))
+            whole = semantic_openrouter.encode_audio(
+                tone.read_bytes(), "flac", encoding, max_bytes=4_000_000)
+            self.assertGreater(len(whole), 1_500_000)
+
+    def test_an_index_at_the_end_is_still_read_and_no_copy_is_left(self) -> None:
+        try:
+            semantic_openrouter.ffmpeg_executable()
+        except RuntimeError:
+            self.skipTest("FFmpeg is not installed")
+        encoding = semantic_openrouter.model_profile(GEMINI).audio_encoding
+        with tempfile.TemporaryDirectory() as folder, \
+                tempfile.TemporaryDirectory() as workdir:
+            # FFmpeg writes an M4A's index last unless told otherwise: a pipe
+            # could not read this file, a seekable descriptor can.
+            tone = self._tone(Path(folder), "tone.m4a", 180, "-c:a", "aac")
+            sent = semantic_openrouter.encode_audio(
+                tone.read_bytes(), "m4a", encoding, workdir=Path(workdir))
+            self.assertEqual(sent[0], 0xFF)
+            # Long enough that a reader which cannot seek back from the index
+            # to the audio fails: a three-second file fits FFmpeg's read-ahead.
+            self.assertGreater(len(sent), 2_500_000)
+            self.assertEqual(list(Path(workdir).iterdir()), [], "no private copy on disk")
+
+    def test_the_encoder_never_sees_the_key(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            seen = Path(folder) / "environment.txt"
+            stand_in = Path(folder) / "ffmpeg"
+            stand_in.write_text('#!/bin/sh\nenv > "$TMPDIR/environment.txt"\nprintf "\\377encoded"\n')
+            stand_in.chmod(0o755)
+            encoding = semantic_openrouter.model_profile(GEMINI).audio_encoding
+            with patch.dict(os.environ, {
+                    "OPENROUTER_API_KEY": "sk-or-CANARY-MUST-NOT-LEAK",
+                    "SOME_OTHER_TOKEN": "CANARY-TOO", "TMPDIR": folder}), \
+                    patch.object(semantic_openrouter, "ffmpeg_executable",
+                                      return_value=str(stand_in)):
+                sent = semantic_openrouter.encode_audio(b"audio", "flac", encoding)
+            self.assertEqual(sent, b"\xffencoded")
+            environment = seen.read_text()
+            self.assertNotIn("CANARY", environment)
+            self.assertIn("TMPDIR=", environment)
+
 
 if __name__ == "__main__":
     unittest.main()

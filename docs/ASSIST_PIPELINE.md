@@ -400,7 +400,19 @@ listening lane's model".
   128 kbit/s keeps a track of about 15 minutes inside AI Studio's 20 MB, which
   a non-ZDR route can reach. A WAV source sent as it is would have been 70 MB
   of base64 for five minutes. The audio hash, and so the cache key and the
-  bridge's identity, stays the source file's;
+  bridge's identity, stays the source file's. FFmpeg reads the snapshot from
+  an anonymous in-memory file handed over as its standard input (seekable,
+  so an M4A with its index at the end is read; no name on disk, so nothing of
+  the track is left behind when the parent kills the helper at its deadline),
+  gets an environment of seven named variables and so never the OpenRouter
+  key, and its output is read in pieces and stopped once it passes the
+  request's own size limit ("the track encodes to more than 19.5 MB, past
+  what one request may carry; nothing was sent"). Review of 2026-11-15; the
+  three controls: the limit ignored, the environment inherited, the input
+  read as a pipe, each failing its test in `tests/test_semantic_openrouter.py`
+  (`RealEncoding`). Not done, on purpose: an answer cached by this build is
+  not reused by an older build (the rule is that newer builds read older
+  files);
 - **no `temperature`**: Google's advice, and on the ZDR route a `temperature`
   with `require_parameters: true` leaves no endpoint (a 404 refusal);
 - no `reasoning` setting: the model's default thinking, which is the Gemini

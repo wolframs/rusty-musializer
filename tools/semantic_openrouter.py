@@ -22,6 +22,7 @@ import hashlib
 import json
 import math
 import os
+import select
 import shutil
 import subprocess
 import sys
@@ -677,46 +678,107 @@ def ffmpeg_executable() -> str:
     return str(Path(found).resolve())
 
 
+# What FFmpeg needs from the helper's environment. An allowlist, so that the
+# OpenRouter key (and any other credential the helper was started with) never
+# reaches a child that only decodes audio.
+FFMPEG_ENVIRONMENT = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
+                      "LD_LIBRARY_PATH")
+ENCODE_STDERR_BYTES = 4096
+
+
+def ffmpeg_environment() -> dict[str, str]:
+    return {name: os.environ[name] for name in FFMPEG_ENVIRONMENT if name in os.environ}
+
+
 def encode_audio(audio_bytes: bytes, source_format: str, encoding: AudioEncoding,
-                 *, workdir: Path | None = None, timeout: float = 600.0) -> bytes:
+                 *, workdir: Path | None = None, timeout: float = 600.0,
+                 max_bytes: int | None = None) -> bytes:
     """The snapshot re-encoded as ``encoding`` says, with every tag dropped.
 
     FFmpeg reads a private copy of the snapshot rather than the source path,
-    so the bytes sent are the bytes hashed even if the file changes meanwhile,
-    and a file rather than a pipe, because an MP4/M4A with its index at the end
-    cannot be read from a pipe.
+    so the bytes sent are the bytes hashed even if the file changes meanwhile.
+    The copy is an anonymous in-memory file handed over as FFmpeg's standard
+    input and read through ``/proc/self/fd/0``: seekable, which an MP4/M4A with
+    its index at the end needs, and with no name on disk, so nothing of the
+    track is left behind when the parent kills this process group at its own
+    deadline. The encoding is read in pieces and stopped at ``max_bytes``: a
+    track too long to send is refused without first being held whole.
     """
+    # FFmpeg probes the content and no file is written, so neither is used;
+    # both stay in the signature the callers and the tests' stand-ins share.
+    _ = (source_format, workdir)
     ffmpeg = ffmpeg_executable()
-    suffix = "." + (source_format or "audio").lower().lstrip(".")
-    with tempfile.TemporaryDirectory(prefix="semantic-encode-", dir=workdir) as folder:
-        source = Path(folder) / f"source{suffix}"
-        source.write_bytes(audio_bytes)
-        completed = subprocess.run(
+    with os.fdopen(os.memfd_create("semantic-encode"), "wb+") as source, \
+            tempfile.TemporaryFile() as errors:
+        source.write(audio_bytes)
+        source.flush()
+        source.seek(0)
+        process = subprocess.Popen(
             [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
-             "-i", str(source), "-map", "0:a:0", "-vn", "-sn", "-dn",
+             "-i", "/proc/self/fd/0", "-map", "0:a:0", "-vn", "-sn", "-dn",
              "-map_metadata", "-1", "-map_chapters", "-1",
              "-ac", str(encoding.channels), "-ar", str(encoding.sample_rate),
              "-c:a", encoding.codec, "-b:a", encoding.bitrate,
              "-id3v2_version", "0", "-write_id3v1", "0",
              "-f", encoding.format, "pipe:1"],
-            stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, check=False)
-    if completed.returncode != 0 or not completed.stdout:
-        # FFmpeg names its input; the private copy's path says nothing useful.
-        detail = completed.stderr.decode("utf-8", "replace").replace(str(source), "the track")
-        detail = " ".join(detail.split())[:120]
-        raise RuntimeError(f"FFmpeg could not encode the track ({detail or 'no output'}); "
-                           "nothing was sent")
-    return completed.stdout
+            stdin=source, stdout=subprocess.PIPE, stderr=errors,
+            env=ffmpeg_environment())
+        assert process.stdout is not None
+        output = process.stdout.fileno()
+        deadline = time.monotonic() + timeout
+        pieces: list[bytes] = []
+        total = 0
+        refusal: str | None = None
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    refusal = "FFmpeg did not finish encoding the track in time"
+                    break
+                ready, _, _ = select.select([output], [], [], min(remaining, 1.0))
+                if not ready:
+                    continue
+                piece = os.read(output, 1 << 16)
+                if not piece:
+                    break
+                total += len(piece)
+                if max_bytes is not None and total > max_bytes:
+                    refusal = (f"the track encodes to more than {max_bytes / 1e6:.1f} MB, "
+                               "past what one request may carry")
+                    break
+                pieces.append(piece)
+        finally:
+            if refusal is not None:
+                process.kill()
+            process.stdout.close()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        if refusal is not None:
+            raise RuntimeError(f"{refusal}; nothing was sent")
+        if process.returncode != 0 or not pieces:
+            errors.seek(0)
+            detail = errors.read(ENCODE_STDERR_BYTES).decode("utf-8", "replace")
+            # FFmpeg names its input; the descriptor's path says nothing useful.
+            detail = " ".join(detail.replace("/proc/self/fd/0", "the track").split())[:120]
+            raise RuntimeError(f"FFmpeg could not encode the track ({detail or 'no output'}); "
+                               "nothing was sent")
+    return b"".join(pieces)
 
 
 def prepare_audio(audio_bytes: bytes, source_format: str, model: str,
                   *, encoder: Callable[..., bytes] = encode_audio,
                   workdir: Path | None = None) -> bytes:
     """What is sent for this model: the snapshot itself, or its encoding."""
-    encoding = model_profile(model).audio_encoding
-    if encoding is None:
+    profile = model_profile(model)
+    if profile.audio_encoding is None:
         return audio_bytes
-    return encoder(audio_bytes, source_format, encoding, workdir=workdir)
+    # Base64 only grows the encoding, so one past the request's own limit can
+    # never be sent; stopping there bounds what is held.
+    return encoder(audio_bytes, source_format, profile.audio_encoding,
+                   workdir=workdir, max_bytes=profile.max_request_bytes)
 
 
 def oversize_reason(payload: dict[str, Any], model: str) -> str | None:
