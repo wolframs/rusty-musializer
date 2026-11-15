@@ -825,8 +825,7 @@ pub fn prepare<'audio>(
     // counted against the ceiling where it leaves, under its request's lock.
     let mut outcomes: Vec<(ClipGeneration, Resolution)> = Vec::new();
     let mut blocked: Vec<usize> = refused.clone();
-    for index in 0..plan.len() {
-        let entry = &mut plan[index];
+    for entry in &mut plan {
         let generation = entry.generation.clone();
         let forecast = match std::mem::replace(&mut entry.step, Step::Settled(None)) {
             Step::Settled(None) => {
