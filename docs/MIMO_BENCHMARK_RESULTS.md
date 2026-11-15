@@ -191,7 +191,7 @@ counted click fits (4/4, 3/4, 6/8, and 12/8 on shut-up-cat where the grid
 hears triplets; plus "free", "can't tell"); and a three-state instrument
 checklist from the scorer's lexicon with a free-text line. Answers save on
 every click, so it can be stopped and resumed. It needs the Lab change that
-lets a protocol hold eight tracks (on this branch).
+lets a protocol hold eight tracks (landed with the session, `41fe23b`).
 
 Start it (from the main checkout; **this plays the music**):
 

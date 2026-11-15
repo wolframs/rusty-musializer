@@ -63,63 +63,19 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
-**In flight — the 2026-11-14 follow-up (claimed; lead: the main session).** The
-operator, 2026-11-14, on what the last wave left with him: "I say yes to
-spending + balanced exports + clicking a section means jumping (modifier +
-click could select, like shift mby?)" and, on the benchmark's missing truth,
-"that can be set up in the listening tooling i used in the past to give coding
-agents here feedback". The spending cap he agreed to is 5 USD for the benchmark
-and the generation test clips together. Tick a step when it is merged and
-verified; delete the block when done, with the record in the archive.
+**The operator's, from the 2026-11-14 follow-up** (record in the archive,
+"The 2026-11-14 follow-up"):
 
-- [x] **H1 — a click on a section jumps**, playing or paused; Shift+click
-  selects without moving the playhead.
-- [x] **H2 — Balanced exports keep their gradients**: measured 2026-11-14,
-  nothing adopted. No x264 setting brings Balanced half way to High within
-  the size caps; `docs/archive/BALANCED_ENCODER_2026-11.md` has the table.
-  What it leaves: under the film finish Balanced flattens the grain into
-  blocks and only High keeps it, and the window does not say so. A line in
-  the Render view when the finish is on and the quality is Balanced would.
-- [x] **H3 — MiMo v2.5 benchmark, first live run** (2026-11-14): 60 calls,
-  0.49 to 0.63 USD (the 0.60 ceiling may have been passed by up to 0.03: two
-  billed calls came back empty before the harness kept such responses).
-  Results and what they mean: `docs/MIMO_BENCHMARK_RESULTS.md`.
-- [ ] **H3, waiting for the operator's ears**: the listening session for key,
-  count and instruments is built (two sessions in the Listening Lab; commands
-  in the results doc). After he has answered, run the converter, commit the
-  ground-truth file and re-score.
-- [x] **H3 follow-ups in the application's MiMo lane** (merged 2026-11-14):
-  a 16,000-token completion cap, a cut-off or empty or off-scale answer as a
-  failed run with its reason and cost, an estimate from completion tokens
-  shown before Start, the numeric scales stated. Left: the estimate's line in
-  the confirmation is cut off with an ellipsis at the default width; the
-  suitability row for `xiaomi/mimo-v2.5` still says no benchmark has been run
-  (it feeds `suitability_revision`, so changing it is a decision); repeats 2
-  and 3 of most benchmark cells are not run.
-- [ ] **A test that fails under load**: `clip::tests::a_budget_of_two_decoders_runs_two_whatever_the_clips`
-  (musializer-runtime) failed once on 2026-11-14 while another gate ran and
-  passed alone. Find the timing assumption.
-- [ ] **H4 — generating a clip** (F2, second half of VG): built and merged
-  2026-11-14, three real clips for 0.36 USD (`build/generated-clips/`), then
-  three review rounds (9, 7 and 9 findings). Held out of the release build
-  until the third round's fixes are in.
-  **The lead's decision, 2026-11-15, after the third review:** `--max-spend N`
-  bounds only what this run itself newly sends; what earlier runs may already
-  have spent is reported on its own line and not counted. Reason: counting
-  prior possible charges against the ceiling was wrong in a new way in each
-  review, and a rule about this run's own sends can be enforced at the moment
-  of each send. The operator has not ruled on this; he can overrule it.
-- [x] **The pixel-look gate's two failures** (2026-11-15): not a regression
-  in the application. The gate's native-key driver typed on a clock and raced
-  the first frame; it now waits for the window. Found on the way and fixed: a
-  typed pixel count past 65,535 was dropped silently.
-- [ ] **Two more tests that fail under load** (seen once each, 2026-11-15,
-  passing alone): `process::ffmpeg::tests::dropping_an_encoder_without_finishing_it_still_reaps_and_cleans_up`
-  and, as noted above, the clip decoder budget test. `lyric_focus_check.py`
-  still focuses the last root child, not the mapped window.
-- [ ] **Close**: one review by GPT-6.1-Sol per stream before its release
-  build, one full `tools/verify.sh`, release build, queue and archive updated,
-  worktrees removed.
+- **The benchmark's truth waits for his ears**: row 2.
+- **The lead's ceiling rule, his to overrule** (2026-11-15): `--max-spend N`
+  is the most a treatment run may newly send; what earlier runs may already
+  have spent is reported on its own line, not counted. Reason: counting prior
+  possible charges was wrong in a new way in each of three reviews, and a rule
+  about the run's own sends is enforced at the moment of each send
+  (`docs/VIDEO_GENERATION.md`, "The ceiling, redefined").
+- **Decided by measurement, his to revisit**: Balanced stays as it is; High
+  is the answer for gradients and grain
+  (`docs/archive/BALANCED_ENCODER_2026-11.md`).
 
 **WX-6 appearance coverage — still open (2026-10-30).** The EX4-c CPU
 failure is diagnosed and fixed: it predates WX-5d (5/5
@@ -258,17 +214,17 @@ a CX ruling, not a preference.
 | # | Work | Ids | Size |
 | --- | --- | --- | --- |
 | 1 | **Review SX4, then revisit CX-4.** Track A's original session was rejected; track B is unreviewed. The new design review has four questions per track and a separate cut-quality question in the browser. Original CX-4 files/answers remain intact; do not unblind until both original sessions are complete. Tap-offset and 80/120/200 ms flash comparisons also remain unvalidated | SX4, CX-4 | operator listening |
-| 2 | **MiMo v2.5 capability benchmark** (E of the 2026-11-13 wave) — operator's stated priority. Design and harness exist (`docs/MIMO_BENCHMARK_PLAN.md`, `tools/mimo_bench/`); the offline dry run is done (`tools/mimo_bench/run.py plan` prints the calls and the projected cost, on 2026-11-14 159 calls and 0.32–0.36 USD, with both tracks' excerpts prepared). **Waits for the operator** on two things: the go-ahead for the live run, which sends audio to OpenRouter and spends credits; and key, meter and instruments in `tools/mimo_bench/ground_truth/tracks.json`, still unadjudicated for both tracks, so six dimensions would abstain | — | one session |
+| 2 | **MiMo v2.5 capability benchmark** — operator's stated priority. The first live run is done (2026-11-14, 60 calls; `docs/MIMO_BENCHMARK_RESULTS.md`). **Waits for the operator's ears**: the Listening Lab session for key, metre and instruments is built (the two commands are in the results doc). After he has answered: run the converter, commit the ground-truth file, re-score, update the results doc and decide the suitability row for `xiaomi/mimo-v2.5` (it still says no benchmark has been run, and it feeds `suitability_revision`). The rest of MiMo is under **MiMo** below | — | operator listening, then one session |
 | 3 | **The remaining CX rulings, in their stated order.** Review the implemented track-specific CX-5 scene thumbnails, then CX-1 marker rails and the proposal review queue (PXF-8), then CX-2 export variants (PXF-4 first, schema v2 — PXF-9) | CX-1, CX-2, CX-5 | large; four or five agents |
 | 4 | **Workflow friction and product opportunities** left from the user-perspective review | UX0-B06, B07, B10–B19; UX0-C05, C08, C09, C17; PXF-3, PXF-12, PXF-13 | medium |
-| 5 | **Durable-edit remainder, then the missing product surfaces, then honesty and gates** | B3; C2, C3, C5; D6, D8; E2, E3, E4; F1/F2/F3 remainder; G1, G2; GX-3 | large |
+| 5 | **Durable-edit remainder, then the missing product surfaces, then honesty and gates** | B3; C2, C3, C5; D6, D8; E2, E3, E4; F1/F2/F3 remainder; G1, G2; GX-3, GX-4 | large |
 | 6 | **Dev-ex and infrastructure** (DX8 closed 2026-08-29 — E2/E4 unblocked) | DX1–DX7, DX9 | small each |
 | 7 | **Assist provider remainder** | AP5-b/c/d, AP6-e | small each; AP5-c is a feature |
 | 8 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
 | 9 | **What directing a video from the command line ran into** (MV1 landed 2026-10-11, MV2 2026-11-13; guide in `docs/MUSIC_VIDEO_CLI.md`) | MV2 remainder, MV3–MV8 | small each |
 | 10 | **The look cards' remainder** — MV9-l and MV3-a landed 2026-11-14 as Look's look cards; what they left is listed under MV9 | MV9-l remainder | small each, UI |
 | 11 | **The window as a directing workstation** — a dock with a real terminal and native Claude Code / Codex / Antigravity sessions, the window following a treatment live, and the restyle the mockup proposes. Operator request 2026-10-21; WX-0 to WX-5d landed by 2026-10-30, the treatment picker 2026-11-13; WX-6 appearance coverage and the lyric-lane grip decision remain open in [`docs/WORKSTATION.md`](docs/WORKSTATION.md) | WX-6 | gate runtime cap |
-| 12 | **Generated video as material** — the first half (F1: any video file as a `clip` section, bundled) landed 2026-11-14, record and seam in [`docs/VIDEO_GENERATION.md`](docs/VIDEO_GENERATION.md). **F2, generating a clip** (provider call, price shown first, consent through the Assist contracts, provenance on the clip asset, a `generated` transition) **waits for the operator's go-ahead on spending**; `tools/openrouter_video_prices.py --hd` refreshes the prices. The clip half's own leftovers are listed under VG below | VG (F2), VG remainder | F2 one session once approved |
+| 12 | **Generated video as material** — clips as material (F1) and generating a clip through OpenRouter (F2, H4) landed 2026-11-14 to 2026-11-15; record in [`docs/VIDEO_GENERATION.md`](docs/VIDEO_GENERATION.md). What both halves left, and what was never tried for real, is under VG below | VG remainder | small each |
 
 ### The items, in one line each
 
@@ -371,17 +327,18 @@ here.
   dialogs behind the Direct view's treatment picker and Import clip…; the look
   cards with a real mouse and keyboard; a real agent session beside the
   picker; a 4K export with a slow preset (EX4); a GPU that refuses the 16-bit
-  export target; a real phone video, a clip from a generation model, and a
-  clip longer than 20 s or above 1080p.
+  export target; a real phone video, and a clip longer than 20 s or above
+  1080p. From the 2026-11-14 follow-up: the generation and MiMo items listed
+  under VG and MiMo below.
 
 **EX3/EX4 — the export defects' remainder.** Both defects landed in the
 2026-11-13 wave (the 16-bit export target with one dithered quantise; the
 writer thread that keeps the progress screen painting). Left:
 
-- **Balanced exports keep most of their banding**: x264 at CRF 20 flattens the
-  dither again. `-aq-mode 3` measured better on the ramp (EX3 row in
-  `docs/DIVERGENCES.md`) but changes encoder settings and file sizes, so it is
-  **the operator's call**.
+- **The Render view does not say what Balanced costs**: when the film finish
+  is on and the quality is Balanced, a line should say that Balanced flattens
+  grain and gradients and High keeps them. Balanced itself stays as it is
+  (measured 2026-11-14, `docs/archive/BALANCED_ENCODER_2026-11.md`).
 - **The finish's bloom and blur buffers are still RGBA8**
   (`runtime::offscreen::Canvas`).
 - Recorded, not fixed: a **cached** mid-export caption atlas failure would make
@@ -461,11 +418,23 @@ version of the defect that let three export SIZE buttons sit dead for months.
 
 **GX-3 — the poster gate's frame-budget comparison measures the machine,**
 as GX-2's stall assertion did. On 2026-11-14 it failed the full verify
-("posters stalled more frames (3) than no posters (1)"); run alone three
-times at load 6 to 7 it gave on/off stalls of 1/2, 0/5 and 2/1. It needs a
+("posters stalled more frames (3) than no posters (1)"), and again in the
+full verify on `7abda56` (2026-11-14); run alone three times at load 6 to 7
+it gave on/off stalls of 1/2, 0/5 and 2/1. It needs a
 comparison that survives a busy machine (repeated runs and medians, or the
 poster service's own step timings) before it can decide anything. Do not
 loosen it without that.
+
+**GX-4 — tests and gates that fail under load**, seen once each (2026-11-14
+to 2026-11-15) and passing alone; find each timing assumption:
+
+- `clip::tests::a_budget_of_two_decoders_runs_two_whatever_the_clips` and
+  `process::ffmpeg::tests::dropping_an_encoder_without_finishing_it_still_reaps_and_cleans_up`.
+- `tools/treatment_check.sh` run standalone on a fixed display can die on a
+  race in `tools/headless_run.sh`: the previous launch's X lock vanishes
+  between the check and the read (a builder's report, not reproduced).
+- `tools/lyric_focus_check.py` still focuses the last root child, not the
+  mapped window (`docs/TRAPS.md`, the XTest driver entry).
 
 **SX2/SX3 — scene follow-ups.** No HX protocol has been run on Clawd's expression
 thresholds, its petal-show arm thresholds (measured against one track), or any of
@@ -533,19 +502,34 @@ one real video with it found these, each from a contact sheet:
   - The Pixel group's typed value is keyed by slot and scene only and may
     need the cards' owner rule (a draft belongs to one project).
 
-- **VG remainder — clips** (F1 landed 2026-11-14; F2 is row 12):
+- **VG remainder — clips and generating them** (row 12):
   - A clip restored from a crash-recovery snapshot is still opened by name,
     and autosave still checks an existing bundled file by name; the bundled
     path is walked beneath its folder everywhere else.
-  - Provenance on the clip asset (model, prompt, price) and a `generated`
-    transition, both with F2.
   - The `punch` setting reads as subtle even at 0.6.
+  - No `generated` transition (a generated section with `"first":
+    "previous"`, `"last": "next"` is the bridge today); the prompt field is
+    one scrolling line, not multi-line.
+  - A save writes only the clips a section plays, so an unplaced generated
+    clip lives only in the store.
+  - Accepted from the last review, to fix only if it ever matters: the
+    ceiling comparison's tolerance of one billionth of a dollar.
+  - Never tried for real (all four real calls went through a treatment run):
+    the window's card against the real service, a real Cancel, a failed or
+    refused real job, a second model family, a lost answer, two callers at
+    once, a cut-short download, an expired job.
 
-- **The section click while playing — an agent's decision, the operator's to
-  revise.** While the track plays, a click on a section selects it and does
-  not move the playhead; paused, it shows the section. Agent G decided this on
-  2026-11-14 (`docs/DIVERGENCES.md`, "The show belongs to a completed click
-  while paused"); the operator has not ruled on it.
+- **MiMo — the application's lane and the benchmark's remainder** (the truth
+  and the suitability row are row 2):
+  - Repeats 2 and 3 of most benchmark cells are not run.
+  - The estimate's line in the Start confirmation is cut off with an
+    ellipsis at the default width.
+  - Accepted from the last review, to fix only if it ever matters: the
+    "latest MiMo attempt failed" notice can be wrong when two helpers act on
+    one cache at the same moment (a success can remove a newer failure's
+    receipt), or when the wall clock is set back between attempts.
+  - Never tried for real: a real cut-off answer, a whole-length track, Start
+    pressed in the application itself.
 
 - **WX — the window as a directing workstation** (2026-10-21). Parts, order,
   decisions and status live in [`docs/WORKSTATION.md`](docs/WORKSTATION.md);

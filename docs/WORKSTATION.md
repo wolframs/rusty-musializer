@@ -373,10 +373,10 @@ remaining workstation work is:
   [HEADLESS_GPU.md](HEADLESS_GPU.md).
 - **Lyric lane resizing.** Decide whether dragging the lane grip should grow
   the whole band. The current band limits downward growth.
-- **Generating a clip** (VG's second half). Clips as material are built
-  (2026-11-14); generation, with its price shown first and consent through the
-  Assist contracts, waits for the operator's go-ahead on spending. The seam is
-  in [VIDEO_GENERATION.md](VIDEO_GENERATION.md).
+- **Generated clips** (VG). Clips as material and generating them are built
+  (2026-11-14 to 2026-11-15, [VIDEO_GENERATION.md](VIDEO_GENERATION.md)); what
+  they left, including the card never tried against the real service, is
+  under VG in the live queue.
 
 ## Decisions recorded along the way
 

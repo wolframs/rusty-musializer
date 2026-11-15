@@ -5072,3 +5072,132 @@ generating a clip; EX3 for Balanced and the finish's buffers; GX-3; the look
 cards', clips' and MV2's remainders; PXF-13 (recovery and the playhead);
 UX0-B18 now with number keys to list; the things never tried for real, under
 G2.
+
+## The 2026-11-14 follow-up: section jumps, Balanced, the MiMo benchmark, generating clips (2026-11-14 to 2026-11-15)
+
+The operator, 2026-11-14, on what the 2026-11-13 wave left with him: *"I say
+yes to spending + balanced exports + clicking a section means jumping
+(modifier + click could select, like shift mby?)"* and, on the benchmark's
+missing truth, *"that can be set up in the listening tooling i used in the
+past to give coding agents here feedback"*. The spending cap he agreed to: 5
+USD for the benchmark and the generation test clips together. Claimed in the
+live queue as H1–H4 (`a3a81a6`, `889899e`). Lead: the main session; builders:
+Opus sub agents in worktrees; reviews by GPT-6.1-Sol.
+
+**H1 — a click on a section jumps** (`f1b8795`). A body press released
+without passing the drag threshold selects the section and seeks to its rest
+(50 ms past its arrival), playing or paused, from inside the section too, and
+lets an active Play the cut go; Shift held at the press only selects
+(`--ui-probe click-shift=1`). The operator's decision, replacing agent G's
+"while playing a click only selects" from the 2026-11-13 wave. Divergence row
+"A click on a section jumps there"; `tools/look_cards_check.py` check 39 and
+its negative controls 39, 39a, 39b in the docstring.
+
+**H2 — Balanced exports measured, nothing adopted** (`6c622e1`, `a5c3f70`).
+The exact frames exports hand to FFmpeg (film-finished Door clips, Clawd,
+Spectrum, the gate's clean gradient) against `-aq-mode 3`, aq strengths,
+film/grain tunes, deadzones, mb-tree, preset, CRF 18/17, High/Master and NVENC
+spatial AQ. No x264 setting brings Balanced half way to High within the size
+caps (+15 % bright, +40 % dark); under the film finish Balanced flattens the
+grain into blocks and only High keeps it. Table, method and decision:
+`docs/archive/BALANCED_ENCODER_2026-11.md`; `tools/encoder_matrix.py`
+reproduces the application's MP4 byte for byte. Found with it: the gate's
+gradient measure reads film grain as detail (`docs/TRAPS.md`). Left: a line in
+the Render view saying so (EX3 remainder in the queue).
+
+**H3 — the MiMo v2.5 benchmark's first live run** (`86bd13f` to `3b1b92b`).
+60 calls on 2026-11-14, cut from the plan's 159 because MiMo reasons before it
+answers (the first call cost three times its projection); a hard ceiling from
+recorded `usage.cost` (`86bd13f`), billed empty answers kept and counted
+(`9e2c1a4`). Cost **0.49 to 0.63 USD**: two billed calls came back empty
+before the harness kept such responses, so **the 0.60 ceiling may have been
+passed by up to 0.03**. Results, hypotheses and gates, read at n = 1 for most
+cells: `docs/MIMO_BENCHMARK_RESULTS.md`. The Listening Lab session for key,
+metre and instruments and its converter (`41fe23b`) supply the missing truth
+the operator asked for; it waits for his ears (commands in the results doc).
+
+**H3's follow-ups in the application's MiMo lane** (`77c0310` to `f91b21e`): a
+16,000-token completion cap; a cut-off, empty, off-schema or off-scale answer
+is a failed run with its reason, its cost and a receipt (never cached); an
+estimate from completion tokens shown before Start and recorded beside the
+bill; the numeric scales stated in prompt v2. Calibrated on two real capped
+calls on the 100 s excerpt, **0.0052 + 0.0042 = 0.0094 USD** (`4662ad4`).
+Record: `docs/ASSIST_PIPELINE.md` "The MiMo feelings request",
+`docs/DIVERGENCES.md` "The MiMo lane's request"; two traps (a reasoning model
+with no `max_tokens`, a helper's reason dying at `_run`).
+
+**H4 — generating a clip, the second half of VG** (`2cd31ea` to `96bc15c`).
+The contract and price list (`core::generation`), the OpenRouter client, the
+store and the job, the treatment grammar (`"clip": { "generate": … }`, spent
+only with `--generate-clips --max-spend USD`), the section card's Generate
+with the price on its button and a second press to send, provenance on the
+clip asset. Three real `google/veo-3.1-lite` clips for **0.36 USD**, every
+estimate the cost to the cent. Record, the API as found and what the clips
+looked like: `docs/VIDEO_GENERATION.md` "Generating a clip"; gate
+`tools/generate_check.sh` (fake provider), its negative controls in the doc
+and the gate's docstring; grammar in `docs/MUSIC_VIDEO_CLI.md`.
+
+Four review rounds followed, each finding fixed before the next:
+
+- **Round 1, nine findings, three of them ways to pay twice** (`9b886da` to
+  `7abda56`): one owner per request across processes; an intent written before
+  the POST; a refused download keeps its paid job; submit and poll answers
+  bounded; the window finds a clip the project holds; a finished clip goes
+  only to its section; no frame from a stand-in; `--fps`/`--quality` govern
+  the frames sent; the armed Send belongs to one project. One real
+  confirmation clip, **0.12 USD**. Record: "Billing safety (H4b)" and its
+  checks.
+- **Round 2, seven findings** (`fa234fd` to `e0770e5`): a maximum rounded up
+  at the precision shown; the store durable across a power loss; a late
+  poller removes only its own job; every unanswered send kept on record (the
+  ledger `spending.tsv`); MiMo retries narrowed to a 429 or a request that
+  never left; an earlier MiMo answer staged after a failed attempt says so; a
+  run plans every request before it sends any. Record: "The second review's
+  fixes (H4c)"; ten traps across `3d421ac` and `e0770e5`.
+- **Round 3, nine findings, four of them the ceiling's prior-exposure
+  accounting wrong in new ways** (a job in flight left out, a job record
+  hiding unanswered sends, a request known only after earlier sends, another
+  process's store changes after the plan). **The lead decided on 2026-11-15
+  to replace that accounting** (`63b44d3`): `--max-spend N` is the most this
+  run may newly send, checked and increased under the request's lock at the
+  moment of each send; what earlier runs may have spent is reported on its
+  own line, not counted. Reason: the accounting had been wrong in a new way in
+  each of three reviews, and a rule about this run's own sends can be
+  enforced where the money leaves. **The operator has not ruled on it and may
+  overrule it.** The smaller fixes: an unreadable intent holds its request,
+  three unanswered sends stop it (`982c961`); no send without its ledger line
+  (`f334c0b`); the ceiling printed as typed (`9ddcb61`); every MiMo status
+  after the send but a clear refusal may be billed (`5f3d522`); a MiMo
+  failure receipt applies only to an answer older than it (`1672ebf`).
+  Record: "The ceiling, redefined (H4d)", "The same review's smaller fixes
+  (H4d)" and their negative-control tables; MiMo halves in
+  `docs/ASSIST_PIPELINE.md`.
+- **Round 4, narrow**: the ceiling rule clean. Three leftovers accepted, to
+  fix only if they ever matter (in the queue under VG and MiMo). The lead also
+  aligned the video client's status rule with the MiMo helper's list of clear
+  refusals (`053d466`).
+
+**A false alarm, recorded so nobody repeats it.** `tools/pixel_look_check.sh`
+failed twice in a full verify and twice alone, and the lead told the operator
+that typing a pixel count for a section was broken. It was not: the gate's
+native-key driver typed 0.8 s after launch and raced the first frame (it lost
+on the older commit too: 4 of 10 runs at `2578329`). The driver now waits for
+the mapped window (`aa3a315`; trap "A native-key driver that types on a
+clock races the first frame"). Found on the way and fixed in the application:
+a typed pixel count past 65,535 was dropped silently; it clamps now
+(`faf2f20`, negative control in the commit).
+
+**Verification.** A full `tools/verify.sh` on `7abda56`: 24 of 26 (that
+pixel-look gate, and the poster frame-budget comparison already queued as
+GX-3). A full `tools/verify.sh` on `053d466`, the final commit, on
+2026-11-15: **26 passed, 0 failed**. The release was built on `053d466`.
+
+**Money spent in all**, from the ledgers: benchmark 0.49 to 0.63, the lane's
+two calls 0.0094, generation 0.36 + 0.12 = 0.48: **about 0.98 to 1.12 USD of
+the 5 USD cap.**
+
+**Left open** (all in the live queue): the listening session and its
+re-score (row 2); the ceiling rule and Balanced, the operator's to revisit;
+the Render view's Balanced line (EX3); generation's remainder and the things
+never tried for real (VG, G2); MiMo's remainder; the tests and gates that
+failed under load (GX-4) and GX-3.
