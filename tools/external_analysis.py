@@ -45,7 +45,7 @@ import observed_audio_occurrences
 import lyric_align
 import lyric_anchor_block
 import local_lyric_recovery
-import mimo_openrouter as mimo_adapter
+import semantic_openrouter as semantic_adapter
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -357,7 +357,7 @@ def _local_runtime_env(executable: str | Path) -> dict[str, str]:
 
 
 def _openrouter_env(dotenv_path: Path | None = None, *, allow_dotenv: bool = True) -> dict[str, str]:
-    """Expose only the one credential authorized for the MiMo helper.
+    """Expose only the one credential authorized for the semantic helper.
 
     Desktop launchers do not normally inherit interactive shell variables, so
     the repository's ignored .env is accepted as an explicit local credential
@@ -1593,7 +1593,7 @@ def _semantic_route(route: dict[str, Any] | None) -> dict[str, Any]:
         if isinstance(constraints.get(key), (int, float))
     }
     return {
-        "model": (route or {}).get("model_id") or mimo_adapter.MODEL,
+        "model": (route or {}).get("model_id") or semantic_adapter.MODEL,
         "order": list(constraints.get("order") or []),
         "only": list(constraints.get("only") or []),
         "ignore": list(constraints.get("ignore") or []),
@@ -1606,12 +1606,12 @@ def _semantic_route(route: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _mimo_request_identity(
+def _semantic_request_identity(
     audio: Path, *, audio_sha: str, measured_duration: float, zdr: bool,
     semantic: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     semantic = semantic or _semantic_route(None)
-    settings = mimo_adapter.request_settings(
+    settings = semantic_adapter.request_settings(
         model=semantic["model"],
         audio_duration=measured_duration,
         audio_format=audio.suffix.lstrip(".").lower(),
@@ -1625,16 +1625,16 @@ def _mimo_request_identity(
     return {"audio_sha256": audio_sha, **settings}
 
 
-def _mimo_failure(cache_path: Path, audio_sha: str) -> str | None:
+def _semantic_failure(cache_path: Path, audio_sha: str) -> str | None:
     """The helper's own sentence for a failed run, read from its receipt.
 
     `_run` reports a failed child as "python3 exited with code 1", which says
-    nothing about a MiMo answer that was cut off, empty or off-schema, nor what
+    nothing about a model's answer that was cut off, empty or off-schema, nor what
     it cost. The helper writes that sentence into a receipt beside the cache
-    (`mimo_openrouter.failure_receipt_path`), and it is surfaced from there: it
+    (`semantic_openrouter.failure_receipt_path`), and it is surfaced from there: it
     names a reason and a number, never the answer or the request.
     """
-    path = mimo_adapter.failure_receipt_path(cache_path)
+    path = semantic_adapter.failure_receipt_path(cache_path)
     try:
         if path.stat().st_size > 1 << 20:
             return None
@@ -1642,7 +1642,7 @@ def _mimo_failure(cache_path: Path, audio_sha: str) -> str | None:
     except (OSError, ValueError):
         return None
     if (not isinstance(receipt, dict)
-            or receipt.get("schema_version") != mimo_adapter.FAILED_RUN_SCHEMA_VERSION
+            or receipt.get("schema_version") not in semantic_adapter.READABLE_FAILED_RUN_SCHEMAS
             or receipt.get("audio_sha256") != audio_sha
             or not isinstance(receipt.get("message"), str)):
         return None
@@ -1660,14 +1660,14 @@ def _utc_words(value: Any) -> str | None:
     return None
 
 
-def _mimo_latest_failure(cache_path: Path, audio_sha: str,
+def _semantic_latest_failure(cache_path: Path, audio_sha: str,
                          envelope: dict[str, Any]) -> dict[str, Any] | None:
     """The failed attempt recorded beside a cache this run is reusing (H4c).
 
     The helper removes the receipt as an attempt starts and writes one only
     when it fails, and a success removes a receipt older than itself; a
     receipt beside an accepted cache, failed after the answer in it was made
-    (`mimo_openrouter.receipt_applies`, H4d), means the latest attempt failed:
+    (`semantic_openrouter.receipt_applies`, H4d), means the latest attempt failed:
     a regeneration that
     cost money (or may have) and produced nothing. The earlier answer is still
     this request's answer — same audio, same identity, validated when it was
@@ -1675,7 +1675,7 @@ def _mimo_latest_failure(cache_path: Path, audio_sha: str,
     attempt failed, when, why, what it may have cost, and which answer they are
     looking at. The receipt stays until the next attempt, so every reuse says it.
     """
-    path = mimo_adapter.failure_receipt_path(cache_path)
+    path = semantic_adapter.failure_receipt_path(cache_path)
     try:
         if path.stat().st_size > 1 << 20:
             return None
@@ -1683,13 +1683,13 @@ def _mimo_latest_failure(cache_path: Path, audio_sha: str,
     except (OSError, ValueError):
         return None
     if (not isinstance(receipt, dict)
-            or receipt.get("schema_version") != mimo_adapter.FAILED_RUN_SCHEMA_VERSION
+            or receipt.get("schema_version") not in semantic_adapter.READABLE_FAILED_RUN_SCHEMAS
             or receipt.get("audio_sha256") != audio_sha
             or not isinstance(receipt.get("message"), str)):
         return None
     # Only a failure after the answer in use describes it (H4d): another
     # helper's failure that ended before this answer was made is older news.
-    if not mimo_adapter.receipt_applies(receipt, envelope):
+    if not semantic_adapter.receipt_applies(receipt, envelope):
         return None
     message = " ".join(receipt["message"].split())[:300]
     failed = _utc_words(receipt.get("failed_utc"))
@@ -1701,8 +1701,11 @@ def _mimo_latest_failure(cache_path: Path, audio_sha: str,
                if key != "audio_sha256"}
     same_request = receipt.get("request") == request
     estimate = receipt.get("estimate") if isinstance(receipt.get("estimate"), dict) else {}
+    receipt_request = receipt.get("request") if isinstance(receipt.get("request"), dict) else {}
+    name = semantic_adapter.model_label(
+        str(receipt_request.get("model") or request.get("model") or semantic_adapter.MODEL))
     words = (
-        f"The latest MiMo attempt{' (with other settings)' if not same_request else ''} "
+        f"The latest {name} attempt{' (with other settings)' if not same_request else ''} "
         f"failed{f' on {failed}' if failed else ''}: {message} "
         f"The feelings staged here are the earlier answer"
         f"{f', made on {made}' if made else ''}, which was kept.")
@@ -1720,7 +1723,7 @@ def _mimo_latest_failure(cache_path: Path, audio_sha: str,
     }
 
 
-def _mimo_cache_accepts(
+def _semantic_cache_accepts(
     envelope: dict[str, Any], *, request_identity: dict[str, Any],
     execution_route: dict[str, Any] | None = None,
 ) -> bool:
@@ -1728,11 +1731,13 @@ def _mimo_cache_accepts(
     return (isinstance(normalized, dict) and
             envelope.get("request") == request_identity and
             envelope.get("cache_key") == canonical_sha256(request_identity) and
-            _provenance_matches(
+            # The helper's name, or its name before 2026-11-15
+            # (`tools/mimo_openrouter.py`): the identity decides, not the file.
+            any(_provenance_matches(
                 normalized,
-                adapter="tools/mimo_openrouter.py",
+                adapter=adapter,
                 adapter_version=ADAPTER_VERSION,
-                source_kind="mimo_openrouter",
+                source_kind=source_kind,
                 request_settings={
                     key: value for key, value in request_identity.items()
                     if key != "audio_sha256"
@@ -1741,11 +1746,11 @@ def _mimo_cache_accepts(
                 # was routed to a variant is still an answer to this route, and
                 # comparing the observed id would regenerate on every reroute.
                 model=None,
-                prompt_version=mimo_adapter.PROMPT_VERSION,
+                prompt_version=semantic_adapter.PROMPT_VERSION,
                 execution_route=execution_route,
-            ) and
+            ) for adapter, source_kind in semantic_adapter.ACCEPTED_ADAPTERS) and
             normalized.get("provenance", {}).get("requested_model",
-                                                 mimo_adapter.MODEL)
+                                                 semantic_adapter.MODEL)
             == request_identity["model"])
 
 
@@ -2022,7 +2027,7 @@ def run_assist(
                             "whisper", ("lyric_sync_or_codex_review" if wording_route.get("route_type") == "codex"
                                         else "lyric_sync_or_local_transcript"),
                             "anchor_block_localization_or_ctc_forced_alignment"])
-    if mode in {"mimo", "all"}: actions[1:1] = ["mimo_openrouter"]
+    if mode in {"mimo", "all"}: actions[1:1] = ["semantic_openrouter"]
     if dry_run:
         return {
             "dry_run": True, "mode": mode, "audio_sha256": audio_sha,
@@ -2044,7 +2049,7 @@ def run_assist(
                 if os.environ.get("OPENROUTER_API_KEY", "").strip() else None),
             "execution_snapshot": snapshot,
             "environment_dump": _dump_environment_for_probe(),
-            **({"semantic_cost_estimate": mimo_adapter.estimate_cost(
+            **({"semantic_cost_estimate": semantic_adapter.estimate_cost(
                     semantic_route["model"], audio_duration)}
                if mode in {"mimo", "all"} else {}),
             "resolved_routes": {
@@ -2323,11 +2328,11 @@ def run_assist(
     semantic: dict[str, Any] | None = None
     semantic_failure: dict[str, Any] | None = None
     if mode in {"mimo", "all"}:
-        request_identity = _mimo_request_identity(
+        request_identity = _semantic_request_identity(
             audio, audio_sha=audio_sha, measured_duration=measured_duration, zdr=zdr,
             semantic=semantic_route,
         )
-        accepts = lambda value: _mimo_cache_accepts(
+        accepts = lambda value: _semantic_cache_accepts(
             value, request_identity=request_identity,
             execution_route=routes["TC-SEMANTIC"],
         )
@@ -2337,7 +2342,7 @@ def run_assist(
         )
         if envelope is None:
             command = [
-                sys.executable, str(ROOT / "tools/mimo_openrouter.py"), str(audio),
+                sys.executable, str(ROOT / "tools/semantic_openrouter.py"), str(audio),
                 str(paths["semantic"]), "--duration", f"{measured_duration:.9f}",
                 "--model", semantic_route["model"],
             ]
@@ -2349,21 +2354,21 @@ def run_assist(
             if not semantic_route["allow_fallbacks"]: command.append("--no-fallbacks")
             if zdr: command.append("--zdr")
             # A receipt left by an earlier attempt must not explain this one.
-            mimo_adapter.failure_receipt_path(paths["semantic"]).unlink(missing_ok=True)
+            semantic_adapter.failure_receipt_path(paths["semantic"]).unlink(missing_ok=True)
             try:
                 _run(command, timeout=external_timeout,
                      env=_openrouter_env(allow_dotenv=allow_dotenv), runner=runner)
             except RuntimeError as error:
-                failure = _mimo_failure(paths["semantic"], audio_sha)
+                failure = _semantic_failure(paths["semantic"], audio_sha)
                 if failure is None:
                     raise
                 raise RuntimeError(failure) from error
             envelope = _cache_matches(
                 paths["semantic"], "musializer.analysis-cache/v1", audio_sha,
                 accept=lambda value: (
-                    _mimo_cache_accepts(value, request_identity=request_identity)),
+                    _semantic_cache_accepts(value, request_identity=request_identity)),
             )
-            if envelope is None: raise RuntimeError("MiMo helper produced an invalid cache")
+            if envelope is None: raise RuntimeError("the semantic helper produced an invalid cache")
             # The envelope wraps the artifact, so the stamp goes on the
             # normalized document inside it rather than on the wrapper.
             normalized = envelope.get("normalized")
@@ -2374,7 +2379,7 @@ def run_assist(
             cache_status["semantic"] = "generated"
         else:
             cache_status["semantic"] = "reused"
-            semantic_failure = _mimo_latest_failure(paths["semantic"], audio_sha, envelope)
+            semantic_failure = _semantic_latest_failure(paths["semantic"], audio_sha, envelope)
             if semantic_failure is not None:
                 print(f"warning: {semantic_failure['words']}", file=sys.stderr)
         semantic = _semantic_document(envelope)
@@ -2522,7 +2527,7 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
             "semantics": len(semantic.get("segments", [])) if semantic else 0,
         },
     }
-    # The MiMo call's estimate beside what OpenRouter reported for it. From the
+    # The semantic call's estimate beside what OpenRouter reported for it. From the
     # artifact's own provenance, so a reused cache shows what *that* call cost;
     # `cache_status.semantic` says whether this run paid for it.
     generation = ((semantic or {}).get("provenance") or {}).get("generation") or {}

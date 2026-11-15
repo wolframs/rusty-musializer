@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Create cached MiMo-V2.5 semantic scores through OpenRouter.
+"""Create cached semantic scores (the song's sections and how each feels)
+through one hosted listening call on OpenRouter.
+
+Model-independent: the cap, the failed-run receipts, the one-send rule, the
+estimate and the stated scales hold for every model. What differs per model is
+looked up by its slug (``MODEL_LABELS``). Until 2026-11-15 this file was
+``tools/mimo_openrouter.py``; caches and receipts it wrote are still read.
 
 The helper is opt-in and external to the renderer. It reads the API key only
 from the process environment. ``--dry-run`` never opens a network connection
@@ -65,7 +71,27 @@ REFUSED_STATUSES = frozenset((400, 401, 402, 403, 404, 405, 413, 415, 422))
 DEFAULT_TIMEOUT = 600.0
 DEFAULT_MAX_ATTEMPTS = 3
 COVERAGE_TOLERANCE_SECONDS = 0.001
-FAILED_RUN_SCHEMA_VERSION = "musializer.mimo-failed-run/v1"
+FAILED_RUN_SCHEMA_VERSION = "musializer.semantic-failed-run/v1"
+# Receipts this helper reads: its own, and the ones it wrote as
+# tools/mimo_openrouter.py (same fields, older name).
+READABLE_FAILED_RUN_SCHEMAS = frozenset((
+    FAILED_RUN_SCHEMA_VERSION, "musializer.mimo-failed-run/v1"))
+# What a cached answer's provenance names as its maker. The second pair is the
+# same helper under its old name: an answer it made is still this request's
+# answer when the identity matches (a user who stays on MiMo is not billed
+# again for a rename).
+ADAPTER_PATH = "tools/semantic_openrouter.py"
+SOURCE_KIND = "openrouter_semantic"
+ACCEPTED_ADAPTERS = ((ADAPTER_PATH, SOURCE_KIND),
+                     ("tools/mimo_openrouter.py", "mimo_openrouter"))
+# The name a sentence uses for the model; an unlisted model is named by its slug.
+MODEL_LABELS: dict[str, str] = {
+    "xiaomi/mimo-v2.5": "MiMo",
+}
+
+
+def model_label(model: str) -> str:
+    return MODEL_LABELS.get(model) or model
 
 # The completion cap, reasoning included (OpenRouter's `max_tokens`; MiMo bills
 # its reasoning as completion tokens and counts it against this limit). Without
@@ -261,7 +287,8 @@ def _on_scale(raw: Any, name: str, field: str) -> float:
     Not a clamp: `energy: 78` clamped to 1.0 would be drawn as the loudest
     passage of the song, and an answer on a 0-100 scale has its other numbers
     on that scale too. So the run fails, naming the field, rather than one
-    field being dropped (docs/DIVERGENCES.md, "MiMo numeric scales").
+    field being dropped (docs/DIVERGENCES.md, "MiMo numeric scales", which
+    holds for every model).
     """
     low, high, _meaning = NUMERIC_SCALES[name]
     value = number(raw, f"{field}.{name}")
@@ -349,9 +376,9 @@ def normalize_semantic_score(
 
     metadata = response_metadata or {}
     provenance = {
-        "adapter": "tools/mimo_openrouter.py",
+        "adapter": ADAPTER_PATH,
         "adapter_version": ADAPTER_VERSION,
-        "source_kind": "mimo_openrouter",
+        "source_kind": SOURCE_KIND,
         "audio_sha256": audio_sha256,
         "schema_version": SCORE_SCHEMA_VERSION,
         # §6: `model_id` is OBSERVED, not inferred. OpenRouter reports the
@@ -644,7 +671,7 @@ def _raw_content(response: dict[str, Any]) -> str | None:
     return None
 
 
-def completion_failure(response: dict[str, Any]) -> str | None:
+def completion_failure(response: dict[str, Any], model: str = MODEL) -> str | None:
     """Why this billed response is not an answer, or None when it may be one.
 
     The three shapes the benchmark met: a completion cut off at the token
@@ -655,15 +682,16 @@ def completion_failure(response: dict[str, Any]) -> str | None:
     """
     finish = _choice(response).get("finish_reason")
     content = _raw_content(response)
+    name = model_label(model)
     if finish == "length":
-        return f"MiMo's answer was cut off at the {MAX_COMPLETION_TOKENS}-token cap"
+        return f"{name}'s answer was cut off at the {MAX_COMPLETION_TOKENS}-token cap"
     if content is None:
-        return "MiMo returned no answer text"
+        return f"{name} returned no answer text"
     if not content.strip():
-        return "MiMo returned an empty answer"
+        return f"{name} returned an empty answer"
     if finish != "stop":
         label = finish if isinstance(finish, str) and finish else "none"
-        return f"MiMo's answer did not finish (finish reason: {label[:24]})"
+        return f"{name}'s answer did not finish (finish reason: {label[:24]})"
     return None
 
 
@@ -842,7 +870,7 @@ def decode_model_score(response: dict[str, Any]) -> Any:
     try:
         return json.loads(content)
     except json.JSONDecodeError as error:
-        raise AnalysisValidationError("MiMo completion is not valid JSON") from error
+        raise AnalysisValidationError("the completion is not valid JSON") from error
 
 
 def analyze_to_cache(
@@ -903,13 +931,15 @@ def analyze_to_cache(
             audio_sha256=audio_hash, detail=detail, estimate=estimate)
         return FailedRun(failure_message(reason, response, estimate))
 
-    reason = completion_failure(response)
+    requested = str(settings.get("model") or model)
+    name = model_label(requested)
+    reason = completion_failure(response, requested)
     if reason is not None:
         raise failed(reason)
     try:
         score = decode_model_score(response)
     except AnalysisValidationError as error:
-        raise failed("MiMo's answer is not valid JSON", str(error)) from error
+        raise failed(f"{name}'s answer is not valid JSON", str(error)) from error
     try:
         normalized = normalize_semantic_score(
             score,
@@ -917,12 +947,12 @@ def analyze_to_cache(
             audio_duration=audio_duration,
             request_settings=settings,
             response_metadata=response,
-            requested_model=str(settings.get("model") or model),
+            requested_model=requested,
             cost_estimate=estimate,
         )
     except AnalysisValidationError as error:
         detail = str(error)
-        raise failed(f"MiMo's answer does not fit the schema ({detail[:60]})",
+        raise failed(f"{name}'s answer does not fit the schema ({detail[:60]})",
                      detail) from error
     cache_key = canonical_sha256({"audio_sha256": audio_hash, **settings})
     answered_ns = time.time_ns()
@@ -1015,7 +1045,7 @@ def main(argv: list[str] | None = None) -> int:
             _prepared_request=(payload, settings),
         )
     except (OSError, ValueError, RuntimeError) as error:
-        print(f"MiMo analysis failed: {error}", file=sys.stderr)
+        print(f"Semantic analysis failed: {error}", file=sys.stderr)
         return 1
     return 0
 

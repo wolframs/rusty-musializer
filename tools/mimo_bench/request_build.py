@@ -3,7 +3,7 @@
 Nothing here reads a credential, opens a socket, or touches the filesystem.
 ``redact`` replaces the base64 audio with its sha256 so a request body can be
 printed, stored beside the result and diffed — the same discipline
-``tools/mimo_openrouter.py`` already uses for its ``--dry-run``.
+``tools/semantic_openrouter.py`` (once ``tools/mimo_openrouter.py``) already uses for its ``--dry-run``.
 
 Every payload carries an ``identity`` companion (returned alongside, never
 sent) with the model, prompt id and hash, schema version and hash, chunk span

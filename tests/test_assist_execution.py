@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import external_analysis  # noqa: E402
-import mimo_openrouter  # noqa: E402
+import semantic_openrouter  # noqa: E402
 from analysis_io import AnalysisValidationError  # noqa: E402
 
 
@@ -200,7 +200,7 @@ class SemanticRouteWiring(unittest.TestCase):
 
     def test_an_unrouted_run_keeps_the_helpers_own_defaults(self) -> None:
         route = external_analysis._semantic_route(None)
-        self.assertEqual(route["model"], mimo_openrouter.MODEL)
+        self.assertEqual(route["model"], semantic_openrouter.MODEL)
         self.assertTrue(route["allow_fallbacks"])
         self.assertFalse(route["zdr_required"])
         self.assertEqual(route["max_price"], {})
@@ -209,7 +209,7 @@ class SemanticRouteWiring(unittest.TestCase):
         """Changing a constraint must not reuse another policy's answer."""
         route = external_analysis._semantic_route(
             external_analysis.execution_route(snapshot(), "TC-SEMANTIC"))
-        identity = external_analysis._mimo_request_identity(
+        identity = external_analysis._semantic_request_identity(
             Path("song.wav"), audio_sha="a" * 64, measured_duration=8.0,
             zdr=True, semantic=route)
         self.assertEqual(identity["model"], "google/gemini-2.5-flash")
@@ -220,7 +220,7 @@ class SemanticRouteWiring(unittest.TestCase):
         self.assertEqual(identity["max_price"], {"audio": 12.5})
 
         relaxed = dict(route, zdr_required=False)
-        other = external_analysis._mimo_request_identity(
+        other = external_analysis._semantic_request_identity(
             Path("song.wav"), audio_sha="a" * 64, measured_duration=8.0,
             zdr=False, semantic=relaxed)
         self.assertNotEqual(identity, other)
@@ -228,7 +228,7 @@ class SemanticRouteWiring(unittest.TestCase):
 
 class MimoRequest(unittest.TestCase):
     def test_the_model_is_a_flag_and_reaches_the_payload(self) -> None:
-        payload, settings = mimo_openrouter.build_request(
+        payload, settings = semantic_openrouter.build_request(
             b"\x00\x01", audio_format="wav", audio_duration=8.0,
             model="google/gemini-2.5-flash",
             provider_order=["fireworks"], provider_only=["fireworks"],
@@ -246,9 +246,9 @@ class MimoRequest(unittest.TestCase):
         self.assertEqual(provider["max_price"], {"audio": 12.5})
 
     def test_an_unconstrained_request_is_what_it_always_was(self) -> None:
-        payload, settings = mimo_openrouter.build_request(
+        payload, settings = semantic_openrouter.build_request(
             b"\x00", audio_format="wav", audio_duration=8.0)
-        self.assertEqual(payload["model"], mimo_openrouter.MODEL)
+        self.assertEqual(payload["model"], semantic_openrouter.MODEL)
         self.assertNotIn("only", payload["provider"])
         self.assertNotIn("ignore", payload["provider"])
         self.assertNotIn("zdr", payload["provider"])
@@ -263,7 +263,7 @@ class MimoRequest(unittest.TestCase):
                                                      start_seconds=0.0,
                                                      end_seconds=8.0)],
         }
-        served = mimo_openrouter.normalize_semantic_score(
+        served = semantic_openrouter.normalize_semantic_score(
             raw, audio_sha256="a" * 64, audio_duration=8.0,
             request_settings={"model": "xiaomi/mimo-v2.5"},
             response_metadata={"model": "xiaomi/mimo-v2.5:free",
@@ -277,7 +277,7 @@ class MimoRequest(unittest.TestCase):
         # A response that reports nothing falls back to what was requested,
         # never to the module constant — which is the whole reason the parameter
         # exists.
-        silent = mimo_openrouter.normalize_semantic_score(
+        silent = semantic_openrouter.normalize_semantic_score(
             raw, audio_sha256="a" * 64, audio_duration=8.0,
             request_settings={"model": "google/gemini-2.5-flash"},
             response_metadata={}, requested_model="google/gemini-2.5-flash",
@@ -369,7 +369,7 @@ class ObservedSnapshot(unittest.TestCase):
 
 
 def _creative() -> dict:
-    """The eleven fields `mimo_openrouter._creative` requires."""
+    """The eleven fields `semantic_openrouter._creative` requires."""
     return {
         "summary": "a summary", "moods": ["calm"], "energy": 0.5,
         "tension": 0.4, "valence": 0.1, "motion": ["drift"],

@@ -50,7 +50,7 @@ pub const DISTRIBUTION_SUPPORT_FILES: &[&str] = &[
     "tools/import_whisper.py",
     "tools/lyric_align.py",
     "tools/lyric_anchor_block.py",
-    "tools/mimo_openrouter.py",
+    "tools/semantic_openrouter.py",
     "tools/musializer_doctor.py",
     "tools/provider_catalog.py",
     "tools/runtime_inventory.py",

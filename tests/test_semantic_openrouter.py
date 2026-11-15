@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
 import external_analysis  # noqa: E402
-import mimo_openrouter  # noqa: E402
+import semantic_openrouter  # noqa: E402
 
 
 SENTINEL_KEY = "sk-or-v1-test-sentinel-not-a-key"
@@ -106,7 +106,7 @@ class Workspace:
         self.audio = self.root / "song.wav"
         self.audio.write_bytes(b"RIFF-not-really-audio")
         self.cache = self.root / "semantic.cache.json"
-        self.receipt = mimo_openrouter.failure_receipt_path(self.cache)
+        self.receipt = semantic_openrouter.failure_receipt_path(self.cache)
 
     def close(self) -> None:
         self._dir.cleanup()
@@ -122,7 +122,7 @@ class LaneTestCase(unittest.TestCase):
 
     def run_lane(self, *bodies: object) -> tuple[FakeOpenRouter, object]:
         fake = FakeOpenRouter(*bodies)
-        outcome = mimo_openrouter.analyze_to_cache(
+        outcome = semantic_openrouter.analyze_to_cache(
             self.ws.audio, self.ws.cache, audio_duration=DURATION,
             transport=fake, sleeper=lambda _seconds: None)
         return fake, outcome
@@ -130,15 +130,15 @@ class LaneTestCase(unittest.TestCase):
 
 class CompletionCap(LaneTestCase):
     def test_the_request_caps_the_completion_and_the_cap_is_in_its_identity(self) -> None:
-        payload, settings = mimo_openrouter.build_request(
+        payload, settings = semantic_openrouter.build_request(
             b"\x00", audio_format="wav", audio_duration=DURATION)
         self.assertEqual(payload["max_tokens"], 16_000)
         self.assertEqual(settings["max_tokens"], 16_000)
-        self.assertEqual(mimo_openrouter.MAX_COMPLETION_TOKENS, 16_000)
+        self.assertEqual(semantic_openrouter.MAX_COMPLETION_TOKENS, 16_000)
         # The cap must leave room for the largest legitimate answer the
         # benchmark measured (10 942) and cut both runaways (43 578, 65 536).
-        self.assertGreater(mimo_openrouter.MAX_COMPLETION_TOKENS, 10_942)
-        self.assertLess(mimo_openrouter.MAX_COMPLETION_TOKENS, 43_578)
+        self.assertGreater(semantic_openrouter.MAX_COMPLETION_TOKENS, 10_942)
+        self.assertLess(semantic_openrouter.MAX_COMPLETION_TOKENS, 43_578)
 
     def test_the_cap_is_what_the_helper_actually_sends(self) -> None:
         fake, _ = self.run_lane(response(answer()))
@@ -148,7 +148,7 @@ class CompletionCap(LaneTestCase):
 
 class FailedRuns(LaneTestCase):
     def assert_failed(self, body: dict, reason_fragment: str, cost_text: str) -> dict:
-        with self.assertRaises(mimo_openrouter.FailedRun) as raised:
+        with self.assertRaises(semantic_openrouter.FailedRun) as raised:
             self.run_lane(body)
         message = str(raised.exception)
         self.assertIn(reason_fragment, message)
@@ -159,7 +159,7 @@ class FailedRuns(LaneTestCase):
         self.assertLessEqual(len(message.encode("utf-8")), 160, message)
         self.assertFalse(self.ws.cache.exists(), "a failed run is never cached")
         receipt = json.loads(self.ws.receipt.read_text())
-        self.assertEqual(receipt["schema_version"], "musializer.mimo-failed-run/v1")
+        self.assertEqual(receipt["schema_version"], "musializer.semantic-failed-run/v1")
         self.assertEqual(receipt["message"], message)
         self.assertEqual(receipt["generation"]["usage"], body["usage"])
         self.assertNotIn(SENTINEL_KEY, self.ws.receipt.read_text())
@@ -171,7 +171,7 @@ class FailedRuns(LaneTestCase):
         self.assertEqual(receipt["finish_reason"], "length")
         self.assertEqual(receipt["reported_cost_usd"], 0.1312484)
         self.assertEqual(receipt["content_characters"], 70_000)
-        self.assertEqual(len(receipt["content_start"]), mimo_openrouter.FAILED_CONTENT_KEEP)
+        self.assertEqual(len(receipt["content_start"]), semantic_openrouter.FAILED_CONTENT_KEEP)
 
     def test_a_cut_off_that_happens_to_be_valid_json_is_still_a_failed_run(self) -> None:
         # A truncated answer can parse: the first segments of a longer list.
@@ -202,15 +202,15 @@ class FailedRuns(LaneTestCase):
 
     def test_a_billed_failure_is_sent_once_not_retried(self) -> None:
         fake = FakeOpenRouter(NULL_CONTENT, response(answer()), response(answer()))
-        with self.assertRaises(mimo_openrouter.FailedRun):
-            mimo_openrouter.analyze_to_cache(
+        with self.assertRaises(semantic_openrouter.FailedRun):
+            semantic_openrouter.analyze_to_cache(
                 self.ws.audio, self.ws.cache, audio_duration=DURATION,
                 transport=fake, sleeper=lambda _seconds: None)
         self.assertEqual(len(fake.sent), 1)
 
     def test_a_rate_limit_is_retried_because_it_was_not_processed(self) -> None:
         limited = urllib.error.HTTPError(
-            mimo_openrouter.OPENROUTER_URL, 429, "slow down", {"Retry-After": "0"},
+            semantic_openrouter.OPENROUTER_URL, 429, "slow down", {"Retry-After": "0"},
             io.BytesIO(b""))
         fake, _ = self.run_lane(limited, response(answer()))
         self.assertEqual(len(fake.sent), 2)
@@ -231,10 +231,10 @@ class FailedRuns(LaneTestCase):
         for status in (502, 503, 504, 408, 500, 524, 520, 418, 409, 307):
             with self.subTest(status=status):
                 gateway = urllib.error.HTTPError(
-                    mimo_openrouter.OPENROUTER_URL, status, "gateway", {}, io.BytesIO(b""))
+                    semantic_openrouter.OPENROUTER_URL, status, "gateway", {}, io.BytesIO(b""))
                 fake = FakeOpenRouter(gateway, response(answer()), response(answer()))
-                with self.assertRaises(mimo_openrouter.FailedRun) as raised:
-                    mimo_openrouter.analyze_to_cache(
+                with self.assertRaises(semantic_openrouter.FailedRun) as raised:
+                    semantic_openrouter.analyze_to_cache(
                         self.ws.audio, self.ws.cache, audio_duration=DURATION,
                         transport=fake, sleeper=lambda _seconds: None)
                 self.assertEqual(len(fake.sent), 1, "sent once, never again by itself")
@@ -251,16 +251,16 @@ class FailedRuns(LaneTestCase):
                 self.assertIsNone(receipt["reported_cost_usd"])
 
     def test_a_clear_refusal_is_not_billed_and_not_resent(self) -> None:
-        for status in sorted(mimo_openrouter.REFUSED_STATUSES):
+        for status in sorted(semantic_openrouter.REFUSED_STATUSES):
             with self.subTest(status=status):
                 refused = urllib.error.HTTPError(
-                    mimo_openrouter.OPENROUTER_URL, status, "no", {}, io.BytesIO(b""))
+                    semantic_openrouter.OPENROUTER_URL, status, "no", {}, io.BytesIO(b""))
                 fake = FakeOpenRouter(refused, response(answer()))
                 with self.assertRaises(RuntimeError) as raised:
-                    mimo_openrouter.analyze_to_cache(
+                    semantic_openrouter.analyze_to_cache(
                         self.ws.audio, self.ws.cache, audio_duration=DURATION,
                         transport=fake, sleeper=lambda _seconds: None)
-                self.assertNotIsInstance(raised.exception, mimo_openrouter.FailedRun)
+                self.assertNotIsInstance(raised.exception, semantic_openrouter.FailedRun)
                 self.assertEqual(str(raised.exception),
                                  f"OpenRouter request failed with HTTP {status}")
                 self.assertEqual(len(fake.sent), 1)
@@ -276,8 +276,8 @@ class FailedRuns(LaneTestCase):
                  "OpenRouter's answer was cut short (IncompleteRead)")):
             with self.subTest(error=type(error).__name__):
                 fake = FakeOpenRouter(error, response(answer()))
-                with self.assertRaises(mimo_openrouter.FailedRun) as raised:
-                    mimo_openrouter.analyze_to_cache(
+                with self.assertRaises(semantic_openrouter.FailedRun) as raised:
+                    semantic_openrouter.analyze_to_cache(
                         self.ws.audio, self.ws.cache, audio_duration=DURATION,
                         transport=fake, sleeper=lambda _seconds: None)
                 self.assertEqual(len(fake.sent), 1)
@@ -291,8 +291,8 @@ class FailedRuns(LaneTestCase):
                 self.sent.append(json.loads(request.data.decode("utf-8")))
                 return FakeHTTPResponse(b"<html>bad gateway</html>")
         fake = Garbled()
-        with self.assertRaises(mimo_openrouter.FailedRun) as raised:
-            mimo_openrouter.analyze_to_cache(
+        with self.assertRaises(semantic_openrouter.FailedRun) as raised:
+            semantic_openrouter.analyze_to_cache(
                 self.ws.audio, self.ws.cache, audio_duration=DURATION,
                 transport=fake, sleeper=lambda _seconds: None)
         self.assertEqual(len(fake.sent), 1)
@@ -310,7 +310,7 @@ class FailedRuns(LaneTestCase):
 
 class CostEstimate(LaneTestCase):
     def test_a_whole_track_is_priced_from_its_answer_not_its_audio(self) -> None:
-        estimate = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", 200.0)
+        estimate = semantic_openrouter.estimate_cost("xiaomi/mimo-v2.5", 200.0)
         self.assertEqual(estimate["input_tokens"], 1_480 + 200)
         self.assertEqual(estimate["completion_tokens_typical"], [1_500, 11_000])
         self.assertEqual(estimate["completion_tokens_max"], 16_000)
@@ -322,28 +322,28 @@ class CostEstimate(LaneTestCase):
     def test_the_benchmarks_recorded_call_lands_inside_the_range(self) -> None:
         # 100 s: the benchmark's 5 110 completion tokens (0.010596 USD) and
         # this lane's two capped calls, 2 407 and 2 044 (0.0051852, 0.00417248).
-        low, high = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", 100.0)["usd_typical"]
+        low, high = semantic_openrouter.estimate_cost("xiaomi/mimo-v2.5", 100.0)["usd_typical"]
         for reported in (0.010596, 0.0051852, 0.00417248):
             self.assertLessEqual(low, reported)
             self.assertLessEqual(reported, high)
 
     def test_an_unlisted_model_gets_tokens_and_no_dollars(self) -> None:
-        estimate = mimo_openrouter.estimate_cost("acme/never-priced", 200.0)
+        estimate = semantic_openrouter.estimate_cost("acme/never-priced", 200.0)
         self.assertEqual(estimate["input_tokens"], 1_680)
         self.assertIsNone(estimate["usd_typical"])
         self.assertIsNone(estimate["usd_max"])
 
     def test_the_dry_run_shows_the_estimate(self) -> None:
-        payload, settings = mimo_openrouter.build_request(
+        payload, settings = semantic_openrouter.build_request(
             b"\x00", audio_format="wav", audio_duration=200.0)
-        dump = mimo_openrouter.redacted_request_dump(payload, settings, "a" * 64)
+        dump = semantic_openrouter.redacted_request_dump(payload, settings, "a" * 64)
         self.assertEqual(dump["cost_estimate"]["usd_max"], 0.032672)
 
     def test_the_cached_answer_records_the_estimate_beside_the_reported_cost(self) -> None:
         _, envelope = self.run_lane(response(answer(), cost=0.010596))
         generation = envelope["normalized"]["provenance"]["generation"]
         self.assertEqual(generation["estimate"]["usd_max"],
-                         mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", DURATION)["usd_max"])
+                         semantic_openrouter.estimate_cost("xiaomi/mimo-v2.5", DURATION)["usd_max"])
         self.assertEqual(generation["reported_cost_usd"], 0.010596)
         self.assertEqual(generation["usage"]["completion_tokens"], 5110)
         manifest = external_analysis.build_assist_manifest(
@@ -355,25 +355,25 @@ class CostEstimate(LaneTestCase):
         self.assertTrue(manifest["semantic_cost"]["billed_this_run"])
 
     def test_a_failed_run_without_a_reported_cost_names_the_ceiling(self) -> None:
-        with self.assertRaises(mimo_openrouter.FailedRun) as raised:
+        with self.assertRaises(semantic_openrouter.FailedRun) as raised:
             self.run_lane(response(None, cost=None))
         # 8 s is 260 prompt tokens: the capped call is 0.032104 USD, a bound
         # that reads 0.033 (rounded up), never 0.032.
-        ceiling = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", DURATION)["usd_max"]
+        ceiling = semantic_openrouter.estimate_cost("xiaomi/mimo-v2.5", DURATION)["usd_max"]
         self.assertEqual(ceiling, 0.032104)
         self.assertIn("(at most 0.033 USD)", str(raised.exception))
 
     def test_at_most_is_rounded_up_as_the_rust_side_rounds_it(self) -> None:
         # The figure core::assist::cost pins at 100 s: 940 prompt tokens,
         # 0.032376 USD, shown as at most 0.033 USD on both sides.
-        estimate = mimo_openrouter.estimate_cost("xiaomi/mimo-v2.5", 100.0)
+        estimate = semantic_openrouter.estimate_cost("xiaomi/mimo-v2.5", 100.0)
         self.assertEqual(estimate["input_tokens"], 940)
         self.assertEqual(estimate["usd_max"], 0.032376)
-        self.assertEqual(mimo_openrouter._cost_clause({}, estimate),
+        self.assertEqual(semantic_openrouter._cost_clause({}, estimate),
                          "OpenRouter reported no cost for it (at most 0.033 USD)")
-        self.assertEqual(mimo_openrouter.ceil_usd(0.033, 3), 0.033)
-        self.assertEqual(mimo_openrouter.ceil_usd(0.0320000000001, 3), 0.032)
-        self.assertEqual(mimo_openrouter.ceil_usd(0.032001, 3), 0.033)
+        self.assertEqual(semantic_openrouter.ceil_usd(0.033, 3), 0.033)
+        self.assertEqual(semantic_openrouter.ceil_usd(0.0320000000001, 3), 0.032)
+        self.assertEqual(semantic_openrouter.ceil_usd(0.032001, 3), 0.033)
 
 
 class NumericScales(LaneTestCase):
@@ -381,9 +381,9 @@ class NumericScales(LaneTestCase):
         expected = {"energy": (0, 1), "tension": (0, 1), "valence": (-1, 1),
                     "confidence": (0, 1)}
         self.assertEqual({name: (low, high) for name, (low, high, _) in
-                          mimo_openrouter.NUMERIC_SCALES.items()}, expected)
+                          semantic_openrouter.NUMERIC_SCALES.items()}, expected)
         for where in ("global", "segments"):
-            schema = mimo_openrouter.MODEL_OUTPUT_SCHEMA["properties"][where]
+            schema = semantic_openrouter.MODEL_OUTPUT_SCHEMA["properties"][where]
             properties = (schema["items"] if where == "segments" else schema)["properties"]
             for name, (low, high) in expected.items():
                 with self.subTest(where=where, field=name):
@@ -392,14 +392,14 @@ class NumericScales(LaneTestCase):
                     self.assertIn(f"from {low:g} to {high:g}", field["description"])
         for name, (low, high) in expected.items():
             self.assertIn(f"- {name}: a number from {low:g} to {high:g};",
-                          mimo_openrouter.SYSTEM_PROMPT)
-        self.assertIn("Never use percentages", mimo_openrouter.SYSTEM_PROMPT)
+                          semantic_openrouter.SYSTEM_PROMPT)
+        self.assertIn("Never use percentages", semantic_openrouter.SYSTEM_PROMPT)
 
     def test_the_benchmarks_off_scale_energy_fails_the_run(self) -> None:
         # 78, 8 and 5: the three chunks of one excerpt, unprompted.
         for energy in (78, 8, 5):
             with self.subTest(energy=energy):
-                with self.assertRaises(mimo_openrouter.FailedRun) as raised:
+                with self.assertRaises(semantic_openrouter.FailedRun) as raised:
                     self.run_lane(response(answer(energy=energy)))
                 message = str(raised.exception)
                 self.assertIn(f"segments[0].energy is {energy}, outside 0 to 1", message)
@@ -410,7 +410,7 @@ class NumericScales(LaneTestCase):
         _, envelope = self.run_lane(response(answer(valence=-1.0)))
         self.assertEqual(envelope["normalized"]["segments"][0]["valence"], -1.0)
         self.ws.cache.unlink()
-        with self.assertRaises(mimo_openrouter.FailedRun) as raised:
+        with self.assertRaises(semantic_openrouter.FailedRun) as raised:
             self.run_lane(response(answer(valence=-1.5)))
         self.assertIn("valence is -1.5, outside -1 to 1", str(raised.exception))
 
@@ -419,7 +419,7 @@ class NumericScales(LaneTestCase):
         self.assertEqual(envelope["normalized"]["segments"][0]["confidence"], 1.0)
 
     def test_an_old_cache_is_not_read_as_a_new_answer_but_still_opens(self) -> None:
-        v2 = external_analysis._mimo_request_identity(
+        v2 = external_analysis._semantic_request_identity(
             Path("song.wav"), audio_sha="a" * 64, measured_duration=DURATION, zdr=False)
         self.assertEqual(v2["prompt_version"], "musializer-semantic-score/v2")
         # A v1 cache as the previous helper wrote it: its identity named v1, a
@@ -427,14 +427,14 @@ class NumericScales(LaneTestCase):
         v1_identity = dict(v2, prompt_version="musializer-semantic-score/v1",
                            prompt_sha256="0" * 64, model_output_schema_sha256="1" * 64)
         v1_identity.pop("max_tokens")
-        normalized = mimo_openrouter.normalize_semantic_score(
+        normalized = semantic_openrouter.normalize_semantic_score(
             json.loads(answer()), audio_sha256="a" * 64, audio_duration=DURATION,
             request_settings={k: v for k, v in v1_identity.items() if k != "audio_sha256"})
         normalized["provenance"]["prompt_version"] = "musializer-semantic-score/v1"
         old = {"schema_version": "musializer.analysis-cache/v1",
                "cache_key": external_analysis.canonical_sha256(v1_identity),
                "request": v1_identity, "raw_response": {}, "normalized": normalized}
-        self.assertFalse(external_analysis._mimo_cache_accepts(old, request_identity=v2))
+        self.assertFalse(external_analysis._semantic_cache_accepts(old, request_identity=v2))
         # The document itself is still a semantic-score/v1 and still reads.
         self.assertEqual(external_analysis._semantic_document(old)["segments"][0]["energy"], 0.5)
 
@@ -468,11 +468,11 @@ class AFailedRegenerationIsSaid(LaneTestCase):
     def helper(self, body: object):
         def runner(argv, **_kwargs):  # noqa: ANN001
             try:
-                mimo_openrouter.analyze_to_cache(
+                semantic_openrouter.analyze_to_cache(
                     Path(argv[2]), Path(argv[3]), audio_duration=float(argv[5]),
                     transport=FakeOpenRouter(body), sleeper=lambda _s: None)
-            except mimo_openrouter.FailedRun as error:
-                return subprocess.CompletedProcess(argv, 1, "", f"MiMo analysis failed: {error}\n")
+            except semantic_openrouter.FailedRun as error:
+                return subprocess.CompletedProcess(argv, 1, "", f"Semantic analysis failed: {error}\n")
             return subprocess.CompletedProcess(argv, 0, "", "")
         return runner
 
@@ -484,8 +484,8 @@ class AFailedRegenerationIsSaid(LaneTestCase):
         self.assertEqual(first["cache_status"]["semantic"], "generated")
         self.assertNotIn("semantic_latest_failure", first)
         # A regeneration of exactly this request and cache fails, billed.
-        with self.assertRaises(mimo_openrouter.FailedRun):
-            mimo_openrouter.analyze_to_cache(
+        with self.assertRaises(semantic_openrouter.FailedRun):
+            semantic_openrouter.analyze_to_cache(
                 self.ws.audio, self.ws.cache, audio_duration=DURATION,
                 transport=FakeOpenRouter(CUT_OFF), sleeper=lambda _s: None)
         self.assertTrue(self.ws.receipt.exists())
@@ -510,9 +510,9 @@ class AFailedRegenerationIsSaid(LaneTestCase):
     def test_a_gateway_failure_on_regeneration_says_it_may_have_been_billed(self) -> None:
         self.run_assist_to_manifest(self.helper(response(answer())))
         gateway = urllib.error.HTTPError(
-            mimo_openrouter.OPENROUTER_URL, 502, "gateway", {}, io.BytesIO(b""))
-        with self.assertRaises(mimo_openrouter.FailedRun):
-            mimo_openrouter.analyze_to_cache(
+            semantic_openrouter.OPENROUTER_URL, 502, "gateway", {}, io.BytesIO(b""))
+        with self.assertRaises(semantic_openrouter.FailedRun):
+            semantic_openrouter.analyze_to_cache(
                 self.ws.audio, self.ws.cache, audio_duration=DURATION,
                 transport=FakeOpenRouter(gateway), sleeper=lambda _s: None)
         failure = self.run_assist_to_manifest(self.never)["semantic_latest_failure"]
@@ -529,14 +529,14 @@ class AFailedRegenerationIsSaid(LaneTestCase):
 
         class FailsAnotherFirst(FakeOpenRouter):
             def __call__(inner, request, timeout: float):  # noqa: ANN001, N805
-                with self.assertRaises(mimo_openrouter.FailedRun):
-                    mimo_openrouter.analyze_to_cache(
+                with self.assertRaises(semantic_openrouter.FailedRun):
+                    semantic_openrouter.analyze_to_cache(
                         self.ws.audio, self.ws.cache, audio_duration=DURATION,
                         transport=failing, sleeper=lambda _s: None)
                 self.assertTrue(self.ws.receipt.exists(), "helper A's receipt")
                 return super().__call__(request, timeout)
 
-        mimo_openrouter.analyze_to_cache(
+        semantic_openrouter.analyze_to_cache(
             self.ws.audio, self.ws.cache, audio_duration=DURATION,
             transport=FailsAnotherFirst(response(answer())), sleeper=lambda _s: None)
         self.assertFalse(self.ws.receipt.exists(), "B's success removed A's older receipt")
@@ -545,7 +545,7 @@ class AFailedRegenerationIsSaid(LaneTestCase):
         # A receipt older than the answer that is still there (written by a
         # helper of before H4d, say) is not the answer's word either.
         envelope = json.loads(self.ws.cache.read_text())
-        stale = {"schema_version": mimo_openrouter.FAILED_RUN_SCHEMA_VERSION,
+        stale = {"schema_version": semantic_openrouter.FAILED_RUN_SCHEMA_VERSION,
                  "failed_utc": "2026-11-14T18:00:00Z",
                  "failed_ns": envelope["answered_ns"] - 1,
                  "audio_sha256": envelope["request"]["audio_sha256"],
@@ -559,7 +559,7 @@ class AFailedRegenerationIsSaid(LaneTestCase):
         self.assertEqual(failure["message"], "an older failure")
         # A success removes only a receipt older than itself.
         self.assertTrue(self.ws.receipt.exists())
-        mimo_openrouter._drop_older_receipt(self.ws.cache, envelope["answered_ns"])
+        semantic_openrouter._drop_older_receipt(self.ws.cache, envelope["answered_ns"])
         self.assertTrue(self.ws.receipt.exists(), "a later failure's receipt stays")
 
     def test_no_receipt_no_word(self) -> None:
@@ -573,13 +573,13 @@ class FailedRunReachesTheUser(LaneTestCase):
 
     def runner_for(self, body: dict):
         def runner(argv, **_kwargs):  # noqa: ANN001
-            self.assertTrue(argv[1].endswith("mimo_openrouter.py"), argv)
+            self.assertTrue(argv[1].endswith("semantic_openrouter.py"), argv)
             try:
-                mimo_openrouter.analyze_to_cache(
+                semantic_openrouter.analyze_to_cache(
                     Path(argv[2]), Path(argv[3]), audio_duration=float(argv[5]),
                     transport=FakeOpenRouter(body), sleeper=lambda _s: None)
-            except mimo_openrouter.FailedRun as error:
-                return subprocess.CompletedProcess(argv, 1, "", f"MiMo analysis failed: {error}\n")
+            except semantic_openrouter.FailedRun as error:
+                return subprocess.CompletedProcess(argv, 1, "", f"Semantic analysis failed: {error}\n")
             return subprocess.CompletedProcess(argv, 0, "", "")
         return runner
 
@@ -614,9 +614,45 @@ class FailedRunReachesTheUser(LaneTestCase):
 
     def test_a_receipt_for_other_audio_is_not_this_runs_reason(self) -> None:
         self.ws.receipt.write_text(json.dumps({
-            "schema_version": mimo_openrouter.FAILED_RUN_SCHEMA_VERSION,
+            "schema_version": semantic_openrouter.FAILED_RUN_SCHEMA_VERSION,
             "audio_sha256": "f" * 64, "message": "stale"}))
-        self.assertIsNone(external_analysis._mimo_failure(self.ws.cache, "a" * 64))
+        self.assertIsNone(external_analysis._semantic_failure(self.ws.cache, "a" * 64))
+
+
+class WrittenByTheOldName(LaneTestCase):
+    """Files written while this helper was tools/mimo_openrouter.py still read."""
+
+    def test_a_cache_made_under_the_old_name_is_this_requests_answer(self) -> None:
+        _, envelope = self.run_lane(response(answer()))
+        identity = external_analysis._semantic_request_identity(
+            self.ws.audio, audio_sha=envelope["request"]["audio_sha256"],
+            measured_duration=DURATION, zdr=False)
+        self.assertEqual(envelope["normalized"]["provenance"]["adapter"],
+                         "tools/semantic_openrouter.py")
+        self.assertEqual(envelope["normalized"]["provenance"]["source_kind"],
+                         "openrouter_semantic")
+        self.assertTrue(external_analysis._semantic_cache_accepts(
+            envelope, request_identity=identity))
+        old = json.loads(json.dumps(envelope))
+        old["normalized"]["provenance"].update(
+            adapter="tools/mimo_openrouter.py", source_kind="mimo_openrouter")
+        self.assertTrue(external_analysis._semantic_cache_accepts(
+            old, request_identity=identity), "a MiMo answer is not billed again for a rename")
+        # Any other maker is not.
+        old["normalized"]["provenance"].update(adapter="tools/other.py")
+        self.assertFalse(external_analysis._semantic_cache_accepts(
+            old, request_identity=identity))
+
+    def test_a_receipt_under_the_old_schema_is_still_read(self) -> None:
+        self.ws.receipt.write_text(json.dumps({
+            "schema_version": "musializer.mimo-failed-run/v1",
+            "audio_sha256": "a" * 64, "message": "MiMo returned no answer text."}))
+        self.assertEqual(external_analysis._semantic_failure(self.ws.cache, "a" * 64),
+                         "MiMo returned no answer text.")
+        self.ws.receipt.write_text(json.dumps({
+            "schema_version": "musializer.other-receipt/v1",
+            "audio_sha256": "a" * 64, "message": "not ours"}))
+        self.assertIsNone(external_analysis._semantic_failure(self.ws.cache, "a" * 64))
 
 
 if __name__ == "__main__":

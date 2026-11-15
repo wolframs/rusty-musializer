@@ -8,7 +8,7 @@
   "properties": {
     "adapter": {"type": "string", "minLength": 1},
     "adapter_version": {"type": "string", "minLength": 1},
-    "source_kind": {"enum": ["whisper_import", "mimo_openrouter"]},
+    "source_kind": {"enum": ["whisper_import", "mimo_openrouter", "openrouter_semantic"]},
     "audio_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "schema_version": {"type": "string", "minLength": 1},
     "model": {"type": "string"},

@@ -429,7 +429,7 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
     ))
 
     mimo_assets = (
-        "tools/mimo_openrouter.py", "schemas/semantic-notes-v1.schema.json",
+        "tools/semantic_openrouter.py", "schemas/semantic-notes-v1.schema.json",
         "schemas/semantic-score-v1.schema.json",
     )
     missing = _missing_files(root, mimo_assets)

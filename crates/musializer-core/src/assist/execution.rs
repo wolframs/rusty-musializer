@@ -115,7 +115,7 @@ pub fn format_rfc3339_utc(seconds: i64) -> String {
 /// Seeded **only** from evidence this repository holds, the same rule
 /// `assist::suitability` follows: `mms-ctc` for `TC-ALIGN` is the benchmarked
 /// aligner, `whisper.cpp` is the coarse lane the production path already runs,
-/// `xiaomi/mimo-v2.5` is what `tools/mimo_openrouter.py` uses, and the planner is
+/// `xiaomi/mimo-v2.5` is what `tools/semantic_openrouter.py` uses, and the planner is
 /// the deterministic one.
 ///
 /// `TC-VERIFY` deliberately has **no** recommended route. Independent timing

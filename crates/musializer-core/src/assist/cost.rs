@@ -9,7 +9,7 @@
 //! from the measured span of answer lengths, and a ceiling from the completion
 //! cap the helper sends, which is the most one call can cost.
 //!
-//! Every constant here has a twin in `tools/mimo_openrouter.py`, which records
+//! Every constant here has a twin in `tools/semantic_openrouter.py`, which records
 //! the same estimate beside what OpenRouter reported. Both copies are pinned
 //! against each other by `tests/test_cross_language_pins.py`; change both or
 //! neither.
@@ -79,7 +79,7 @@ impl CostEstimate {
 /// Dollars rounded up to the thousandth a maximum is shown at, tolerating
 /// float noise below a millionth of a thousandth (0.033 computed as
 /// 0.0330000000001 stays 0.033). The helper's `ceil_usd(value, 3)` in
-/// `tools/mimo_openrouter.py` is the same rule; both are pinned at 100 s.
+/// `tools/semantic_openrouter.py` is the same rule; both are pinned at 100 s.
 #[must_use]
 pub fn ceil_thousandths(usd: f64) -> f64 {
     ((usd * 1000.0) - 1.0e-6).ceil().max(0.0) / 1000.0
@@ -172,7 +172,7 @@ mod tests {
     /// A maximum is rounded up at the precision shown: 100 s is 940 prompt
     /// tokens, so a capped call is 0.000376 + 0.032 = 0.032376 USD, which a
     /// nearest rounding showed as "at most 0.032 USD". The helper's failure
-    /// sentence pins the same figure (`tests/test_mimo_openrouter.py`).
+    /// sentence pins the same figure (`tests/test_semantic_openrouter.py`).
     #[test]
     fn at_most_is_rounded_up_never_down() {
         let estimate = semantic_estimate("xiaomi/mimo-v2.5", 100.0).expect("priced");
