@@ -1,3 +1,4 @@
+mode 2 name|Feelings
 mode 0 badge|LYRICS · LOCAL AUDIO
 mode 0 workflow|Creates timed lyrics with local Whisper and MMS. Without an authored lyric source, keeps the locally transcribed words for review.
 mode 0 boundary|Audio stays local. Codex receives bounded transcript text only if wording review is needed.
@@ -7,12 +8,12 @@ mode 1 workflow|Creates scene changes: measured local audio feeds the determinis
 mode 1 boundary|Runs locally. Audio and analysis output do not leave this computer.
 mode 1 empty|Measured analysis produced no validated scene changes. Existing cues were left unchanged.
 mode 2 badge|FEELINGS · SENDS AUDIO
-mode 2 workflow|Creates feeling cues: the full track is sent to OpenRouter MiMo, then the local planner stages cues.
-mode 2 boundary|Track audio is sent to OpenRouter for MiMo; Zero Data Retention is requested.
-mode 2 empty|MiMo produced no validated feeling cues. Existing semantic events were left unchanged.
+mode 2 workflow|Creates feeling cues: the full track is sent to a listening model on OpenRouter, then the local planner stages cues.
+mode 2 boundary|Track audio is sent to OpenRouter for the listening model; Zero Data Retention is requested.
+mode 2 empty|The listening model produced no validated feeling cues. Existing semantic events were left unchanged.
 mode 3 badge|ALL 3 · SENDS AUDIO
 mode 3 workflow|Creates timed lyrics, scene changes, and feeling cues by running all implemented lanes.
-mode 3 boundary|Track audio goes to OpenRouter MiMo with ZDR requested; Codex gets bounded transcript text only if wording review is needed.
+mode 3 boundary|Track audio goes to OpenRouter's listening model with ZDR requested; Codex gets bounded transcript text only if wording review is needed.
 mode 3 empty|The completed workflow produced no validated editor changes. Existing content was left unchanged.
 card_height 0|70
 card_height 1|89

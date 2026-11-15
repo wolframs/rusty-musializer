@@ -678,7 +678,7 @@ impl AssistController {
                 // line and in a notice, rather than reading as a clean run
                 // (`ASSIST_AUDIT_2026-08-29.md`, protocol map row 2b).
                 // The semantic answer staged may be an earlier one, kept
-                // after the latest MiMo attempt failed (H4c): said here,
+                // after the latest listening attempt failed (H4c): said here,
                 // where the result is read.
                 let semantic_failure = latest_semantic_failure(&output_dir);
                 let read_back = staged_execution_snapshot(&output_dir);
@@ -1373,11 +1373,11 @@ fn workflow_description(mode: AssistMode, audio: bool) -> &'static str {
     if audio && performed && mode == AssistMode::Lyrics {
         "Detects performed phrases from audio; uses written lyrics for exact local spelling."
     } else if audio && performed && mode == AssistMode::All {
-        "Detects performed lyric phrases, measured scene changes, and MiMo feeling cues."
+        "Detects performed lyric phrases, measured scene changes, and feeling cues."
     } else if audio && mode == AssistMode::Lyrics {
         "Times lyrics using short audio clips and local acoustic checks."
     } else if audio && mode == AssistMode::All {
-        "Creates lyrics from audio clips, scene changes from measured audio, and feeling cues through MiMo."
+        "Creates lyrics from audio clips, scene changes from measured audio, and feeling cues."
     } else {
         mode.workflow()
     }
@@ -1402,7 +1402,7 @@ fn report_routing(line: &str) {
 }
 
 /// The notice a finished job's manifest asks for when the semantic answer it
-/// staged is an earlier one, kept because the latest MiMo attempt failed after
+/// staged is an earlier one, kept because the latest listening attempt failed after
 /// it (`semantic_latest_failure`, H4c): when, why, what it may have cost, and
 /// which answer is staged, in the helper's words. `None` in the plain case.
 fn latest_semantic_failure(output_dir: &str) -> Option<AssistNotice> {
@@ -1418,8 +1418,13 @@ fn latest_semantic_failure(output_dir: &str) -> Option<AssistNotice> {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
-    (!words.is_empty())
-        .then(|| AssistNotice::new(Severity::Warning, "The latest MiMo attempt failed", words))
+    (!words.is_empty()).then(|| {
+        AssistNotice::new(
+            Severity::Warning,
+            "The latest listening attempt failed",
+            words,
+        )
+    })
 }
 
 /// The execution snapshot a finished job's manifest embedded, if any.
@@ -1957,11 +1962,27 @@ fn stage_analysis_lanes(
     } else {
         observed_lyrics.unwrap_or("whisper-codex")
     };
+    // The semantic lane names the model that ran (observed in the snapshot,
+    // `google/gemini-3.8-flash` or `xiaomi/mimo-v2.5`), as the lyric lane
+    // does. Until 2026-11-15 it was always the C's `xiaomi-mimo-v2.5`
+    // (`plug.c:3546-3560`), which stays the word for a run with no snapshot
+    // (docs/DIVERGENCES.md, "The listening lane's model").
+    let semantic_model = if imported_bridge {
+        "imported-bridge"
+    } else {
+        snapshot
+            .and_then(|value| {
+                value.contract(musializer_core::assist::contracts::ContractId::Semantic)
+            })
+            .map(|entry| entry.model_id.as_str())
+            .filter(|model| !model.is_empty())
+            .unwrap_or("xiaomi-mimo-v2.5")
+    };
     #[rustfmt::skip]
     let requests: [(bool, AnalysisLaneKind, &str); 3] = [
         (available.lyrics,    AnalysisLaneKind::LyricTiming,   lyric_model),
         (available.sections,  AnalysisLaneKind::MeasuredSignal, if imported_bridge { "imported-bridge" } else { "measured-sections" }),
-        (available.semantics, AnalysisLaneKind::SemanticScore,  if imported_bridge { "imported-bridge" } else { "xiaomi-mimo-v2.5" }),
+        (available.semantics, AnalysisLaneKind::SemanticScore,  semantic_model),
     ];
 
     let mut lanes = track.analysis_lanes.clone();
@@ -4881,7 +4902,7 @@ mod tests {
         assert!(!titles.contains(&notice.title), "and it is a fifth title");
     }
 
-    /// H4c: the manifest of a run that staged an earlier MiMo answer after a
+    /// H4c: the manifest of a run that staged an earlier semantic answer after a
     /// failed attempt makes a warning with the helper's words, within the
     /// tray's capacity; a manifest without the key makes none.
     #[test]
@@ -4903,7 +4924,7 @@ mod tests {
         let folder = scratch.0.display().to_string();
         let notice = latest_semantic_failure(&folder).expect("a notice");
         assert_eq!(notice.severity, Severity::Warning);
-        assert_eq!(notice.title, "The latest MiMo attempt failed");
+        assert_eq!(notice.title, "The latest listening attempt failed");
         assert_eq!(notice.detail, words);
         assert!(notice.detail.len() < musializer_core::ui::notice::DETAIL_CAPACITY);
         std::fs::write(
@@ -5244,6 +5265,42 @@ mod tests {
             workspace.get_mut(0).unwrap().analysis_lanes = staged.lanes;
         }
         assert_eq!(workspace.tracks()[0].analysis_lanes.len(), 3);
+    }
+
+    /// The semantic lane in the `.musi` names the model that ran, from the
+    /// job's snapshot, as the lyric lane does; with no snapshot it keeps the
+    /// C's word (2026-11-15).
+    #[test]
+    fn the_semantic_lane_names_the_model_that_ran() {
+        use musializer_core::assist::settings::AssistSettings;
+        let scratch = Scratch::new("semantic-model");
+        let (workspace, audio) = workspace_with_track(&scratch);
+        let bridge = bridge_for(&scratch, &audio);
+        let loaded = load_candidate(&bridge, &workspace.tracks()[0], Lanes::ALL).expect("stages");
+        let semantic_model = |snapshot: Option<&ExecutionSnapshot>| {
+            stage_analysis_lanes(
+                &workspace.tracks()[0],
+                &loaded.candidate,
+                &bridge,
+                false,
+                snapshot,
+            )
+            .expect("provenance")
+            .lanes
+            .into_iter()
+            .find(|lane| lane.kind == AnalysisLaneKind::SemanticScore)
+            .expect("a semantic lane")
+            .provenance
+            .model
+        };
+        let snapshot = execution::resolve(
+            &AssistSettings::default(),
+            execution::WorkflowKind::All,
+            false,
+            &execution::ExecutionFacts::default(),
+        );
+        assert_eq!(semantic_model(Some(&snapshot)), "google/gemini-3.8-flash");
+        assert_eq!(semantic_model(None), "xiaomi-mimo-v2.5");
     }
 
     #[test]

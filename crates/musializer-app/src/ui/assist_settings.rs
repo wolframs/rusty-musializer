@@ -2788,6 +2788,7 @@ impl AssistSettingsDialog {
             // the picker's own filters, which is a strictly narrower question
             // than catalog membership and the one this dialog can act on.
             catalog_models: None,
+            catalog_fetched_utc: None,
             codex: match self.codex_discovery.as_ref().map(|found| &found.outcome) {
                 Some(discover::Outcome::Found { .. }) => CodexFact::Found,
                 Some(discover::Outcome::OverrideMissing { path, reason }) => {

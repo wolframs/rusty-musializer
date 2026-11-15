@@ -1436,6 +1436,11 @@ pub struct PreflightFacts {
     /// was never fetched. `None` is "we have not looked", which is not grounds
     /// to refuse a job.
     pub catalog_models: Option<Vec<CatalogModelFacts>>,
+    /// When that fetch happened (`fetched_at_utc`, RFC 3339), when known. A
+    /// catalog fetched before the day this build knows a model was listed
+    /// cannot say it is gone: it never saw it (2026-11-15, the operator's own
+    /// catalog of 2026-09-01 and the then-new recommended Gemini).
+    pub catalog_fetched_utc: Option<String>,
     pub codex: CodexFact,
     /// Doctor verdicts by [`doctor_key`], for the surfaces that have a report.
     pub local_runtimes: Vec<(String, RuntimeFact)>,
@@ -1658,6 +1663,9 @@ fn openrouter_verdict(route: &RouteFacts<'_>, facts: &PreflightFacts) -> RouteVe
         };
     };
     let Some(model) = catalog.iter().find(|model| model.id == model_id) else {
+        if catalog_predates_model(facts.catalog_fetched_utc.as_deref(), &model_id) {
+            return RouteVerdict::Unknown(CATALOG_PREDATES_MODEL.to_string());
+        }
         return RouteVerdict::Blocked(ExecutionBlock::NoEndpoint {
             contract: route.contract,
             constraint: format!("the last catalog fetch does not list {model_id}"),
@@ -1678,6 +1686,34 @@ fn openrouter_verdict(route: &RouteFacts<'_>, facts: &PreflightFacts) -> RouteVe
         }
     }
     RouteVerdict::Ready
+}
+
+/// The verdict for a model the cached catalog does not list because it was
+/// fetched before the model existed for this build: not a refusal, the same
+/// standing as a catalog never fetched. Refreshing it settles the question.
+pub const CATALOG_PREDATES_MODEL: &str = "Catalog older than this model; refresh it";
+
+/// Whether a catalog fetched at `fetched_utc` is older than the date this
+/// build records the model as listed on OpenRouter (`cost::MODELS`,
+/// `prices_listed_on`). Unknown either way is `false`: an unknown date is no
+/// reason to discount the catalog, and a model with no row has no date.
+#[must_use]
+pub fn catalog_predates_model(fetched_utc: Option<&str>, model_id: &str) -> bool {
+    let Some(listed_on) = crate::assist::cost::model(model_id).map(|row| row.prices_listed_on)
+    else {
+        return false;
+    };
+    let Some(day) = fetched_utc.and_then(|value| value.get(..10)) else {
+        return false;
+    };
+    // ISO dates compare as strings; a malformed day is not a date.
+    let iso = |text: &str| {
+        text.len() == 10
+            && text.bytes().enumerate().all(|(index, byte)| {
+                matches!(index, 4 | 7) == (byte == b'-') && (byte == b'-' || byte.is_ascii_digit())
+            })
+    };
+    iso(day) && iso(listed_on) && day < listed_on
 }
 
 /// Everything that must be true before a process is spawned (§5 invariant 4).
@@ -3304,5 +3340,56 @@ mod tests {
             br#"{"schema":"musializer.assist-settings/v1","active_profile":"recommended","listening_model":"x"}"#
         )
         .is_err());
+    }
+
+    /// A catalog fetched before this build knows the model was listed does
+    /// not refuse it (it never saw it), and says to refresh; a catalog fetched
+    /// since does, by name. The operator's own case on 2026-11-15: a catalog of
+    /// 2026-09-01 and the new recommended `google/gemini-3.8-flash`.
+    #[test]
+    fn a_catalog_older_than_the_model_cannot_say_it_is_gone() {
+        let snapshot = resolve(
+            &AssistSettings::default(),
+            WorkflowKind::Mimo,
+            true,
+            &facts(),
+        );
+        let catalog = Some(vec![catalog_row("xiaomi/mimo-v2.5", &["audio", "text"])]);
+        let stale = PreflightFacts {
+            catalog_models: catalog.clone(),
+            catalog_fetched_utc: Some("2026-09-01T21:00:28Z".to_string()),
+            ..PreflightFacts::with_credential(true)
+        };
+        assert!(preflight(&snapshot, &stale).is_empty());
+        let fresh = PreflightFacts {
+            catalog_models: catalog.clone(),
+            catalog_fetched_utc: Some("2026-11-16T08:00:00Z".to_string()),
+            ..PreflightFacts::with_credential(true)
+        };
+        let blocks = preflight(&snapshot, &fresh);
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].sentence().contains("google/gemini-3.8-flash"));
+        // An unknown or malformed date is no reason to discount the catalog.
+        for fetched in [None, Some("unknown"), Some("2026-9-1T00:00:00Z")] {
+            let facts = PreflightFacts {
+                catalog_models: catalog.clone(),
+                catalog_fetched_utc: fetched.map(str::to_string),
+                ..PreflightFacts::with_credential(true)
+            };
+            assert_eq!(preflight(&snapshot, &facts).len(), 1, "{fetched:?}");
+        }
+        // Nor is a model with no row in the build's table: it has no date.
+        assert!(!catalog_predates_model(
+            Some("2000-01-01T00:00:00Z"),
+            "acme/x"
+        ));
+        assert!(catalog_predates_model(
+            Some("2026-11-14T23:59:59Z"),
+            "google/gemini-3.8-flash"
+        ));
+        assert!(!catalog_predates_model(
+            Some("2026-11-15T00:00:00Z"),
+            "google/gemini-3.8-flash"
+        ));
     }
 }

@@ -48,12 +48,17 @@ impl AssistMode {
     ];
 
     /// The button label (`assist_ui_state.c:72-82`).
+    ///
+    /// The third is `Feelings` since 2026-11-15, not the C's `MiMo feelings`:
+    /// the lane's model is a route setting (Gemini 3.8 Flash by default, MiMo
+    /// by choice), and the confirmation names it. The enum variant and the
+    /// helper's `mimo` mode keep their names; they are tokens, not copy.
     #[must_use]
     pub fn display_name(self) -> &'static str {
         match self {
             AssistMode::Lyrics => "Timed lyrics",
             AssistMode::Sections => "Scene changes",
-            AssistMode::Mimo => "MiMo feelings",
+            AssistMode::Mimo => "Feelings",
             AssistMode::All => "Full assist",
         }
     }
@@ -95,7 +100,7 @@ impl AssistMode {
                 "Creates scene changes: measured local audio feeds the deterministic scene planner."
             }
             AssistMode::Mimo => {
-                "Creates feeling cues: the full track is sent to OpenRouter MiMo, then the local planner stages cues."
+                "Creates feeling cues: the full track is sent to a listening model on OpenRouter, then the local planner stages cues."
             }
             AssistMode::All => "Creates timed lyrics, scene changes, and feeling cues by running all implemented lanes.",
         }
@@ -112,10 +117,10 @@ impl AssistMode {
                 "Runs locally. Audio and analysis output do not leave this computer."
             }
             AssistMode::Mimo => {
-                "Track audio is sent to OpenRouter for MiMo; Zero Data Retention is requested."
+                "Track audio is sent to OpenRouter for the listening model; Zero Data Retention is requested."
             }
             AssistMode::All => {
-                "Track audio goes to OpenRouter MiMo with ZDR requested; Codex gets bounded transcript text only if wording review is needed."
+                "Track audio goes to OpenRouter's listening model with ZDR requested; Codex gets bounded transcript text only if wording review is needed."
             }
         }
     }
@@ -135,7 +140,7 @@ impl AssistMode {
                 "Measured analysis produced no validated scene changes. Existing cues were left unchanged."
             }
             AssistMode::Mimo => {
-                "MiMo produced no validated feeling cues. Existing semantic events were left unchanged."
+                "The listening model produced no validated feeling cues. Existing semantic events were left unchanged."
             }
             AssistMode::All => {
                 "The completed workflow produced no validated editor changes. Existing content was left unchanged."

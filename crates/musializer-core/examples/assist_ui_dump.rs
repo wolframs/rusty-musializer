@@ -20,7 +20,11 @@ fn bools(value: bool) -> &'static str {
 
 fn main() {
     for (index, mode) in AssistMode::ALL.into_iter().enumerate() {
-        println!("mode {index} name|{}", mode.display_name());
+        // The third label left the C on 2026-11-15 (`Feelings`, not `MiMo
+        // feelings`); it is pinned below the marker instead.
+        if mode != AssistMode::Mimo {
+            println!("mode {index} name|{}", mode.display_name());
+        }
         println!("mode {index} arg|{}", mode.argument());
         println!(
             "mode {index} uses_reference|{}",
@@ -137,6 +141,7 @@ fn post_legacy() {
     // truthful": the lyric route keeps audio local and names MMS), and the
     // harness, run on demand only, was not updated then. Pinned here instead,
     // so a copy change is still a visible diff.
+    println!("mode 2 name|{}", AssistMode::Mimo.display_name());
     for (index, mode) in AssistMode::ALL.into_iter().enumerate() {
         println!("mode {index} badge|{}", mode.badge());
         println!("mode {index} workflow|{}", mode.workflow());

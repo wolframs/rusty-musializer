@@ -465,6 +465,10 @@ pub fn resolve(inputs: &PlanInputs<'_>) -> ExecutionPlan {
         &snapshot,
         &PreflightFacts {
             credential: credential_source.fact(),
+            catalog_fetched_utc: catalog
+                .as_ref()
+                .and_then(|(revision, _)| revision.split_once('@'))
+                .map(|(_, fetched)| fetched.to_string()),
             catalog_models: catalog.map(|(_, models)| models),
             codex: codex
                 .as_ref()

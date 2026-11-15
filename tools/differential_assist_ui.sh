@@ -61,9 +61,18 @@ echo "=== running both ==="
 # does, and this on-demand harness had been red on 13 of these 16 rows since.
 # They are pinned in the post-legacy file now, by name, so the filter cannot
 # swallow anything else: the expected count is asserted below.
+#
+# The third mode's label too, since 2026-11-15: the C calls it "MiMo feelings",
+# and the lane's model is a route setting now (Gemini 3.8 Flash by default), so
+# the button says "Feelings". Pinned in the post-legacy file; one row, asserted.
 "$OUT_DIR/assist_ui_oracle" >"$OUT_DIR/assist_ui_oracle_full.txt"
-grep -vE '^(layout|timeline) |^mode [0-3] (badge|workflow|boundary|empty)\|' \
+grep -vE '^(layout|timeline) |^mode [0-3] (badge|workflow|boundary|empty)\||^mode 2 name\|' \
     "$OUT_DIR/assist_ui_oracle_full.txt" >"$OUT_DIR/assist_ui_oracle.txt"
+dropped_name="$(grep -cE '^mode 2 name\|MiMo feelings$' "$OUT_DIR/assist_ui_oracle_full.txt")"
+if [ "$dropped_name" -ne 1 ]; then
+    echo "FAIL: expected to set aside the oracle's one 'MiMo feelings' label, found $dropped_name" >&2
+    exit 1
+fi
 dropped_copy="$(grep -cE '^mode [0-3] (badge|workflow|boundary|empty)\|' "$OUT_DIR/assist_ui_oracle_full.txt")"
 if [ "$dropped_copy" -ne 16 ]; then
     echo "FAIL: expected to set aside 16 mode copy rows, found $dropped_copy" >&2
