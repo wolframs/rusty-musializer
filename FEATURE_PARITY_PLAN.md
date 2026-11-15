@@ -75,9 +75,18 @@ needs a schema bump or an updated harness and a recorded reason:
   superseded it in usefulness by a lot..." So the semantic lane's model is to
   be reconsidered before more is built on MiMo; the benchmark harness, the
   lane's cap, failed-run and estimate handling, and the truth session are not
-  specific to MiMo. Not yet decided by him: whether to measure a Gemini Flash
-  model with the same harness first, and through which route (OpenRouter, or
-  the Antigravity route the lyrics work already uses).
+  specific to MiMo. **Decided by him, 2026-11-15:** "Gemini Flash 3.8, no
+  competition ;)", in answer to whether to measure it first; no benchmark is
+  wanted for the choice. The route is the lead's choice: OpenRouter lists
+  `google/gemini-3.8-flash` with audio input (2026-11-15: 0.825 USD per million
+  input and audio tokens, 4.125 per million output), so the application's
+  existing hosted lane takes it and no second route is needed.
+- **In flight (2026-11-15, claimed by the lead): the listening lane moves to Gemini
+  3.8 Flash.** The semantic lane's model becomes `google/gemini-3.8-flash`
+  on OpenRouter, recommended on the operator's word; MiMo stays selectable
+  as experimental. Cap, failed-run receipts, estimate and stated scales carry
+  over; one or two real calls on the benchmark's two excerpts confirm it
+  (at most 0.25 USD of the 5 USD cap).
 - **The benchmark's truth waits for his ears**: row 2. He started the session
   on 2026-11-15 and found the key question hard ("both eb minor and F# fit parts of
   this track"); those two are relative keys with the same notes. The scorer
