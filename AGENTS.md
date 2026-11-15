@@ -250,6 +250,9 @@ number disagrees, grep it there before debugging from scratch.
 - **A gateway error is not proof the request was not processed**: retry only a 429 or a request that never left whole. See `docs/TRAPS.md`.
 - **An upper bound printed at a precision is rounded up**: show a ceiling the person typed as given. See `docs/TRAPS.md`.
 - **A native-key driver that types on a clock races the first frame**: wait for the mapped window and a settle past frame 0 (or a painted ready mark), and give the run frames enough to outlast the keys. See `docs/TRAPS.md`.
+- **A parameter one provider lists can leave a ZDR route with no endpoint**: Gemini's Vertex endpoints do not list `temperature`, so keep a model's quirks in its row, not in the shared request. See `docs/TRAPS.md`.
+- **A cached catalog older than a model cannot say the model is gone**: its absence there is "not looked since", not a refusal. See `docs/TRAPS.md`.
+- **`headless_run.sh` isolates config, not cache**: a probe reads the operator's `~/.cache/musializer`, so set an absolute `XDG_CACHE_HOME` when a capture must not depend on it. See `docs/TRAPS.md`.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe

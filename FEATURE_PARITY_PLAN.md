@@ -81,12 +81,20 @@ needs a schema bump or an updated harness and a recorded reason:
   `google/gemini-3.8-flash` with audio input (2026-11-15: 0.825 USD per million
   input and audio tokens, 4.125 per million output), so the application's
   existing hosted lane takes it and no second route is needed.
-- **In flight (2026-11-15, claimed by the lead): the listening lane moves to Gemini
-  3.8 Flash.** The semantic lane's model becomes `google/gemini-3.8-flash`
-  on OpenRouter, recommended on the operator's word; MiMo stays selectable
-  as experimental. Cap, failed-run receipts, estimate and stated scales carry
-  over; one or two real calls on the benchmark's two excerpts confirm it
-  (at most 0.25 USD of the 5 USD cap).
+- **The listening lane runs on Gemini 3.8 Flash** (merged 2026-11-15; review and
+  release build pending at the time of writing): default and recommended on
+  the operator's word, MiMo selectable as experimental, three real calls for
+  0.0475 USD. Record: `docs/ASSIST_PIPELINE.md`, "Gemini 3.8 Flash through
+  OpenRouter", and `docs/DIVERGENCES.md`, "The listening lane's model". What
+  the three answers showed, which is not a benchmark: on one excerpt the
+  sections sat on the lyric changes and energy followed loudness; on the
+  other a section 2 to 4 dB quieter was called a quiet breakdown and a hook's
+  return was placed 8 s early; the same audio heard twice in one call was cut
+  into different sections. Open from it: whether the plan the application
+  suggests from these sections is good enough to act on unchecked; the
+  benchmark harness is not pointed at Gemini (it needs a price row and its
+  fixed temperature removed first); never tried for real: a Gemini refusal, a
+  track near the size limit, a route without zero data retention.
 - **The benchmark's truth waits for his ears**: row 2. He started the session
   on 2026-11-15 and found the key question hard ("both eb minor and F# fit parts of
   this track"); those two are relative keys with the same notes. The scorer
