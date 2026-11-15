@@ -13,7 +13,7 @@ regeneration with unchanged inputs is byte-for-byte stable.
 
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
-| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 92 | 108,306 | 654 |
+| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 92 | 108,919 | 658 |
 | [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `atmosphere_probe` (example), `beat_tracker_dump` (example), `cat_probe` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `fluid_probe` (example), `layout_dump` (example), `listening_defaults` (example), `organic_probe` (example), `pixel_cats_bench` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 153 | 104,509 | 1,392 |
 | [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 35 | 23,182 | 241 |
 | [`raylib-link`](../crates/raylib-link/Cargo.toml) | Builds and links raylib 6.0 from vendored source, for raylib-sys nobuild mode | `raylib_link` (lib), `build-script-build` (custom-build) | 2 | 112 | 0 |
@@ -63,15 +63,15 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | Source | Lines | Tests | Module responsibility |
 | --- | ---: | ---: | --- |
 | [`src/bin/make_fixture_wav.rs`](../crates/musializer-app/src/bin/make_fixture_wav.rs) | 89 | 0 | Writes a synthetic WAV for headless checks. |
-| [`src/cli.rs`](../crates/musializer-app/src/cli.rs) | 3,113 | 61 | The command line. |
+| [`src/cli.rs`](../crates/musializer-app/src/cli.rs) | 3,122 | 61 | The command line. |
 | [`src/clips.rs`](../crates/musializer-app/src/clips.rs) | 587 | 2 | A track's video clips (post-legacy, 2026-11-14, VG): importing a file into the track's library, and the treatment's clip files. |
-| [`src/generation/client.rs`](../crates/musializer-app/src/generation/client.rs) | 864 | 6 | The four OpenRouter calls a generation makes, through `curl`. |
-| [`src/generation/job.rs`](../crates/musializer-app/src/generation/job.rs) | 1,620 | 8 | One generation, on its own thread: submit, poll, download, verify. |
-| [`src/generation/store.rs`](../crates/musializer-app/src/generation/store.rs) | 1,003 | 4 | Where generated clips, their jobs and the price list live on this machine. |
-| [`src/generation/treatment.rs`](../crates/musializer-app/src/generation/treatment.rs) | 1,291 | 3 | A treatment's generated clips, in a batch run (VG H4). |
-| [`src/generation/window.rs`](../crates/musializer-app/src/generation/window.rs) | 1,154 | 2 | Generating from the window (VG H4): the section card's Generate. |
+| [`src/generation/client.rs`](../crates/musializer-app/src/generation/client.rs) | 889 | 7 | The four OpenRouter calls a generation makes, through `curl`. |
+| [`src/generation/job.rs`](../crates/musializer-app/src/generation/job.rs) | 1,992 | 11 | One generation, on its own thread: submit, poll, download, verify. |
+| [`src/generation/store.rs`](../crates/musializer-app/src/generation/store.rs) | 1,114 | 4 | Where generated clips, their jobs and the price list live on this machine. |
+| [`src/generation/treatment.rs`](../crates/musializer-app/src/generation/treatment.rs) | 1,378 | 3 | A treatment's generated clips, in a batch run (VG H4). |
+| [`src/generation/window.rs`](../crates/musializer-app/src/generation/window.rs) | 1,162 | 2 | Generating from the window (VG H4): the section card's Generate. |
 | [`src/generation.rs`](../crates/musializer-app/src/generation.rs) | 165 | 0 | Generating a clip with a video model (post-legacy, 2026-11-14, VG H4). |
-| [`src/main.rs`](../crates/musializer-app/src/main.rs) | 7,799 | 5 | The Musializer binary: composition root. |
+| [`src/main.rs`](../crates/musializer-app/src/main.rs) | 7,800 | 5 | The Musializer binary: composition root. |
 | [`src/posters/audio.rs`](../crates/musializer-app/src/posters/audio.rs) | 106 | 1 | The track's audio as the poster replay hears it. |
 | [`src/posters/recipe.rs`](../crates/musializer-app/src/posters/recipe.rs) | 274 | 1 | A run's poster recipe, built from the track every time the lane asks. |
 | [`src/posters/replay.rs`](../crates/musializer-app/src/posters/replay.rs) | 242 | 0 | One poster's replay: the export's per-frame sequence over the service's own state. |
@@ -369,7 +369,7 @@ with the module documentation and searching for a narrow symbol before scrolling
 | Source | Lines | Tests |
 | --- | ---: | ---: |
 | [`crates/musializer-app/src/ui/assist_settings.rs`](../crates/musializer-app/src/ui/assist_settings.rs) | 9,647 | 67 |
-| [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 7,799 | 5 |
+| [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 7,800 | 5 |
 | [`crates/musializer-app/src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 7,213 | 46 |
 | [`crates/musializer-app/src/ui/panels/assist.rs`](../crates/musializer-app/src/ui/panels/assist.rs) | 6,691 | 63 |
 | [`crates/musializer-app/src/ui/panels/lyrics.rs`](../crates/musializer-app/src/ui/panels/lyrics.rs) | 5,749 | 47 |
@@ -378,7 +378,7 @@ with the module documentation and searching for a narrow symbol before scrolling
 | [`crates/musializer-app/src/ui/panels/export.rs`](../crates/musializer-app/src/ui/panels/export.rs) | 3,886 | 6 |
 | [`crates/musializer-app/src/ui/widgets.rs`](../crates/musializer-app/src/ui/widgets.rs) | 3,610 | 29 |
 | [`crates/musializer-core/src/assist/execution.rs`](../crates/musializer-core/src/assist/execution.rs) | 3,226 | 39 |
-| [`crates/musializer-app/src/cli.rs`](../crates/musializer-app/src/cli.rs) | 3,113 | 61 |
+| [`crates/musializer-app/src/cli.rs`](../crates/musializer-app/src/cli.rs) | 3,122 | 61 |
 | [`crates/musializer-app/src/ui/panels/tune.rs`](../crates/musializer-app/src/ui/panels/tune.rs) | 3,092 | 25 |
 | [`crates/musializer-core/src/agent.rs`](../crates/musializer-core/src/agent.rs) | 3,084 | 41 |
 | [`crates/musializer-app/src/ui/panels/tune/cards.rs`](../crates/musializer-app/src/ui/panels/tune/cards.rs) | 3,023 | 6 |

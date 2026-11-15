@@ -244,7 +244,8 @@ number disagrees, grep it there before debugging from scratch.
 - **A `--ui-probe` spec over 256 bytes is refused whole**: the run goes on with no probe; use relative paths. See `docs/TRAPS.md`.
 - **A rename is atomic, not durable**: sync the folder after it, a new folder into its parent, and a file another program wrote before renaming it. See `docs/TRAPS.md`.
 - **A removal after a wait removes whatever is there now**: remove a record under its lock and only while it is still the record you read. See `docs/TRAPS.md`.
-- **A ceiling checked one request at a time bounds only what was seen so far**: read every state, add up, decide, then act. See `docs/TRAPS.md`.
+- **A ceiling checked one request at a time bounds only what was seen so far**: keep the bound where the act happens, checked and increased under the act's own lock, and report rather than count a sum another process can change. See `docs/TRAPS.md`.
+- **A record that cannot be read is not an empty record**: absent, read and there-but-unreadable are three answers; the third holds what the record guards until a person looks. See `docs/TRAPS.md`.
 - **Replacing a record of possible spending erases a possible charge**: append, and clear only when the thing paid for is in hand. See `docs/TRAPS.md`.
 - **A gateway error is not proof the request was not processed**: retry only a 429 or a request that never left whole. See `docs/TRAPS.md`.
 - **An upper bound printed at a precision is rounded up**: show a ceiling the person typed as given. See `docs/TRAPS.md`.

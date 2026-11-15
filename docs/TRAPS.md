@@ -674,7 +674,7 @@ provider took the job. Reporting any of those as "nothing was billed" and
 letting the next press submit again pays twice, and OpenRouter has no
 idempotency key or job listing to find the lost job (read 2026-11-14). Write
 an intent before the request leaves; clear it only on an answer that proves
-no job exists (a 4xx other than 408) or when nothing left the machine (curl's
+no job exists (a clear refusal: 400, 401, 402, 403, 404, 405, 413, 415, 422 or 429) or when nothing left the machine (curl's
 `--write-out %{size_request}` is 0, which curl prints even when the transfer
 failed; 6 and 7 precede any byte). Symptom: two submits for one request in
 the provider's log after a dropped connection. Pinned by the generation

@@ -333,7 +333,8 @@ been billed.**
   seconds, the time, the estimate; since H4c every unanswered send, see
   *The second review's fixes*) is written before the request leaves,
   replaced by the job record when the id arrives, and removed when the
-  provider refused it (a 4xx other than 408) or the call never wrote a byte of
+  provider clearly refused it (400, 401, 402, 403, 404, 405, 413, 415, 422
+  or 429; every other status may be billed, the MiMo helper's list) or the call never wrote a byte of
   it (curl's `size_request` is 0: no such host, connection refused). Anything
   else after the request left — a dropped connection, a cut-short or
   unreadable answer, a Cancel or a closed window mid-submit, a 5xx or 408 —

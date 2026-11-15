@@ -396,6 +396,19 @@ fn refusal(answer: &Answer, body: &Path) -> ClientError {
 /// A JSON call's configuration lines past the URL: the answer is bounded on
 /// the wire (curl's `max-filesize`, which also stops a stream with no
 /// length that grows past it) as well as when it is read.
+/// The statuses that say the request was refused before any job was made.
+///
+/// Everything else after the request has left may be billed: a status the
+/// list does not know is counted as possibly paid, never as free. 429 is a
+/// refusal here (the request was not processed).
+#[must_use]
+pub fn is_clear_refusal(status: u16) -> bool {
+    matches!(
+        status,
+        400 | 401 | 402 | 403 | 404 | 405 | 413 | 415 | 422 | 429
+    )
+}
+
 fn json_limits() -> String {
     format!("max-filesize = {MAX_JSON_BYTES}\n")
 }
@@ -502,10 +515,11 @@ impl Client<'_> {
                 // only `Local` a submit returns is curl closing its input).
                 ClientError::NoCurl(_) | ClientError::Local(_) => false,
                 ClientError::Network { sent, .. } => *sent,
-                // The provider answered and refused: no job. A 5xx or a
-                // timeout from OpenRouter may come after the model's
-                // provider took the job.
-                ClientError::Http(refusal) => refusal.status >= 500 || refusal.status == 408,
+                // The provider answered and clearly refused: no job. Every
+                // other status (a 5xx, a timeout, a gateway's own code such
+                // as 524, a redirect) may come after the model's provider
+                // took the job. The same list as the MiMo helper's.
+                ClientError::Http(refusal) => !is_clear_refusal(refusal.status),
                 // Killed mid-call, or a 2xx whose answer could not be read.
                 ClientError::Stopped | ClientError::Format(_) | ClientError::TooLarge(_) => true,
             };
@@ -699,6 +713,17 @@ pub fn image_mime(bytes: &[u8]) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_a_clear_refusal_is_free_of_a_possible_bill() {
+        for status in [400, 401, 402, 403, 404, 405, 413, 415, 422, 429] {
+            assert!(super::is_clear_refusal(status), "{status}");
+        }
+        // A timeout, a conflict, a gateway's own codes, a redirect, a 5xx.
+        for status in [307, 408, 409, 418, 425, 499, 500, 502, 503, 504, 520, 524] {
+            assert!(!super::is_clear_refusal(status), "{status}");
+        }
+    }
+
     use super::*;
 
     #[test]
