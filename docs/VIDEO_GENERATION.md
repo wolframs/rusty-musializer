@@ -626,13 +626,21 @@ first control's concurrent group, not a defect of the application).
   ceiling gets the estimate back. The line written when a job ends comes after
   the money left: a failure there is a warning, and the job record or intent
   still holds the request.
+- **The ceiling as typed.** `--max-spend 0.1234567` printed "$0.1234567"
+  as "$0.123457 allowed" (six places, rounded). The command line now keeps
+  the text it parsed and every line shows it as given: "about $0.00 of its
+  $0.1234567 allowed"; `--max-spend 0` reads "$0".
 
 | Perturbation | What failed |
 | --- | --- |
 | An intent that cannot be read taken for none again (`Err(_) => Ok(None)` in `Store::intent`, as before) | gate intent: the oversized record let the agreed resend out (status 0, 1 submit) and so did the unparseable one; `an_unreadable_intent_and_too_many_unanswered_sends_hold_the_request` panicked at the first hold |
 | No bound on unanswered sends | gate intent: the fourth send of a request with three lost answers went out (4 submits); the unit test: "three unanswered sends did not hold the request" |
 | A failed ledger line ignored again before the send (as before) | gate ledger: with `spending.tsv` a folder the request went out (status 0, 1 submit), and the next step found nothing left to send; `an_unwritable_ledger_stops_the_send` |
-FIXES_H4D
+| The ceiling printed from the number at six places again (no typed text) | gate ceiling: "the ceiling was not printed as typed" (`$0.123457 allowed`), and `--max-spend 0` read "$0.00", not "$0" as typed |
+
+Never tried for real (the fake provider only): an intent grown past 64 KiB by
+use (the bound now stops it at three sends), a disk that fails a sync, and a
+gateway 524 from OpenRouter itself.
 
 ### What is not built
 

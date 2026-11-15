@@ -53,10 +53,12 @@ use crate::scene_host::SceneRenderer;
 const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
 
 /// What a run may spend.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Spending {
     /// `--generate-clips` with `--max-spend USD`.
     pub ceiling_usd: Option<f64>,
+    /// `--max-spend` as typed: the ceiling is printed as given (H4d).
+    pub ceiling_typed: Option<String>,
     /// `--resend-unconfirmed`: a request sent before whose answer never
     /// arrived may be sent again (it may then be paid twice).
     pub resend_unconfirmed: bool,
@@ -589,10 +591,11 @@ pub fn prepare<'audio>(
         store.root().display()
     );
     let ceiling = spending.ceiling_usd.map(|usd| {
-        Arc::new(Ceiling::new(
-            usd,
-            ceiling_words(usd).trim_start_matches('$'),
-        ))
+        let typed = spending
+            .ceiling_typed
+            .clone()
+            .unwrap_or_else(|| ceiling_words(usd));
+        Arc::new(Ceiling::new(usd, &typed))
     });
     let (frames_name, frames_dir) = store.private_work("frames")?;
     let mut frames = Frames {
@@ -1192,15 +1195,15 @@ fn stand_in_in_frame(
     None
 }
 
-/// The ceiling as the person gave it: `$0.15`, or every digit it has
-/// (`$0.125`), never rounded to a cent either way.
+/// A ceiling with no typed text (the command line keeps what was typed):
+/// `0.15`, or every digit the number has (`0.1234567`), never rounded. The
+/// six-place form this replaced printed `0.1234567` as `0.123457` (H4d).
 fn ceiling_words(ceiling: f64) -> String {
     let cents = format!("{ceiling:.2}");
     if (cents.parse::<f64>().unwrap_or(f64::NAN) - ceiling).abs() < 1.0e-9 {
-        format!("${cents}")
+        cents
     } else {
-        let exact = format!("{ceiling:.6}");
-        format!("${}", exact.trim_end_matches('0'))
+        format!("{ceiling}")
     }
 }
 
@@ -1357,10 +1360,12 @@ mod tests {
 
     #[test]
     fn a_ceiling_is_shown_as_given_and_never_rounded() {
-        assert_eq!(ceiling_words(0.15), "$0.15");
-        assert_eq!(ceiling_words(1.0), "$1.00");
-        assert_eq!(ceiling_words(0.125), "$0.125");
-        assert_eq!(ceiling_words(0.129_9), "$0.1299");
+        assert_eq!(ceiling_words(0.15), "0.15");
+        assert_eq!(ceiling_words(1.0), "1.00");
+        assert_eq!(ceiling_words(0.125), "0.125");
+        assert_eq!(ceiling_words(0.129_9), "0.1299");
+        assert_eq!(ceiling_words(0.123_456_7), "0.1234567");
+        assert_eq!(Ceiling::new(0.123_456_7, "0.1234567").shown(), "$0.1234567");
     }
 
     #[test]

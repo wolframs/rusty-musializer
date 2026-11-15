@@ -57,6 +57,7 @@
 #     counts once with it; three new requests under two estimates send two
 #     and refuse the third by name; a section whose request is known only
 #     later and turns out held is not sent, and the run says what changed;
+#     the ceiling is printed as typed (0.1234567, not 0.123457);
 #   - intent (H4d): a record of unanswered sends that cannot be read (past
 #     64 KiB, or not a record) holds the request, flag or not, and is never
 #     replaced; removing it frees the request; after three unanswered sends a
@@ -388,7 +389,7 @@ else
     fail "the two runs did not share the job (status $status_a, $status_b); see $OUT/twice-a.log, $OUT/twice-b.log"
 fi
 if [ "$status_z" = 0 ] && grep -qF 'clip.generate picked up' "$OUT/twice-z.log" \
-    && grep -qF 'this run sent 0 requests, about $0.00 of its $0.00 allowed' "$OUT/twice-z.log"; then
+    && grep -qF 'this run sent 0 requests, about $0.00 of its $0 allowed' "$OUT/twice-z.log"; then
     pass "--max-spend 0 picks up the job another run is sending, and sends nothing itself"
 else
     fail "--max-spend 0 did not pick the job up (status $status_z); see $OUT/twice-z.log"
@@ -730,10 +731,17 @@ MUSIALIZER_VIDEO_DEADLINE_S=1 launch c-zero-0 --treatment "$OUT/c-zero.treatment
 submits="$(count submit)"
 launch c-zero --treatment "$OUT/c-zero.treatment.json" --generate-clips --max-spend 0 --save-project "$OUT/c-zero.musi"
 if [ "$(status_of c-zero)" = 0 ] && [ "$(count submit)" = "$submits" ] && has c-zero 'clip.generate picked up' \
-    && has c-zero 'this run sent 0 requests, about $0.00 of its $0.00 allowed' && [ -e "$OUT/c-zero.musi" ]; then
+    && has c-zero 'this run sent 0 requests, about $0.00 of its $0 allowed' && [ -e "$OUT/c-zero.musi" ]; then
     pass "--max-spend 0 picks up a job in flight and sends nothing (0 submits)"
 else
     fail "--max-spend 0 did not pick the job up, or sent (status $(status_of c-zero)); see $OUT/c-zero.log"
+fi
+# The ceiling is printed as typed, never rounded: the same treatment, found now.
+launch c-typed --treatment "$OUT/c-zero.treatment.json" --generate-clips --max-spend 0.1234567 --save-project "$OUT/c-typed.musi"
+if [ "$(status_of c-typed)" = 0 ] && has c-typed 'about $0.00 of its $0.1234567 allowed' && ! has c-typed '$0.123457 '; then
+    pass "--max-spend 0.1234567 is printed as typed (\$0.1234567), not rounded"
+else
+    fail "the ceiling was not printed as typed; see $OUT/c-typed.log"
 fi
 # Three new requests under two estimates: two sent, the third refused by name.
 sections "$OUT/c-three.treatment.json" "the ceiling: one of three" "the ceiling: two of three" "the ceiling: three of three"

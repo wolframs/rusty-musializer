@@ -730,6 +730,8 @@ pub struct Cli {
     /// dollars by the estimates of the requests it submits itself (H4d). A
     /// job picked up, and what earlier runs may have spent, are not counted.
     pub max_spend: Option<f64>,
+    /// `--max-spend` as typed, so the ceiling is printed as given (H4d).
+    pub max_spend_text: Option<String>,
     /// `--resend-unconfirmed` (H4b, additive): a request sent before whose
     /// answer never arrived (it may have been billed, and its job cannot be
     /// found) may be sent again; the new send counts against `--max-spend`
@@ -1066,7 +1068,10 @@ where
             "--generate-clips" => cli.generate_clips = true,
             "--resend-unconfirmed" => cli.resend_unconfirmed = true,
             "--max-spend" => match value_of(&argv, i).and_then(parse_seconds) {
-                Some(usd) if usd.is_finite() && usd <= 1000.0 => cli.max_spend = Some(usd),
+                Some(usd) if usd.is_finite() && usd <= 1000.0 => {
+                    cli.max_spend = Some(usd);
+                    cli.max_spend_text = value_of(&argv, i).map(str::to_owned);
+                }
                 _ => cli.warn("Invalid --max-spend; expected dollars, 0 to 1000"),
             },
 
