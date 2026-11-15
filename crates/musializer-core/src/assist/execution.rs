@@ -1663,7 +1663,7 @@ fn openrouter_verdict(route: &RouteFacts<'_>, facts: &PreflightFacts) -> RouteVe
         };
     };
     let Some(model) = catalog.iter().find(|model| model.id == model_id) else {
-        if catalog_predates_model(facts.catalog_fetched_utc.as_deref(), &model_id) {
+        if catalog_predates_model(facts.catalog_fetched_utc.as_deref(), model_id) {
             return RouteVerdict::Unknown(CATALOG_PREDATES_MODEL.to_string());
         }
         return RouteVerdict::Blocked(ExecutionBlock::NoEndpoint {
