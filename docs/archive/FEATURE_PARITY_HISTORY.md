@@ -5201,3 +5201,53 @@ re-score (row 2); the ceiling rule and Balanced, the operator's to revisit;
 the Render view's Balanced line (EX3); generation's remainder and the things
 never tried for real (VG, G2); MiMo's remainder; the tests and gates that
 failed under load (GX-4) and GX-3.
+
+## The listening lane moves to Gemini 3.8 Flash (2026-11-15)
+
+The operator, 2026-11-15, while answering the benchmark's truth session in the
+Listening Lab: *"I'm also ONLY JUST remembering that Mimo V2.5's perception of
+audio is worse than the newer gemini flash models' is, so the entire 'use mimo
+for this task' setup is outdated. It started that way because Mimo V2.5 was the
+first model that had *any* usable *music* training for something like this, but
+the gemini flash series has since superseded it in usefulness by a lot..."*
+Asked what a benchmark of the new model would be for, and told that his
+experience was enough to choose: *"Gemini Flash 3.8, no competition ;)"*. The
+same session, on the key question: *"both eb minor and F# fit parts of this
+track"* (they are relative keys; the question asked a listener to tell apart
+two homes of one scale). The truth session is therefore not waited for any
+more: nothing in the application uses key, metre or instruments.
+
+**What landed** (`5aae316`, `2af778c`, `7ad01f6`, `3a75485`, `2bc3d9f`;
+builder: an Opus sub agent; lead: the main session). `google/gemini-3.8-flash`
+on OpenRouter is the semantic lane's default and its recommended model, on the
+operator's word and not on a benchmark; MiMo stays selectable as experimental
+with the first run's findings as its evidence. The helper is named for its
+lane (`tools/semantic_openrouter.py`) with a per-model table; the cap, the
+failed-run receipts, the one send, the estimate and the stated scales carry
+over. The route is the existing hosted one, the lead's choice: OpenRouter
+lists the model with audio input. A settings file with no stored semantic
+route moves to the new default; a stored MiMo route stays. Three real calls
+for 0.0475 USD (the two benchmark excerpts, and both joined to 300 s). What
+they showed, the request's shape, the provider's documentation as read that
+day and the negative controls: `docs/ASSIST_PIPELINE.md`, "Gemini 3.8 Flash
+through OpenRouter"; the decision and its consequences for old settings and
+caches: `docs/DIVERGENCES.md`, "The listening lane's model".
+
+**Review** (GPT-6.1-Sol, one round, four findings, all in the track's
+conversion to MP3). Fixed by the lead in `2f93e05`: the conversion is read in
+pieces and stopped at the request's size limit, FFmpeg gets an allowlisted
+environment without the key, and the private copy of the track is an anonymous
+in-memory file, so a helper killed at its deadline leaves nothing behind; the
+bytes produced are identical to before on the benchmark excerpt. Declined: an
+older build does not reuse a cache this build wrote (newer builds read older
+files, not the reverse). Nothing was found in the money path, the settings
+move or old `.musi` files.
+
+**Verification.** A full `tools/verify.sh` on the merged lane before the
+conversion fix: 26 passed, 0 failed. After the fix, which touches the Python
+helper only: the helper's and the lane's Python tests and
+`tools/secret_canary_check.sh`. The release was built on `2f93e05`.
+
+**Money in all** for the two waves and this change: about 1.03 to 1.17 USD of
+the 5 USD the operator allowed on 2026-11-14.
+
