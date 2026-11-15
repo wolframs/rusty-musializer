@@ -13,7 +13,7 @@ is never touched.
 | `differential_routes.sh` | 380 rows, including the clamp asymmetry |
 | `differential_route_persistence.sh` | 381 lines: parse grammar and the both-ways pairing |
 | `differential_event_merge.sh` | 12 cases, 15 merged events, ids and ordering exact |
-| `differential_assist_ui.sh` | 199 policy decisions exact; 324 post-legacy rows pin the column's Assist layout (4 widths x 9 bodies x 4 cards x 2 offsets) and the 16 mode copy rows |
+| `differential_assist_ui.sh` | 198 policy decisions exact; 325 post-legacy rows pin the column's Assist layout (4 widths x 9 bodies x 4 cards x 2 offsets), the 16 mode copy rows and the third mode's label |
 | `differential_preset_store.sh` | 11 scene tokens, 44 presets, 3660 bytes of store JSON |
 | `differential_song_atlas_map.sh` | 912 slices, 29374 values, largest delta **0** |
 | `differential_ascii_art.sh` | 53847 records, 329738 values, largest delta **0** |
@@ -157,6 +157,12 @@ empty) left it too: the copy changed on 2026-08-18 (e8e2aa6) and the on-demand
 harness had been red on 13 of them since nobody ran it; they are pinned post-legacy
 by name and the filter asserts it drops exactly 16. Negative control: CARD_PADDING
 13 -> 14 fails all 264 column rows, the oracle half stays green.
+Since 2026-11-15 the third mode's label left it as well: the C says "MiMo
+feelings", the application "Feelings" (the listening model is a route setting;
+`DIVERGENCES.md`, "The listening lane's model"). The script sets that one oracle
+row aside and asserts it found exactly one; the dump prints the label below the
+marker. Negative control: the label put back to "MiMo feelings" fails the
+post-legacy diff, the oracle half stays green.
 
 2026-10-30: the operator-retired modal removes its rail slot. The post-legacy
 layout pins three icons, the bottom column toggle, and the 3-icon threshold

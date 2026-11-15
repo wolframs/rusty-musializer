@@ -1122,7 +1122,7 @@ get wrong.
 | `project-v1.schema.json` | **Canonical `.musi` project contract** — see 6.2/6.3. |
 | `scene-plan-v1.schema.json` | Deterministic scene-switch plan (the imported suggestion sequence behind `--auto-scenes`). |
 | `semantic-notes-v1.schema.json` | Imported free-form MiMo interpretation notes. |
-| `semantic-score-v1.schema.json` | MiMo SemanticScore (the `semantic_score` lane artifact: energy / tension / valence / confidence). Unchanged by prompt v2 (2026-11-14); see 6.7a. |
+| `semantic-score-v1.schema.json` | SemanticScore from the listening model (MiMo until 2026-11-15, Gemini 3.8 Flash since) (the `semantic_score` lane artifact: energy / tension / valence / confidence). Unchanged by prompt v2 (2026-11-14); see 6.7a. |
 
 All except `codex-lyric-review-output-v1` use `$id`
 `https://musializer.local/schemas/...` — **except** `font-import-v1`, which
@@ -1674,9 +1674,9 @@ The helper flags tranche P4 adds, all optional and all inert when absent:
 | --- | --- | --- |
 | `external_analysis.py assist` | `--execution-snapshot PATH` | the record above; configures every route, keys cache acceptance, and is embedded in the manifest |
 | `external_analysis.py assist` | `--codex-reasoning-effort {minimal,low,medium,high}` | `TC-WORDING` effort; enters the review lane's cache identity, so a review produced at `low` is not reused for `high`. The snapshot's own `reasoning_effort` wins over the flag |
-| `mimo_openrouter.py` | `--model SLUG` | replaces the module's hard-coded `xiaomi/mimo-v2.5`, which is now only the unrouted default |
-| `mimo_openrouter.py` | `--only`, `--ignore` (repeatable) | OpenRouter `provider.only` / `provider.ignore`; `--provider` already carried `order` |
-| `mimo_openrouter.py` | `--max-price-prompt`, `--max-price-completion`, `--max-price-audio` | `provider.max_price`, USD per 1M tokens |
+| `semantic_openrouter.py` (until 2026-11-15 `mimo_openrouter.py`) | `--model SLUG` | replaces the module's hard-coded model, which is now only the unrouted default (`google/gemini-3.8-flash` since 2026-11-15, `xiaomi/mimo-v2.5` before) |
+| `semantic_openrouter.py` | `--only`, `--ignore` (repeatable) | OpenRouter `provider.only` / `provider.ignore`; `--provider` already carried `order` |
+| `semantic_openrouter.py` | `--max-price-prompt`, `--max-price-completion`, `--max-price-audio` | `provider.max_price`, USD per 1M tokens |
 
 All five join the request identity, so changing any of them regenerates the
 semantic lane instead of reusing an answer another policy produced. The
@@ -1700,6 +1700,28 @@ Not files in `schemas/`; the helper writes them and the tests pin them.
 | `assist cost:` | report line, Assist confirmation | `model=… seconds=… input-tokens=… usd-typical=LOW..HIGH usd-max=… cap=16000`, or `unpriced` |
 
 No environment variable was added.
+
+### 6.7c The listening lane's model rows (2026-11-15)
+
+The lane moved from MiMo to Gemini 3.8 Flash (`DIVERGENCES.md`, "The listening
+lane's model"). What changed in what the helper writes and reads:
+
+| Name | Where | Contents |
+| --- | --- | --- |
+| `audio_encoding`, `temperature` | request identity, only for a model whose row changes the request shape (Gemini) | `"mp3 libmp3lame 44100 Hz 2 ch 128k"`, `null` (not sent). Absent for MiMo and unlisted models, whose identity is byte for byte the 6.7a one |
+| `audio_format` | request identity and `input_audio.format` | the format **sent**: `mp3` for Gemini whatever the source; the source's suffix otherwise. The cache key's `audio_sha256` stays the source file's |
+| `max_tokens` | request identity and payload | the model row's cap; `16000` for both rows and for unlisted models |
+| `musializer.semantic-failed-run/v1` | `<cache stem>.failed.json` | the 6.7a receipt's fields under a model-independent name; `musializer.mimo-failed-run/v1` receipts are still read. A run stopped before sending (too large, FFmpeg failed) writes one with `may_be_billed: false` and no `generation` |
+| `musializer.semantic-cost-estimate/v1` | where `musializer.mimo-cost-estimate/v1` was | its fields plus `audio_tokens` and `prices_usd_per_million.audio`; per-model token model and cap |
+| `provenance.adapter`, `provenance.source_kind` | semantic artifact | `tools/semantic_openrouter.py`, `openrouter_semantic`; caches with `tools/mimo_openrouter.py`, `mimo_openrouter` are accepted on read when the identity matches. `schemas/analysis-provenance-v1.schema.json` lists both source kinds |
+| `suitability_revision` | execution snapshot | `musializer.assist-suitability/2026-11-15` (was `…/2026-08-05`); an older snapshot keeps its revision |
+| `analysis_lanes[].provenance.model` (semantic score) | `.musi` | the model the job observed (`google/gemini-3.8-flash`, `xiaomi/mimo-v2.5`); `xiaomi-mimo-v2.5` for a run with no snapshot, as every earlier build wrote |
+| `assist cost:` | report line | `cap=` is the row's cap |
+| the recommended `TC-SEMANTIC` route | `core::assist::execution::recommended_route` | model `google/gemini-3.8-flash` (was `xiaomi/mimo-v2.5`). `assist.json` (`musializer.assist-settings/v1`) is unchanged: an absent route inherits it, a stored one is kept |
+
+No environment variable was added. The helper now needs `ffmpeg` on `PATH` for
+a model that re-encodes (Gemini), resolved to an absolute path; the measured
+lane already needed it.
 
 ### 6.7b The generation store's records (VG H4, H4b, H4c; 2026-11-14)
 
@@ -2262,8 +2284,8 @@ headless gate's own knobs — `MZ_NO_WAYLAND`, `MZ_GL_LAUNCH`, `MZ_VGL_DEVICE`,
 
 | Variable | Site | Purpose | Unset behaviour | Parsing |
 | --- | --- | --- | --- | --- |
-| `OPENROUTER_API_KEY` | `tools/mimo_openrouter.py:319` | Bearer credential | `raise RuntimeError("OPENROUTER_API_KEY is not set in the process environment")` (`:320-321`) | truthiness only |
-| `OPENROUTER_API_KEY` | `tools/external_analysis.py:287` | Same credential for the MiMo helper | Falls back to parsing the repo `.env` **as data, not shell** (`:288-300`): skips blanks, `#`, and lines without `=`; matches the exact name; strips one layer of matching `"` or `'` | `.strip()`ed string, truthiness |
+| `OPENROUTER_API_KEY` | `tools/semantic_openrouter.py` (`submit_request`; `tools/mimo_openrouter.py:319` until 2026-11-15) | Bearer credential | `raise RuntimeError("OPENROUTER_API_KEY is not set in the process environment")` (`:320-321`) | truthiness only |
+| `OPENROUTER_API_KEY` | `tools/external_analysis.py:287` | Same credential for the semantic helper | Falls back to parsing the repo `.env` **as data, not shell** (`:288-300`): skips blanks, `#`, and lines without `=`; matches the exact name; strips one layer of matching `"` or `'` | `.strip()`ed string, truthiness |
 | `MUSIALIZER_WHISPER_BIN` | `tools/external_analysis.py:1220`, `--whisper-bin` default `:1450` | whisper.cpp CLI path | Discovers `<install>/build/bin/whisper-cli` (`:1223-1227`); if still unresolved → `AnalysisValidationError` (`:1493`) | raw string → `Path`; **env always wins over discovery**, comment `:1197-1198` |
 | `MUSIALIZER_WHISPER_MODEL` | `tools/external_analysis.py:1221`, `:1451` | ggml model file | Preference-ordered discovery `_WHISPER_MODEL_PREFERENCE` (`:1204-1209`); a better model anywhere beats a lesser model in a preferred install (`:1229-1235`) | raw string → `Path` |
 | `MUSIALIZER_WHISPER_VAD_MODEL` | `tools/external_analysis.py`, `whisper_vad_model()` | Opt-in whisper.cpp VAD model (`--vad`/`--vad-model`). **Added by tranche LT1**, and off by default: Silero v6.2.0 rejects sung vocals over accompaniment (canary kept 0.4 s of 114.84 s) | no VAD; a named path that is not a readable file logs the reason and also runs without VAD, rather than failing the job | `.strip()`, `expanduser()` → `Path`; its SHA-256 enters the Whisper cache identity |

@@ -250,17 +250,24 @@ The stable output directory permits reuse, but cache provenance includes source
 and audio identities plus the relevant model, policy, and settings versions.
 Changing a timing policy must invalidate the artifact it changes.
 
-### The MiMo feelings request (2026-11-14)
+### The feelings request (MiMo 2026-11-14; Gemini 3.8 Flash since 2026-11-15)
 
-`tools/mimo_openrouter.py` sends the whole track once, with the checklist-style
-prompt the benchmark kept ([`MIMO_BENCHMARK_RESULTS.md`](MIMO_BENCHMARK_RESULTS.md)),
-and three guards it found missing:
+`tools/semantic_openrouter.py` (until 2026-11-15 `tools/mimo_openrouter.py`)
+sends the whole track once, with the checklist-style prompt the MiMo benchmark
+kept ([`MIMO_BENCHMARK_RESULTS.md`](MIMO_BENCHMARK_RESULTS.md)), and the guards
+below. They were built on MiMo and hold for every model; what is really per
+model is one row of `MODEL_PROFILES` (Rust twin `core::assist::cost::MODELS`),
+and the lane's model since 2026-11-15 is Gemini 3.8 Flash (next section). The
+sentences quoted here name MiMo because they were written on it; the helper
+now names the model the request asked for ("Gemini's answer was cut off …").
 
 - **A completion cap.** `max_tokens: 16000`, reasoning included, part of the
-  request identity. Without it the provider's 65 536 applied.
+  request identity. Without it the provider's 65 536 applied. The cap is per
+  model now; both rows hold 16 000.
 - **Failed runs.** A response that did not finish with `stop`, carries null or
   empty text, is not JSON, or does not fit the schema is never cached and never
-  staged. A `musializer.mimo-failed-run/v1` receipt goes beside the cache
+  staged. A `musializer.semantic-failed-run/v1` receipt (written as
+  `musializer.mimo-failed-run/v1` until 2026-11-15; both are read) goes beside the cache
   (`semantic.cache.failed.json`), and the job fails with one sentence naming the
   reason and what OpenRouter billed for it (or, unreported, the most it can
   have cost). A billed empty answer is not retried.
@@ -285,7 +292,8 @@ and three guards it found missing:
   audio, the same request identity and route, validated when it was made —
   so it is staged, and discarding it would only make the person pay again.
   It is never staged silently: the manifest carries `semantic_latest_failure`
-  and the Assist panel raises a warning, "The latest MiMo attempt failed",
+  and the Assist panel raises a warning, "The latest MiMo attempt failed"
+  ("The latest listening attempt failed" since 2026-11-15),
   with the helper's words, e.g. "The latest MiMo attempt failed on 2026-11-14
   22:37 UTC: MiMo's answer was cut off at the 16000-token cap. Nothing was
   saved; OpenRouter billed 0.1312 USD for it. The feelings staged here are the
@@ -299,13 +307,18 @@ and three guards it found missing:
   other numbers on it too. Prompt `musializer-semantic-score/v2`; a v1 cache is
   regenerated, and its document still opens.
 
-The cost is estimated from completion tokens, not audio
-(`musializer.mimo-cost-estimate/v1`, `core::assist::cost` and its pinned Python
-twin): the confirmation shows a range and the cap's ceiling under the MiMo
-route (the ceiling rounded up at the thousandth shown, so a capped call on
+The cost is estimated from completion tokens as well as audio
+(`musializer.semantic-cost-estimate/v1` since 2026-11-15, before it
+`musializer.mimo-cost-estimate/v1`; `core::assist::cost` and its pinned Python
+twin): the confirmation shows a range and the cap's ceiling under the semantic
+route (the ceiling rounded up at the thousandth shown, so a capped MiMo call on
 100 s, 0.032376 USD, reads "at most 0.033 USD", in the confirmation and in a
 failure sentence alike), and the artifact's `provenance.generation` and the manifest's
 `semantic_cost` keep that estimate beside the provider's `usage` and cost.
+Since 2026-11-15 the line reads "Cost: about 0.013–0.040 USD, at most 0.073 USD
+(16000-token cap)" (Gemini, 200 s); the earlier "Estimated cost: …, at most …
+(answer capped at 16000 tokens)" was cut off with an ellipsis at the default
+window width, and now fits in both appearances (capture of 2026-11-15, 1280×720).
 
 **Negative controls (H4c, 2026-11-14)**, each run on a perturbed source and
 the source restored byte for byte (`cmp` against a saved copy):
@@ -319,6 +332,172 @@ the source restored byte for byte (`cmp` against a saved copy):
 | (H4d, 2026-11-15) A success no longer removing an older receipt | `test_a_failure_older_than_the_answer_is_not_its_word`: "B's success removed A's older receipt" |
 | (H4d) The reuse path reading a receipt older than the answer (`receipt_applies` skipped) | the same test: `semantic_latest_failure` named "an older failure" beside a newer answer |
 | (H4d, 2026-11-15) Only H4c's five statuses (408, 500, 502, 503, 504) counted as possibly billed again | `test_a_gateway_failure_after_sending_is_one_call_that_may_be_billed`: 524, 520, 418 and 409 ended as "OpenRouter request failed with HTTP …", no receipt, no word on billing |
+| (Gemini, 2026-11-15) `temperature: 0.2` sent to Gemini again | `test_the_request_is_shaped_for_gemini`, `test_the_identity_carries_the_shape_and_the_cap` |
+| (Gemini) `identity_extra` no longer empty for MiMo's shape | `test_mimos_request_is_byte_for_byte_what_it_was`: the identity hash moved, so every MiMo cache would be paid for again |
+| (Gemini) no local request-size limit | `test_a_request_too_large_for_the_model_is_never_sent`: a 20 MB body was sent |
+| (Gemini) both tag guards dropped (`-map_metadata -1` and `-id3v2_version 0`) | `RealEncoding.test_tags_never_leave_with_the_audio`: the canary title and artist in an ID3 header. Dropping either guard alone stays green, as it should: each suffices |
+| (Gemini) Rust's Gemini completion price 4.125 → 4.0 | `test_the_table_is_the_same_table` (cross-language pins) |
+| (Gemini) the confirmation's old long sentence restored | `the_line_is_short_enough_for_the_column` |
+| (Gemini) the recommended route back on MiMo | `the_old_default_moves_to_gemini_and_a_stored_mimo_route_stays` |
+| (Gemini) the stale-catalog rule switched off | `a_catalog_older_than_the_model_cannot_say_it_is_gone` |
+| (Gemini) the `.musi` semantic lane hard-coded to `xiaomi-mimo-v2.5` again | `the_semantic_lane_names_the_model_that_ran` |
+| (Gemini) the third workflow's label back to "MiMo feelings" | `tools/differential_assist_ui.sh`, the post-legacy diff |
+
+### Gemini 3.8 Flash through OpenRouter (2026-11-15)
+
+**The decision.** Operator, 2026-11-15: MiMo was "the first model that had
+*any* usable *music* training", and "the gemini flash series has since
+superseded it in usefulness by a lot"; asked whether to measure first:
+"Gemini Flash 3.8, no competition ;)". So `google/gemini-3.8-flash` is the
+recommended `TC-SEMANTIC` model on his judgment, **not on a benchmark run
+here**; MiMo stays selectable as experimental. Row in `DIVERGENCES.md`, "The
+listening lane's model".
+
+**What was read, 2026-11-15.**
+
+- OpenRouter's live lists: `https://openrouter.ai/api/v1/models`,
+  `https://openrouter.ai/api/v1/models/google/gemini-3.8-flash/endpoints`,
+  `https://openrouter.ai/api/v1/endpoints/zdr`. Input text, image, video, file,
+  audio; context 1 048 576; output up to 65 536. Listed price 0.825 USD per
+  million input and audio tokens, 4.125 per million output and per million
+  `internal_reasoning`. That is the dearest endpoint a base slug routes to
+  (Vertex `us`); Vertex `global` and Google AI Studio list 0.75 / 3.75, and the
+  `flex` (0.375) and `priority` (1.35) tiers are opt-in only. **ZDR endpoints
+  are Vertex's only**, so with the lane's default `zdr: true` it goes to
+  Vertex. Vertex endpoints do **not** list `temperature` among their
+  parameters (AI Studio does).
+- Audio input, `https://openrouter.ai/docs/features/multimodal/audio`:
+  `{"type": "input_audio", "input_audio": {"data": <base64>, "format": …}}`,
+  base64 only (no URLs); Chat Completions takes any format the provider does.
+  No size limit or billing rule stated there.
+- Routing, `https://openrouter.ai/docs/features/provider-routing`: `zdr: true`
+  routes only to ZDR endpoints; `require_parameters: true` excludes an
+  endpoint that does not support every parameter sent; `max_price` is a hard
+  filter; service tiers need `service_tier` or a `:floor`/`:nitro` slug.
+- Reasoning, `https://openrouter.ai/docs/use-cases/reasoning-tokens`: Gemini 3
+  uses Google's `thinkingLevel`, `reasoning.effort` maps onto it; reasoning
+  tokens are billed as output and count against `max_tokens` (a run out of
+  budget ends with `finish_reason: length`, billed); reported in
+  `usage.completion_tokens_details.reasoning_tokens`.
+- Structured output, `https://openrouter.ai/docs/features/structured-outputs`:
+  per endpoint; `strict` enforcement varies by provider. All seven Gemini 3.8
+  Flash endpoints list `structured_outputs` and `response_format`.
+- Google, `https://aistudio.google.com/docs/audio` (the old
+  `ai.google.dev/gemini-api/docs/audio` redirects there): 32 tokens per second
+  of audio, up to 9.5 h per prompt, **20 MB per request in total** inline,
+  audio downsampled to 16 kbps and mixed to one channel. Vertex,
+  `https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/audio-understanding`:
+  about 8.4 h or 1 M tokens per prompt, 256 MB per inline part. Gemini 3
+  guide, `https://ai.google.dev/gemini-api/docs/gemini-3`: keep temperature at
+  its default 1.0 ("setting it below 1.0 may lead to unexpected behavior, such
+  as looping"); thinking level defaults to high.
+
+**What the application sends** (the row in `MODEL_PROFILES`):
+
+- the track **re-encoded** by FFmpeg from the snapshot that was hashed: MP3,
+  128 kbit/s, 44.1 kHz, two channels, every tag and chapter dropped (no title,
+  artist or cover leaves with the audio). Google hears 16 kbps mono anyway;
+  128 kbit/s keeps a track of about 15 minutes inside AI Studio's 20 MB, which
+  a non-ZDR route can reach. A WAV source sent as it is would have been 70 MB
+  of base64 for five minutes. The audio hash, and so the cache key and the
+  bridge's identity, stays the source file's;
+- **no `temperature`**: Google's advice, and on the ZDR route a `temperature`
+  with `require_parameters: true` leaves no endpoint (a 404 refusal);
+- no `reasoning` setting: the model's default thinking, which is the Gemini
+  the operator chose on;
+- `max_tokens: 16000`, the same prompt v2, schema and `provider` block as before;
+- a local refusal, before anything leaves, of a body over 19.5 MB ("the track
+  encodes to a 21.3 MB request, past the 19.5 MB one Gemini request may carry;
+  nothing was sent"), with a receipt that says nothing was billed.
+
+The request identity carries `audio_encoding` ("mp3 libmp3lame 44100 Hz 2 ch
+128k"), `temperature: null`, the cap and `audio_format: "mp3"`, so a MiMo answer
+is never served as Gemini's. MiMo's identity and body are byte for byte what
+`tools/mimo_openrouter.py` built at `2d5d1b6` (pinned by hash), so a user who
+stays on MiMo reuses every cached answer.
+
+**The cap: 16 000, and why.** Three real calls (below) used 1 915–2 231
+completion tokens on 100 s and 5 030 on 300 s, of which 0–2 264 were thinking.
+Answer length grows with the number of sections, so a 10-minute track should
+want about 10 000; 16 000 leaves room for that at the default thinking level,
+and stops a runaway at 16 000 × 4.125 = 0.066 USD of output against the 0.27
+USD an uncapped 65 536 would cost.
+
+**The estimate** (`musializer.semantic-cost-estimate/v1`), from the row: audio
+at Google's 32 tokens per second (Vertex counted 25.0 on this request; the
+higher rate is kept for a bound), 1 650 tokens of text (measured, every call),
+answers of 1 500–8 000 tokens typical and the cap as the ceiling, all at the
+0.825 / 4.125 list price (calls were served at 0.75 / 3.75). For a whole
+track: 200 s, about 0.013–0.040 USD, at most 0.073; 300 s, about 0.015–0.042,
+at most 0.076 (0.075281 rounded up).
+
+**The real calls**, through the path the application spawns (`semantic_openrouter.py
+AUDIO CACHE --duration … --model google/gemini-3.8-flash --no-fallbacks --zdr`,
+the recommended route's flags), on the two benchmark excerpts (approved
+2026-11-14) and, for whole-track length, the three excerpts joined to 300 s as
+a WAV (cat, whale, cat). Ledger kept in the worktree's `build/gemini-calls/`.
+
+| audio | prompt tokens (audio) | completion (thinking) | finish | reported USD | estimate USD |
+| --- | --- | --- | --- | --- | --- |
+| shut-up-cat excerpt, 100 s | 4 152 (2 502) | 2 231 (641) | stop | 0.01148025 | 0.010–0.037, ≤ 0.071 |
+| constellation-whale excerpt, 100 s | 4 152 (2 502) | 1 915 (0) | stop | 0.01029525 | 0.010–0.037, ≤ 0.071 |
+| the three joined, 300 s | 9 152 (7 502) | 5 030 (2 264) | stop | 0.0257265 | 0.015–0.042, ≤ 0.076 |
+
+Total 0.0475 USD of the 0.25 allowed. All three were served by Google
+(Vertex; the first took 21 s end to end), valid JSON on the first try, on scale, contiguous to the
+second. A whole song fits one request with room to spare: 7 502 audio tokens
+for 300 s against a 1 M context, 4.8 MB of MP3.
+
+**What the answers looked like** — two excerpts and one joined file, read
+against what `build/mimo-bench/` knows (the adjudicated lyric onsets; its
+measured sections are a 12 s grid and say little about form). Two excerpts are
+not a benchmark, and nothing below is one.
+
+- *constellation-whale* (0–100 s): seven sections, and they sit where the
+  lyrics say the song changes: verse from 10.5 s (first line 8.1 s), a build
+  from 23.5 s, a drop at 38–55.5 s exactly where the vocals stop (33–55 s), the
+  second verse from 55.5 s (line at 55.1 s), a second build at 73 s, a final
+  chorus from 88 s. Energy follows loudness closely (correlation 0.82 with each
+  section's RMS level); tension peaks in the two builds (0.75, 0.80) and drops
+  in the drops, which is what a build is.
+- *shut-up-cat* (30–130 s of the track): six sections. The hook section at
+  10–22.5 s matches the "Shut up Cat" refrains (8–21 s), the change at 22.5 s
+  the switch to "I play it tough" / "queen of the sky" (23.3 s, 28.6 s), and
+  33–58 s the repeated hooks. It calls 58–83 s an "introspective half-time
+  breakdown" at energy 0.45 while the waveform there is only 2–4 dB quieter
+  than its neighbours, and puts the last return at 83 s where the vocal comes
+  back at 91.6 s (it may be hearing the build before it). Correlation with
+  loudness 0.49.
+- *joined, 300 s*: it found both joins (100.0 s exactly, and 199 s for 200 s).
+  But the third part is the first part again, and it was segmented
+  differently (one 61-second "climax" against 0–24, 24–58 the first time) and
+  described as a different moment of the song: the same audio heard twice in
+  one call does not get the same sections. Energy against loudness 0.87.
+
+Valence stays positive on both excerpts (0.10–0.88), which fits two bright
+tracks and leaves the dark half of the scale untested.
+
+**A user with MiMo settings or answers** sees this:
+
+- *No `TC-SEMANTIC` route stored* (the common case, the operator's own file):
+  the next Feelings or Full assist job is on Gemini; the confirmation names
+  it and shows its estimate, and the previous MiMo answer in the track's
+  `semantic.cache.json` does not match the new identity, so the job pays once
+  for a Gemini answer, which replaces it. The project's applied lane keeps its
+  MiMo cues until the new candidate is applied.
+- *A stored MiMo route* (chosen in AI settings): stays on MiMo, marked
+  experimental in the picker; its cached answers are reused, nothing is paid
+  again. The receipts and caches the old helper wrote still read.
+- *A cached OpenRouter catalog older than 2026-11-15* (the operator's is
+  2026-09-01, before Gemini 3.8 Flash existed): it does not list the model, and
+  until this change that refused the job ("has no eligible endpoint"). Now it
+  reads "Catalog older than this model; refresh it" and does not refuse;
+  opening AI settings with refresh-on-open refreshes it.
+
+Not tried for real: a refusal or failure from Gemini (every failure path is
+tested against synthetic responses only), a track long enough to hit the size
+limit, a route without ZDR (AI Studio), and any thinking level other than the
+default.
 
 ### Local performed-phrase recovery (2026-09-08)
 
@@ -551,12 +730,14 @@ Failure should remain visible at the narrowest boundary that can explain it:
   Assist panel.
 - Invalid schema, wrong audio, duration mismatch, or excess lane authority: Rust
   rejects the bridge and stages nothing.
-- A MiMo answer cut off at its cap, empty, unparseable, off-schema or off-scale:
+- A semantic answer (any model) cut off at its cap, empty, unparseable, off-schema or off-scale:
   a failed run before any bridge exists; the job's failure line names the
   reason and the billed cost, and the receipt keeps the provider's `usage`.
-- A MiMo request answered by any status other than a clear refusal, a timeout
+- A semantic request answered by any status other than a clear refusal, a timeout
   or a dropped connection after it left: a failed run that says it may have been billed up
   to the cap; never sent again by itself.
+- A semantic request too large for its model, or a track FFmpeg cannot encode:
+  stopped before anything leaves, with a receipt that says nothing was sent.
 - Authorized mode producing no changes: a truthful terminal no-change result,
   not an empty candidate.
 - Weak boundary evidence within one occurrence: retain timing as uncertain.
@@ -580,7 +761,8 @@ Failure should remain visible at the narrowest boundary that can explain it:
 | Assist state and mode authority | core tests, anchored by `tools/differential_assist_ui.sh` (341 policy decisions; run deliberately, not part of `verify.sh`) |
 | Process start, timeout, cancellation, and reaping | runtime `process::assist` tests |
 | Bridge bounds, identity, coverage, and staging | core bridge/candidate tests and app panel tests |
-| MiMo request: cap, failed runs, cost estimate, numeric scales | [`tests/test_mimo_openrouter.py`](../tests/test_mimo_openrouter.py) (fake OpenRouter), the `MimoCostEstimate` pins in [`tests/test_cross_language_pins.py`](../tests/test_cross_language_pins.py), `core::assist::cost` tests |
+| Semantic request (MiMo and Gemini rows): cap, failed runs, cost estimate, numeric scales, Gemini's request shape and encoding, MiMo's unchanged identity | [`tests/test_semantic_openrouter.py`](../tests/test_semantic_openrouter.py) (fake OpenRouter; one real FFmpeg encode of a synthetic tone), the `SemanticCostEstimate` pins in [`tests/test_cross_language_pins.py`](../tests/test_cross_language_pins.py), `core::assist::cost` tests |
+| The default model's move and settings inheritance, the stale-catalog rule | `core::assist::execution` tests (`the_old_default_moves_to_gemini_and_a_stored_mimo_route_stays`, `a_catalog_older_than_the_model_cannot_say_it_is_gone`) |
 | Execution snapshot: route resolution at Start, provenance, mid-job settings immutability | [`tests/test_assist_execution.py`](../tests/test_assist_execution.py), `core::assist::execution` tests, [`crates/musializer-runtime/examples/assist_canary_probe.rs`](../crates/musializer-runtime/examples/assist_canary_probe.rs) |
 | Installed helper and local-lyrics assets | `python3 tools/musializer_doctor.py --require local_lyrics` |
 | Support workflow | `tools/support_bundle_check.sh` |

@@ -825,3 +825,46 @@ window-sized child and then a settle well past the first frame (as
 `lyric_focus_check.py` does), and the run's `--probe-frames` must outlast the
 keys. A typed count is also read wide and clamped now, so the same loss would
 show as 720, not as nothing.
+
+## A parameter one provider lists can leave a ZDR route with no endpoint
+
+With `provider.require_parameters: true`, OpenRouter routes only to endpoints
+that list every parameter the request carries, and `zdr: true` keeps only the
+zero-data-retention ones. For `google/gemini-3.8-flash` those are Google
+Vertex's, and Vertex's endpoints do not list `temperature` (AI Studio's do,
+and AI Studio is not ZDR). The MiMo-era request sent `temperature: 0.2`; sent
+to Gemini on the default route it would match no endpoint and be refused
+(OpenRouter answers that with a 404, "No endpoints found that can handle the
+requested parameters"; not sent here), which reads like a wrong model name. Read
+`/api/v1/models/<slug>/endpoints` and `/api/v1/endpoints/zdr` for the
+parameters of the endpoints the route can actually reach, and keep a quirk in
+the model's row (`MODEL_PROFILES`), never in the shared request. Found while
+moving the listening lane to Gemini, 2026-11-15, from the lists, before a call
+was sent; Google's own advice (keep Gemini 3 at its default temperature, lower
+may loop) points the same way.
+
+## A cached catalog older than a model cannot say the model is gone
+
+Preflight refused a job when the cached OpenRouter catalog did not list the
+route's model (§5 invariant 4). When the recommended model changed to one
+listed after the user's last catalog fetch, every such user was refused on the
+first press, told the route "has no eligible endpoint" and to relax a
+constraint, while nothing was wrong but the cache's age. The symptom is the
+refusal naming a model the provider plainly offers, with a catalog whose
+`fetched_at_utc` is older than the model. Absence from a catalog fetched before
+the day this build knows the model was listed (`cost::MODELS`
+`prices_listed_on`) is "not looked since", like a catalog never fetched
+(`catalog_predates_model`, `CATALOG_PREDATES_MODEL`). Found on the operator's
+catalog of 2026-09-01 in the confirmation capture, 2026-11-15.
+
+## `headless_run.sh` isolates the config directory, not the cache directory
+
+The wrapper gives the application a private `XDG_CONFIG_HOME` but leaves
+`XDG_CACHE_HOME` as the caller's, so a probe reads the operator's own
+`~/.cache/musializer/` (the OpenRouter and Codex catalogs among it). A capture
+then shows a state that comes from the operator's machine rather than the run:
+the Gemini confirmation first showed "No eligible endpoint", from a catalog of
+2026-09-01. Nothing was written there (the private settings forbid network
+fetches), but a capture that must not depend on the operator's cache sets its
+own `XDG_CACHE_HOME`, absolute (a relative one is ignored), as
+`tools/headless_check.sh` does for its route captures. Found 2026-11-15.

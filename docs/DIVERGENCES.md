@@ -499,7 +499,11 @@ edited in the window, in Look. The code is `ui/panels/tune/cards.rs` and
 ## The MiMo lane's request (H3b, 2026-11-14)
 
 The three changes `docs/MIMO_BENCHMARK_RESULTS.md` asked of the application's
-own MiMo call. Code: `tools/mimo_openrouter.py`, the failure surfacing in
+own MiMo call. They hold for every model since the lane moved to Gemini (next
+section); file and function names below are as they were that day (the helper
+is `tools/semantic_openrouter.py` now, `_mimo_failure` is `_semantic_failure`,
+the tests `tests/test_semantic_openrouter.py`, the pins `SemanticCostEstimate`).
+Code: `tools/mimo_openrouter.py`, the failure surfacing in
 `tools/external_analysis.py` (`_mimo_failure`), `core::assist::cost` and the
 confirmation's cost line in `ui/panels/assist.rs`. Tests:
 `tests/test_mimo_openrouter.py`, the `MimoCostEstimate` pins in
@@ -520,3 +524,32 @@ confirmation's cost line in `ui/panels/assist.rs`. Tests:
 | `PROMPT_VERSION` `musializer-semantic-score/v1` | `…/v2`; the model schema is named `musializer_semantic_score_v2` | The prompt and schema text changed, so `prompt_sha256` and `model_output_schema_sha256` change with it and a v1 cache is regenerated rather than read as a v2 answer. The document stays `musializer.semantic-score/v1` (same fields, same ranges) and an old cache or document still opens |
 | "at most 0.032 USD" for a capped call on 100 s (0.032376 USD, rounded to the nearest thousandth), in the confirmation and in the failure sentence of an unreported cost | Every maximum is rounded **up** at the precision shown: "at most 0.033 USD" (`core::assist::cost::ceil_thousandths`, the helper's `ceil_usd`; one rule, tolerance a millionth of the last place). The "about" range stays rounded to the nearest (H4c, 2026-11-14) | A bound that reads below what the call can cost is not a bound. Both sides pin the 100 s figure (`at_most_is_rounded_up_never_down`, `test_at_most_is_rounded_up_as_the_rust_side_rounds_it`, `MimoAtMostRoundsUp`) |
 | After a successful MiMo run, a failed regeneration of the same request left only its receipt, and the next Assist run staged the earlier cached answer without a word | The earlier answer is still staged (same audio, identity and route, validated when made), and the manifest's `semantic_latest_failure` makes the Assist panel warn "The latest MiMo attempt failed" with when, why, what it may have cost and which answer is staged; the receipt carries `failed_utc` (H4c, 2026-11-14) | Discarding a valid paid answer would make the person pay again; staging it silently hid a charge and a failure. The trust policy decides the first, the principle "where the truth cannot be known, say so" the second |
+
+## The listening lane's model (2026-11-15)
+
+**Operator, 2026-11-15**, while answering the truth session: "I'm also ONLY
+JUST remembering that Mimo V2.5's perception of audio is worse than the newer
+gemini flash models' is, so the entire 'use mimo for this task' setup is
+outdated. It started that way because Mimo V2.5 was the first model that had
+*any* usable *music* training for something like this, but the gemini flash
+series has since superseded it in usefulness by a lot..."; asked whether to
+measure first: "Gemini Flash 3.8, no competition ;)". The choice is his and
+rests on his own use, not on a benchmark run here; do not "restore" MiMo as
+the default, and do not demote Gemini for lacking a benchmark row. Code:
+`tools/semantic_openrouter.py` (`MODEL_PROFILES`), `core::assist::cost`
+(`MODELS`), `core::assist::execution::recommended_route`,
+`core::assist::suitability`. Details: `ASSIST_PIPELINE.md`, "Gemini 3.8 Flash
+through OpenRouter".
+
+| Before | Now | Why |
+| --- | --- | --- |
+| The recommended `TC-SEMANTIC` route named `xiaomi/mimo-v2.5` | It names `google/gemini-3.8-flash`. No settings migration and no schema bump: the file is sparse, so a file with no `TC-SEMANTIC` route inherits the new default, and a stored route (a choice, possibly MiMo) is kept as it is | A stored route is user data; the record cannot tell "chose MiMo" from "changed a constraint while MiMo was the default", and rewriting user data silently is what §5 forbids. The dialog stores a route only when it differs from the recommended one, so an untouched user has none and moves |
+| Suitability overlay `2026-08-05`; MiMo `experimental`, "no benchmark has been run"; a `recommended` row had to be benchmarked | Overlay `musializer.assist-suitability/2026-11-15`; Gemini `recommended` with evidence "operator's judgment … not a benchmark run here"; MiMo `experimental` with its 2026-11-14 benchmark findings. A `recommended` row rests on a measurement **or** an operator's recorded decision, and its evidence line says which | The operator decided; the row must not pretend to be a measurement, and MiMo's row now has evidence (`MIMO_BENCHMARK_RESULTS.md`) |
+| The helper's unrouted default model `xiaomi/mimo-v2.5` | `google/gemini-3.8-flash` (`MODEL`); the application always passes `--model` from the route | The command line follows the application's default |
+| One request shape for every model: source bytes in their own format, `temperature: 0.2` | Per model. Gemini: the track re-encoded by FFmpeg to MP3 128 kbit/s 44.1 kHz stereo with every tag dropped, **no `temperature`**, a local refusal over 19.5 MB; `audio_encoding` and `temperature` join the identity. MiMo and any unlisted model: the old shape, identity and body byte for byte (pinned by hash) | Gemini 3 wants its default temperature (Google: below 1.0 may loop), and OpenRouter's ZDR endpoints for it (Vertex) do not list `temperature`, so `require_parameters` would refuse every request. AI Studio caps a request at 20 MB; a five-minute WAV is 70 MB of base64. MiMo users keep their caches |
+| The estimate priced audio at the prompt rate and assumed MiMo's token model for any priced model | Per-model rows: prompt, audio and completion prices, audio tokens per second, text tokens, typical span, cap (`musializer.semantic-cost-estimate/v1`) | Gemini lists an audio price and counts audio differently (25–32 tokens per second against MiMo's 7.4) |
+| The confirmation's line: "Estimated cost: about …, at most … USD (answer capped at 16000 tokens)" | "Cost: about …, at most … USD (16000-token cap)", the cap from the model's row | Cut off with an ellipsis at the default window width; fits now in both appearances |
+| The third workflow was "MiMo feelings", its copy "OpenRouter MiMo" | "Feelings"; the copy says "the listening model"; the failed-attempt notice "The latest listening attempt failed". `AssistMode::Mimo`, `WorkflowKind::Mimo` and the helper's `--mode mimo` keep their names | The model is a route setting now and the confirmation names it. Tokens are CLI grammar and stay; copy is not. `differential_assist_ui.sh` sets the C's one "MiMo feelings" row aside, asserted, and pins the new label |
+| The `.musi` semantic analysis lane's `provenance.model` was always `xiaomi-mimo-v2.5` (`plug.c:3546-3560`) | The model the job's snapshot observed (`google/gemini-3.8-flash`, or `xiaomi/mimo-v2.5`), as the lyric lane already did; `xiaomi-mimo-v2.5` remains for a run with no snapshot | A project must not say MiMo produced cues Gemini produced. Older projects open unchanged (a free string) |
+| New answers named their maker `tools/mimo_openrouter.py` / `mimo_openrouter`; receipts `musializer.mimo-failed-run/v1` | `tools/semantic_openrouter.py` / `openrouter_semantic` and `musializer.semantic-failed-run/v1`; the old names are still accepted on read (cache reuse, receipts), and `analysis-provenance-v1.schema.json` lists both source kinds | The helper is not MiMo's; reading the old names keeps a MiMo user's answers |
+| A cached OpenRouter catalog that did not list the route's model always refused the job ("has no eligible endpoint") | A catalog fetched before the day this build records the model as listed (`cost::MODELS` `prices_listed_on`) reads "Catalog older than this model; refresh it" and does not refuse; one fetched since still refuses by name | The operator's catalog (2026-09-01) predates Gemini 3.8 Flash: it never saw the model and cannot show it gone. Without this the new default refused on first use with advice to relax a constraint |

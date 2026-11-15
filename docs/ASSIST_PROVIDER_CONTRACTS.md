@@ -11,7 +11,8 @@ one wins: it carries the operator's 2026-08-04 storage decisions recorded in
 
 Current mechanisms this replaces or wraps: `tools/external_analysis.py`
 (`_safe_local_env`, `_openrouter_env`, `--codex-model`),
-`tools/mimo_openrouter.py` (hard-coded `MODEL = "xiaomi/mimo-v2.5"`),
+`tools/mimo_openrouter.py` (hard-coded `MODEL = "xiaomi/mimo-v2.5"`; since
+2026-11-15 `tools/semantic_openrouter.py`, model from the route),
 `crates/musializer-runtime/src/process/assist.rs` (`AssistSpec`, argv, `--zdr`),
 `crates/musializer-app/src/ui/panels/assist.rs` (staging boundary).
 
@@ -69,9 +70,16 @@ Rules that follow from the table and are not negotiable per-route:
   distinct confirmation, and the excerpt list is shown before Start.
 - Modality eligibility (`audio -> text`) is necessary and not sufficient. The
   suitability overlay (`recommended` / `experimental` / `unsupported`) gates what
-  a picker offers by default; see the plan's OpenRouter section.
-- A workflow button (`Timed lyrics`, `Scene changes`, `MiMo feelings`,
-  `Full assist`) resolves to a set of these ids. Confirmation shows the resolved
+  a picker offers by default; see the plan's OpenRouter section. A
+  `recommended` row rests on a measurement here **or** on an operator's
+  decision recorded in `DIVERGENCES.md` with its date and words, and its
+  evidence line says which (`core::assist::suitability`). Since 2026-11-15
+  (`musializer.assist-suitability/2026-11-15`) `google/gemini-3.8-flash` is
+  recommended for `TC-SEMANTIC` on the operator's judgment, not a benchmark,
+  and `xiaomi/mimo-v2.5` is experimental, its evidence the 2026-11-14
+  benchmark (`MIMO_BENCHMARK_RESULTS.md`).
+- A workflow button (`Timed lyrics`, `Scene changes`, `Feelings` (`MiMo
+  feelings` until 2026-11-15), `Full assist`) resolves to a set of these ids. Confirmation shows the resolved
   set, per-contract, before any process starts.
 
 ### Eligible is not the same as implemented
@@ -109,21 +117,37 @@ The four workflow buttons map to output lanes and stages as follows:
 | --- | --- | --- |
 | Timed lyrics | lyrics only | measured analysis, local Whisper, conditional Codex wording review only when no authored source is found, local MMS alignment, deterministic planner support |
 | Scene changes | scene switches only | measured analysis and deterministic planner |
-| MiMo feelings | semantic cues only | measured analysis, OpenRouter MiMo over the track audio, deterministic planner |
+| Feelings | semantic cues only | measured analysis, the `TC-SEMANTIC` model on OpenRouter over the track audio (Gemini 3.8 Flash by default), deterministic planner |
 | Full assist | all three lanes | the union of the preceding stages |
 
-### What a `TC-SEMANTIC` call is told and what it may cost (2026-11-14)
+### What a `TC-SEMANTIC` call is told and what it may cost (2026-11-14, per model since 2026-11-15)
 
-The OpenRouter request for `TC-SEMANTIC` carries `max_tokens: 16000` (reasoning
-included) and no `reasoning` setting; the cap is part of the request identity
-(§5 rule 7). Before Start the confirmation shows the call's estimated cost,
-built on completion tokens from a dated price table (`core::assist::cost`),
-under the route row; a model with no listed price shows only the cap, never a
-guessed figure. A response that is cut off, empty, off-schema or off-scale is a
+The OpenRouter request for `TC-SEMANTIC` carries the model row's `max_tokens`
+(16 000 for both rows, reasoning included) and no `reasoning` setting; the cap
+is part of the request identity (§5 rule 7). What else is per model is one row
+(`tools/semantic_openrouter.py` `MODEL_PROFILES`, `core::assist::cost::MODELS`,
+pinned to each other): for Gemini the track is re-encoded to MP3 with every tag
+dropped and no `temperature` is sent, both in the identity; for MiMo and any
+model with no row the request is exactly what it was. Before Start the
+confirmation shows the call's estimated cost from that dated table, under the
+route row; a model with no listed price shows only the cap, never a guessed
+figure. A response that is cut off, empty, off-schema or off-scale is a
 failed run: the contract fails (fallback `none`), nothing is cached, and the
-failure names what the provider billed. Details and the numbers behind them:
-`ASSIST_PIPELINE.md`, "The MiMo feelings request", and `DIVERGENCES.md`, "The
-MiMo lane's request".
+failure names what the provider billed.
+
+`zdr_required` (default true for this contract) routes Gemini 3.8 Flash to
+Google Vertex only, its one ZDR provider on OpenRouter (2026-11-15). Those
+endpoints do not list `temperature`, which is why the Gemini row sends none:
+with `require_parameters: true` a sent `temperature` would leave no endpoint.
+
+A cached catalog fetched before the day this build records a model as listed
+(`cost::MODELS` `prices_listed_on`) cannot show the model is gone, so preflight
+reads its absence as "Catalog older than this model; refresh it" rather than
+§5 invariant 4's refusal; a catalog fetched since still refuses by name.
+
+Details and the numbers behind them: `ASSIST_PIPELINE.md`, "The feelings
+request" and "Gemini 3.8 Flash through OpenRouter", and `DIVERGENCES.md`, "The
+MiMo lane's request" and "The listening lane's model".
 
 ## 2. Non-secret preferences record
 
@@ -224,7 +248,7 @@ Dialog flows:
 | --- | --- | --- |
 | E1 | env of unrelated children (`ffmpeg`, `kdialog`/`zenity`, `codex`, local analysis) | `external_analysis.py::_safe_local_env` already strips every variable whose name contains `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CREDENTIAL`, `AUTH`, and only `_openrouter_env` re-adds the one authorized key. Extend the same rule to the Rust side: the app removes `OPENROUTER_API_KEY` from its own environment after the startup import, so no child can inherit it by accident. Note this needs `std::env::remove_var`, which is `unsafe` in edition 2024 — it must run before any thread starts and get a `SAFETY:` comment and an `AGENTS.md` unsafe-inventory row |
 | E2 | `argv` (visible in `/proc/*/cmdline` to the same user, and in `ps` output pasted into a bug report) | secrets are passed only through the child's environment. No flag ever takes a key. `AssistSpec` builds argv from paths, mode, duration and `--zdr`, and that stays true |
-| E3 | logs and the job log file | `mimo_openrouter.py` already logs the request with `"Authorization": "Bearer <redacted>"`. Every new request-echo path does the same. No log line prints an environment map |
+| E3 | logs and the job log file | `semantic_openrouter.py` (formerly `mimo_openrouter.py`) already logs the request with `"Authorization": "Bearer <redacted>"`. Every new request-echo path does the same. No log line prints an environment map |
 | E4 | analysis manifests / dry-run output | `assist --dry-run` reports `"credentials": "environment only; omitted"`, asserted by `tools/support_bundle_check.sh`. The execution snapshot (§6) records `credential_present: bool` and `credential_fingerprint`, never `lookup_id` if it would expose an account label unnecessarily |
 | E5 | `.musi` project files | credentials and `lookup_id` are user configuration, never project content. Projects carry the execution snapshot only |
 | E6 | model/catalog cache under `$XDG_CACHE_HOME` | catalog responses are normalized to a bounded allowlist of fields before writing. Response headers are never persisted. Catalog strings are untrusted display data and never become paths or shell fragments |

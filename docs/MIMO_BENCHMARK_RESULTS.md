@@ -1,6 +1,17 @@
 # MiMo v2.5 description benchmark — results of the first live run
 
-Read this before changing how the application's MiMo lane chunks, prompts or
+**Since 2026-11-15 the application's listening lane runs on Gemini 3.8
+Flash** (operator's choice; `ASSIST_PIPELINE.md`, "Gemini 3.8 Flash through
+OpenRouter"); MiMo stays selectable as experimental, and this file is the
+evidence its suitability row cites. What it found about prompting, the cap and
+cost carried over to the lane as a whole. The harness itself still targets
+MiMo; pointing it at another model is more than one line (the model constant
+in `matrix.py`, a price row in `cost.py` or its spending stop projects 0 USD,
+and its fixed temperature 0.2, which Google advises against for Gemini 3 and
+which, with the harness's `require_parameters`, narrows routing to the
+endpoints that list `temperature`, Google AI Studio's).
+
+Read this before changing how the application's semantic lane chunks, prompts or
 shapes its request. The design, hypotheses and gates are in
 [`MIMO_BENCHMARK_PLAN.md`](MIMO_BENCHMARK_PLAN.md); this file is what the run
 said. Update it in the same commit as a re-score that changes a number here

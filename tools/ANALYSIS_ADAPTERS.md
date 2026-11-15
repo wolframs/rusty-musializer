@@ -250,19 +250,24 @@ reject an unknown header/version, wrong field count, invalid integer/base64,
 out-of-order or out-of-range timing, unknown scenes, oversized decoded fields,
 and duplicate IDs before replacing the last valid bridge.
 
-## MiMo semantic interpretation
+## Semantic interpretation (the listening model)
 
-Inspect the exact request shape without a key or network access:
+`tools/semantic_openrouter.py` (until 2026-11-15 `tools/mimo_openrouter.py`).
+The model comes from `--model` (the application passes the `TC-SEMANTIC`
+route's; `google/gemini-3.8-flash` by default since 2026-11-15, MiMo by choice).
+For Gemini the track is re-encoded with FFmpeg to MP3 before it is sent, so
+the dry run needs `ffmpeg` too. Inspect the exact request shape without a key
+or network access:
 
 ```console
-python3 tools/mimo_openrouter.py track.mp3 --duration 213.7 --dry-run \
+python3 tools/semantic_openrouter.py track.mp3 --duration 213.7 --dry-run \
   --request-dump request.redacted.json --zdr
 ```
 
 Submit an explicitly authorized analysis and atomically write its cache:
 
 ```console
-OPENROUTER_API_KEY=... python3 tools/mimo_openrouter.py \
+OPENROUTER_API_KEY=... python3 tools/semantic_openrouter.py \
   track.mp3 track.semantic-cache.json --duration 213.7 --zdr
 ```
 
@@ -270,7 +275,7 @@ OPENROUTER_API_KEY=... python3 tools/mimo_openrouter.py \
 pins routing to that eligible set. `--zdr` asks OpenRouter to restrict routing
 to Zero Data Retention endpoints, which can reduce provider availability.
 
-The MiMo cache is one atomic envelope containing:
+The semantic cache is one atomic envelope containing:
 
 - the deterministic cache key and credential-free request settings;
 - the raw OpenRouter response for audit/re-normalization;
