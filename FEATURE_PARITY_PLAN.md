@@ -80,9 +80,9 @@ needs a schema bump or an updated harness and a recorded reason:
   the Antigravity route the lyrics work already uses).
 - **The benchmark's truth waits for his ears**: row 2. He started the session
   on 2026-11-15 and found the key question hard ("both eb minor and F# fit parts of
-  this track"); those two are relative keys with the same notes, which the
-  session should not ask a listener to tell apart and the scorer should not
-  count as a miss.
+  this track"); those two are relative keys with the same notes. The scorer
+  already grades a relative answer apart from a wrong one; the session should
+  not make a listener choose between the two.
 - **The lead's ceiling rule, his to overrule** (2026-11-15): `--max-spend N`
   is the most a treatment run may newly send; what earlier runs may already
   have spent is reported on its own line, not counted. Reason: counting prior
