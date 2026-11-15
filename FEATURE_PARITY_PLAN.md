@@ -95,11 +95,13 @@ needs a schema bump or an updated harness and a recorded reason:
   benchmark harness is not pointed at Gemini (it needs a price row and its
   fixed temperature removed first); never tried for real: a Gemini refusal, a
   track near the size limit, a route without zero data retention.
-- **The benchmark's truth waits for his ears**: row 2. He started the session
-  on 2026-11-15 and found the key question hard ("both eb minor and F# fit parts of
-  this track"); those two are relative keys with the same notes. The scorer
-  already grades a relative answer apart from a wrong one; the session should
-  not make a listener choose between the two.
+- **The benchmark's truth is no longer waited for** (2026-11-15). He started
+  the Listening Lab session and found the key question hard ("both eb minor
+  and F# fit parts of this track": relative keys, one scale). With MiMo set
+  aside and nothing in the application using key, metre or instruments, his
+  answers are not needed; the session and its converter stay in
+  `tools/mimo_bench/` for a later benchmark of whichever model, and its key
+  question should then not make a listener choose between a relative pair.
 - **The lead's ceiling rule, his to overrule** (2026-11-15): `--max-spend N`
   is the most a treatment run may newly send; what earlier runs may already
   have spent is reported on its own line, not counted. Reason: counting prior
@@ -247,7 +249,7 @@ a CX ruling, not a preference.
 | # | Work | Ids | Size |
 | --- | --- | --- | --- |
 | 1 | **Review SX4, then revisit CX-4.** Track A's original session was rejected; track B is unreviewed. The new design review has four questions per track and a separate cut-quality question in the browser. Original CX-4 files/answers remain intact; do not unblind until both original sessions are complete. Tap-offset and 80/120/200 ms flash comparisons also remain unvalidated | SX4, CX-4 | operator listening |
-| 2 | **MiMo v2.5 capability benchmark** — operator's stated priority. The first live run is done (2026-11-14, 60 calls; `docs/MIMO_BENCHMARK_RESULTS.md`). **Waits for the operator's ears**: the Listening Lab session for key, metre and instruments is built (the two commands are in the results doc). After he has answered: run the converter, commit the ground-truth file, re-score, update the results doc and decide the suitability row for `xiaomi/mimo-v2.5` (it still says no benchmark has been run, and it feeds `suitability_revision`). The rest of MiMo is under **MiMo** below | — | operator listening, then one session |
+| 2 | **The listening model** — was the MiMo v2.5 capability benchmark, the operator's stated priority. Its first live run is done (2026-11-14, 60 calls; `docs/MIMO_BENCHMARK_RESULTS.md`), and on 2026-11-15 he set MiMo aside for Gemini 3.8 Flash without wanting a benchmark for the choice (the block above; archive, "The listening lane moves to Gemini 3.8 Flash"). Open: whether the plan the application suggests from Gemini's sections is good enough to act on unchecked; pointing the harness at Gemini needs a price row and its fixed temperature removed, and a new paid run needs his go-ahead | — | operator listening, then one session |
 | 3 | **The remaining CX rulings, in their stated order.** Review the implemented track-specific CX-5 scene thumbnails, then CX-1 marker rails and the proposal review queue (PXF-8), then CX-2 export variants (PXF-4 first, schema v2 — PXF-9) | CX-1, CX-2, CX-5 | large; four or five agents |
 | 4 | **Workflow friction and product opportunities** left from the user-perspective review | UX0-B06, B07, B10–B19; UX0-C05, C08, C09, C17; PXF-3, PXF-12, PXF-13 | medium |
 | 5 | **Durable-edit remainder, then the missing product surfaces, then honesty and gates** | B3; C2, C3, C5; D6, D8; E2, E3, E4; F1/F2/F3 remainder; G1, G2; GX-3, GX-4 | large |
@@ -552,17 +554,21 @@ one real video with it found these, each from a contact sheet:
     refused real job, a second model family, a lost answer, two callers at
     once, a cut-short download, an expired job.
 
-- **MiMo — the application's lane and the benchmark's remainder** (the truth
-  and the suitability row are row 2):
-  - Repeats 2 and 3 of most benchmark cells are not run.
-  - The estimate's line in the Start confirmation is cut off with an
-    ellipsis at the default width.
-  - Accepted from the last review, to fix only if it ever matters: the
-    "latest MiMo attempt failed" notice can be wrong when two helpers act on
-    one cache at the same moment (a success can remove a newer failure's
-    receipt), or when the wall clock is set back between attempts.
-  - Never tried for real: a real cut-off answer, a whole-length track, Start
-    pressed in the application itself.
+- **The listening lane and the benchmark's remainder** (the model question is
+  row 2; the lane runs on Gemini 3.8 Flash since 2026-11-15):
+  - Not known: whether the plan suggested from Gemini's sections can be acted
+    on unchecked. Three real answers showed one song cut well, one with a
+    section misjudged and a return placed 8 s early, and the same audio cut
+    differently when heard twice in one call.
+  - The benchmark's repeats 2 and 3 of most MiMo cells are not run, and are
+    not worth running for a model set aside.
+  - Accepted from the reviews, to fix only if it ever matters: the "latest
+    attempt failed" notice can be wrong when two helpers act on one cache at
+    the same moment or when the wall clock is set back between attempts; an
+    older build does not reuse a cache a newer build wrote.
+  - Never tried for real: a cut-off or refused answer from either model, a
+    track near the request's size limit, a route without zero data retention,
+    Start pressed in the application itself.
 
 - **WX — the window as a directing workstation** (2026-10-21). Parts, order,
   decisions and status live in [`docs/WORKSTATION.md`](docs/WORKSTATION.md);
