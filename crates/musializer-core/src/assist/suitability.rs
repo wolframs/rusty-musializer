@@ -12,14 +12,16 @@
 //!   an allowlist of *evidence*, not of models: a model nobody has measured is
 //!   usable behind `catalog.show_experimental` and is never offered by default.
 //! - **A `recommended` row must carry an evidence date and the prompt/schema
-//!   version it was benchmarked at.** Without those, "recommended" is an
-//!   opinion, and §6 says a run whose provenance is inexact "must not be
-//!   accepted as benchmark evidence". The test enforces it on the table, so a
-//!   future row cannot be promoted by editing one word.
-//! - **Rows are seeded only from evidence this repository holds.** Every row
-//!   below cites `docs/LYRICS_TIMING_BENCHMARK_RESULTS.md` or names itself
-//!   unmeasured. There are three rows because there are three measurements; the
-//!   table is short on purpose.
+//!   version it was measured or chosen at.** Without those, "recommended" is
+//!   an untraceable opinion, and §6 says a run whose provenance is inexact
+//!   "must not be accepted as benchmark evidence". The test enforces it on the
+//!   table, so a future row cannot be promoted by editing one word.
+//! - **Rows are seeded only from grounds this repository records**: a
+//!   measurement (`docs/LYRICS_TIMING_BENCHMARK_RESULTS.md`,
+//!   `docs/MIMO_BENCHMARK_RESULTS.md`), or an operator's decision recorded in
+//!   `docs/DIVERGENCES.md` with its date and words. The evidence line says
+//!   which of the two it is, so an operator's judgment is never read as a
+//!   benchmark. The table is short on purpose.
 //!
 //! It is a `const` table rather than a JSON asset because `musializer-core`
 //! opens no files, and because a mistyped contract id should be a compile error
@@ -32,13 +34,14 @@ use crate::assist::contracts::ContractId;
 /// The overlay's version, recorded as `suitability_revision` in an execution
 /// snapshot (§6). Bump the date when a row changes so an old snapshot stays
 /// interpretable.
-pub const OVERLAY_REVISION: &str = "musializer.assist-suitability/2026-08-05";
+pub const OVERLAY_REVISION: &str = "musializer.assist-suitability/2026-11-15";
 
 /// How fit a model is for a contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Suitability {
-    /// Measured on this repository's own evidence and offered by default.
+    /// Measured on this repository's own evidence, or chosen by the operator
+    /// on recorded grounds, and offered by default.
     Recommended,
     /// Usable, but unmeasured or only partly measured. Hidden unless
     /// `catalog.show_experimental` is on.
@@ -220,21 +223,45 @@ pub const OVERLAY: &[SuitabilityRow] = &[
             "validated only on speech, which the web evidence predicted",
         ],
     },
-    // In production use for MiMo feelings and never benchmarked. It is here so
-    // the absence of evidence is stated rather than inferred; without a row it
-    // would resolve to experimental anyway, and this says why.
+    // The listening lane's model since 2026-11-15, on the operator's word and
+    // not on a benchmark run here: "the gemini flash series has since
+    // superseded it in usefulness by a lot", and, asked whether to measure
+    // first, "Gemini Flash 3.8, no competition ;)" (docs/DIVERGENCES.md).
+    // The prompt and schema are the ones it was chosen to run under; three
+    // calls on two excerpts confirmed the request works, which is not a
+    // measurement of its listening.
+    SuitabilityRow {
+        model_id: "google/gemini-3.8-flash",
+        contract: ContractId::Semantic,
+        status: Suitability::Recommended,
+        evidence_date: Some("2026-11-15"),
+        evidence: "operator's judgment from his own use (2026-11-15, docs/DIVERGENCES.md), not a benchmark run here; three confirming calls in docs/ASSIST_PIPELINE.md",
+        prompt_version: Some("musializer-semantic-score/v2"),
+        schema_version: Some("musializer.semantic-score/v1"),
+        audio_scope: AudioScope::WholeTrack,
+        languages: &["*"],
+        limitations: &[
+            "not benchmarked here: its section boundaries and feel numbers have been read on two excerpts only",
+            "identical audio heard twice in one call was segmented differently (2026-11-15), so a re-run can move boundaries",
+            "sends the complete track, so TC-SEMANTIC's audio-leaves-machine confirmation applies per job",
+        ],
+    },
+    // The lane's model until 2026-11-15, benchmarked on 2026-11-14 at n = 1
+    // per cell. Kept selectable for anyone who chooses it.
     SuitabilityRow {
         model_id: "xiaomi/mimo-v2.5",
         contract: ContractId::Semantic,
         status: Suitability::Experimental,
-        evidence_date: None,
-        evidence: "in use by tools/mimo_openrouter.py; no benchmark has been run",
-        prompt_version: None,
-        schema_version: None,
+        evidence_date: Some("2026-11-14"),
+        evidence: "docs/MIMO_BENCHMARK_RESULTS.md: first live run, one sample per cell; superseded for this lane by the operator on 2026-11-15",
+        prompt_version: Some("musializer-semantic-score/v2"),
+        schema_version: Some("musializer.semantic-score/v1"),
         audio_scope: AudioScope::WholeTrack,
         languages: &["*"],
         limitations: &[
-            "never benchmarked: no measured evidence for or against it",
+            "tempo no better than chance (accept rate 0-20 % against 27-32 % chance)",
+            "quotes lyrics that are not there: 15 % of quoted phrases matched no line, 22 % on one track in this lane's shape",
+            "reasons before it answers; uncapped, one call ran to 65 536 tokens of whitespace",
             "sends the complete track, so TC-SEMANTIC's audio-leaves-machine confirmation applies per job",
         ],
     },
@@ -362,10 +389,16 @@ mod tests {
                     Some("2026-08-04")
                 ),
                 (
+                    "google/gemini-3.8-flash",
+                    ContractId::Semantic,
+                    Suitability::Recommended,
+                    Some("2026-11-15")
+                ),
+                (
                     "xiaomi/mimo-v2.5",
                     ContractId::Semantic,
                     Suitability::Experimental,
-                    None
+                    Some("2026-11-14")
                 ),
             ]
         );
@@ -433,5 +466,6 @@ mod tests {
             );
         }
         assert!(OVERLAY_REVISION.starts_with("musializer.assist-suitability/"));
+        assert_eq!(OVERLAY_REVISION, "musializer.assist-suitability/2026-11-15");
     }
 }

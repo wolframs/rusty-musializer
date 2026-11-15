@@ -2489,8 +2489,8 @@ fn route_notes(plan: &ExecutionPlan) -> Vec<(String, raylib::prelude::Color)> {
 /// What the semantic call should cost, under its route row, before Start.
 ///
 /// Built on completion tokens rather than audio seconds
-/// (`musializer_core::assist::cost`): the benchmark found a whole-track MiMo
-/// call is nearly all reasoning output. The `assist cost:` report line carries
+/// (`musializer_core::assist::cost`): the MiMo benchmark found a whole-track
+/// call is mostly reasoning output. The `assist cost:` report line carries
 /// the same numbers, so a capture can check the line it cannot read.
 fn semantic_cost_line(entry: &ContractSnapshot, duration_seconds: Option<f64>) -> Option<String> {
     use musializer_core::assist::{contracts::ContractId, contracts::RouteType, cost};
@@ -2507,12 +2507,12 @@ fn semantic_cost_line(entry: &ContractSnapshot, duration_seconds: Option<f64>) -
             estimate.usd_typical[0],
             estimate.usd_typical[1],
             estimate.usd_max,
-            cost::SEMANTIC_MAX_COMPLETION_TOKENS,
+            estimate.max_completion_tokens,
         ),
         None => format!(
             "model={} seconds={duration:.3} unpriced cap={}",
             entry.model_id,
-            cost::SEMANTIC_MAX_COMPLETION_TOKENS,
+            cost::max_completion_tokens(&entry.model_id),
         ),
     });
     Some(cost::semantic_line(&entry.model_id, duration))
@@ -4638,7 +4638,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_mimo_route_shows_its_cost_and_no_other_route_does() {
+    fn the_semantic_route_shows_its_cost_and_no_other_route_does() {
         use musializer_core::assist::{contracts::ContractId, settings::AssistSettings};
         let snapshot = execution::resolve(
             &AssistSettings::default(),
@@ -4650,10 +4650,10 @@ mod tests {
         for entry in &snapshot.contracts {
             let line = semantic_cost_line(entry, Some(200.0));
             if entry.contract == ContractId::Semantic {
-                assert_eq!(entry.model_id, "xiaomi/mimo-v2.5");
+                assert_eq!(entry.model_id, "google/gemini-3.8-flash");
                 assert_eq!(
                     line.as_deref(),
-                    Some("Estimated cost: about 0.004\u{2013}0.023 USD, at most 0.033 USD (answer capped at 16000 tokens)")
+                    Some("Cost: about 0.013\u{2013}0.040 USD, at most 0.073 USD (16000-token cap)")
                 );
                 priced += 1;
             } else {

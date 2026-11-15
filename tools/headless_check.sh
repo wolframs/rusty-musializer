@@ -2840,7 +2840,7 @@ fi
 #   local     a Timed-lyrics job. Every task stays on this machine except the
 #             Codex wording review, which sends bounded JSON; the heading says
 #             so and no row is tinted as audio-leaving.
-#   remote    a MiMo job with a stubbed credential in a private 0600 file. One
+#   remote    a feelings job with a stubbed credential in a private 0600 file. One
 #             task sends the whole track, and both the heading and that row are
 #             warning-tinted.
 #   no-key    the same graph with no credential anywhere, which must refuse
@@ -2923,9 +2923,10 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
         *"TC-COARSE=local-proc/whisper.cpp[local-only]"*"TC-ALIGN=local-proc/mms-ctc[local-only]"*"audio-leaves=false"*"blocks=none"*) ;;
         *) echo "FAIL: the local graph is not local: $ROUTE_LOCAL" >&2; SWEEP_FAILED=1 ;;
     esac
-    # A MiMo job with a key resolves the OpenRouter route and blocks nothing.
+    # A feelings job with a key resolves the OpenRouter route (the recommended
+    # model since 2026-11-15) and blocks nothing.
     case "$ROUTE_REMOTE" in
-        *"TC-SEMANTIC=openrouter/xiaomi/mimo-v2.5[audio-leaves-machine]"*"credential=file"*"blocks=none"*) ;;
+        *"TC-SEMANTIC=openrouter/google/gemini-3.8-flash[audio-leaves-machine]"*"credential=file"*"blocks=none"*) ;;
         *) echo "FAIL: the remote graph did not resolve: $ROUTE_REMOTE" >&2; SWEEP_FAILED=1 ;;
     esac
     # And without one it refuses, naming the contract and the missing piece
@@ -4798,10 +4799,19 @@ import json, pathlib, sys
 root = pathlib.Path(sys.argv[1]) / "experimental"
 root.mkdir(parents=True, exist_ok=True)
 # Nothing but the toggle differs between the two, so the pair isolates it.
+# The configured experimental model is a stored MiMo route: since 2026-11-15
+# the recommended TC-SEMANTIC model is Gemini, so a user still on MiMo is the
+# one who chose it and kept it, which is the state this check is about.
+mimo = {"contract": "TC-SEMANTIC", "route_type": "openrouter",
+        "runtime_id": "openrouter", "model_id": "xiaomi/mimo-v2.5",
+        "fallback": "none",
+        "provider": {"allow_fallbacks": False, "zdr_required": True}}
 for name, show in (("off", False), ("on", True)):
     (root / f"assist-{name}.json").write_text(json.dumps({
         "schema": "musializer.assist-settings/v1",
-        "active_profile": "recommended",
+        "active_profile": "kept-mimo",
+        "profiles": [{"id": "kept-mimo", "label": "Kept MiMo",
+                      "routes": {"TC-SEMANTIC": mimo}}],
         "catalog": {"show_experimental": show},
     }, indent=2) + "\n")
 PYEXPERIMENTAL

@@ -139,7 +139,7 @@ assert local["execution_snapshot"]["credential_present"] is False, \
 # The resolved route really reached the flags, rather than the helper's old
 # hard-coded model and default provider policy.
 routes = remote["resolved_routes"]
-assert routes["semantic_model"] == "xiaomi/mimo-v2.5", routes
+assert routes["semantic_model"] == "google/gemini-3.8-flash", routes
 assert routes["semantic_zdr"] is True, "the audio contract's ZDR default was lost"
 assert routes["semantic_provider"]["allow_fallbacks"] is False, routes
 assert routes["codex_model"] == "Codex default", routes

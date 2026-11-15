@@ -83,59 +83,81 @@ def rust_number_const(path: Path, name: str) -> float:
     return float(match.group(1).replace("_", ""))
 
 
-class MimoCostEstimate(unittest.TestCase):
-    """The estimate the confirmation shows and the one the helper records."""
+class SemanticCostEstimate(unittest.TestCase):
+    """The estimate the confirmation shows and the one the helper records,
+    per model: `cost.rs::MODELS` and `semantic_openrouter.MODEL_PROFILES`."""
 
-    def test_the_cap_is_the_one_the_helper_sends(self) -> None:
-        self.assertEqual(rust_number_const(COST_RS, "SEMANTIC_MAX_COMPLETION_TOKENS"),
-                         semantic_openrouter.MAX_COMPLETION_TOKENS)
+    ROW = re.compile(
+        r'ModelCost\s*\{\s*model_id:\s*"([^"]+)",\s*'
+        r'prompt_usd_per_million:\s*([0-9.]+),\s*'
+        r'audio_usd_per_million:\s*([0-9.]+),\s*'
+        r'completion_usd_per_million:\s*([0-9.]+),\s*'
+        r'prices_listed_on:\s*"([^"]+)",\s*'
+        r'max_completion_tokens:\s*([0-9_]+),\s*'
+        r'audio_tokens_per_second:\s*([0-9.]+),\s*'
+        r'prompt_text_tokens:\s*([0-9_]+),\s*'
+        r'typical_completion_tokens:\s*\[([0-9_]+),\s*([0-9_]+)\]\s*\}')
 
-    def test_the_token_model_is_the_same_on_both_sides(self) -> None:
-        self.assertEqual(rust_number_const(COST_RS, "AUDIO_TOKENS_PER_SECOND"),
-                         semantic_openrouter.AUDIO_TOKENS_PER_SECOND)
-        self.assertEqual(rust_number_const(COST_RS, "PROMPT_TEXT_TOKENS"),
-                         semantic_openrouter.PROMPT_TEXT_TOKENS)
-        self.assertEqual(
-            (rust_number_const(COST_RS, "TYPICAL_COMPLETION_TOKENS_LOW"),
-             rust_number_const(COST_RS, "TYPICAL_COMPLETION_TOKENS_HIGH")),
-            semantic_openrouter.TYPICAL_COMPLETION_TOKENS)
-        self.assertEqual(rust_str_const(COST_RS, "PRICES_LISTED_ON"),
-                         semantic_openrouter.PRICES_LISTED_ON)
+    def rust_rows(self) -> dict[str, tuple]:
+        rows = self.ROW.findall(rust_source(COST_RS))
+        self.assertTrue(rows, "cost.rs no longer declares its MODELS rows")
 
-    def test_the_price_table_is_the_same_table(self) -> None:
-        rows = re.findall(
-            r'ModelPrice\s*\{\s*model_id:\s*"([^"]+)",\s*prompt_usd_per_million:\s*([0-9.]+),'
-            r'\s*completion_usd_per_million:\s*([0-9.]+)\s*\}',
-            rust_source(COST_RS))
-        self.assertTrue(rows, "cost.rs no longer declares its PRICES rows")
-        self.assertEqual(
-            {model: (float(prompt), float(completion)) for model, prompt, completion in rows},
-            semantic_openrouter.PRICES_USD_PER_MILLION)
+        def n(text: str) -> float:
+            return float(text.replace("_", ""))
+        return {row[0]: (n(row[1]), n(row[2]), n(row[3]), row[4], n(row[5]), n(row[6]),
+                         n(row[7]), (n(row[8]), n(row[9]))) for row in rows}
 
-    def test_the_helper_computes_the_number_the_rust_test_pins(self) -> None:
-        # cost.rs pins 200 s at 1 680 input tokens and 0.003672 / 0.022672 /
-        # 0.032672 USD; the helper must record the same figures.
-        estimate = semantic_openrouter.estimate_cost("xiaomi/mimo-v2.5", 200.0)
-        self.assertEqual(estimate["input_tokens"], 1_680)
-        self.assertEqual(estimate["usd_typical"], [0.003672, 0.022672])
-        self.assertEqual(estimate["usd_max"], 0.032672)
+    def test_the_table_is_the_same_table(self) -> None:
+        python = {
+            model: (p.prompt_usd, p.audio_usd, p.completion_usd, p.prices_listed_on,
+                    p.max_completion_tokens, p.audio_tokens_per_second,
+                    p.prompt_text_tokens, p.typical_completion_tokens)
+            for model, p in semantic_openrouter.MODEL_PROFILES.items() if p.priced()
+        }
+        self.assertEqual(self.rust_rows(), python)
+        self.assertEqual(set(python), {"xiaomi/mimo-v2.5", "google/gemini-3.8-flash"})
+
+    def test_an_unlisted_model_has_the_same_cap_on_both_sides(self) -> None:
+        self.assertEqual(rust_number_const(COST_RS, "DEFAULT_MAX_COMPLETION_TOKENS"),
+                         semantic_openrouter.DEFAULT_MAX_COMPLETION_TOKENS)
+        self.assertEqual(semantic_openrouter.max_completion_tokens("acme/unlisted"),
+                         semantic_openrouter.DEFAULT_MAX_COMPLETION_TOKENS)
+
+    def test_the_helper_computes_the_numbers_the_rust_tests_pin(self) -> None:
+        # cost.rs pins MiMo at 200 s (1 680 input tokens, 0.003672 / 0.022672 /
+        # 0.032672 USD) and Gemini at 300 s (11 250, 0.01546875 / 0.04228125 /
+        # 0.07528125); the helper records the same figures, to the millionth.
+        mimo = semantic_openrouter.estimate_cost("xiaomi/mimo-v2.5", 200.0)
+        self.assertEqual(mimo["input_tokens"], 1_680)
+        self.assertEqual(mimo["usd_typical"], [0.003672, 0.022672])
+        self.assertEqual(mimo["usd_max"], 0.032672)
+        gemini = semantic_openrouter.estimate_cost("google/gemini-3.8-flash", 300.0)
+        self.assertEqual(gemini["input_tokens"], 11_250)
+        self.assertEqual(gemini["usd_typical"], [0.015469, 0.042281])
+        self.assertEqual(gemini["usd_max"], 0.075281)
         source = rust_source(COST_RS)
-        for figure in ("1_680", "0.003_672", "0.022_672", "0.032_672"):
+        for figure in ("1_680", "0.003_672", "0.022_672", "0.032_672",
+                       "11_250", "0.015_468_75", "0.042_281_25", "0.075_281_25"):
             self.assertIn(figure, source)
 
 
-class MimoAtMostRoundsUp(unittest.TestCase):
+class SemanticAtMostRoundsUp(unittest.TestCase):
     """A maximum is rounded up at the shown precision, by one rule on both sides."""
 
     def test_both_sides_show_0_033_for_a_capped_call_on_100_seconds(self) -> None:
         estimate = semantic_openrouter.estimate_cost("xiaomi/mimo-v2.5", 100.0)
         self.assertIn("(at most 0.033 USD)", semantic_openrouter._cost_clause({}, estimate))
         source = rust_source(COST_RS)
-        self.assertIn('semantic_estimate("xiaomi/mimo-v2.5", 100.0)', source)
-        self.assertIn("at most 0.033 USD (answer capped", source)
+        self.assertIn("semantic_estimate(MIMO, 100.0)", source)
+        self.assertIn("at most 0.033 USD (16000-token cap)", source)
         # The same tolerance: noise below a millionth of the last place.
         self.assertIn("((usd * 1000.0) - 1.0e-6).ceil()", source)
         self.assertEqual(semantic_openrouter.ceil_usd(0.0320000000001, 3), 0.032)
+
+    def test_both_sides_show_0_076_for_gemini_on_300_seconds(self) -> None:
+        estimate = semantic_openrouter.estimate_cost("google/gemini-3.8-flash", 300.0)
+        self.assertIn("(at most 0.076 USD)", semantic_openrouter._cost_clause({}, estimate))
+        self.assertIn("at most 0.076 USD (16000-token cap)", rust_source(COST_RS))
 
 
 class BridgeHeaderConstants(unittest.TestCase):

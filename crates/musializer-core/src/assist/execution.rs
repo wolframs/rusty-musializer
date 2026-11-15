@@ -112,11 +112,13 @@ pub fn format_rfc3339_utc(seconds: i64) -> String {
 /// The built-in `recommended` profile (§2: "`recommended` is built in and
 /// unwritable").
 ///
-/// Seeded **only** from evidence this repository holds, the same rule
-/// `assist::suitability` follows: `mms-ctc` for `TC-ALIGN` is the benchmarked
-/// aligner, `whisper.cpp` is the coarse lane the production path already runs,
-/// `xiaomi/mimo-v2.5` is what `tools/semantic_openrouter.py` uses, and the planner is
-/// the deterministic one.
+/// Seeded **only** from recorded grounds, the same rule `assist::suitability`
+/// follows: `mms-ctc` for `TC-ALIGN` is the benchmarked aligner, `whisper.cpp`
+/// is the coarse lane the production path already runs,
+/// `google/gemini-3.8-flash` for `TC-SEMANTIC` is the operator's choice of
+/// 2026-11-15 (it replaced `xiaomi/mimo-v2.5`, which stays selectable; a
+/// settings file that stores a MiMo route keeps it, one that stores none
+/// inherits this), and the planner is the deterministic one.
 ///
 /// `TC-VERIFY` deliberately has **no** recommended route. Independent timing
 /// verification was never benchmarked here, and inventing a default for it would
@@ -146,7 +148,7 @@ pub fn recommended_route(contract: ContractId) -> Option<Route> {
         ContractId::Semantic => Some(route(
             RouteType::OpenRouter,
             "openrouter",
-            Some("xiaomi/mimo-v2.5"),
+            Some("google/gemini-3.8-flash"),
         )),
         ContractId::Plan => Some(route(RouteType::Builtin, "builtin-planner", None)),
         ContractId::Verify => None,
@@ -2040,7 +2042,7 @@ mod tests {
         let semantic = snapshot.contract(ContractId::Semantic).expect("composed");
         assert_eq!(semantic.boundary_applied, Boundary::AudioLeavesMachine);
         assert!(semantic.boundary_confirmed);
-        assert_eq!(semantic.model_id, "xiaomi/mimo-v2.5");
+        assert_eq!(semantic.model_id, "google/gemini-3.8-flash");
         let provider = semantic.provider_constraints.as_ref().expect("constraints");
         assert!(provider.zdr_required, "an audio contract defaults to ZDR");
         assert!(!provider.allow_fallbacks);
@@ -2527,7 +2529,7 @@ mod tests {
             },
             ExecutionBlock::ModalityLost {
                 contract: ContractId::Semantic,
-                model_id: "xiaomi/mimo-v2.5".to_string(),
+                model_id: "google/gemini-3.8-flash".to_string(),
                 modality: "audio",
             },
             ExecutionBlock::CodexNotFound(ContractId::Wording),
@@ -2652,7 +2654,7 @@ mod tests {
         let (revision, models) = parse_catalog_facts(
             br#"{"schema_version":"musializer.openrouter-catalog/v1",
                  "fetched_at_utc":"2026-08-05T10:00:00Z",
-                 "models":[{"id":"xiaomi/mimo-v2.5","input_modalities":["audio","text"]},
+                 "models":[{"id":"google/gemini-3.8-flash","input_modalities":["audio","text"]},
                            {"id":"openai/gpt-4o"},{"name":"no id"}]}"#,
         )
         .expect("a well-formed catalog");
@@ -2661,7 +2663,7 @@ mod tests {
             "musializer.openrouter-catalog/v1@2026-08-05T10:00:00Z"
         );
         let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
-        assert_eq!(ids, vec!["xiaomi/mimo-v2.5", "openai/gpt-4o"]);
+        assert_eq!(ids, vec!["google/gemini-3.8-flash", "openai/gpt-4o"]);
         assert_eq!(models[0].input_modalities, vec!["audio", "text"]);
         // A row that reports no modalities at all is "not reported", and must
         // never be read as a refusal: `tools/provider_catalog.py` normalizes a
@@ -2789,7 +2791,7 @@ mod tests {
         );
         assert_eq!(blocks.len(), 1);
         assert!(matches!(blocks[0], ExecutionBlock::NoEndpoint { .. }));
-        assert!(blocks[0].sentence().contains("xiaomi/mimo-v2.5"));
+        assert!(blocks[0].sentence().contains("google/gemini-3.8-flash"));
     }
 
     fn catalog_row(id: &str, inputs: &[&str]) -> CatalogModelFacts {
@@ -2810,7 +2812,10 @@ mod tests {
         assert!(preflight(
             &snapshot,
             &PreflightFacts {
-                catalog_models: Some(vec![catalog_row("xiaomi/mimo-v2.5", &["audio", "text"])]),
+                catalog_models: Some(vec![catalog_row(
+                    "google/gemini-3.8-flash",
+                    &["audio", "text"]
+                )]),
                 ..PreflightFacts::with_credential(true)
             },
         )
@@ -2820,7 +2825,7 @@ mod tests {
         assert!(preflight(
             &snapshot,
             &PreflightFacts {
-                catalog_models: Some(vec![catalog_row("xiaomi/mimo-v2.5", &[])]),
+                catalog_models: Some(vec![catalog_row("google/gemini-3.8-flash", &[])]),
                 ..PreflightFacts::with_credential(true)
             },
         )
@@ -2841,7 +2846,7 @@ mod tests {
         let blocks = preflight(
             &snapshot,
             &PreflightFacts {
-                catalog_models: Some(vec![catalog_row("xiaomi/mimo-v2.5", &["text"])]),
+                catalog_models: Some(vec![catalog_row("google/gemini-3.8-flash", &["text"])]),
                 ..PreflightFacts::with_credential(true)
             },
         );
@@ -2850,14 +2855,14 @@ mod tests {
             blocks[0],
             ExecutionBlock::ModalityLost {
                 contract: ContractId::Semantic,
-                model_id: "xiaomi/mimo-v2.5".to_string(),
+                model_id: "google/gemini-3.8-flash".to_string(),
                 modality: "audio",
             }
         );
         // A distinct, actionable sentence: not "not found", and it names both
         // the model and what it stopped being able to do.
         let sentence = blocks[0].sentence();
-        assert!(sentence.contains("xiaomi/mimo-v2.5"), "{sentence}");
+        assert!(sentence.contains("google/gemini-3.8-flash"), "{sentence}");
         assert!(sentence.contains("accepting audio input"), "{sentence}");
         assert!(!sentence.contains("does not list"), "{sentence}");
         assert_eq!(blocks[0].label(), MODALITY_LOST);
@@ -2990,7 +2995,7 @@ mod tests {
         );
 
         // And a constraint change with the same model is also a different route.
-        route.model_id = Some("xiaomi/mimo-v2.5".to_string());
+        route.model_id = Some("google/gemini-3.8-flash".to_string());
         let mut provider = Provider::defaults_for(ContractId::Semantic);
         provider.zdr_required = false;
         route.provider = Some(provider);
@@ -3222,5 +3227,82 @@ mod tests {
         // And the pair, end to end: everything this side writes survives the
         // tolerant read unchanged.
         assert_eq!(ExecutionSnapshot::parse_observed(&value).unwrap(), snapshot);
+    }
+
+    /// The listening model's move (2026-11-15) needs no migration step, and
+    /// these pin why: the settings file is sparse. A file that stores no
+    /// `TC-SEMANTIC` route (the operator's own, among others) inherits the
+    /// recommended route, which now names Gemini; a file that stores a MiMo
+    /// route stores a choice, and the choice stays. Both as files an earlier
+    /// build wrote, byte for byte.
+    #[test]
+    fn the_old_default_moves_to_gemini_and_a_stored_mimo_route_stays() {
+        let inherited = AssistSettings::parse(
+            br#"{"schema":"musializer.assist-settings/v1","active_profile":"recommended","catalog":{"network_allowed":true,"refresh_on_open":true,"show_experimental":true}}"#,
+        )
+        .expect("an earlier build's file reads");
+        let resolved = resolve_route(&inherited, ContractId::Semantic);
+        assert_eq!(resolved.origin, RouteOrigin::Recommended);
+        assert_eq!(resolved.model_label(), "google/gemini-3.8-flash");
+        assert_eq!(
+            resolve(&inherited, WorkflowKind::Mimo, true, &facts())
+                .contract(ContractId::Semantic)
+                .unwrap()
+                .model_id,
+            "google/gemini-3.8-flash"
+        );
+
+        // A profile that overrides another contract but not this one still
+        // inherits: only a stored TC-SEMANTIC route is a choice of model.
+        let other_override = AssistSettings::parse(
+            br#"{"schema":"musializer.assist-settings/v1","active_profile":"custom","profiles":[{"id":"custom","label":"Custom","routes":{"TC-PLAN":{"contract":"TC-PLAN","route_type":"codex","runtime_id":"codex","reasoning_effort":"medium","fallback":"none"}}}]}"#,
+        )
+        .expect("reads");
+        assert_eq!(
+            resolve_route(&other_override, ContractId::Semantic).model_label(),
+            "google/gemini-3.8-flash"
+        );
+
+        let chose_mimo = AssistSettings::parse(
+            br#"{"schema":"musializer.assist-settings/v1","active_profile":"custom","profiles":[{"id":"custom","label":"Custom","routes":{"TC-SEMANTIC":{"contract":"TC-SEMANTIC","route_type":"openrouter","runtime_id":"openrouter","model_id":"xiaomi/mimo-v2.5","fallback":"none","provider":{"allow_fallbacks":false,"zdr_required":true}}}}]}"#,
+        )
+        .expect("reads");
+        let kept = resolve_route(&chose_mimo, ContractId::Semantic);
+        assert_eq!(kept.origin, RouteOrigin::Override);
+        assert_eq!(kept.model_label(), "xiaomi/mimo-v2.5");
+        let snapshot = resolve(&chose_mimo, WorkflowKind::Mimo, true, &facts());
+        assert_eq!(
+            snapshot.contract(ContractId::Semantic).unwrap().model_id,
+            "xiaomi/mimo-v2.5"
+        );
+        // Recorded as what it now is: selectable, and experimental.
+        assert_eq!(
+            suitability::status("xiaomi/mimo-v2.5", ContractId::Semantic),
+            suitability::Suitability::Experimental
+        );
+        assert_eq!(
+            suitability::status("google/gemini-3.8-flash", ContractId::Semantic),
+            suitability::Suitability::Recommended
+        );
+        assert_eq!(
+            snapshot.suitability_revision.as_deref(),
+            Some(suitability::OVERLAY_REVISION)
+        );
+
+        // A newer build's file is refused by name, not read as this one's
+        // (and so never "migrated" by a reader that does not understand it).
+        assert_eq!(
+            AssistSettings::parse(
+                br#"{"schema":"musializer.assist-settings/v2","active_profile":"recommended"}"#
+            ),
+            Err(crate::assist::settings::SettingsError::Schema(
+                "musializer.assist-settings/v2".to_string()
+            ))
+        );
+        // Nor is a v1 file carrying a field this build does not know.
+        assert!(AssistSettings::parse(
+            br#"{"schema":"musializer.assist-settings/v1","active_profile":"recommended","listening_model":"x"}"#
+        )
+        .is_err());
     }
 }

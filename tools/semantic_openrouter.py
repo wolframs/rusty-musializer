@@ -22,10 +22,14 @@ import hashlib
 import json
 import math
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -45,7 +49,10 @@ from analysis_io import (
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-MODEL = "xiaomi/mimo-v2.5"
+# What an unrouted command line asks for. The application always passes the
+# TC-SEMANTIC route's model (`--model`); since 2026-11-15 its recommended route
+# names the same model (operator's choice, docs/DIVERGENCES.md).
+MODEL = "google/gemini-3.8-flash"
 # v2 (2026-11-14): the numeric scales are defined in the prompt and the
 # schema, and an off-scale number fails the run instead of being clamped. A v1
 # answer was produced without those definitions, so it is a different request
@@ -84,46 +91,163 @@ ADAPTER_PATH = "tools/semantic_openrouter.py"
 SOURCE_KIND = "openrouter_semantic"
 ACCEPTED_ADAPTERS = ((ADAPTER_PATH, SOURCE_KIND),
                      ("tools/mimo_openrouter.py", "mimo_openrouter"))
-# The name a sentence uses for the model; an unlisted model is named by its slug.
-MODEL_LABELS: dict[str, str] = {
-    "xiaomi/mimo-v2.5": "MiMo",
+@dataclass(frozen=True)
+class AudioEncoding:
+    """How the track is re-encoded before it is sent, when it is.
+
+    FFmpeg reads the snapshot taken for the hash and writes one stream with
+    every tag dropped: no title, artist or cover art leaves with the audio.
+    """
+    format: str          # the `input_audio.format` sent
+    codec: str
+    sample_rate: int
+    channels: int
+    bitrate: str
+
+    def identity(self) -> str:
+        return (f"{self.format} {self.codec} {self.sample_rate} Hz "
+                f"{self.channels} ch {self.bitrate}")
+
+
+@dataclass(frozen=True)
+class ModelProfile:
+    """Everything about the request that is really per model, in one row.
+
+    The rest of this file holds for any model. A model with no row gets
+    ``UNLISTED``: the request shape this helper sent before rows existed, the
+    common cap, and no dollar figure (never a guessed one).
+
+    Prices are USD per million tokens as OpenRouter listed them on
+    ``prices_listed_on``; every number used by the estimate has a twin in
+    `crates/musializer-core/src/assist/cost.rs`, pinned by
+    tests/test_cross_language_pins.py: change both or neither.
+    """
+    label: str
+    # The completion cap, reasoning included (OpenRouter's `max_tokens`).
+    max_completion_tokens: int
+    # The estimate's token model.
+    audio_tokens_per_second: float
+    prompt_text_tokens: int
+    typical_completion_tokens: tuple[int, int]
+    prompt_usd: float | None = None
+    audio_usd: float | None = None
+    completion_usd: float | None = None
+    prices_listed_on: str | None = None
+    # None: the source file's bytes are sent as they are, in its own format.
+    audio_encoding: AudioEncoding | None = None
+    # None: not sent, the provider's default applies.
+    temperature: float | None = 0.2
+    # The largest request body this helper sends to the model; past it the run
+    # stops before anything leaves. None: no local bound.
+    max_request_bytes: int | None = None
+
+    def priced(self) -> bool:
+        return None not in (self.prompt_usd, self.audio_usd, self.completion_usd)
+
+    def identity_extra(self) -> dict[str, Any]:
+        """The request-shape fields a cache key carries beyond the common ones.
+
+        Empty for the shape every answer before 2026-11-15 was made under, so
+        those identities, and a MiMo user's cache, stay byte-identical.
+        """
+        if self.audio_encoding is None and self.temperature == 0.2:
+            return {}
+        return {
+            "audio_encoding": (self.audio_encoding.identity()
+                               if self.audio_encoding else "source"),
+            "temperature": self.temperature,
+        }
+
+
+# The cap before rows existed, kept for MiMo and for any model with no row.
+# Why 16 000: without a cap the provider's own ceiling, 65 536, applied, and in
+# the 2026-11-14 benchmark one MiMo call emitted that many tokens of whitespace
+# (0.131 USD) and another ran to 43 578. The largest legitimate answer used
+# 10 942 on a 100-second excerpt; the cap leaves half again as much room and
+# still cuts both runaways. docs/MIMO_BENCHMARK_RESULTS.md, "Cost".
+DEFAULT_MAX_COMPLETION_TOKENS = 16_000
+UNLISTED = ModelProfile(
+    label="",
+    max_completion_tokens=DEFAULT_MAX_COMPLETION_TOKENS,
+    # MiMo's calibration: the only one there is for a model nobody measured.
+    audio_tokens_per_second=7.4,
+    prompt_text_tokens=200,
+    typical_completion_tokens=(1_500, 11_000),
+)
+
+MODEL_PROFILES: dict[str, ModelProfile] = {
+    # Calibrated from the 2026-11-14 benchmark: audio at 7.4 tokens per second
+    # (recorded `usage.prompt_tokens`), the request's text about 200 tokens
+    # (928 prompt tokens for 100 s, 740 of them audio), answers of 2 044 and
+    # 2 407 on this lane's capped request, 5 110 on the benchmark's shape of
+    # it, 10 942 the largest legitimate one. Venice, the only provider that
+    # day, lists no audio price: audio bills as prompt tokens. MiMo reasons
+    # before it answers, billed at the completion rate.
+    "xiaomi/mimo-v2.5": ModelProfile(
+        label="MiMo",
+        max_completion_tokens=DEFAULT_MAX_COMPLETION_TOKENS,
+        audio_tokens_per_second=7.4,
+        prompt_text_tokens=200,
+        typical_completion_tokens=(1_500, 11_000),
+        prompt_usd=0.40, audio_usd=0.40, completion_usd=2.00,
+        prices_listed_on="2026-11-14",
+    ),
+    # The lane's model since 2026-11-15 (operator). OpenRouter, 2026-11-15:
+    # 0.825 USD per million input and audio tokens and 4.125 per million output,
+    # thinking included (`internal_reasoning`), the highest of the endpoints a
+    # base slug routes to (Vertex us; Vertex global and AI Studio list 0.75 and
+    # 3.75; the flex and priority tiers are opt-in only). Google: 32 tokens per
+    # second of audio; ZDR endpoints are Vertex's only.
+    #
+    # Measured on this request, 2026-11-15, three calls served by Google
+    # (Vertex): 2 502 audio tokens for 100 s and 7 502 for 300 s (25 per
+    # second; the estimate keeps Google's 32, the higher), 1 650 tokens of text
+    # every time, answers of 2 231 and 1 915 tokens on the two 100 s excerpts
+    # and 5 030 on 300 s, of them 641, 0 and 2 264 thinking. The typical span is
+    # those answers widened for a long track; the cap is about three times the
+    # 300 s answer, room for a long song at the default thinking level, and it
+    # stops a runaway at 0.066 USD of output. docs/ASSIST_PIPELINE.md, "Gemini
+    # 3.8 Flash through OpenRouter", has the sources.
+    "google/gemini-3.8-flash": ModelProfile(
+        label="Gemini",
+        max_completion_tokens=16_000,
+        audio_tokens_per_second=32.0,
+        prompt_text_tokens=1_650,
+        typical_completion_tokens=(1_500, 8_000),
+        prompt_usd=0.825, audio_usd=0.825, completion_usd=4.125,
+        prices_listed_on="2026-11-15",
+        # Google downsamples audio to 16 kbps and one channel itself; MP3 at
+        # 128 kbit/s keeps everything it hears and keeps a long track inside
+        # Google AI Studio's 20 MB request limit (about 15 minutes).
+        audio_encoding=AudioEncoding(format="mp3", codec="libmp3lame",
+                                     sample_rate=44_100, channels=2, bitrate="128k"),
+        # Not sent: Google asks for the default (1.0) on Gemini 3, below which
+        # it may loop, and OpenRouter's Vertex endpoints (the ZDR ones) do not
+        # list `temperature`, so `require_parameters` would leave no endpoint.
+        temperature=None,
+        max_request_bytes=19_500_000,
+    ),
 }
+
+
+def model_profile(model: str) -> ModelProfile:
+    return MODEL_PROFILES.get(model, UNLISTED)
 
 
 def model_label(model: str) -> str:
-    return MODEL_LABELS.get(model) or model
+    """The name a sentence uses for the model; an unlisted one is its slug."""
+    return model_profile(model).label or model
 
-# The completion cap, reasoning included (OpenRouter's `max_tokens`; MiMo bills
-# its reasoning as completion tokens and counts it against this limit). Without
-# it the provider's own ceiling, 65 536, applied: in the 2026-11-14 benchmark
-# one call emitted that many tokens of whitespace (0.131 USD) and another ran
-# to 43 578. The largest legitimate answer used 10 942, on a 100-second excerpt;
-# this lane sends whole tracks, so the cap leaves half again as much room and
-# still cuts both runaways. docs/MIMO_BENCHMARK_RESULTS.md, "Cost".
-MAX_COMPLETION_TOKENS = 16_000
-# The cost estimate, built from completion tokens rather than audio length: a
-# whole-track MiMo call is nearly all reasoning output (600-9 200 reasoning
-# tokens per benchmark call, billed at the completion rate), while audio is
-# 7.4 tokens per second at the prompt rate. Every number below is pinned
-# against its Rust copy in `crates/musializer-core/src/assist/cost.rs` by
-# tests/test_cross_language_pins.py; change both or neither.
-COST_ESTIMATE_VERSION = "musializer.mimo-cost-estimate/v1"
-# USD per million tokens as OpenRouter listed them on 2026-11-14 (Venice, the
-# only provider for this model that day). No separate audio price is listed;
-# audio bills as prompt tokens. A model not in this table has no estimate.
-PRICES_USD_PER_MILLION: dict[str, tuple[float, float]] = {
-    "xiaomi/mimo-v2.5": (0.40, 2.00),
-}
-PRICES_LISTED_ON = "2026-11-14"
-# Calibrated from the benchmark's recorded `usage.prompt_tokens`.
-AUDIO_TOKENS_PER_SECOND = 7.4
-# This request's text as prompt tokens: the 2026-11-14 capped call reported
-# 928 prompt tokens for 100 s, 740 of them audio at the rate above.
-PROMPT_TEXT_TOKENS = 200
-# The span of whole-excerpt answers seen so far: 2 044 and 2 407 on this
-# lane's capped request (two calls, 2026-11-14), 5 110 on the benchmark's
-# shape of it, 10 942 the largest legitimate one. The ceiling is the cap.
-TYPICAL_COMPLETION_TOKENS = (1_500, 11_000)
+
+def max_completion_tokens(model: str) -> int:
+    return model_profile(model).max_completion_tokens
+
+
+# The cost estimate, built from completion tokens as much as from audio: a
+# reasoning model's answer is most of its bill. v1 (2026-11-15) replaces
+# musializer.mimo-cost-estimate/v1, adding the audio price and per-model rows.
+COST_ESTIMATE_VERSION = "musializer.semantic-cost-estimate/v1"
+
 # Bytes of a failed answer's text kept in its receipt: enough to see what kind
 # of failure it was (whitespace, prose, half a JSON object), never 65 k tokens.
 FAILED_CONTENT_KEEP = 4096
@@ -134,40 +258,45 @@ Transport = Callable[..., Any]
 def estimate_cost(model: str, audio_duration: float) -> dict[str, Any]:
     """What one call should cost, before it is sent: a range and a ceiling.
 
-    The range is the measured span of answer lengths; the ceiling is what a
-    call that runs to the completion cap costs, which is the most it can.
-    Prices are a dated table, not a live quote; an unlisted model gets token
-    counts and no dollar figures rather than a guess.
+    The range is the measured (or, for a new row, stated) span of answer
+    lengths; the ceiling is what a call that runs to the completion cap costs,
+    which is the most it can. Prices are a dated table, not a live quote; an
+    unlisted model gets token counts and no dollar figures rather than a guess.
     """
+    profile = model_profile(model)
     seconds = duration(audio_duration)
-    input_tokens = math.ceil(seconds * AUDIO_TOKENS_PER_SECOND) + PROMPT_TEXT_TOKENS
-    low_tokens, high_tokens = TYPICAL_COMPLETION_TOKENS
+    audio_tokens = math.ceil(seconds * profile.audio_tokens_per_second)
+    text_tokens = profile.prompt_text_tokens
+    input_tokens = audio_tokens + text_tokens
+    low_tokens, high_tokens = profile.typical_completion_tokens
     estimate: dict[str, Any] = {
         "version": COST_ESTIMATE_VERSION,
         "model": model,
         "audio_seconds": seconds,
+        "audio_tokens": audio_tokens,
         "input_tokens": input_tokens,
         "completion_tokens_typical": [low_tokens, high_tokens],
-        "completion_tokens_max": MAX_COMPLETION_TOKENS,
+        "completion_tokens_max": profile.max_completion_tokens,
         "prices_usd_per_million": None,
         "prices_listed_on": None,
         "usd_typical": None,
         "usd_max": None,
     }
-    prices = PRICES_USD_PER_MILLION.get(model)
-    if prices is None:
+    if not profile.priced():
         return estimate
-    prompt_price, completion_price = prices
 
     def usd(completion_tokens: int) -> float:
-        return round((input_tokens * prompt_price
-                      + completion_tokens * completion_price) / 1_000_000.0, 6)
+        return round((audio_tokens * profile.audio_usd
+                      + text_tokens * profile.prompt_usd
+                      + completion_tokens * profile.completion_usd) / 1_000_000.0, 6)
 
     estimate.update({
-        "prices_usd_per_million": {"prompt": prompt_price, "completion": completion_price},
-        "prices_listed_on": PRICES_LISTED_ON,
+        "prices_usd_per_million": {"prompt": profile.prompt_usd,
+                                   "audio": profile.audio_usd,
+                                   "completion": profile.completion_usd},
+        "prices_listed_on": profile.prices_listed_on,
         "usd_typical": [usd(low_tokens), usd(high_tokens)],
-        "usd_max": usd(MAX_COMPLETION_TOKENS),
+        "usd_max": usd(profile.max_completion_tokens),
     })
     return estimate
 
@@ -431,7 +560,15 @@ def request_settings(
     reused (docs/ASSIST_PROVIDER_CONTRACTS.md §5 rule 7). The three price
     bounds and the two provider allow/deny lists were previously not part of it
     at all, so changing them silently reused the old answer.
+
+    The per-model request shape is in it too (``ModelProfile.identity_extra``,
+    the cap, and the format actually sent), so an answer made under another
+    model's shape is never this one's. For MiMo and unlisted models it is the
+    identity this helper wrote before model rows existed, byte for byte.
     """
+    profile = model_profile(model)
+    if profile.audio_encoding is not None:
+        audio_format = profile.audio_encoding.format
     return {
         "model": model,
         "prompt_version": PROMPT_VERSION,
@@ -448,7 +585,8 @@ def request_settings(
         "max_price": dict(sorted((max_price or {}).items())),
         # Part of the identity: an answer produced under another cap (or none)
         # is not this request's answer (§5 rule 7).
-        "max_tokens": MAX_COMPLETION_TOKENS,
+        "max_tokens": profile.max_completion_tokens,
+        **profile.identity_extra(),
     }
 
 
@@ -465,6 +603,12 @@ def build_request(
     zero_data_retention: bool = False,
     max_price: dict[str, float] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The request body and its identity.
+
+    ``audio_bytes`` are what is sent: the source file's bytes, or, for a model
+    whose row names an encoding, what ``prepare_audio`` made of them.
+    """
+    profile = model_profile(model)
     measured_duration = duration(audio_duration)
     settings = request_settings(
         model=model,
@@ -503,7 +647,7 @@ def build_request(
                 {"type": "text", "text": f"{SYSTEM_PROMPT}\nAudio duration: {measured_duration:.6f} seconds."},
                 {"type": "input_audio", "input_audio": {
                     "data": base64.b64encode(audio_bytes).decode("ascii"),
-                    "format": audio_format,
+                    "format": settings["audio_format"],
                 }},
             ],
         }],
@@ -516,10 +660,80 @@ def build_request(
             },
         },
         "provider": provider,
-        "temperature": 0.2,
-        "max_tokens": MAX_COMPLETION_TOKENS,
+        **({"temperature": profile.temperature}
+           if profile.temperature is not None else {}),
+        "max_tokens": profile.max_completion_tokens,
     }
     return payload, settings
+
+
+def ffmpeg_executable() -> str:
+    """FFmpeg as an absolute path: a bare name is no child under a private
+    ``PATH`` (docs/TRAPS.md)."""
+    found = shutil.which("ffmpeg")
+    if not found:
+        raise RuntimeError("FFmpeg was not found, and it is needed to encode the track; "
+                           "nothing was sent")
+    return str(Path(found).resolve())
+
+
+def encode_audio(audio_bytes: bytes, source_format: str, encoding: AudioEncoding,
+                 *, workdir: Path | None = None, timeout: float = 600.0) -> bytes:
+    """The snapshot re-encoded as ``encoding`` says, with every tag dropped.
+
+    FFmpeg reads a private copy of the snapshot rather than the source path,
+    so the bytes sent are the bytes hashed even if the file changes meanwhile,
+    and a file rather than a pipe, because an MP4/M4A with its index at the end
+    cannot be read from a pipe.
+    """
+    ffmpeg = ffmpeg_executable()
+    suffix = "." + (source_format or "audio").lower().lstrip(".")
+    with tempfile.TemporaryDirectory(prefix="semantic-encode-", dir=workdir) as folder:
+        source = Path(folder) / f"source{suffix}"
+        source.write_bytes(audio_bytes)
+        completed = subprocess.run(
+            [ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error",
+             "-i", str(source), "-map", "0:a:0", "-vn", "-sn", "-dn",
+             "-map_metadata", "-1", "-map_chapters", "-1",
+             "-ac", str(encoding.channels), "-ar", str(encoding.sample_rate),
+             "-c:a", encoding.codec, "-b:a", encoding.bitrate,
+             "-id3v2_version", "0", "-write_id3v1", "0",
+             "-f", encoding.format, "pipe:1"],
+            stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, check=False)
+    if completed.returncode != 0 or not completed.stdout:
+        # FFmpeg names its input; the private copy's path says nothing useful.
+        detail = completed.stderr.decode("utf-8", "replace").replace(str(source), "the track")
+        detail = " ".join(detail.split())[:120]
+        raise RuntimeError(f"FFmpeg could not encode the track ({detail or 'no output'}); "
+                           "nothing was sent")
+    return completed.stdout
+
+
+def prepare_audio(audio_bytes: bytes, source_format: str, model: str,
+                  *, encoder: Callable[..., bytes] = encode_audio,
+                  workdir: Path | None = None) -> bytes:
+    """What is sent for this model: the snapshot itself, or its encoding."""
+    encoding = model_profile(model).audio_encoding
+    if encoding is None:
+        return audio_bytes
+    return encoder(audio_bytes, source_format, encoding, workdir=workdir)
+
+
+def oversize_reason(payload: dict[str, Any], model: str) -> str | None:
+    """Why this body is too large to send to this model, or None.
+
+    Checked before anything leaves, so a refusal costs nothing: a provider
+    that refuses a large body after reading it (413) is a refusal too, but a
+    gateway that times out on one is not, and either way the person waits.
+    """
+    limit = model_profile(model).max_request_bytes
+    if limit is None:
+        return None
+    size = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    if size <= limit:
+        return None
+    return (f"the track encodes to a {size / 1e6:.1f} MB request, past the "
+            f"{limit / 1e6:.1f} MB one {model_label(model)} request may carry; nothing was sent")
 
 
 def redacted_request_dump(payload: dict[str, Any], settings: dict[str, Any], audio_sha256: str) -> dict[str, Any]:
@@ -684,7 +898,7 @@ def completion_failure(response: dict[str, Any], model: str = MODEL) -> str | No
     content = _raw_content(response)
     name = model_label(model)
     if finish == "length":
-        return f"{name}'s answer was cut off at the {MAX_COMPLETION_TOKENS}-token cap"
+        return f"{name}'s answer was cut off at the {max_completion_tokens(model)}-token cap"
     if content is None:
         return f"{name} returned no answer text"
     if not content.strip():
@@ -888,6 +1102,8 @@ def analyze_to_cache(
     max_price: dict[str, float] | None = None,
     transport: Transport = urllib.request.urlopen,
     sleeper: Callable[[float], None] = time.sleep,
+    encoder: Callable[..., bytes] = encode_audio,
+    request_dump: Path | None = None,
     _audio_bytes: bytes | None = None,
     _prepared_request: tuple[dict[str, Any], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -896,9 +1112,34 @@ def analyze_to_cache(
     selected_format = (audio_format or audio_path.suffix.lstrip(".")).lower()
     if not selected_format:
         raise AnalysisValidationError("audio format is required")
+    receipt_path = failure_receipt_path(cache_path)
+    # A receipt from an earlier attempt describes that attempt, not this one.
+    receipt_path.unlink(missing_ok=True)
+
+    def not_sent(reason: str, settings: dict[str, Any]) -> RuntimeError:
+        """A run that stopped before anything left: its receipt says so, and
+        that nothing can have been billed (the parent reads the sentence from
+        the receipt, since a child's own words die at `_run`)."""
+        _write_failure_receipt(
+            cache_path, reason=reason, response=None, settings=settings,
+            audio_sha256=audio_hash, message=f"{reason[:1].upper()}{reason[1:]}.",
+            may_be_billed=False)
+        return RuntimeError(reason)
+
     if _prepared_request is None:
+        try:
+            sent_bytes = prepare_audio(audio_bytes, selected_format, model,
+                                       encoder=encoder, workdir=cache_path.parent)
+        except RuntimeError as error:
+            raise not_sent(str(error), request_settings(
+                model=model, audio_duration=audio_duration,
+                audio_format=selected_format, provider_order=provider_order,
+                provider_only=provider_only, provider_ignore=provider_ignore,
+                allow_fallbacks=allow_fallbacks,
+                zero_data_retention=zero_data_retention,
+                max_price=max_price)) from error
         payload, settings = build_request(
-            audio_bytes,
+            sent_bytes,
             audio_format=selected_format,
             audio_duration=audio_duration,
             model=model,
@@ -911,10 +1152,13 @@ def analyze_to_cache(
         )
     else:
         payload, settings = _prepared_request
-    receipt_path = failure_receipt_path(cache_path)
-    # A receipt from an earlier attempt describes that attempt, not this one.
-    receipt_path.unlink(missing_ok=True)
-    estimate = estimate_cost(str(settings.get("model") or model), audio_duration)
+    if request_dump is not None:
+        atomic_write_json(request_dump, redacted_request_dump(payload, settings, audio_hash))
+    requested = str(settings.get("model") or model)
+    oversize = oversize_reason(payload, requested)
+    if oversize is not None:
+        raise not_sent(oversize, settings)
+    estimate = estimate_cost(requested, audio_duration)
     try:
         response = submit_request(payload, transport=transport, sleeper=sleeper)
     except SentUnanswered as error:
@@ -931,7 +1175,6 @@ def analyze_to_cache(
             audio_sha256=audio_hash, detail=detail, estimate=estimate)
         return FailedRun(failure_message(reason, response, estimate))
 
-    requested = str(settings.get("model") or model)
     name = model_label(requested)
     reason = completion_failure(response, requested)
     if reason is not None:
@@ -1006,29 +1249,29 @@ def main(argv: list[str] | None = None) -> int:
                 ("audio", args.max_price_audio),
             ) if value is not None
         }
-        payload, settings = build_request(
-            audio_bytes,
-            audio_format=audio_format,
-            audio_duration=args.duration,
-            model=args.model,
-            provider_order=args.providers,
-            provider_only=args.only,
-            provider_ignore=args.ignore,
-            allow_fallbacks=not args.no_fallbacks,
-            zero_data_retention=args.zdr,
-            max_price=max_price,
-        )
         if args.dry_run:
+            payload, settings = build_request(
+                prepare_audio(audio_bytes, audio_format, args.model),
+                audio_format=audio_format,
+                audio_duration=args.duration,
+                model=args.model,
+                provider_order=args.providers,
+                provider_only=args.only,
+                provider_ignore=args.ignore,
+                allow_fallbacks=not args.no_fallbacks,
+                zero_data_retention=args.zdr,
+                max_price=max_price,
+            )
             dump = redacted_request_dump(payload, settings, audio_hash)
             if args.request_dump:
                 atomic_write_json(args.request_dump, dump)
             else:
                 print(json.dumps(dump, ensure_ascii=False, indent=2))
             return 0
-        if args.request_dump:
-            atomic_write_json(args.request_dump, redacted_request_dump(payload, settings, audio_hash))
         if args.cache is None:
             parser.error("cache is required unless only inspecting help")
+        # The audio is prepared (encoded, for a model that needs it) inside,
+        # where a failure to do so leaves the receipt the parent reads.
         analyze_to_cache(
             args.audio,
             args.cache,
@@ -1041,8 +1284,8 @@ def main(argv: list[str] | None = None) -> int:
             allow_fallbacks=not args.no_fallbacks,
             zero_data_retention=args.zdr,
             max_price=max_price,
+            request_dump=args.request_dump,
             _audio_bytes=audio_bytes,
-            _prepared_request=(payload, settings),
         )
     except (OSError, ValueError, RuntimeError) as error:
         print(f"Semantic analysis failed: {error}", file=sys.stderr)

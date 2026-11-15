@@ -7468,6 +7468,20 @@ mod tests {
         dialog
     }
 
+    /// A user who chose MiMo for `TC-SEMANTIC` and kept it after it stopped
+    /// being the recommended model (2026-11-15): a configured model that is
+    /// experimental, which is the state the defect-B tests below were written
+    /// for when MiMo was the default.
+    fn dialog_on_mimo() -> AssistSettingsDialog {
+        let mut dialog = dialog();
+        let mut route = recommended_route(ContractId::Semantic).unwrap();
+        route.model_id = Some("xiaomi/mimo-v2.5".to_string());
+        set_override(&mut dialog.draft, route);
+        // Saved, not an unsaved edit: the choice is in the file.
+        dialog.saved = dialog.draft.clone();
+        dialog
+    }
+
     // -- background deadlines (audit B10) -----------------------------------
 
     fn piped(program: &str, script: &str) -> Command {
@@ -8662,7 +8676,7 @@ mod tests {
     /// than parses.
     #[test]
     fn the_report_names_every_state_a_capture_has_to_assert() {
-        let mut dialog = dialog();
+        let mut dialog = dialog_on_mimo();
         dialog.section = Section::OpenRouter;
         dialog.credentials = CredentialState::Refused {
             path: "/tmp/credentials.json".to_string(),
@@ -9146,7 +9160,7 @@ mod tests {
     /// a model the catalog never heard of would be its own evidence.
     #[test]
     fn the_eligible_count_does_not_count_the_selection_itself() {
-        let mut dialog = dialog();
+        let mut dialog = dialog_on_mimo();
         dialog.catalog = CacheSlot::Loaded(audio_catalog(&["text/only"]));
         dialog.draft.catalog.show_experimental = true;
         // The picker keeps the selected id so it stays changeable...
@@ -9381,7 +9395,7 @@ mod tests {
     /// shows what the settings configure.
     #[test]
     fn a_single_option_picker_knows_whether_the_filter_emptied_it() {
-        let mut dialog = dialog();
+        let mut dialog = dialog_on_mimo();
         dialog.catalog =
             CacheSlot::Loaded(audio_catalog(&["xiaomi/mimo-v2.5", "acme/never-measured"]));
         // Experimental off: both catalog models are unmeasured, so the picker
@@ -9412,6 +9426,35 @@ mod tests {
         dialog.draft.catalog.show_experimental = true;
         assert!(dialog.model_cell_enabled(ContractId::Semantic));
         assert!(dialog.contracts_without_an_offer().is_empty());
+    }
+
+    /// Since 2026-11-15 the recommended `TC-SEMANTIC` model is Gemini 3.8 Flash:
+    /// with no override and experimental models hidden, the picker offers it,
+    /// and MiMo only behind the experimental toggle.
+    #[test]
+    fn the_default_listening_model_is_offered_and_mimo_needs_asking() {
+        let mut dialog = dialog();
+        dialog.catalog = CacheSlot::Loaded(audio_catalog(&[
+            "google/gemini-3.8-flash",
+            "xiaomi/mimo-v2.5",
+        ]));
+        assert_eq!(
+            dialog.configured_model(ContractId::Semantic).as_deref(),
+            Some("google/gemini-3.8-flash")
+        );
+        assert_eq!(
+            dialog.configured_status(ContractId::Semantic),
+            Some(Suitability::Recommended)
+        );
+        assert_eq!(
+            dialog.model_options_for(ContractId::Semantic),
+            vec!["google/gemini-3.8-flash".to_string()]
+        );
+        assert!(dialog.contracts_without_an_offer().is_empty());
+        dialog.draft.catalog.show_experimental = true;
+        assert!(dialog
+            .model_options_for(ContractId::Semantic)
+            .contains(&"xiaomi/mimo-v2.5".to_string()));
     }
 
     /// Defect B. One offered model plus a configured one that is filtered out is

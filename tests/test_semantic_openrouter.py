@@ -9,6 +9,7 @@ credential: the key is a sentinel set for the duration of a test.
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -30,6 +31,10 @@ import semantic_openrouter  # noqa: E402
 
 SENTINEL_KEY = "sk-or-v1-test-sentinel-not-a-key"
 DURATION = 8.0
+# The classes below up to `GeminiLane` pin the lane as MiMo ran it, numbers
+# and sentences included; MiMo stays selectable, and its request must not move.
+MIMO = "xiaomi/mimo-v2.5"
+GEMINI = "google/gemini-3.8-flash"
 
 
 def creative(**overrides: object) -> dict:
@@ -76,6 +81,11 @@ NULL_CONTENT = response(None, completion_tokens=2_000, cost=0.004)
 EMPTY_CONTENT = response("   \n ", completion_tokens=1_800, cost=0.0036)
 
 
+def fake_encoder(audio_bytes: bytes, source_format: str, encoding, **_kwargs) -> bytes:  # noqa: ANN001
+    """Stands in for FFmpeg: deterministic bytes that name what was asked."""
+    return b"ID3-free " + encoding.identity().encode() + b" of " + audio_bytes
+
+
 class FakeHTTPResponse(io.BytesIO):
     def __enter__(self) -> "FakeHTTPResponse":
         return self
@@ -119,26 +129,34 @@ class LaneTestCase(unittest.TestCase):
         patcher = patch.dict(os.environ, {"OPENROUTER_API_KEY": SENTINEL_KEY})
         patcher.start()
         self.addCleanup(patcher.stop)
+        # An unrouted `run_assist` asks for the helper's default model; these
+        # classes pin MiMo's lane, so its default is MiMo here.
+        default = patch.object(semantic_openrouter, "MODEL", self.MODEL)
+        default.start()
+        self.addCleanup(default.stop)
+
+    MODEL = MIMO
 
     def run_lane(self, *bodies: object) -> tuple[FakeOpenRouter, object]:
         fake = FakeOpenRouter(*bodies)
         outcome = semantic_openrouter.analyze_to_cache(
-            self.ws.audio, self.ws.cache, audio_duration=DURATION,
-            transport=fake, sleeper=lambda _seconds: None)
+            self.ws.audio, self.ws.cache, audio_duration=DURATION, model=self.MODEL,
+            transport=fake, sleeper=lambda _seconds: None, encoder=fake_encoder)
         return fake, outcome
 
 
 class CompletionCap(LaneTestCase):
     def test_the_request_caps_the_completion_and_the_cap_is_in_its_identity(self) -> None:
         payload, settings = semantic_openrouter.build_request(
-            b"\x00", audio_format="wav", audio_duration=DURATION)
+            b"\x00", audio_format="wav", audio_duration=DURATION, model=MIMO)
         self.assertEqual(payload["max_tokens"], 16_000)
         self.assertEqual(settings["max_tokens"], 16_000)
-        self.assertEqual(semantic_openrouter.MAX_COMPLETION_TOKENS, 16_000)
+        cap = semantic_openrouter.max_completion_tokens(MIMO)
+        self.assertEqual(cap, 16_000)
         # The cap must leave room for the largest legitimate answer the
         # benchmark measured (10 942) and cut both runaways (43 578, 65 536).
-        self.assertGreater(semantic_openrouter.MAX_COMPLETION_TOKENS, 10_942)
-        self.assertLess(semantic_openrouter.MAX_COMPLETION_TOKENS, 43_578)
+        self.assertGreater(cap, 10_942)
+        self.assertLess(cap, 43_578)
 
     def test_the_cap_is_what_the_helper_actually_sends(self) -> None:
         fake, _ = self.run_lane(response(answer()))
@@ -204,7 +222,7 @@ class FailedRuns(LaneTestCase):
         fake = FakeOpenRouter(NULL_CONTENT, response(answer()), response(answer()))
         with self.assertRaises(semantic_openrouter.FailedRun):
             semantic_openrouter.analyze_to_cache(
-                self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
                 transport=fake, sleeper=lambda _seconds: None)
         self.assertEqual(len(fake.sent), 1)
 
@@ -235,7 +253,7 @@ class FailedRuns(LaneTestCase):
                 fake = FakeOpenRouter(gateway, response(answer()), response(answer()))
                 with self.assertRaises(semantic_openrouter.FailedRun) as raised:
                     semantic_openrouter.analyze_to_cache(
-                        self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                        self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
                         transport=fake, sleeper=lambda _seconds: None)
                 self.assertEqual(len(fake.sent), 1, "sent once, never again by itself")
                 message = str(raised.exception)
@@ -258,7 +276,7 @@ class FailedRuns(LaneTestCase):
                 fake = FakeOpenRouter(refused, response(answer()))
                 with self.assertRaises(RuntimeError) as raised:
                     semantic_openrouter.analyze_to_cache(
-                        self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                        self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
                         transport=fake, sleeper=lambda _seconds: None)
                 self.assertNotIsInstance(raised.exception, semantic_openrouter.FailedRun)
                 self.assertEqual(str(raised.exception),
@@ -278,7 +296,7 @@ class FailedRuns(LaneTestCase):
                 fake = FakeOpenRouter(error, response(answer()))
                 with self.assertRaises(semantic_openrouter.FailedRun) as raised:
                     semantic_openrouter.analyze_to_cache(
-                        self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                        self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
                         transport=fake, sleeper=lambda _seconds: None)
                 self.assertEqual(len(fake.sent), 1)
                 self.assertTrue(str(raised.exception).startswith(reason), str(raised.exception))
@@ -293,7 +311,7 @@ class FailedRuns(LaneTestCase):
         fake = Garbled()
         with self.assertRaises(semantic_openrouter.FailedRun) as raised:
             semantic_openrouter.analyze_to_cache(
-                self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
                 transport=fake, sleeper=lambda _seconds: None)
         self.assertEqual(len(fake.sent), 1)
         self.assertTrue(str(raised.exception).startswith("OpenRouter's answer could not be read"))
@@ -335,7 +353,7 @@ class CostEstimate(LaneTestCase):
 
     def test_the_dry_run_shows_the_estimate(self) -> None:
         payload, settings = semantic_openrouter.build_request(
-            b"\x00", audio_format="wav", audio_duration=200.0)
+            b"\x00", audio_format="wav", audio_duration=200.0, model=MIMO)
         dump = semantic_openrouter.redacted_request_dump(payload, settings, "a" * 64)
         self.assertEqual(dump["cost_estimate"]["usd_max"], 0.032672)
 
@@ -469,7 +487,7 @@ class AFailedRegenerationIsSaid(LaneTestCase):
         def runner(argv, **_kwargs):  # noqa: ANN001
             try:
                 semantic_openrouter.analyze_to_cache(
-                    Path(argv[2]), Path(argv[3]), audio_duration=float(argv[5]),
+                    Path(argv[2]), Path(argv[3]), audio_duration=float(argv[5]), model=argv[argv.index('--model') + 1],
                     transport=FakeOpenRouter(body), sleeper=lambda _s: None)
             except semantic_openrouter.FailedRun as error:
                 return subprocess.CompletedProcess(argv, 1, "", f"Semantic analysis failed: {error}\n")
@@ -486,7 +504,7 @@ class AFailedRegenerationIsSaid(LaneTestCase):
         # A regeneration of exactly this request and cache fails, billed.
         with self.assertRaises(semantic_openrouter.FailedRun):
             semantic_openrouter.analyze_to_cache(
-                self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
                 transport=FakeOpenRouter(CUT_OFF), sleeper=lambda _s: None)
         self.assertTrue(self.ws.receipt.exists())
         failed_utc = json.loads(self.ws.receipt.read_text())["failed_utc"]
@@ -513,7 +531,7 @@ class AFailedRegenerationIsSaid(LaneTestCase):
             semantic_openrouter.OPENROUTER_URL, 502, "gateway", {}, io.BytesIO(b""))
         with self.assertRaises(semantic_openrouter.FailedRun):
             semantic_openrouter.analyze_to_cache(
-                self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
                 transport=FakeOpenRouter(gateway), sleeper=lambda _s: None)
         failure = self.run_assist_to_manifest(self.never)["semantic_latest_failure"]
         self.assertTrue(failure["may_be_billed"])
@@ -531,13 +549,13 @@ class AFailedRegenerationIsSaid(LaneTestCase):
             def __call__(inner, request, timeout: float):  # noqa: ANN001, N805
                 with self.assertRaises(semantic_openrouter.FailedRun):
                     semantic_openrouter.analyze_to_cache(
-                        self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                        self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
                         transport=failing, sleeper=lambda _s: None)
                 self.assertTrue(self.ws.receipt.exists(), "helper A's receipt")
                 return super().__call__(request, timeout)
 
         semantic_openrouter.analyze_to_cache(
-            self.ws.audio, self.ws.cache, audio_duration=DURATION,
+            self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
             transport=FailsAnotherFirst(response(answer())), sleeper=lambda _s: None)
         self.assertFalse(self.ws.receipt.exists(), "B's success removed A's older receipt")
         manifest = self.run_assist_to_manifest(self.never)
@@ -576,7 +594,7 @@ class FailedRunReachesTheUser(LaneTestCase):
             self.assertTrue(argv[1].endswith("semantic_openrouter.py"), argv)
             try:
                 semantic_openrouter.analyze_to_cache(
-                    Path(argv[2]), Path(argv[3]), audio_duration=float(argv[5]),
+                    Path(argv[2]), Path(argv[3]), audio_duration=float(argv[5]), model=argv[argv.index('--model') + 1],
                     transport=FakeOpenRouter(body), sleeper=lambda _s: None)
             except semantic_openrouter.FailedRun as error:
                 return subprocess.CompletedProcess(argv, 1, "", f"Semantic analysis failed: {error}\n")
@@ -653,6 +671,270 @@ class WrittenByTheOldName(LaneTestCase):
             "schema_version": "musializer.other-receipt/v1",
             "audio_sha256": "a" * 64, "message": "not ours"}))
         self.assertIsNone(external_analysis._semantic_failure(self.ws.cache, "a" * 64))
+
+
+def gemini_response(content: object, *, finish: object = "stop", completion_tokens: int = 2231,
+                    reasoning_tokens: int = 641, cost: float | None = 0.01148025) -> dict:
+    """A chat completion in the shape OpenRouter returned for Gemini 3.8 Flash
+    on 2026-11-15 (usage figures from the first real call; the answer text is
+    synthetic). Thinking is reported under `completion_tokens_details`."""
+    usage: dict = {
+        "prompt_tokens": 4152, "completion_tokens": completion_tokens,
+        "completion_tokens_details": {"reasoning_tokens": reasoning_tokens,
+                                      "audio_tokens": 0, "image_tokens": 0},
+        "prompt_tokens_details": {"audio_tokens": 2502, "cached_tokens": 0},
+        "total_tokens": 4152 + completion_tokens, "is_byok": False,
+    }
+    if cost is not None:
+        usage["cost"] = cost
+    return {
+        "id": "gen-gemini-test", "created": 1794758836, "model": GEMINI,
+        "provider": "Google", "object": "chat.completion",
+        "choices": [{"finish_reason": finish, "native_finish_reason": "STOP",
+                     "message": {"role": "assistant", "content": content,
+                                 "reasoning": "short thought", "refusal": None}}],
+        "usage": usage,
+    }
+
+
+class GeminiLane(LaneTestCase):
+    """The lane on its model since 2026-11-15: the same guards, its own request."""
+
+    MODEL = GEMINI
+
+    def test_the_request_is_shaped_for_gemini(self) -> None:
+        fake, _ = self.run_lane(gemini_response(answer()))
+        sent = fake.sent[0]
+        self.assertEqual(sent["model"], GEMINI)
+        self.assertEqual(sent["max_tokens"], 16_000)
+        # Not sent: Gemini 3 wants its default, and the ZDR (Vertex) endpoints
+        # do not list the parameter, so `require_parameters` would leave none.
+        self.assertNotIn("temperature", sent)
+        self.assertNotIn("reasoning", sent)
+        audio = sent["messages"][0]["content"][1]["input_audio"]
+        self.assertEqual(audio["format"], "mp3", "the source was a .wav; mp3 is what is sent")
+        self.assertEqual(base64.b64decode(audio["data"]),
+                         b"ID3-free mp3 libmp3lame 44100 Hz 2 ch 128k of RIFF-not-really-audio")
+        self.assertEqual(sent["response_format"]["type"], "json_schema")
+        self.assertTrue(sent["provider"]["require_parameters"])
+
+    def test_the_identity_carries_the_shape_and_the_cap(self) -> None:
+        _, settings = semantic_openrouter.build_request(
+            b"x", audio_format="wav", audio_duration=DURATION, model=GEMINI)
+        self.assertEqual(settings["audio_format"], "mp3")
+        self.assertEqual(settings["audio_encoding"], "mp3 libmp3lame 44100 Hz 2 ch 128k")
+        self.assertIsNone(settings["temperature"])
+        self.assertEqual(settings["max_tokens"], 16_000)
+        identity = external_analysis._semantic_request_identity(
+            Path("song.flac"), audio_sha="a" * 64, measured_duration=DURATION, zdr=True)
+        self.assertEqual(identity["model"], GEMINI, "the unrouted default is Gemini")
+        self.assertEqual({k: v for k, v in identity.items() if k != "audio_sha256"},
+                         dict(settings, zero_data_retention=True))
+
+    def test_a_mimo_answer_is_not_served_as_geminis(self) -> None:
+        mimo = external_analysis._semantic_request_identity(
+            Path("song.wav"), audio_sha="a" * 64, measured_duration=DURATION, zdr=False,
+            semantic=dict(external_analysis._semantic_route(None), model=MIMO))
+        gemini = external_analysis._semantic_request_identity(
+            Path("song.wav"), audio_sha="a" * 64, measured_duration=DURATION, zdr=False)
+        self.assertNotEqual(external_analysis.canonical_sha256(mimo),
+                            external_analysis.canonical_sha256(gemini))
+        _, envelope = self.run_lane_as(MIMO, response(answer()))
+        audio_sha = envelope["request"]["audio_sha256"]
+        mimo["audio_sha256"] = gemini["audio_sha256"] = audio_sha
+        self.assertTrue(external_analysis._semantic_cache_accepts(envelope, request_identity=mimo))
+        self.assertFalse(external_analysis._semantic_cache_accepts(envelope, request_identity=gemini))
+
+    def run_lane_as(self, model: str, *bodies: object):  # noqa: ANN201
+        fake = FakeOpenRouter(*bodies)
+        outcome = semantic_openrouter.analyze_to_cache(
+            self.ws.audio, self.ws.cache, audio_duration=DURATION, model=model,
+            transport=fake, sleeper=lambda _seconds: None, encoder=fake_encoder)
+        return fake, outcome
+
+    def test_mimos_request_is_byte_for_byte_what_it_was(self) -> None:
+        # Hashes of the identity and the body as tools/mimo_openrouter.py built
+        # them at 2d5d1b6, for the same inputs: a user who stays on MiMo keeps
+        # every cached answer, and MiMo is sent exactly what it was sent.
+        kwargs = dict(audio_duration=200.0, audio_format="mp3", provider_order=["venice"],
+                      allow_fallbacks=False, zero_data_retention=True,
+                      max_price={"prompt": 1.0})
+        settings = semantic_openrouter.request_settings(model=MIMO, **kwargs)
+        payload, _ = semantic_openrouter.build_request(b"abc", model=MIMO, **kwargs)
+        self.assertEqual(
+            semantic_openrouter.canonical_sha256(settings),
+            "18163520c97f2ee718c5760e14a47c78ac3563865dc72f05091ee8cc69221dd4")
+        self.assertEqual(
+            semantic_openrouter.canonical_sha256(payload),
+            "8fae05410bfe4b042805bf33ee899abafe5c904bd6999ecb40e08488732eebac")
+
+    def test_a_well_formed_answer_is_cached_with_its_estimate_and_cost(self) -> None:
+        _, envelope = self.run_lane(gemini_response(answer()))
+        cached = json.loads(self.ws.cache.read_text())
+        self.assertEqual(cached["cache_key"], envelope["cache_key"])
+        provenance = cached["normalized"]["provenance"]
+        self.assertEqual(provenance["model"], GEMINI)
+        self.assertEqual(provenance["provider"], "Google")
+        generation = provenance["generation"]
+        self.assertEqual(generation["reported_cost_usd"], 0.01148025)
+        self.assertEqual(generation["usage"]["completion_tokens_details"]["reasoning_tokens"], 641)
+        self.assertEqual(generation["estimate"]["version"], "musializer.semantic-cost-estimate/v1")
+        self.assertEqual(generation["estimate"]["prices_usd_per_million"],
+                         {"prompt": 0.825, "audio": 0.825, "completion": 4.125})
+
+    def assert_failed(self, body: dict, words: str) -> dict:
+        with self.assertRaises(semantic_openrouter.FailedRun) as raised:
+            self.run_lane(body)
+        message = str(raised.exception)
+        self.assertEqual(message, words)
+        self.assertLessEqual(len(message.encode("utf-8")), 160, message)
+        self.assertFalse(self.ws.cache.exists(), "a failed run is never cached")
+        receipt = json.loads(self.ws.receipt.read_text())
+        self.assertEqual(receipt["message"], message)
+        self.ws.receipt.unlink()
+        return receipt
+
+    def test_a_cut_off_answer_is_a_failed_run(self) -> None:
+        receipt = self.assert_failed(
+            gemini_response('{"global": {"summary": "an', finish="length",
+                            completion_tokens=16_000, reasoning_tokens=14_000, cost=0.0631),
+            "Gemini's answer was cut off at the 16000-token cap. Nothing was saved; "
+            "OpenRouter billed 0.0631 USD for it.")
+        self.assertEqual(receipt["finish_reason"], "length")
+        self.assertFalse(receipt["may_be_billed"])
+        self.assertEqual(receipt["reported_cost_usd"], 0.0631)
+
+    def test_empty_or_missing_content_is_a_failed_run(self) -> None:
+        self.assert_failed(gemini_response("", cost=0.004),
+                           "Gemini returned an empty answer. Nothing was saved; "
+                           "OpenRouter billed 0.0040 USD for it.")
+        # Unreported cost: the ceiling for 8 s is 0.06757245, at most 0.068.
+        self.assert_failed(gemini_response(None, cost=None),
+                           "Gemini returned no answer text. Nothing was saved; "
+                           "OpenRouter reported no cost for it (at most 0.068 USD).")
+
+    def test_an_off_scale_number_fails_the_run(self) -> None:
+        self.assert_failed(
+            gemini_response(answer(tension=7)),
+            "Gemini's answer does not fit the schema (segments[0].tension is 7, outside 0 to 1). "
+            "Nothing was saved; OpenRouter billed 0.0115 USD for it.")
+
+    def test_a_refusal_is_free_and_an_unclear_status_may_be_billed(self) -> None:
+        refused = urllib.error.HTTPError(semantic_openrouter.OPENROUTER_URL, 404,
+                                         "no endpoint", {}, io.BytesIO(b""))
+        fake = FakeOpenRouter(refused, gemini_response(answer()))
+        with self.assertRaises(RuntimeError) as raised:
+            self.run_lane_as(GEMINI, refused)
+        self.assertNotIsInstance(raised.exception, semantic_openrouter.FailedRun)
+        self.assertEqual(str(raised.exception), "OpenRouter request failed with HTTP 404")
+        self.assertFalse(self.ws.receipt.exists())
+        del fake
+        unclear = urllib.error.HTTPError(semantic_openrouter.OPENROUTER_URL, 524,
+                                         "timeout", {}, io.BytesIO(b""))
+        fake = FakeOpenRouter(unclear, gemini_response(answer()))
+        with self.assertRaises(semantic_openrouter.FailedRun) as raised:
+            semantic_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=GEMINI,
+                transport=fake, sleeper=lambda _s: None, encoder=fake_encoder)
+        self.assertEqual(len(fake.sent), 1, "sent once, never again by itself")
+        self.assertEqual(str(raised.exception),
+                         "OpenRouter answered HTTP 524 after the request was sent; it may "
+                         "have been billed (at most 0.068 USD). Nothing was saved or sent again.")
+        self.assertTrue(json.loads(self.ws.receipt.read_text())["may_be_billed"])
+
+    def test_a_request_too_large_for_the_model_is_never_sent(self) -> None:
+        fake = FakeOpenRouter(gemini_response(answer()))
+        with self.assertRaises(RuntimeError) as raised:
+            semantic_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=GEMINI,
+                transport=fake, sleeper=lambda _s: None,
+                encoder=lambda *_args, **_kw: b"\x00" * 15_000_000)
+        self.assertNotIsInstance(raised.exception, semantic_openrouter.FailedRun)
+        self.assertEqual(fake.sent, [], "nothing left the machine")
+        self.assertIn("past the 19.5 MB one Gemini request may carry; nothing was sent",
+                      str(raised.exception))
+        receipt = json.loads(self.ws.receipt.read_text())
+        self.assertFalse(receipt["may_be_billed"])
+        self.assertEqual(external_analysis._semantic_failure(self.ws.cache,
+                                                             receipt["audio_sha256"]),
+                         receipt["message"])
+        # Just under the limit is sent.
+        self.ws.receipt.unlink()
+        fake = FakeOpenRouter(gemini_response(answer()))
+        semantic_openrouter.analyze_to_cache(
+            self.ws.audio, self.ws.cache, audio_duration=DURATION, model=GEMINI,
+            transport=fake, sleeper=lambda _s: None,
+            encoder=lambda *_args, **_kw: b"\x00" * 14_000_000)
+        self.assertEqual(len(fake.sent), 1)
+
+    def test_an_encoder_failure_says_why_and_that_nothing_was_sent(self) -> None:
+        def broken(*_args, **_kwargs):  # noqa: ANN002, ANN003
+            raise RuntimeError("FFmpeg was not found, and it is needed to encode the track; "
+                               "nothing was sent")
+        fake = FakeOpenRouter(gemini_response(answer()))
+        with self.assertRaises(RuntimeError):
+            semantic_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=GEMINI,
+                transport=fake, sleeper=lambda _s: None, encoder=broken)
+        self.assertEqual(fake.sent, [])
+        receipt = json.loads(self.ws.receipt.read_text())
+        self.assertEqual(receipt["message"], "FFmpeg was not found, and it is needed to "
+                         "encode the track; nothing was sent.")
+        self.assertFalse(receipt["may_be_billed"])
+
+    def test_an_unrouted_assist_run_spawns_the_helper_for_gemini(self) -> None:
+        seen: list[list[str]] = []
+
+        def runner(argv, **_kwargs):  # noqa: ANN001
+            seen.append(list(argv))
+            semantic_openrouter.analyze_to_cache(
+                Path(argv[2]), Path(argv[3]), audio_duration=float(argv[5]),
+                model=argv[argv.index("--model") + 1],
+                transport=FakeOpenRouter(gemini_response(answer())),
+                sleeper=lambda _s: None, encoder=fake_encoder)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        def cache(path, *_args, **kwargs):  # noqa: ANN001
+            if path.name == "measured.json":
+                return {"audio": {"duration_seconds": DURATION}}
+            if path.exists():
+                value = json.loads(path.read_text())
+                return value if kwargs["accept"](value) else None
+            return None
+
+        with patch.object(external_analysis, "_cache_matches", side_effect=cache), \
+             patch.object(external_analysis, "build_scene_plan", return_value={"sections": []}), \
+             patch.object(external_analysis, "build_bridge", return_value=""):
+            manifest = external_analysis.run_assist(
+                self.ws.audio, self.ws.root, audio_duration=DURATION, mode="mimo",
+                semantic_cache=self.ws.cache, allow_dotenv=False, runner=runner)
+        self.assertTrue(seen[0][1].endswith("tools/semantic_openrouter.py"), seen[0])
+        self.assertEqual(seen[0][seen[0].index("--model") + 1], GEMINI)
+        self.assertEqual(manifest["semantic_cost"]["reported_cost_usd"], 0.01148025)
+
+
+class RealEncoding(unittest.TestCase):
+    """FFmpeg itself, on a synthetic tone: what leaves is MP3 with no tags."""
+
+    def test_tags_never_leave_with_the_audio(self) -> None:
+        try:
+            ffmpeg = semantic_openrouter.ffmpeg_executable()
+        except RuntimeError:
+            self.skipTest("FFmpeg is not installed")
+        with tempfile.TemporaryDirectory() as folder:
+            tagged = Path(folder) / "tone.flac"
+            subprocess.run(
+                [ffmpeg, "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+                 "sine=frequency=440:duration=2", "-metadata", "title=PRIVATE-TITLE-CANARY",
+                 "-metadata", "artist=PRIVATE-ARTIST-CANARY", str(tagged)],
+                check=True, timeout=60)
+            encoding = semantic_openrouter.model_profile(GEMINI).audio_encoding
+            sent = semantic_openrouter.encode_audio(tagged.read_bytes(), "flac", encoding)
+        self.assertNotIn(b"PRIVATE-TITLE-CANARY", sent)
+        self.assertNotIn(b"PRIVATE-ARTIST-CANARY", sent)
+        self.assertFalse(sent.startswith(b"ID3"), "no ID3 header at all")
+        self.assertEqual(sent[0], 0xFF, "an MPEG audio frame comes first")
+        self.assertGreater(len(sent), 10_000)
 
 
 if __name__ == "__main__":
