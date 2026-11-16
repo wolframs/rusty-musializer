@@ -961,6 +961,60 @@ fn review_entry_from_performed(record: &Value, index: usize) -> Option<LyricRevi
     })
 }
 
+/// One section of a staged feelings answer, as the person reviewing it needs
+/// it: where it starts **and ends**, what the model said about it, and its
+/// feel (J2, 2026-11-16).
+///
+/// The semantic event lane keeps only a start and four numbers per cue, which
+/// is all playback reads and all Apply writes. The review needs the two things
+/// that lane drops on the way: the end (a section is a span the person listens
+/// to, not an instant) and the model's own words. So they are carried beside
+/// the lane, inert like the rest of the candidate, and [`AnalysisCandidate::apply`]
+/// never looks at them — what Apply writes is unchanged.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeelingSection {
+    /// The semantic event's id in the staged lane (salted, see
+    /// [`SEMANTIC_ID_SALT`]), so a row and its timeline cue name one thing.
+    pub event_id: u64,
+    pub start_seconds: f64,
+    pub end_seconds: f64,
+    /// `0..=1`.
+    pub energy: f32,
+    /// `0..=1`.
+    pub tension: f32,
+    /// `-1..=1`.
+    pub valence: f32,
+    /// `0..=1`.
+    pub confidence: f32,
+    /// The model's description, as the bridge carried it (bounded there by
+    /// `SUMMARY_MAX_BYTES`). May be empty: the bridge allows it.
+    pub summary: String,
+}
+
+impl FeelingSection {
+    /// A time strictly inside the section, for a seek that must land in it
+    /// (`docs/TRAPS.md`, "A seek to exactly a section's start can land in the
+    /// section before"): 50 ms in, or the middle of a section shorter than
+    /// 100 ms.
+    #[must_use]
+    pub fn seek_seconds(&self) -> f64 {
+        let length = (self.end_seconds - self.start_seconds).max(0.0);
+        self.start_seconds + (length * 0.5).min(SECTION_SEEK_INSET_SECONDS)
+    }
+
+    /// Whether `seconds` falls in this section by the lane's own rule: a cue
+    /// holds from its start until the next begins (`semantic_lane::sample`),
+    /// so the start belongs to it and the end to the next.
+    #[must_use]
+    pub fn contains(&self, seconds: f64) -> bool {
+        seconds >= self.start_seconds && seconds < self.end_seconds
+    }
+}
+
+/// How far into a section a seek lands, the same 50 ms Look's section
+/// selection uses (`section_rest_seconds`).
+pub const SECTION_SEEK_INSET_SECONDS: f64 = 0.05;
+
 /// Validated, mode-bounded, **inert** analysis state (`Analysis_Candidate`,
 /// `analysis_candidate.h:24-36`).
 #[derive(Clone, Debug)]
@@ -970,6 +1024,9 @@ pub struct AnalysisCandidate {
     lyrics: LyricsDocument,
     sections: SceneSwitchTimeline,
     semantic_events: EventTimeline,
+    /// The staged semantic cues as spans with their words (J2). Same order and
+    /// count as `semantic_events`; empty when that lane is.
+    feeling_sections: Vec<FeelingSection>,
     uncertain_lyric_count: usize,
     semantic_note_count: usize,
     /// The LT1 review surface, when the job left an artifact describing one.
@@ -1004,6 +1061,13 @@ impl AnalysisCandidate {
     #[must_use]
     pub fn semantic_events(&self) -> &EventTimeline {
         &self.semantic_events
+    }
+
+    /// The staged feeling cues as sections with their ends and the model's
+    /// words, in time order (J2). Empty unless the semantics lane is staged.
+    #[must_use]
+    pub fn feeling_sections(&self) -> &[FeelingSection] {
+        &self.feeling_sections
     }
 
     /// How many staged lyric cues the helper flagged as estimated. Worth surfacing
@@ -1134,6 +1198,7 @@ impl AnalysisCandidate {
                 .map_err(|_| AnalysisCandidateError::Duration)?,
             sections: SceneSwitchTimeline::new(),
             semantic_events: EventTimeline::new(),
+            feeling_sections: Vec::new(),
             uncertain_lyric_count: 0,
             semantic_note_count: 0,
             lyrics_review: None,
@@ -1188,21 +1253,36 @@ impl AnalysisCandidate {
                     if id == 0 {
                         id = 1;
                     }
+                    let values = [
+                        f32::from(cue.energy_milli) / 1000.0,
+                        f32::from(cue.tension_milli) / 1000.0,
+                        f32::from(cue.valence_milli) / 1000.0,
+                        f32::from(cue.confidence_milli) / 1000.0,
+                    ];
+                    let start_seconds = cue.start_ms as f64 / 1000.0;
                     candidate
                         .semantic_events
                         .record(EventRecord {
-                            timestamp_seconds: cue.start_ms as f64 / 1000.0,
+                            timestamp_seconds: start_seconds,
                             id,
                             event_type: EventType::Semantic as u32,
                             value_count: 4,
-                            values: [
-                                f32::from(cue.energy_milli) / 1000.0,
-                                f32::from(cue.tension_milli) / 1000.0,
-                                f32::from(cue.valence_milli) / 1000.0,
-                                f32::from(cue.confidence_milli) / 1000.0,
-                            ],
+                            values,
                         })
                         .map_err(|_| AnalysisCandidateError::Semantics)?;
+                    // The same numbers the event holds, read back from it rather
+                    // than recomputed, plus what the lane has no room for.
+                    let [energy, tension, valence, confidence] = values;
+                    candidate.feeling_sections.push(FeelingSection {
+                        event_id: id,
+                        start_seconds,
+                        end_seconds: cue.end_ms as f64 / 1000.0,
+                        energy,
+                        tension,
+                        valence,
+                        confidence,
+                        summary: cue.summary.clone(),
+                    });
                 }
                 candidate.available.semantics = true;
             }
@@ -1378,6 +1458,78 @@ mod tests {
             SceneId::Loom.index() as u32
         );
         assert_eq!(candidate.sections().cues()[1].strength, 0.75);
+    }
+
+    /// J2: the review list's spans, words and feel come through `prepare`,
+    /// and each row names the event the lane will hold.
+    #[test]
+    fn the_staged_feelings_keep_their_ends_and_their_words() {
+        let candidate =
+            AnalysisCandidate::prepare(&bridge(), Lanes::ALL, DURATION, SCENES).unwrap();
+        let sections = candidate.feeling_sections();
+        assert_eq!(sections.len(), candidate.semantic_events().len());
+        assert_eq!(
+            sections[0],
+            FeelingSection {
+                event_id: 20 ^ SEMANTIC_ID_SALT,
+                start_seconds: 0.0,
+                end_seconds: 30.0,
+                energy: 0.4,
+                tension: 0.3,
+                valence: -0.2,
+                confidence: 0.9,
+                summary: "calm".to_string(),
+            }
+        );
+        assert_eq!(sections[1].start_seconds, 30.0);
+        assert_eq!(sections[1].end_seconds, 60.0);
+        assert_eq!(sections[1].summary, "bright");
+        for (section, event) in sections.iter().zip(candidate.semantic_events().events()) {
+            assert_eq!(section.event_id, event.id);
+            assert_eq!(section.start_seconds, event.timestamp_seconds);
+            assert_eq!(
+                [
+                    section.energy,
+                    section.tension,
+                    section.valence,
+                    section.confidence
+                ],
+                event.values
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_without_the_semantics_lane_has_no_feeling_sections() {
+        let candidate =
+            AnalysisCandidate::prepare(&bridge(), Lanes::lyrics_only(), DURATION, SCENES).unwrap();
+        assert!(candidate.feeling_sections().is_empty());
+        let notes = analysis_bridge::parse(notes_document().as_bytes(), None, None).unwrap();
+        let candidate = AnalysisCandidate::prepare(&notes, Lanes::ALL, DURATION, SCENES).unwrap();
+        assert!(candidate.feeling_sections().is_empty());
+    }
+
+    /// The seek lands strictly inside: 50 ms past the start, and for a span
+    /// shorter than 100 ms its middle, never on or past the end.
+    #[test]
+    fn a_section_seek_lands_strictly_inside_it() {
+        let section = |start: f64, end: f64| FeelingSection {
+            event_id: 1,
+            start_seconds: start,
+            end_seconds: end,
+            energy: 0.0,
+            tension: 0.0,
+            valence: 0.0,
+            confidence: 0.0,
+            summary: String::new(),
+        };
+        let long = section(24.0, 58.0);
+        assert_eq!(long.seek_seconds(), 24.05);
+        assert!(long.contains(long.seek_seconds()));
+        let short = section(10.0, 10.04);
+        assert!((short.seek_seconds() - 10.02).abs() < 1e-9);
+        assert!(short.contains(short.seek_seconds()));
+        assert!(long.contains(24.0) && !long.contains(58.0));
     }
 
     #[test]
