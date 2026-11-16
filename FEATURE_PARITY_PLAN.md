@@ -63,6 +63,24 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
+**In flight — Start on "Feelings", before the operator tries it (2026-11-16; lead:
+the main session).** The operator, 2026-11-16: "Can you let a Sol code review worker
+trace the 'pressing Start on Feelings in the app itself' routes and potential
+edge cases we don't address yet, then take its hints and go look yourself,
+then fix / preempt issues in the code, before I test it myself? :)"
+
+- [ ] GPT-6.1-Sol traces the route from the press to the staged result, with
+  the operator's own settings and caches as the first case, and lists what is
+  not handled.
+- [ ] The lead reads each hint in the code and decides: real, already
+  handled, or not worth it.
+- [ ] Fixes, each with its check.
+- [ ] One real press of Start through the window's own path (headless, the
+  operator's settings and key file, a benchmark excerpt; a few cents of the
+  5 USD cap), read against what a user would see at each step.
+- [ ] Review of the fixes, one full `tools/verify.sh`, release build; the
+  record to the archive and this block deleted.
+
 **The operator's, from the 2026-11-14 follow-up** (record in the archive,
 "The 2026-11-14 follow-up"):
 
