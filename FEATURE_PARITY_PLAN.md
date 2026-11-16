@@ -105,7 +105,7 @@ then fix / preempt issues in the code, before I test it myself? :)"
   staged and listed, the ghosts on the timeline, then a third press reusing
   the answer and saying so. About 0.05 USD in all. Record:
   `docs/ASSIST_PIPELINE.md`, "Starting Feelings safely".
-- [ ] Review of the fixes: GPT-6.1-Sol, 2026-11-16, seven more findings, all
+- [x] Review of the fixes: GPT-6.1-Sol, 2026-11-16, seven more findings, all
   taken (the lead's decision; one agent on them): two helpers deleting each
   other's sent record; an earlier-charge warning not tied to the audio and the
   request; `bridge_fit`'s repairs not shown to the user; the saved-answer
@@ -113,9 +113,24 @@ then fix / preempt issues in the code, before I test it myself? :)"
   then a paid call); a row of a staged answer seeking whatever track is
   current; an audio-read failure without a receipt; a stop before the request
   left reported as sent, with no way to put the warning behind one.
-- [ ] After those: a real press again if anything sent changed, one full
-  `tools/verify.sh`, release build; the record to the archive and this block
-  deleted.
+  Merged 2026-11-16 (J3, nine commits; record: `docs/ASSIST_PIPELINE.md`,
+  "Seven more defects on the Feelings path (J3)"). Nothing sent to the model
+  changed.
+- [x] Real presses on the merged build, through the window (headless, the
+  job folder under `build/analysis/`): Start on the saved answer reused it
+  ("nothing was sent or billed this time"); Start with the saved answer set
+  aside made one paid call (6 sections staged, 0.0115 USD reported), and no
+  sent record was left behind.
+- [ ] A third review, of J3's diff only (GPT-6.1-Sol, started 2026-11-16):
+  take what must be fixed before a person presses Start, queue the rest here.
+- [ ] One full `tools/verify.sh` with nothing else running (the run on
+  `4950511` failed two frame-timing parts under another agent's load: the
+  headless gate's 120 ms intervention and poster frames), release build; the
+  record to the archive and this block deleted.
+- Never pressed for real, to say to the operator: Apply and Put back on a
+  real answer (the probe has one click per run; the gate presses both on a
+  fixture answer), Cancel while a request is in flight, a settings change
+  through the AI dialog while the card is open, two windows on one track.
 
 **The operator's, from the 2026-11-14 follow-up** (record in the archive,
 "The 2026-11-14 follow-up"):
