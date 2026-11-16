@@ -50,6 +50,8 @@
 
 use std::path::{Path, PathBuf};
 
+mod feelings;
+
 use musializer_core::assist::diagnosis;
 use musializer_core::assist::execution::{
     self, ContractSnapshot, ExecutionBlock, ExecutionSnapshot,
@@ -664,6 +666,7 @@ impl AssistController {
                 // rather than from the bridge. Staged with the candidate, so it
                 // is as inert as the candidate is.
                 stage_lyrics_review(&mut loaded.candidate, &output_dir);
+                stage_semantic_reuse(&mut loaded.candidate, &output_dir);
                 // §6: the staged result exposes the graph that produced it, with
                 // the model ids the helper **observed** rather than the ones it
                 // was asked for. Read back from the manifest for exactly that
@@ -1542,6 +1545,20 @@ fn report_settings_button(line: &str) {
 /// carries how many rows reached the screen, which only the panel knows. The one
 /// case with no rows to count is still reported at once, because a run whose
 /// review is absent has nothing to wait for a frame for.
+/// Notes on the candidate that its feelings answer was a saved one, reused,
+/// when the job's manifest says so (J2). Staged with the candidate, inert.
+fn stage_semantic_reuse(candidate: &mut AnalysisCandidate, output_dir: &str) {
+    if output_dir.is_empty() || !candidate.available().semantics {
+        return;
+    }
+    if let Some(words) = read_bounded(&Path::new(output_dir).join(ASSIST_MANIFEST_NAME))
+        .as_deref()
+        .and_then(analysis_candidate::semantic_reuse_words)
+    {
+        candidate.note_reused_answer(words);
+    }
+}
+
 fn stage_lyrics_review(candidate: &mut AnalysisCandidate, output_dir: &str) {
     LAST_REVIEW_REPORT.with(|last| last.borrow_mut().clear());
     REVIEW_SCROLL.with(|first| first.set(0));
@@ -2244,6 +2261,41 @@ fn probe_artifacts(session: &mut AssistSession) {
 /// unset or unrecognized value is `all`, so every existing capture is unchanged.
 pub const PROBE_LANES_VARIABLE: &str = "MUSIALIZER_ASSIST_PROBE_LANES";
 
+/// `MUSIALIZER_ASSIST_PROBE_STAGE` (J2): what `assist=candidate` stages.
+///
+/// Unset is the literal fixture against a missing track, every existing
+/// capture's state. `bridge` stages `result.bridge.tsv` from
+/// [`PROBE_ARTIFACT_DIR_VARIABLE`]'s folder against the current track through
+/// the real `load_candidate` (the audio digest and duration checks included),
+/// so Apply is live; `armed` adds Apply's first press, so one `click=` on
+/// Confirm apply is the second; `applied` sends that second press's request
+/// too, so the run continues after a real Apply. An environment variable for
+/// the reason [`PROBE_LANES_VARIABLE`] is one: the `--ui-probe` grammar lives
+/// in `cli.rs`.
+pub const PROBE_STAGE_VARIABLE: &str = "MUSIALIZER_ASSIST_PROBE_STAGE";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProbeStage {
+    Literal,
+    Bridge,
+    Armed,
+    Applied,
+}
+
+fn probe_stage() -> ProbeStage {
+    match std::env::var(PROBE_STAGE_VARIABLE)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "bridge" => ProbeStage::Bridge,
+        "armed" => ProbeStage::Armed,
+        "applied" => ProbeStage::Applied,
+        _ => ProbeStage::Literal,
+    }
+}
+
 /// The mode named by [`PROBE_LANES_VARIABLE`], or `All`.
 fn probe_mode() -> AssistMode {
     match std::env::var(PROBE_LANES_VARIABLE)
@@ -2319,20 +2371,49 @@ pub(crate) fn apply_probe_state(
         }
         crate::cli::AssistProbe::Candidate => {
             let mode = probe_mode();
-            let mut candidate = probe_candidate(mode)?;
+            let stage = probe_stage();
+            // J2: a real bridge staged against the current track, so Apply is
+            // live and the rows seek the track that plays.
+            let (mut candidate, target) = if stage == ProbeStage::Literal {
+                (probe_candidate(mode)?, Some(PROBE_MISSING_TRACK))
+            } else {
+                let mut artifacts = AssistSession::default();
+                probe_artifacts(&mut artifacts);
+                let track = current
+                    .and_then(|index| workspace.get(index))
+                    .ok_or_else(|| "a staged bridge needs a loaded track".to_string())?;
+                let loaded = load_candidate(
+                    Path::new(&artifacts.bridge_path),
+                    track,
+                    assist_ui_state::mode_lanes(mode),
+                )?;
+                (loaded.candidate, current)
+            };
             let session = &mut workspace.assist;
             session.select_mode(mode);
             session.set_confirmation_pending(false);
             session.set_apply_confirmation_pending(false);
             session.candidate_first_lyric = first_lyric(&candidate);
             session.candidate_mode = mode;
-            session.candidate_track = Some(PROBE_MISSING_TRACK);
+            session.candidate_track = target;
             session.job_state = AssistJobState::Succeeded;
             probe_artifacts(session);
             // Same seam a finished job uses, so the review a capture shows is
             // the review a real run would show.
             stage_lyrics_review(&mut candidate, &session.output_dir);
+            stage_semantic_reuse(&mut candidate, &session.output_dir);
             session.candidate = Some(candidate);
+            match stage {
+                ProbeStage::Literal | ProbeStage::Bridge => {}
+                ProbeStage::Armed => session.set_apply_confirmation_pending(true),
+                // The second press's request, drained by the frame loop's real
+                // Apply on the first frame: what follows is the state after a
+                // real Apply, which is what the step back is pressed in.
+                ProbeStage::Applied => {
+                    session.set_apply_confirmation_pending(true);
+                    session.request(AssistRequest::Apply);
+                }
+            }
         }
         crate::cli::AssistProbe::Running => {
             let session = &mut workspace.assist;
@@ -2720,6 +2801,7 @@ fn assist_probe_run() -> bool {
         PROBE_LANES_VARIABLE,
         PROBE_ACTIVATE_ROW_VARIABLE,
         PROBE_REVIEW_SCROLL_VARIABLE,
+        PROBE_STAGE_VARIABLE,
     ]
     .iter()
     .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
@@ -3251,6 +3333,9 @@ fn draw_lyrics_review(
 // The Assist view in the right column (WX-5d §3.4).
 // ---------------------------------------------------------------------------
 
+/// Between the lyric review and the staged feelings when a run stages both.
+const FEELINGS_GAP: f32 = 10.0;
+
 /// The cards' press targets and the Auto scenes switch, in [`ASSIST_WIDGETS`]
 /// past the band's own ids (0..=92 and the review rows from 60).
 const CARD_WIDGET: u32 = 100;
@@ -3332,6 +3417,8 @@ pub struct AssistColumn {
     /// The open card and its body last frame: a change brings the card into
     /// view once, so a state that opens below the fold is not missed.
     shown: Option<(AssistMode, AssistPanelContent)>,
+    /// The staged feelings list's scroll, open row and report (J2).
+    feelings: feelings::FeelingsView,
 }
 
 impl Shell {
@@ -3576,7 +3663,19 @@ impl Shell {
         let reason_lines = blocked_reason.map_or_else(Vec::new, |reason| {
             wrap_to_width(reason, inner, 3, &measure13)
         });
-        let review_height = review_block_height(candidate) as u32;
+        // The lyric review and the staged feelings share the one extra block
+        // the layout reserves above Apply (J2): the review first, as before.
+        let apply_lines: Vec<String> = Vec::new();
+        let lyric_review_height = review_block_height(candidate);
+        let feelings_height = self.feelings_height(font, candidate, inner, apply_lines.len());
+        let review_height = (lyric_review_height
+            + if lyric_review_height > 0.0 && feelings_height > 0.0 {
+                FEELINGS_GAP
+            } else {
+                0.0
+            }
+            + feelings_height)
+            .ceil() as u32;
 
         let open_spec = open_mode.map(|mode| {
             (
@@ -3619,7 +3718,28 @@ impl Shell {
         };
 
         let mouse = input.ui_scale.mouse(d);
-        let wheel = self.wheel_delta(d);
+        let mut wheel = self.wheel_delta(d);
+        // Over the staged feelings rows the wheel moves the list (J2), and the
+        // column only once the list is at its end that way.
+        if wheel != 0.0
+            && self
+                .assist_column
+                .feelings
+                .list
+                .contains_point(mouse.x, mouse.y)
+        {
+            let count = session
+                .candidate
+                .as_ref()
+                .map_or(0, |candidate| candidate.feeling_sections().len());
+            if self
+                .assist_column
+                .feelings
+                .scroll(-(wheel.round() as i64), count)
+            {
+                wheel = 0.0;
+            }
+        }
         let mut layout =
             assist_ui_state::assist_column_layout(head.body, &spec, self.assist_column.offset);
         if wheel != 0.0 && layout.viewport.contains_point(mouse.x, mouse.y) {
@@ -3797,6 +3917,7 @@ impl Shell {
                         extra: extra_line.as_deref(),
                         reason: &reason_lines,
                         blocked: blocked_reason.is_some(),
+                        apply: &apply_lines,
                     },
                     layout.viewport,
                     commands,
@@ -4318,6 +4439,31 @@ impl Shell {
                     session.request(AssistRequest::Discard);
                 }
                 let links_report = self.assist_copy_links(d, input, &links);
+                // The extra block holds the lyric review, then the staged
+                // feelings (J2); each draws in its own part of it.
+                let lyric_height = review_block_height(session.candidate.as_ref());
+                if let Some(area) = review.filter(|_| {
+                    session
+                        .candidate
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.available().semantics)
+                }) {
+                    let top = if lyric_height > 0.0 {
+                        area.y + lyric_height + FEELINGS_GAP
+                    } else {
+                        area.y
+                    };
+                    self.draw_feelings(
+                        d,
+                        input,
+                        UiRect::new(area.x, top, area.width, area.y + area.height - top),
+                        texts.apply,
+                        commands,
+                    );
+                }
+                let review = review.map(|area| {
+                    UiRect::new(area.x, area.y, area.width, lyric_height.min(area.height))
+                });
                 if let (Some(area), Some(candidate)) = (review, session.candidate.as_ref()) {
                     if let Some(review) = candidate
                         .lyrics_review()
@@ -4483,6 +4629,8 @@ struct AssistOpenTexts<'a> {
     extra: Option<&'a str>,
     reason: &'a [String],
     blocked: bool,
+    /// What Apply will do to the feelings lane, wrapped (J2).
+    apply: &'a [String],
 }
 
 /// The P4 route block's lines for the column: the heading sentence, one row

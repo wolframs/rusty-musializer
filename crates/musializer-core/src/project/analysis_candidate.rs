@@ -1011,9 +1011,64 @@ impl FeelingSection {
     }
 }
 
+/// The longest reuse note the review draws: the manifest is helper output.
+const REUSED_ANSWER_MAX_CHARS: usize = 160;
+
 /// How far into a section a seek lands, the same 50 ms Look's section
 /// selection uses (`section_rest_seconds`).
 pub const SECTION_SEEK_INSET_SECONDS: f64 = 0.05;
+
+/// What an `assist-manifest.json` says about a feelings answer that was a saved
+/// one, reused rather than paid for again (J2), in words for the review; `None`
+/// when it says nothing.
+///
+/// Another agent writes this fact into the manifest in the same wave
+/// (2026-11-16, the Feelings Start work); its key was not settled when this
+/// was written, so the reader takes the spellings that agent's brief makes
+/// likely and nothing depends on it: no key, no line. A boolean says only
+/// "reused"; an object may add when the answer was made (`answered_utc`,
+/// `made_utc`) and its own sentence (`words`).
+#[must_use]
+pub fn semantic_reuse_words(manifest: &[u8]) -> Option<String> {
+    let root = json_value(manifest)?;
+    let value = [
+        "semantic_reused",
+        "semantic_reuse",
+        "semantic_answer_reused",
+    ]
+    .iter()
+    .find_map(|key| root.get(*key))
+    .or_else(|| {
+        ["semantic_answer", "semantic_cache"]
+            .iter()
+            .filter_map(|key| root.get(*key))
+            .find(|value| value.get("reused").and_then(Value::as_bool) == Some(true))
+    })?;
+    match value {
+        Value::Bool(true) => Some("Reused a saved answer: no new call was paid for.".to_string()),
+        Value::Object(fields) => {
+            if fields.get("reused").and_then(Value::as_bool) == Some(false) {
+                return None;
+            }
+            if let Some(words) = fields.get("words").and_then(Value::as_str) {
+                let words = words.trim();
+                if !words.is_empty() {
+                    return Some(words.to_string());
+                }
+            }
+            let made = ["answered_utc", "made_utc"]
+                .iter()
+                .find_map(|key| fields.get(*key).and_then(Value::as_str))
+                .map(str::trim)
+                .filter(|made| !made.is_empty());
+            Some(match made {
+                Some(made) => format!("Reused the answer made {made}: no new call was paid for."),
+                None => "Reused a saved answer: no new call was paid for.".to_string(),
+            })
+        }
+        _ => None,
+    }
+}
 
 /// Validated, mode-bounded, **inert** analysis state (`Analysis_Candidate`,
 /// `analysis_candidate.h:24-36`).
@@ -1032,6 +1087,10 @@ pub struct AnalysisCandidate {
     /// The LT1 review surface, when the job left an artifact describing one.
     /// Additive: `None` is a pre-LT1 run and renders as one.
     lyrics_review: Option<LyricsReview>,
+    /// What the job's manifest said about a feelings answer reused from a
+    /// saved one rather than paid for again (J2), in words for the review.
+    /// `None` when it said nothing, which is not the same as "paid for".
+    reused_answer: Option<String>,
 }
 
 impl AnalysisCandidate {
@@ -1090,6 +1149,25 @@ impl AnalysisCandidate {
     /// `None` and a review whose counts are zero are **different answers** and
     /// the panel draws them differently: the first is an artifact that predates
     /// the question, the second is a run that placed every authored line.
+    /// The manifest's word that the staged feelings were a saved answer, reused
+    /// (J2), or `None` when it said nothing.
+    #[must_use]
+    pub fn reused_answer(&self) -> Option<&str> {
+        self.reused_answer.as_deref()
+    }
+
+    /// Notes that the staged feelings answer was reused, in the words the
+    /// review shows. Refused, like [`Self::attach_lyrics_review`], when no
+    /// semantics lane is staged: it would be a claim about nothing on offer.
+    /// Inert: [`Self::apply`] never reads it.
+    pub fn note_reused_answer(&mut self, words: String) -> bool {
+        if !self.available.semantics || words.trim().is_empty() {
+            return false;
+        }
+        self.reused_answer = Some(clipped(words.trim(), REUSED_ANSWER_MAX_CHARS));
+        true
+    }
+
     #[must_use]
     pub fn lyrics_review(&self) -> Option<&LyricsReview> {
         self.lyrics_review.as_ref()
@@ -1202,6 +1280,7 @@ impl AnalysisCandidate {
             uncertain_lyric_count: 0,
             semantic_note_count: 0,
             lyrics_review: None,
+            reused_answer: None,
         };
 
         if authorized.lyrics && bridge.lyrics_present() {
@@ -1507,6 +1586,45 @@ mod tests {
         let notes = analysis_bridge::parse(notes_document().as_bytes(), None, None).unwrap();
         let candidate = AnalysisCandidate::prepare(&notes, Lanes::ALL, DURATION, SCENES).unwrap();
         assert!(candidate.feeling_sections().is_empty());
+    }
+
+    #[test]
+    fn a_reused_answer_is_read_from_the_manifest_and_nothing_else_is() {
+        assert_eq!(
+            semantic_reuse_words(br#"{"semantic_reused": true}"#).as_deref(),
+            Some("Reused a saved answer: no new call was paid for.")
+        );
+        assert_eq!(
+            semantic_reuse_words(
+                br#"{"semantic_reuse": {"answered_utc": "2026-11-15 16:08 UTC"}}"#
+            )
+            .as_deref(),
+            Some("Reused the answer made 2026-11-15 16:08 UTC: no new call was paid for.")
+        );
+        assert_eq!(
+            semantic_reuse_words(br#"{"semantic_answer": {"reused": true, "words": "Saved."}}"#)
+                .as_deref(),
+            Some("Saved.")
+        );
+        for silent in [
+            &br#"{}"#[..],
+            br#"{"semantic_reused": false}"#,
+            br#"{"semantic_reuse": {"reused": false}}"#,
+            br#"{"semantic_answer": {"reused": false}}"#,
+            b"not json",
+        ] {
+            assert_eq!(semantic_reuse_words(silent), None);
+        }
+        let mut candidate =
+            AnalysisCandidate::prepare(&bridge(), Lanes::lyrics_only(), DURATION, SCENES).unwrap();
+        assert!(
+            !candidate.note_reused_answer("Reused.".to_string()),
+            "no semantics lane, no claim about one"
+        );
+        let mut candidate =
+            AnalysisCandidate::prepare(&bridge(), Lanes::ALL, DURATION, SCENES).unwrap();
+        assert!(candidate.note_reused_answer("Reused.".to_string()));
+        assert_eq!(candidate.reused_answer(), Some("Reused."));
     }
 
     /// The seek lands strictly inside: 50 ms past the start, and for a span
