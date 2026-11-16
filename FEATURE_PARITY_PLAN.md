@@ -142,8 +142,17 @@ then fix / preempt issues in the code, before I test it myself? :)"
   process on the same track's folder, a kill inside a few milliseconds,
   seventeen killed runs or a full disk, and none is on the path of one person
   pressing Start in one window. The operator is told.
-- [ ] J4: the ledger and the binding reuse (one agent, own worktree), then its
-  review, then merged; its record to the archive.
+- [x] J4: the ledger and the binding reuse, merged 2026-11-16 (six commits;
+  record: `docs/ASSIST_PIPELINE.md`, the J4 section). Nothing sent to the
+  model changed. One thing built differently from the lead's design, and
+  right: a saved answer of another key for the same settings is reused, not
+  refused. The lead then pressed Start for real on it, including a helper
+  killed after sending, the warning on the next card and the Start that puts
+  it behind (record in the same section), and fixed what that found: the
+  warned card's Start was below the fold at 1280x720.
+- [ ] A fourth review, of J4 and that fix (GPT-6.1-Sol, started 2026-11-16),
+  and one full `tools/verify.sh`; then the release build. The installed
+  release is still the J3 build (`b36d975`).
 - [x] One full `tools/verify.sh` on the merged tree (`1363bcd`, 2026-11-16):
   24 of 26. The headless gate, which failed its 120 ms intervention on
   `4950511` under another agent's load, passed. Failed: poster frames' frame
