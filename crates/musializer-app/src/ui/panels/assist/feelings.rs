@@ -132,7 +132,7 @@ fn span_clock(seconds: f64) -> String {
     };
     let tenths = (seconds * 10.0).round() as u64;
     let whole = tenths / 10;
-    if tenths % 10 == 0 {
+    if tenths.is_multiple_of(10) {
         format!("{}:{:02}", whole / 60, whole % 60)
     } else {
         format!("{}:{:02}.{}", whole / 60, whole % 60, tenths % 10)
