@@ -354,9 +354,22 @@ scales:
 """ + "\n".join(f"- {name}: {_scale_text(name)}." for name in NUMERIC_SCALES)
 
 
-def _creative_schema(include_timing: bool) -> dict[str, Any]:
+# The bounds the model is given (defect J1-4, 2026-11-16). A compliant answer
+# always fits what the application can hold: the bridge takes 256 semantic
+# cues and 2 047 bytes of summary each (`core::project::analysis_bridge`,
+# SEMANTIC_CAPACITY, SUMMARY_MAX_BYTES; pinned by
+# tests/test_cross_language_pins.py). 64 sections is a song cut every ten
+# seconds for over ten minutes; 500 characters are at most 2 000 bytes.
+SEGMENT_MAX = 64
+SUMMARY_MAX_CHARACTERS = 500
+BRIDGE_SEMANTIC_CAPACITY = 256
+BRIDGE_SUMMARY_MAX_BYTES = 2047
+
+
+def _creative_schema(include_timing: bool, bounded: bool = True) -> dict[str, Any]:
     properties: dict[str, Any] = {
-        "summary": {"type": "string"},
+        "summary": ({"type": "string", "maxLength": SUMMARY_MAX_CHARACTERS}
+                    if bounded else {"type": "string"}),
         "moods": {"type": "array", "items": {"type": "string"}},
         "energy": {"type": "number", "minimum": 0, "maximum": 1,
                           "description": _scale_text("energy")},
@@ -390,20 +403,109 @@ def _creative_schema(include_timing: bool) -> dict[str, Any]:
     }
 
 
-MODEL_OUTPUT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": ["global", "segments"],
-    "properties": {
-        "global": _creative_schema(False),
-        "segments": {
-            "type": "array",
-            "minItems": 1,
-            "description": "A contiguous, ordered, non-overlapping partition from 0 through the full audio duration.",
-            "items": _creative_schema(True),
+def _output_schema(bounded: bool) -> dict[str, Any]:
+    segments: dict[str, Any] = {
+        "type": "array",
+        "minItems": 1,
+        "description": "A contiguous, ordered, non-overlapping partition from 0 through the full audio duration.",
+        "items": _creative_schema(True, bounded),
+    }
+    if bounded:
+        segments["maxItems"] = SEGMENT_MAX
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["global", "segments"],
+        "properties": {
+            "global": _creative_schema(False, bounded),
+            "segments": segments,
         },
-    },
-}
+    }
+
+
+MODEL_OUTPUT_SCHEMA: dict[str, Any] = _output_schema(True)
+# The schema every answer from 2026-11-14 to 2026-11-16 was asked under, which
+# stated no bounds. Its hash is in those answers' identity; an answer made under
+# it that fits the bridge is the same answer the bounded request asks for, so it
+# is still reused rather than paid for again (`legacy_request_identity`).
+LEGACY_OUTPUT_SCHEMA_SHA256 = "1d1c6b45bacf6dda612875ab84979371bcf725d2241c07fda62e9442c50d25f1"
+
+
+def legacy_request_identity(identity: dict[str, Any]) -> dict[str, Any]:
+    """The same request as it was identified before the schema had bounds."""
+    return {**identity, "model_output_schema_sha256": LEGACY_OUTPUT_SCHEMA_SHA256}
+
+
+def _clean_text(value: str) -> str:
+    """Drawable UTF-8: no NUL or other control character the bridge's reader
+    refuses or a card cannot draw, no lone surrogate (JSON allows "\\ud800";
+    UTF-8 cannot carry it)."""
+    cleaned = value.encode("utf-8", "replace").decode("utf-8")
+    return "".join(" " if (ord(char) < 32 or ord(char) == 127) else char for char in cleaned)
+
+
+def bridge_fit(normalized: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """The answer as the bridge will take it, and the repairs that made it so.
+
+    Everything the bridge's reader requires of the semantic lane is checked
+    here, before the answer is cached (defect J1-4): an answer the later steps
+    refuse was cached and then refused on every run, for good. Harmless
+    repairs are made and named (a section whose ends round to the same
+    millisecond joins its neighbour; a summary is shortened at a character
+    boundary; an unprintable character becomes a space); an answer that no
+    repair can fit raises, and is a failed run with a receipt.
+    """
+    repairs: list[str] = []
+    segments = [dict(segment) for segment in normalized.get("segments") or []]
+    merged: list[dict[str, Any]] = []
+    joined = 0
+    for segment in segments:
+        start_ms = round(float(segment["start_seconds"]) * 1000)
+        end_ms = round(float(segment["end_seconds"]) * 1000)
+        if end_ms <= start_ms:
+            joined += 1
+            if merged:
+                merged[-1]["end_seconds"] = segment["end_seconds"]
+            else:
+                # The first section: the next one starts where this did.
+                segment["_join_next"] = True
+                merged.append(segment)
+            continue
+        if merged and merged[-1].pop("_join_next", False):
+            segment["start_seconds"] = merged[-1]["start_seconds"]
+            merged[-1] = segment
+            continue
+        merged.append(segment)
+    if merged and merged[-1].pop("_join_next", False):
+        raise AnalysisValidationError("the answer has no section a millisecond long")
+    if joined:
+        repairs.append(f"joined {joined} section{'s' if joined != 1 else ''} shorter than a "
+                       "millisecond to the one before")
+    if len(merged) > BRIDGE_SEMANTIC_CAPACITY:
+        raise AnalysisValidationError(
+            f"the answer has {len(merged)} sections, more than the "
+            f"{BRIDGE_SEMANTIC_CAPACITY} the application can hold")
+    shortened = cleaned = 0
+    for segment in merged:
+        summary = str(segment.get("summary", ""))
+        text = _clean_text(summary)
+        if text != summary:
+            cleaned += 1
+        encoded = text.encode("utf-8")
+        if len(encoded) > BRIDGE_SUMMARY_MAX_BYTES:
+            text = encoded[:BRIDGE_SUMMARY_MAX_BYTES - 3].decode("utf-8", "ignore").rstrip() + "..."
+            shortened += 1
+        segment["summary"] = text
+    if cleaned:
+        repairs.append(f"replaced unprintable characters in {cleaned} summar"
+                       f"{'ies' if cleaned != 1 else 'y'}")
+    if shortened:
+        repairs.append(f"shortened {shortened} summar{'ies' if shortened != 1 else 'y'} to "
+                       f"{BRIDGE_SUMMARY_MAX_BYTES} bytes")
+    if not repairs:
+        return normalized, []
+    fitted = {**normalized, "segments": merged}
+    return fitted, repairs
 
 
 # Float noise at a bound (1.0000000002) is the bound; anything further out is
@@ -1558,6 +1660,16 @@ def analyze_to_cache(
         detail = str(error)
         raise failed(f"{name}'s answer does not fit the schema ({detail[:60]})",
                      detail) from error
+    # What the bridge requires, checked before anything is cached (J1-4): an
+    # answer that cannot be used is a failed run with its cost, never a cache
+    # the next run reuses and fails on again.
+    try:
+        normalized, repairs = bridge_fit(normalized)
+    except AnalysisValidationError as error:
+        detail = str(error)
+        raise failed(f"{name}'s answer cannot be used: {detail}", detail) from error
+    if repairs:
+        normalized.setdefault("provenance", {})["repairs"] = repairs
     cache_key = canonical_sha256({"audio_sha256": audio_hash, **settings})
     answered_ns = time.time_ns()
     envelope = {

@@ -485,5 +485,33 @@ class ListeningReceipt(unittest.TestCase):
                     semantic_openrouter.KEY_ORIGIN_VARIABLE), "settings")
 
 
+class BridgeLimits(unittest.TestCase):
+    """J1-4: the writer refuses what the reader refuses, and the model is told
+    bounds under the reader's capacity."""
+
+    def usize(self, path: Path, name: str) -> int:
+        match = re.search(rf"\bconst\s+{name}\s*:\s*usize\s*=\s*([0-9_]+)\s*;",
+                          rust_source(path))
+        self.assertIsNotNone(match, name)
+        return int(match.group(1).replace("_", ""))
+
+    def test_the_writers_limits_are_the_readers(self) -> None:
+        lyrics_rs = CORE / "project" / "lyrics.rs"
+        self.assertEqual(external_analysis.BRIDGE_CAPACITIES, {
+            "LYRIC": self.usize(lyrics_rs, "CUE_CAPACITY"),
+            "SECTION": self.usize(BRIDGE_RS, "SECTION_CAPACITY"),
+            "SEMANTIC": self.usize(BRIDGE_RS, "SEMANTIC_CAPACITY"),
+        })
+        self.assertEqual(external_analysis.BRIDGE_FIELD_LIMITS, {
+            "LYRIC": self.usize(lyrics_rs, "TEXT_MAX_BYTES"),
+            "SECTION": self.usize(BRIDGE_RS, "REASONS_MAX_BYTES"),
+            "SEMANTIC": self.usize(BRIDGE_RS, "SUMMARY_MAX_BYTES"),
+        })
+        self.assertEqual(semantic_openrouter.BRIDGE_SEMANTIC_CAPACITY,
+                         self.usize(BRIDGE_RS, "SEMANTIC_CAPACITY"))
+        self.assertEqual(semantic_openrouter.BRIDGE_SUMMARY_MAX_BYTES,
+                         self.usize(BRIDGE_RS, "SUMMARY_MAX_BYTES"))
+
+
 if __name__ == "__main__":
     unittest.main()

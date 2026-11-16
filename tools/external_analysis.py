@@ -1200,6 +1200,12 @@ def _bridge_payload(value: str) -> bytes:
         raise AnalysisValidationError("bridge payload is not base64") from error
 
 
+# `core::project::analysis_bridge`: SECTION_CAPACITY, SEMANTIC_CAPACITY,
+# `lyrics::CUE_CAPACITY`, and the decoded byte limits of each text field.
+BRIDGE_CAPACITIES = {"LYRIC": 1024, "SECTION": 256, "SEMANTIC": 256}
+BRIDGE_FIELD_LIMITS = {"LYRIC": 511, "SECTION": 4095, "SEMANTIC": 2047}
+
+
 def parse_bridge(value: str) -> list[list[str]]:
     rows = [line.split("\t") for line in value.splitlines()]
     if not rows or rows[0] != ["MUSIALIZER_BRIDGE", "1"]:
@@ -1216,6 +1222,7 @@ def parse_bridge(value: str) -> list[list[str]]:
     if audio_duration_ms <= 0: raise AnalysisValidationError("bridge AUDIO duration is invalid")
     ids: set[int] = set()
     previous_time: dict[str, int] = {}
+    counts: dict[str, int] = {}
     for row in rows[1:]:
         if row[0] not in expected or len(row) != expected[row[0]]:
             raise AnalysisValidationError("invalid bridge record shape")
@@ -1229,7 +1236,21 @@ def parse_bridge(value: str) -> list[list[str]]:
                 raise AnalysisValidationError("bridge records are not time ordered")
             ids.add(stable_id); previous_time[row[0]] = start
             decoded = _bridge_payload(row[-1])
-            if len(decoded) > 1024*1024: raise AnalysisValidationError("bridge decoded field is too large")
+            # The reader's own limits (`core::project::analysis_bridge`; pinned
+            # by tests/test_cross_language_pins.py): a document this writer
+            # accepts and the reader refuses was a paid answer thrown away.
+            limit = BRIDGE_FIELD_LIMITS[row[0]]
+            if len(decoded) > limit:
+                raise AnalysisValidationError(
+                    f"bridge {row[0].lower()} text is {len(decoded)} bytes, past the {limit} "
+                    "the application holds")
+            if b"\x00" in decoded:
+                raise AnalysisValidationError("bridge text carries a NUL")
+            counts[row[0]] = counts.get(row[0], 0) + 1
+            if counts[row[0]] > BRIDGE_CAPACITIES[row[0]]:
+                raise AnalysisValidationError(
+                    f"bridge has more than {BRIDGE_CAPACITIES[row[0]]} {row[0].lower()} records, "
+                    "past what the application holds")
             if row[0] == "LYRIC":
                 confidence = _bridge_int(row[4], "lyric confidence")
                 if confidence < -1 or confidence > 1000 or row[5] not in {"none", "uncertain"}:
@@ -1659,6 +1680,35 @@ def _semantic_failure(cache_path: Path, audio_sha: str, *, since_ns: int = 0) ->
     return " ".join(receipt["message"].split())[:300] or None
 
 
+def _set_aside(path: Path) -> Path | None:
+    """Moves a cache the later steps refuse out of the way, keeping it beside
+    the others for the record (`<name>.refused-<ns>.json`)."""
+    target = path.with_name(f"{path.stem}.refused-{time.time_ns()}{path.suffix}")
+    try:
+        os.replace(path, target)
+    except OSError:
+        return None
+    return target
+
+
+def _set_aside_unusable_semantic(path: Path, request_identity: dict[str, Any]) -> None:
+    """Sets aside a cached answer to this request that the bridge cannot take."""
+    if not path.is_file():
+        return
+    try:
+        if path.stat().st_size > 64 << 20:
+            return
+        envelope = read_json(path)
+    except (OSError, ValueError):
+        return
+    if not _semantic_cache_matches_identity(envelope, request_identity):
+        return
+    try:
+        semantic_adapter.bridge_fit(envelope.get("normalized") or {})
+    except (AnalysisValidationError, KeyError, TypeError, ValueError):
+        _set_aside(path)
+
+
 def _utc_words(value: Any) -> str | None:
     """`2026-11-14 21:13 UTC` from a receipt's ISO time or a provider's Unix
     `created`, or None."""
@@ -1733,6 +1783,38 @@ def _semantic_latest_failure(cache_path: Path, audio_sha: str,
 
 
 def _semantic_cache_accepts(
+    envelope: dict[str, Any], *, request_identity: dict[str, Any],
+    execution_route: dict[str, Any] | None = None,
+) -> bool:
+    """Whether a cached answer is this request's and still usable.
+
+    The identity it was asked under, or the same request before the schema
+    stated its bounds (`legacy_request_identity`, J1-4); either way only an
+    answer the bridge can take (`semantic_openrouter.bridge_fit`), so a cache
+    the later steps would refuse is never reused.
+    """
+    for identity in (request_identity, semantic_adapter.legacy_request_identity(request_identity)):
+        if _semantic_cache_accepts_as(envelope, request_identity=identity,
+                                      execution_route=execution_route):
+            try:
+                semantic_adapter.bridge_fit(envelope["normalized"])
+            except (AnalysisValidationError, KeyError, TypeError, ValueError):
+                return False
+            return True
+    return False
+
+
+def _semantic_cache_matches_identity(envelope: Any, request_identity: dict[str, Any]) -> bool:
+    """The request half of acceptance alone: whether a cache answers this
+    request at all, usable or not (J1-4 sets aside one that does and is not)."""
+    if not isinstance(envelope, dict):
+        return False
+    return any(envelope.get("request") == identity
+               for identity in (request_identity,
+                                semantic_adapter.legacy_request_identity(request_identity)))
+
+
+def _semantic_cache_accepts_as(
     envelope: dict[str, Any], *, request_identity: dict[str, Any],
     execution_route: dict[str, Any] | None = None,
 ) -> bool:
@@ -2354,6 +2436,7 @@ def run_assist(
 
     semantic: dict[str, Any] | None = None
     semantic_failure: dict[str, Any] | None = None
+    semantic_repairs: list[str] = []
     if mode in {"mimo", "all"}:
         request_identity = _semantic_request_identity(
             audio, audio_sha=audio_sha, measured_duration=measured_duration, zdr=zdr,
@@ -2368,6 +2451,9 @@ def run_assist(
             accept=accepts,
         )
         if envelope is None:
+            # An answer to this very request that the bridge cannot take is
+            # set aside, not left to be refused on every run (J1-4).
+            _set_aside_unusable_semantic(paths["semantic"], request_identity)
             command = [
                 sys.executable, str(ROOT / "tools/semantic_openrouter.py"), str(audio),
                 str(paths["semantic"]), "--duration", f"{measured_duration:.9f}",
@@ -2416,17 +2502,39 @@ def run_assist(
             if semantic_failure is not None:
                 print(f"warning: {semantic_failure['words']}", file=sys.stderr)
         semantic = _semantic_document(envelope)
+        # The bridge takes the answer as `bridge_fit` leaves it; the repairs
+        # are named in the manifest.
+        if semantic is not None:
+            semantic, repairs = semantic_adapter.bridge_fit(semantic)
+            semantic_repairs = (((envelope.get("normalized") or {}).get("provenance") or {})
+                                .get("repairs") or repairs)
 
     plan = build_scene_plan(
         paths["measured"], lyrics_path=lyrics_lane_path if lyrics else None,
         semantic_path=paths["semantic"] if semantic else None,
     )
     atomic_write_json(paths["plan"], plan)
-    atomic_write_text(paths["bridge"], build_bridge(plan, lyrics=lyrics, semantic=semantic))
+    try:
+        bridge = build_bridge(plan, lyrics=lyrics, semantic=semantic)
+    except AnalysisValidationError as error:
+        # When the listening answer is what the bridge refuses, it is set
+        # aside: reused, it would fail every run the same way (J1-4).
+        if semantic is not None:
+            try:
+                build_bridge(plan, lyrics=lyrics, semantic=None)
+            except AnalysisValidationError:
+                raise error from None
+            _set_aside(paths["semantic"])
+            raise RuntimeError(
+                f"the listening answer does not fit the result ({error}); it was set aside, "
+                "so the next Start asks again") from error
+        raise
+    atomic_write_text(paths["bridge"], bridge)
     manifest = build_assist_manifest(
         mode=mode, audio_sha=audio_sha, measured_duration=measured_duration,
         cache_status=cache_status, paths=paths, plan=plan, lyrics=lyrics, semantic=semantic,
         performed_lyrics=use_performed_lyrics, semantic_latest_failure=semantic_failure,
+        semantic_repairs=semantic_repairs,
         execution_snapshot=observe_execution(
             snapshot,
             whisper=whisper_lane if mode in {"lyrics", "all", "sections"} else None,
@@ -2514,6 +2622,7 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
                           execution_snapshot: dict[str, Any] | None = None,
                           performed_lyrics: bool = False,
                           semantic_latest_failure: dict[str, Any] | None = None,
+                          semantic_repairs: list[str] | None = None,
                           ) -> dict[str, Any]:
     """`assist-manifest.json`, as the Assist panel reads it.
 
@@ -2577,6 +2686,10 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
     # only when there is one, so its absence is the plain case.
     if semantic and semantic_latest_failure is not None:
         manifest["semantic_latest_failure"] = semantic_latest_failure
+    # What was repaired so the answer fits the bridge (J1-4); absent when
+    # nothing was.
+    if semantic and semantic_repairs:
+        manifest["semantic_repairs"] = list(semantic_repairs)
     # Same rule for the localization block, and the same reason: it is the third
     # LT1 marker, so a run without a lyrics lane must not carry the key at all
     # rather than carry it as null (review LT1-R, R1).

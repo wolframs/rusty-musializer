@@ -790,6 +790,144 @@ class EveryFailureLeavesItsReason(LaneTestCase):
         self.assertNotIn("exited with code", str(raised.exception))
 
 
+def segment(start: float, end: float, **overrides: object) -> dict:
+    return dict(creative(**overrides), start_seconds=start, end_seconds=end)
+
+
+class AnAnswerThatCannotBeUsedIsNeverCached(LaneTestCase):
+    """Defect J1-4 (2026-11-16): the schema stated no maximum of sections or
+    summary length and took a section shorter than a millisecond; the helper
+    cached the paid answer, the bridge then refused it, and every later Start
+    reused it and failed again, for good."""
+
+    def test_the_schema_states_bounds_a_compliant_answer_always_fits(self) -> None:
+        schema = semantic_openrouter.MODEL_OUTPUT_SCHEMA
+        segments = schema["properties"]["segments"]
+        self.assertEqual(segments["maxItems"], semantic_openrouter.SEGMENT_MAX)
+        self.assertLessEqual(segments["maxItems"], semantic_openrouter.BRIDGE_SEMANTIC_CAPACITY)
+        limit = segments["items"]["properties"]["summary"]["maxLength"]
+        # Four bytes is the widest UTF-8 character.
+        self.assertLessEqual(limit * 4, semantic_openrouter.BRIDGE_SUMMARY_MAX_BYTES)
+        self.assertEqual(
+            semantic_openrouter.canonical_sha256(semantic_openrouter._output_schema(False)),
+            semantic_openrouter.LEGACY_OUTPUT_SCHEMA_SHA256,
+            "the unbounded schema is the one the 2026-11-15 answers were asked under")
+
+    def test_too_many_sections_is_a_failed_run_with_its_cost_not_a_cache(self) -> None:
+        step = DURATION / 300
+        body = json.dumps({"global": creative(), "segments": [
+            segment(index * step, DURATION if index == 299 else (index + 1) * step)
+            for index in range(300)]})
+        with self.assertRaises(semantic_openrouter.FailedRun) as raised:
+            self.run_lane(response(body))
+        message = str(raised.exception)
+        self.assertIn("300 sections, more than the 256", message)
+        self.assertIn("billed 0.0106 USD", message)
+        self.assertLessEqual(len(message.encode()), semantic_openrouter.ESSENTIAL_MAX_BYTES)
+        self.assertFalse(self.ws.cache.exists())
+        self.assertEqual(json.loads(self.ws.receipt.read_text())["kind"], "unusable_answer")
+
+    def test_a_sub_millisecond_section_joins_its_neighbour_and_says_so(self) -> None:
+        body = json.dumps({"global": creative(), "segments": [
+            segment(0.0, 0.0004, summary="a blip"), segment(0.0004, 4.0, summary="verse"),
+            segment(4.0, 4.0002, summary="a blip"), segment(4.0002, DURATION)]})
+        _, envelope = self.run_lane(response(body))
+        normalized = envelope["normalized"]
+        # The first blip is taken by the verse after it, the second by the
+        # verse before it.
+        self.assertEqual([seg["summary"] for seg in normalized["segments"]],
+                         ["verse", "a summary"])
+        self.assertEqual(normalized["segments"][0]["end_seconds"], 4.0002)
+        self.assertEqual(normalized["segments"][0]["start_seconds"], 0.0)
+        self.assertEqual(normalized["provenance"]["repairs"],
+                         ["joined 2 sections shorter than a millisecond to the one before"])
+        plan = {"audio": {"sha256": "a" * 64, "duration_seconds": DURATION},
+                "sections": [{"start_seconds": 0.0, "end_seconds": DURATION,
+                              "recommended_scene": "spectrum", "transition_strength": 0.5,
+                              "reasons": []}]}
+        with patch.object(external_analysis, "validate_scene_plan"):
+            external_analysis.build_bridge(plan, semantic=normalized)
+
+    def test_a_long_summary_is_shortened_at_a_character_and_unprintables_go(self) -> None:
+        body = json.dumps({"global": creative(), "segments": [
+            segment(0.0, DURATION, summary="\u00e9" * 1500 + "\u0000\ud800")]})
+        _, envelope = self.run_lane(response(body))
+        summary = envelope["normalized"]["segments"][0]["summary"]
+        self.assertLessEqual(len(summary.encode("utf-8")), 2047)
+        self.assertTrue(summary.endswith("..."))
+        self.assertNotIn("\x00", summary)
+        self.assertEqual(envelope["normalized"]["provenance"]["repairs"], [
+            "replaced unprintable characters in 1 summary",
+            "shortened 1 summary to 2047 bytes"])
+
+    def test_python_refuses_what_the_rust_reader_refuses(self) -> None:
+        plan = {"audio": {"sha256": "a" * 64, "duration_seconds": DURATION},
+                "sections": [{"start_seconds": 0.0, "end_seconds": DURATION,
+                              "recommended_scene": "spectrum", "transition_strength": 0.5,
+                              "reasons": []}]}
+        long = {"segments": [segment(0.0, DURATION, summary="x" * 2048)],
+                "schema_version": "musializer.semantic-score/v1"}
+        with patch.object(external_analysis, "validate_scene_plan"), \
+                self.assertRaisesRegex(external_analysis.AnalysisValidationError,
+                                       "2048 bytes, past the 2047"):
+            external_analysis.build_bridge(plan, semantic=long)
+
+
+class RepairsReachTheManifest(unittest.TestCase):
+    def test_the_manifest_names_the_repairs_and_omits_none(self) -> None:
+        common = dict(mode="mimo", audio_sha="a" * 64, measured_duration=8.0,
+                      cache_status={"semantic": "generated"}, paths={}, plan={"sections": []},
+                      lyrics=None, semantic={"lane": "semantic_interpretation", "segments": []})
+        manifest = external_analysis.build_assist_manifest(
+            **common, semantic_repairs=["joined 1 section shorter than a millisecond to the one before"])
+        self.assertEqual(manifest["semantic_repairs"],
+                         ["joined 1 section shorter than a millisecond to the one before"])
+        self.assertNotIn("semantic_repairs", external_analysis.build_assist_manifest(**common))
+
+
+class LegacyAnswersStillCount(LaneTestCase):
+    """J1-4 changed the schema, so the identity. An answer made under the
+    unbounded schema (2026-11-14 to 2026-11-16) is still this request's when
+    it fits the bridge, and is reused, not paid for again; one that does not
+    fit is set aside, and the next run asks again."""
+
+    def legacy_envelope(self, segments: list[dict]) -> tuple[dict, dict]:
+        _, envelope = self.run_lane(response(answer()))
+        identity = external_analysis._semantic_request_identity(
+            self.ws.audio, audio_sha=envelope["request"]["audio_sha256"],
+            measured_duration=DURATION, zdr=False)
+        legacy = semantic_openrouter.legacy_request_identity(identity)
+        old = json.loads(json.dumps(envelope))
+        old["request"] = legacy
+        old["cache_key"] = semantic_openrouter.canonical_sha256(legacy)
+        old["normalized"]["provenance"]["request_settings"] = {
+            key: value for key, value in legacy.items() if key != "audio_sha256"}
+        old["normalized"]["segments"] = segments
+        return old, identity
+
+    def test_a_fitting_legacy_answer_is_reused(self) -> None:
+        old, identity = self.legacy_envelope([segment(0.0, DURATION)])
+        self.assertTrue(external_analysis._semantic_cache_accepts(old, request_identity=identity))
+
+    def test_a_legacy_answer_the_bridge_refuses_is_not_reused_and_is_set_aside(self) -> None:
+        step = DURATION / 300
+        old, identity = self.legacy_envelope([
+            segment(index * step, DURATION if index == 299 else (index + 1) * step)
+            for index in range(300)])
+        self.assertFalse(external_analysis._semantic_cache_accepts(old, request_identity=identity))
+        self.ws.cache.write_text(json.dumps(old))
+        external_analysis._set_aside_unusable_semantic(self.ws.cache, identity)
+        self.assertFalse(self.ws.cache.exists())
+        self.assertEqual(len(list(self.ws.root.glob("semantic.cache.refused-*.json"))), 1)
+
+    def test_an_answer_to_another_request_is_not_set_aside(self) -> None:
+        old, identity = self.legacy_envelope([segment(0.0, DURATION)])
+        old["request"]["model"] = "someone/else"
+        self.ws.cache.write_text(json.dumps(old))
+        external_analysis._set_aside_unusable_semantic(self.ws.cache, identity)
+        self.assertTrue(self.ws.cache.exists())
+
+
 class Killed(BaseException):
     """What a SIGKILL of the process group looks like from inside: nothing
     after it runs. A BaseException, so no `except Exception` catches it."""
@@ -1069,12 +1207,23 @@ class GeminiLane(LaneTestCase):
                       max_price={"prompt": 1.0})
         settings = semantic_openrouter.request_settings(model=MIMO, **kwargs)
         payload, _ = semantic_openrouter.build_request(b"abc", model=MIMO, **kwargs)
+        # J1-4 (2026-11-16): the schema now states its bounds, which moves
+        # exactly one field of the identity. The identity as it was, with the
+        # unbounded schema's hash, is still byte for byte the 2d5d1b6 one, and
+        # an answer made under it is still accepted when it fits the bridge
+        # (`LegacyAnswersStillCount`), so no cached answer is paid for again.
         self.assertEqual(
-            semantic_openrouter.canonical_sha256(settings),
+            semantic_openrouter.canonical_sha256(
+                semantic_openrouter.legacy_request_identity(settings)),
             "18163520c97f2ee718c5760e14a47c78ac3563865dc72f05091ee8cc69221dd4")
         self.assertEqual(
+            {key for key in settings
+             if settings[key] != semantic_openrouter.legacy_request_identity(settings)[key]},
+            {"model_output_schema_sha256"})
+        # The body MiMo is sent now carries the bounded schema; nothing else moved.
+        self.assertEqual(
             semantic_openrouter.canonical_sha256(payload),
-            "8fae05410bfe4b042805bf33ee899abafe5c904bd6999ecb40e08488732eebac")
+            "f0bcf2738802b90aabd577bc1ab6954d960ada52fdb2bc21169333d2dd95ffb8")
 
     def test_a_well_formed_answer_is_cached_with_its_estimate_and_cost(self) -> None:
         _, envelope = self.run_lane(gemini_response(answer()))

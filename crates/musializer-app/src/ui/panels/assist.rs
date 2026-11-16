@@ -845,6 +845,16 @@ impl AssistController {
             None => Err("The track this analysis targeted is no longer available.".to_string()),
             Some(track) => load_candidate(&bridge_path, track, lanes),
         };
+        // A listening answer the reader refuses would be reused and refused on
+        // every later run (J1-4): when its rows are what the reader refuses,
+        // the cache is set aside and the sentence says the next Start asks again.
+        let staged = staged.map_err(|detail| {
+            if lanes.semantics && set_aside_refused_semantic(&bridge_path, Path::new(&output_dir)) {
+                format!("{detail} {SEMANTIC_SET_ASIDE}")
+            } else {
+                detail
+            }
+        });
         match staged {
             Err(detail) => {
                 let session = &mut workspace.assist;
@@ -1394,6 +1404,37 @@ fn load_candidate(path: &Path, track: &Track, lanes: Lanes) -> Result<LoadedCand
         audio_sha256: computed,
         audio_stamp: stamp,
     })
+}
+
+/// What a refused result adds when the listening answer was to blame.
+const SEMANTIC_SET_ASIDE: &str = "The listening answer was the part that did not fit and was \
+    set aside, so the next Start asks again and may cost again.";
+
+/// Sets aside the job folder's listening cache when the bridge parses with its
+/// `SEMANTIC` rows removed and not with them: those rows are what the reader
+/// refused, and the helper would reuse the answer that made them (J1-4).
+fn set_aside_refused_semantic(bridge_path: &Path, output_dir: &Path) -> bool {
+    let Ok(input) = std::fs::read(bridge_path) else {
+        return false;
+    };
+    if input.len() > analysis_bridge::MAX_INPUT_BYTES
+        || analysis_bridge::parse(&input, None, None).is_ok()
+    {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(&input) else {
+        return false;
+    };
+    let without: String = text
+        .split_inclusive('\n')
+        .filter(|line| !line.starts_with("SEMANTIC"))
+        .collect();
+    if analysis_bridge::parse(without.as_bytes(), None, None).is_err() {
+        return false;
+    }
+    let cache = output_dir.join(diagnosis::LISTENING_CACHE_NAME);
+    let aside = output_dir.join(format!("semantic.cache.refused-{}.json", wall_clock_ns()));
+    std::fs::rename(cache, aside).is_ok()
 }
 
 /// What a Start refuses with when the track's file no longer has the digest
@@ -6038,6 +6079,53 @@ mod tests {
             .as_deref(),
             Some(AUDIO_CHANGED_SENTENCE)
         );
+    }
+
+    /// J1-4: a bridge whose semantic rows are what the reader refuses sets the
+    /// listening cache aside, so the next Start asks again instead of reusing
+    /// the answer and failing the same way; a bridge refused for another lane
+    /// leaves it alone.
+    #[test]
+    fn a_refused_listening_answer_is_set_aside_and_another_lane_leaves_it() {
+        let scratch = Scratch::new("set-aside");
+        let cache = scratch.join(diagnosis::LISTENING_CACHE_NAME);
+        let digest = sha256::digest_hex(b"x");
+        let reasons = b64("[\"chorus\"]");
+        let head = format!(
+            "MUSIALIZER_BRIDGE\t1\nAUDIO\t{digest}\t60000\n\
+             SECTION\t10\t0\t60000\tspectrum\t500\t{reasons}\n"
+        );
+        let long = b64(&"x".repeat(analysis_bridge::SUMMARY_MAX_BYTES + 1));
+        let semantic_bad = format!("{head}SEMANTIC\t20\t0\t60000\t400\t300\t-200\t900\t{long}\n");
+        let bridge = scratch.join("bad.bridge.tsv");
+        std::fs::write(&bridge, &semantic_bad).unwrap();
+        std::fs::write(&cache, "{}").unwrap();
+        assert!(set_aside_refused_semantic(&bridge, &scratch.0));
+        assert!(!cache.exists());
+        assert_eq!(
+            std::fs::read_dir(&scratch.0)
+                .unwrap()
+                .filter(|entry| entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("semantic.cache.refused-"))
+                .count(),
+            1
+        );
+
+        // A section the reader refuses is not the listening answer's fault.
+        std::fs::write(&cache, "{}").unwrap();
+        let section_bad = semantic_bad.replace("\tspectrum\t", "\tno-such-scene\t");
+        std::fs::write(&bridge, section_bad).unwrap();
+        assert!(!set_aside_refused_semantic(&bridge, &scratch.0));
+        assert!(cache.exists());
+        // Nor is a bridge the reader takes.
+        std::fs::write(&bridge, format!("{head}")).unwrap();
+        assert!(!set_aside_refused_semantic(&bridge, &scratch.0));
+        assert!(cache.exists());
+        assert!(format!("x {SEMANTIC_SET_ASIDE}").len() < 250);
     }
 
     /// The staging refusal names the cause a user can act on when the result
