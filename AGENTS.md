@@ -255,6 +255,9 @@ number disagrees, grep it there before debugging from scratch.
 - **`headless_run.sh` isolates config, not cache**: a probe reads the operator's `~/.cache/musializer`, so set an absolute `XDG_CACHE_HOME` when a capture must not depend on it. See `docs/TRAPS.md`.
 - **A temporary folder outlives a helper that is killed**: a private copy that must not survive has no name (`os.memfd_create`, read through `/proc/self/fd/0`), and a child that only decodes gets an allowlisted environment. See `docs/TRAPS.md`.
 - **A saved project's bytes move with the playhead**: a save writes `metadata.playhead_seconds` and a seek does not dirty the project, so mask it when comparing saved files. See `docs/TRAPS.md`.
+- **A digest taken once describes the file at that moment**: keep the file's stamp beside it and check it before anything is spent. See `docs/TRAPS.md`.
+- **A request in flight leaves no word on disk unless one is written before it leaves**: a kill runs no `finally`. See `docs/TRAPS.md`.
+- **An answer cached before the later steps check it is refused forever**: check what the reader requires before caching, and set aside what it refuses. See `docs/TRAPS.md`.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe
