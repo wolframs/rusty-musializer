@@ -613,6 +613,20 @@ answer is in hand. The panel reads a record written since the job started:
 
 **An answer the result cannot hold is never cached.** The schema now states 64
 sections and 500-character summaries (the bridge holds 256 and 2 047 bytes).
+The section bound is written in the segments' description ("At most 64
+segments."), not as `maxItems`: Google's endpoints refuse a request whose
+schema carries that keyword (HTTP 400, "Provider returned error"), while
+`maxLength` and `minItems` are accepted. Found by the first Start pressed
+through the window against the real service (2026-11-16, the lead): the press
+failed unbilled, three real calls isolated the keyword (without `maxLength`
+still refused; without `maxItems` accepted; without both accepted), the
+corrected request was accepted, and a second press through the window staged
+seven sections for the benchmark's 100-second excerpt at 0.012 USD; a third
+press reused that answer and said so before and after ("Cost: nothing. A saved
+answer for this track and these settings, from 2026-11-16 14:57 UTC, is
+reused, so this run sends nothing to OpenRouter."). The whole hunt cost about
+0.05 USD. The test `test_the_schema_states_bounds_a_compliant_answer_always_fits`
+pins that the schema carries no `maxItems`; its control is the keyword put back.
 Before caching, `bridge_fit` repairs what is harmless (a section whose ends
 round to the same millisecond joins its neighbour, a long summary is shortened
 at a character, unprintables become spaces), names it in the manifest

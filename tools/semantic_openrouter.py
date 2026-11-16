@@ -411,7 +411,14 @@ def _output_schema(bounded: bool) -> dict[str, Any]:
         "items": _creative_schema(True, bounded),
     }
     if bounded:
-        segments["maxItems"] = SEGMENT_MAX
+        # In words, not as `maxItems`: Google's endpoints refuse the whole
+        # request for that keyword (HTTP 400 "Provider returned error", found
+        # by the first Start pressed through the window, 2026-11-16;
+        # `maxLength` and `minItems` are accepted). `bridge_fit` enforces what
+        # the application can hold before an answer is cached. The prompt is
+        # left alone, so an answer asked under the unbounded schema keeps its
+        # identity (`legacy_request_identity`).
+        segments["description"] += f" At most {SEGMENT_MAX} segments."
     return {
         "type": "object",
         "additionalProperties": False,
@@ -1074,8 +1081,12 @@ def refusal_message(status: int, settings: dict[str, Any] | None, model: str,
             "OpenRouter has no endpoint for ", model, f" (HTTP 404){billed}",
             " Refresh the model list in AI settings \u2192 OpenRouter.")
     said = f": {provider_message}" if provider_message else ""
+    # A request the provider calls malformed is this application's fault (the
+    # first real Start was one: a schema keyword Google refuses), and a person
+    # who reads "refused" looks at their key and settings first.
     return "refused", bounded(f"OpenRouter refused the request (HTTP {status}", said,
-                              f"){billed}")
+                              f"){billed}",
+                              " The request itself is at fault, not your key or settings.")
 
 
 class SentUnanswered(RuntimeError):

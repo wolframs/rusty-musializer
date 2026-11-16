@@ -744,8 +744,12 @@ class EveryFailureLeavesItsReason(LaneTestCase):
         body = json.dumps({"error": {"message": "\u00e9" * 1500}}, ensure_ascii=False).encode()
         receipt = self.refused_with(refusal(400, body))
         self.assertEqual(receipt["kind"], "refused")
-        self.assertTrue(receipt["message"].endswith("...); nothing was billed."),
-                        receipt["message"])
+        essential, _, after = receipt["message"].partition(" The request itself")
+        self.assertTrue(essential.endswith("...); nothing was billed."), receipt["message"])
+        self.assertLessEqual(len(essential.encode()), semantic_openrouter.ESSENTIAL_MAX_BYTES)
+        # A malformed request is the application's fault; the sentence says so,
+        # so that nobody goes looking at their key (the first real Start).
+        self.assertEqual(after, " is at fault, not your key or settings.")
 
     def test_the_bill_survives_the_longest_schema_failure(self) -> None:
         # The "Also" of J1: the schema-failure sentence ends with what was
@@ -803,8 +807,13 @@ class AnAnswerThatCannotBeUsedIsNeverCached(LaneTestCase):
     def test_the_schema_states_bounds_a_compliant_answer_always_fits(self) -> None:
         schema = semantic_openrouter.MODEL_OUTPUT_SCHEMA
         segments = schema["properties"]["segments"]
-        self.assertEqual(segments["maxItems"], semantic_openrouter.SEGMENT_MAX)
-        self.assertLessEqual(segments["maxItems"], semantic_openrouter.BRIDGE_SEMANTIC_CAPACITY)
+        # Stated in words: Google's endpoints refuse a request whose schema
+        # carries `maxItems` (HTTP 400, the first real Start, 2026-11-16).
+        self.assertNotIn("maxItems", json.dumps(schema))
+        self.assertIn(f"At most {semantic_openrouter.SEGMENT_MAX} segments.",
+                      segments["description"])
+        self.assertLessEqual(semantic_openrouter.SEGMENT_MAX,
+                             semantic_openrouter.BRIDGE_SEMANTIC_CAPACITY)
         limit = segments["items"]["properties"]["summary"]["maxLength"]
         # Four bytes is the widest UTF-8 character.
         self.assertLessEqual(limit * 4, semantic_openrouter.BRIDGE_SUMMARY_MAX_BYTES)
@@ -1292,10 +1301,11 @@ class GeminiLane(LaneTestCase):
             {key for key in settings
              if settings[key] != semantic_openrouter.legacy_request_identity(settings)[key]},
             {"model_output_schema_sha256"})
-        # The body MiMo is sent now carries the bounded schema; nothing else moved.
+        # The body MiMo is sent now carries the bounded schema (its section
+        # bound in words since 2026-11-16); nothing else moved.
         self.assertEqual(
             semantic_openrouter.canonical_sha256(payload),
-            "f0bcf2738802b90aabd577bc1ab6954d960ada52fdb2bc21169333d2dd95ffb8")
+            "420b0191939a749e41f0d074948fdb2d7ae1922b635a63bdc9a1eecc66d23ffd")
 
     def test_a_well_formed_answer_is_cached_with_its_estimate_and_cost(self) -> None:
         _, envelope = self.run_lane(gemini_response(answer()))

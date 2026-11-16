@@ -95,11 +95,16 @@ then fix / preempt issues in the code, before I test it myself? :)"
      offers a local route for this task goes.
   7. A second Start on an unchanged track reuses the saved answer but shows
      the paid-call wording. Decided: say reuse, before and after.
-- [ ] Fixes, each with its check: one agent on 1, 2, 3, 5, 6, 7 (money,
-  failures, caches), one on 4 (the review of a staged answer).
-- [ ] One real press of Start through the window's own path (headless, the
-  operator's settings and key file, a benchmark excerpt; a few cents of the
-  5 USD cap), read against what a user would see at each step.
+- [x] Fixes, each with its check: one agent on 1, 2, 3, 5, 6, 7 (money,
+  failures, caches), one on 4 (the review of a staged answer). Merged.
+- [x] One real press of Start through the window's own path (headless, a
+  copy of the operator's settings, his key file read by the application, the
+  benchmark's cat excerpt). The first press failed unbilled: fix 5 had put
+  `maxItems` into the schema and Google refuses that keyword. Isolated with
+  three real calls, fixed (the bound in words), pressed again: seven sections
+  staged and listed, the ghosts on the timeline, then a third press reusing
+  the answer and saying so. About 0.05 USD in all. Record:
+  `docs/ASSIST_PIPELINE.md`, "Starting Feelings safely".
 - [ ] Review of the fixes, one full `tools/verify.sh`, release build; the
   record to the archive and this block deleted.
 

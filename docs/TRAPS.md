@@ -925,3 +925,19 @@ good. Check everything a later step requires before writing the cache, keep the
 writer's limits equal to the reader's (pinned across languages), and set aside
 a cache a later step refuses instead of leaving it to be reused. Found
 2026-11-16 (J1-4).
+
+## A schema keyword one provider refuses fails the whole request
+
+A hosted model's structured-output schema is read by the provider's own
+validator, and a keyword it does not support is not ignored: the request is
+refused whole, unbilled, with a status that names nothing. The listening lane
+gained `maxItems` on its array of sections on 2026-11-16; every unit test, the
+fake provider and the gates were green, and the first real Start read "HTTP
+400: Provider returned error". Google's endpoints accept `minItems`,
+`maxLength`, `minimum` and `maximum` there and refuse `maxItems`. No fake can
+know this. After any change to what is sent to a hosted model (schema, a
+parameter, the provider block), send one real request before the change
+reaches a release; a refused request costs nothing and a short excerpt costs a
+cent. State a bound the validator refuses in words (the description or the
+prompt) and enforce it on the answer.
+

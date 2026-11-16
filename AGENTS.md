@@ -258,6 +258,7 @@ number disagrees, grep it there before debugging from scratch.
 - **A digest taken once describes the file at that moment**: keep the file's stamp beside it and check it before anything is spent. See `docs/TRAPS.md`.
 - **A request in flight leaves no word on disk unless one is written before it leaves**: a kill runs no `finally`. See `docs/TRAPS.md`.
 - **An answer cached before the later steps check it is refused forever**: check what the reader requires before caching, and set aside what it refuses. See `docs/TRAPS.md`.
+- **A schema keyword one provider refuses fails the whole request** (Google refuses `maxItems`): after any change to what a hosted model is sent, make one real request before it reaches a release; no fake can know. See `docs/TRAPS.md`.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
 
 ## Judge by what a user or a file can observe
