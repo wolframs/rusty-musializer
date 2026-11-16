@@ -1060,6 +1060,20 @@ then moves to the job folder's log."; Start carried exactly that attempt's id
 `acknowledged` and a swept `possible` line for it, the record was removed, a
 new answer was staged, and the card after that warned of nothing.
 
+**A receipt is never replaced before its charges are kept (the fourth review,
+2026-11-16).** One loss was left: a may-be-billed receipt an earlier build
+wrote, with its `earlier` list, is the only word of those charges until a
+sweep has run, and a Start the orchestrator refuses (the saved answer gone,
+the ledger refusing the acknowledgement) wrote its own receipt over it before
+any sweep. `_write_failure_receipt` now sweeps first, whoever calls it; when
+the ledger refuses the sweep, the outgoing receipt's legacy charges ride in
+the new receipt's `earlier`, the J1 shape every reader still reads, until a
+sweep can take them. Pinned by
+`test_a_refusal_does_not_replace_the_only_word_of_an_earlier_charge`, written
+first and seen to fail both ways (ledger writable, ledger a directory) with
+"[] != ['unanswered@1', 'may_be_billed@2']". The same review's two lesser
+findings are queued in `FEATURE_PARITY_PLAN.md` (GX-5).
+
 **Start stays on screen when the card grows.** That press found the one thing
 the gate had stepped around with a taller window: the confirmation is brought
 into view when it opens, and the warning arrives with the status query a

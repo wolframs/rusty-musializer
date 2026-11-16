@@ -150,9 +150,14 @@ then fix / preempt issues in the code, before I test it myself? :)"
   killed after sending, the warning on the next card and the Start that puts
   it behind (record in the same section), and fixed what that found: the
   warned card's Start was below the fold at 1280x720.
-- [ ] A fourth review, of J4 and that fix (GPT-6.1-Sol, started 2026-11-16),
-  and one full `tools/verify.sh`; then the release build. The installed
-  release is still the J3 build (`b36d975`).
+- [x] A fourth review, of J4 and that fix (GPT-6.1-Sol, 2026-11-16): the six
+  earlier findings closed but for one path, taken and fixed by the lead (a
+  refused Start wrote its receipt over an earlier build's may-be-billed
+  receipt before any sweep; record in `docs/ASSIST_PIPELINE.md`); two lesser
+  findings queued as GX-5. No fifth review: the fix is one function with its
+  test, and the review found the design sound.
+- [ ] One full `tools/verify.sh` on the final commit, then the release build;
+  the record to the archive and this block deleted.
 - [x] One full `tools/verify.sh` on the merged tree (`1363bcd`, 2026-11-16):
   24 of 26. The headless gate, which failed its 120 ms intervention on
   `4950511` under another agent's load, passed. Failed: poster frames' frame
@@ -355,7 +360,7 @@ a CX ruling, not a preference.
 | 2 | **The listening model** — was the MiMo v2.5 capability benchmark, the operator's stated priority. Its first live run is done (2026-11-14, 60 calls; `docs/MIMO_BENCHMARK_RESULTS.md`), and on 2026-11-15 he set MiMo aside for Gemini 3.8 Flash without wanting a benchmark for the choice (the block above; archive, "The listening lane moves to Gemini 3.8 Flash"). Open: whether the plan the application suggests from Gemini's sections is good enough to act on unchecked; pointing the harness at Gemini needs a price row and its fixed temperature removed, and a new paid run needs his go-ahead | — | operator listening, then one session |
 | 3 | **The remaining CX rulings, in their stated order.** Review the implemented track-specific CX-5 scene thumbnails, then CX-1 marker rails and the proposal review queue (PXF-8), then CX-2 export variants (PXF-4 first, schema v2 — PXF-9) | CX-1, CX-2, CX-5 | large; four or five agents |
 | 4 | **Workflow friction and product opportunities** left from the user-perspective review | UX0-B06, B07, B10–B19; UX0-C05, C08, C09, C17; PXF-3, PXF-12, PXF-13 | medium |
-| 5 | **Durable-edit remainder, then the missing product surfaces, then honesty and gates** | B3; C2, C3, C5; D6, D8; E2, E3, E4; F1/F2/F3 remainder; G1, G2; GX-3, GX-4 | large |
+| 5 | **Durable-edit remainder, then the missing product surfaces, then honesty and gates** | B3; C2, C3, C5; D6, D8; E2, E3, E4; F1/F2/F3 remainder; G1, G2; GX-3, GX-4, GX-5 | large |
 | 6 | **Dev-ex and infrastructure** (DX8 closed 2026-08-29 — E2/E4 unblocked) | DX1–DX7, DX9 | small each |
 | 7 | **Assist provider remainder** | AP5-b/c/d, AP6-e | small each; AP5-c is a feature |
 | 8 | **Scene follow-ups**, each of which wants a listening pass rather than more code | SX2, SX3 open notes | small |
@@ -576,6 +581,24 @@ to 2026-11-15) and passing alone; find each timing assumption:
   between the check and the read (a builder's report, not reproduced).
 - `tools/lyric_focus_check.py` still focuses the last root child, not the
   mapped window (`docs/TRAPS.md`, the XTest driver entry).
+
+**GX-5 — the Feelings charge ledger's two queued findings** (the fourth
+review, GPT-6.1-Sol, 2026-11-16; neither loses or hides money one person in
+one window can meet):
+
+- A status answer over 1 MiB (thousands of pending charges) is refused whole,
+  and the card then reads as an ordinary paid Start with no word that earlier
+  requests could not be shown. Say so on the card when the status query
+  fails; aggregate or page the list.
+- With two helpers on one folder, one that saved its answer and was killed
+  before removing its sent record, while the other's answer replaced the
+  cache, is swept as "never answered" though it was. It over-counts, and
+  Start puts it behind. Write the attempt's `answered` line before its
+  evidence can be replaced.
+- Also never pressed for real: Apply and Put back on a real answer (the probe
+  has one click per run), Cancel while a request is in flight, a settings
+  change through the AI dialog while the card is open, two windows on one
+  track.
 
 **SX2/SX3 — scene follow-ups.** No HX protocol has been run on Clawd's expression
 thresholds, its petal-show arm thresholds (measured against one track), or any of

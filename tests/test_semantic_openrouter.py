@@ -1814,6 +1814,49 @@ class TheLedgerKeepsEveryCharge(LaneTestCase):
             self.run_lane(refusal(402))
         self.assertEqual(self.ids(), expected)
 
+    def test_a_refusal_does_not_replace_the_only_word_of_an_earlier_charge(self) -> None:
+        # The fourth review: a receipt an earlier build left, not yet in the
+        # ledger, is the only word of its charges, and a Start the
+        # orchestrator refuses (the saved answer gone, the ledger refusing
+        # the acknowledgement) writes its own receipt over it.
+        legacy = json.dumps({
+            "schema_version": "musializer.semantic-failed-run/v1", "failed_ns": 2,
+            "failed_utc": "2026-11-16T09:30:00Z", "kind": "timed_out", "message": "x",
+            "may_be_billed": True, "estimate": {"usd_max": 0.073}, "earlier": [
+                {"kind": "unanswered", "at_ns": 1, "at_utc": "2026-11-16T09:00:00Z",
+                 "usd_max": 0.073}]})
+        expected = ["unanswered@1", "may_be_billed@2"]
+
+        def told() -> list[str]:
+            # Not `self.ids()`: that requires a readable ledger.
+            return [charge["id"]
+                    for charge in semantic_openrouter.pending_charges(self.ws.cache)[0]]
+
+        for ledger_refuses in (False, True):
+            with self.subTest(ledger_refuses=ledger_refuses):
+                log = semantic_openrouter.charge_log_path(self.ws.cache)
+                if log.is_dir():
+                    log.rmdir()
+                log.unlink(missing_ok=True)
+                self.ws.receipt.write_text(legacy)
+                if ledger_refuses:
+                    log.mkdir()
+                self.assertEqual(told(), expected)
+                semantic_openrouter.write_start_refusal(
+                    self.ws.cache, kind="answer_gone",
+                    message=semantic_openrouter.ANSWER_GONE_MESSAGE,
+                    audio_sha256="0" * 64, settings={"model": self.MODEL})
+                receipt = json.loads(self.ws.receipt.read_text())
+                self.assertEqual(receipt["kind"], "answer_gone", "the refusal is the receipt now")
+                self.assertEqual(told(), expected, "and both earlier charges are still told")
+                if ledger_refuses:
+                    # Carried in the new receipt, where a later sweep reads
+                    # them once the ledger can be written again.
+                    log.rmdir()
+                    self.assertTrue(semantic_openrouter.sweep(self.ws.cache))
+                    self.assertEqual(self.ids(), expected)
+                    self.assertEqual(len(self.ledger()), 2)
+
     # J4-2: "Cost: nothing" binds the run.
 
     def test_a_saved_answer_gone_since_the_card_was_drawn_is_not_paid_for(self) -> None:

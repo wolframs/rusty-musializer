@@ -1821,6 +1821,31 @@ def write_start_refusal(cache_path: Path, *, kind: str, message: str, audio_sha2
                                   may_be_billed=False, kind=kind)
 
 
+CARRIED_FIELDS = ("kind", "at_utc", "at_ns", "usd_max", "audio_sha256", "request_key", "model")
+
+
+def _outgoing_receipt_charges(cache_path: Path) -> list[dict[str, Any]]:
+    """Called before a receipt replaces the one beside the cache. That one may
+    be the only word of a possible charge: a receipt an earlier build left,
+    with its `earlier` list, not yet in the ledger (the fourth review: a
+    Start refused for a saved answer that was gone wrote over it, and the
+    next card told of nothing). Into the ledger first; when the ledger
+    refuses, what it would have taken is returned, to ride in the new receipt
+    the way that build carried it, where the next sweep reads it. A J4
+    receipt's own charge needs no carrying: the ledger holds it, or its sent
+    record was kept."""
+    if sweep(cache_path):
+        return []
+    receipt = _read_receipt(cache_path)
+    if receipt is None:
+        return []
+    charges = _charges_carried(receipt.get("earlier"))
+    own = _charge_of_receipt(receipt)
+    if own is not None and legacy_charge_id(own["kind"], own["at_ns"]) == own["id"]:
+        charges.append(own)
+    return [{field: charge.get(field) for field in CARRIED_FIELDS} for charge in charges]
+
+
 def _record_possible(cache_path: Path, charge: dict[str, Any]) -> bool:
     """Appends one attempt's possible charge before the receipt that says so
     is written (J4-1, -4); False when the ledger refused it."""
@@ -2095,6 +2120,9 @@ def _write_failure_receipt(
     """
     response = response if isinstance(response, dict) else {}
     content = _raw_content(response)
+    # Before this receipt replaces the one that is there (this attempt's own
+    # record is locked, so the sweep inside leaves it alone).
+    carried = _outgoing_receipt_charges(cache_path)
     failed_ns, failed_utc = time.time_ns(), _utc_now()
     recorded = True
     if sent is not None and may_be_billed:
@@ -2137,6 +2165,9 @@ def _write_failure_receipt(
         "content_characters": None if content is None else len(content),
         "content_start": None if content is None else content[:FAILED_CONTENT_KEEP],
     }
+    if carried:
+        # Only when the ledger refused them (see `_outgoing_receipt_charges`).
+        receipt["earlier"] = carried
     atomic_write_json(failure_receipt_path(cache_path), receipt)
     # The receipt now says how this attempt ended.
     if recorded:
