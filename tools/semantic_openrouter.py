@@ -18,10 +18,12 @@ import argparse
 import base64
 import calendar
 import email.utils
+import fcntl
 import hashlib
 import json
 import math
 import os
+import re
 import select
 import shutil
 import subprocess
@@ -1276,12 +1278,51 @@ def _cost_clause(response: dict[str, Any], estimate: dict[str, Any] | None = Non
 # replaces are carried forward in its record and receipt (`earlier`), and
 # cleared only when an answer is in hand (docs/TRAPS.md, "Replacing a record of
 # possible spending erases a possible charge").
-SENT_RECORD_SCHEMA = "musializer.semantic-request-sent/v1"
+#
+# One record per attempt (J3-1, 2026-11-16). The J1 record had one name per
+# cache, and an attempt learned which record was "its own" by `stat` after
+# publishing it: two helpers on one job folder, and A could adopt B's record
+# and remove it when A ended, leaving B's request in flight with no word on
+# disk. Now each attempt writes its own name (`<cache>.sent-<attempt>.json`,
+# the attempt's identity in the name and in the record), holds an exclusive
+# `flock` on it from before it is published until it is removed, and removes
+# only that name. Another attempt tells a record in flight (locked) from one
+# a killed helper left (the kernel released its lock) by trying the lock.
+SENT_RECORD_SCHEMA = "musializer.semantic-request-sent/v2"
+# v1 (J1, one name per cache) is still read: a helper killed under that build
+# left one.
+READABLE_SENT_RECORD_SCHEMAS = frozenset(("musializer.semantic-request-sent/v1",
+                                          SENT_RECORD_SCHEMA))
 EARLIER_KEEP = 16
+ATTEMPT_PATTERN = re.compile(r"[0-9]{1,20}-[0-9a-f]{8}")
 
 
-def sent_record_path(cache_path: Path) -> Path:
-    return cache_path.with_name(f"{cache_path.stem}.sent.json")
+def sent_record_path(cache_path: Path, attempt: str | None = None) -> Path:
+    """An attempt's record, or (no attempt) the one name the J1 build used."""
+    if attempt is None:
+        return cache_path.with_name(f"{cache_path.stem}.sent.json")
+    return cache_path.with_name(f"{cache_path.stem}.sent-{attempt}.json")
+
+
+def sent_record_paths(cache_path: Path) -> list[Path]:
+    """Every record beside this cache, oldest attempt first, the J1 name
+    first of all."""
+    found: list[tuple[int, Path]] = []
+    legacy = sent_record_path(cache_path)
+    if legacy.exists():
+        found.append((-1, legacy))
+    prefix = f"{cache_path.stem}.sent-"
+    try:
+        names = os.listdir(cache_path.parent)
+    except OSError:
+        names = []
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith(".json")):
+            continue
+        attempt = name[len(prefix):-len(".json")]
+        if ATTEMPT_PATTERN.fullmatch(attempt):
+            found.append((int(attempt.split("-")[0]), cache_path.with_name(name)))
+    return [path for _, path in sorted(found)]
 
 
 def _read_small_json(path: Path) -> Any:
@@ -1294,16 +1335,72 @@ def _read_small_json(path: Path) -> Any:
         return None
 
 
-def earlier_possible_charges(cache_path: Path) -> list[dict[str, Any]]:
+def _sync_directory(path: Path) -> None:
+    try:
+        directory = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory)
+    except OSError:
+        pass
+    finally:
+        os.close(directory)
+
+
+@dataclass
+class DeadRecord:
+    """A record no helper holds any more, read through its own handle."""
+    path: Path
+    identity: tuple[int, int]
+    record: dict[str, Any]
+
+
+def _dead_records(cache_path: Path) -> list[DeadRecord]:
+    """The records beside this cache whose attempt is over: no live helper
+    holds their lock. A record still locked is a request in flight now and is
+    neither read as an earlier charge nor removed. A record that cannot be
+    read is left where it is (docs/TRAPS.md, "A record that cannot be read is
+    not an empty record")."""
+    dead: list[DeadRecord] = []
+    for path in sent_record_paths(cache_path):
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except OSError:
+            continue
+        with os.fdopen(fd, "rb") as handle:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                continue
+            try:
+                seen = os.fstat(fd)
+                if seen.st_size > 1 << 20:
+                    continue
+                record = json.loads(handle.read().decode("utf-8"))
+            except (OSError, ValueError):
+                continue
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        if isinstance(record, dict) and record.get("schema_version") in READABLE_SENT_RECORD_SCHEMAS:
+            dead.append(DeadRecord(path, (seen.st_ino, seen.st_dev), record))
+    return dead
+
+
+def _charge_of_record(record: dict[str, Any]) -> dict[str, Any]:
+    return {"kind": "unanswered", "at_utc": record.get("sent_utc"),
+            "at_ns": record.get("sent_ns"), "usd_max": record.get("usd_max")}
+
+
+def earlier_possible_charges(cache_path: Path, dead: list[DeadRecord] | None = None,
+                             ) -> list[dict[str, Any]]:
     """Every attempt beside this cache that may have been billed and is not
-    yet answered: a sent record still there, a receipt that says "may have
+    yet answered: a record a killed helper left, a receipt that says "may have
     been billed", and what each of them carried forward."""
     found: list[dict[str, Any]] = []
-    record = _read_small_json(sent_record_path(cache_path))
-    if isinstance(record, dict) and record.get("schema_version") == SENT_RECORD_SCHEMA:
-        found.extend(entry for entry in record.get("earlier") or [] if isinstance(entry, dict))
-        found.append({"kind": "unanswered", "at_utc": record.get("sent_utc"),
-                      "at_ns": record.get("sent_ns"), "usd_max": record.get("usd_max")})
+    for entry in _dead_records(cache_path) if dead is None else dead:
+        found.extend(item for item in entry.record.get("earlier") or [] if isinstance(item, dict))
+        found.append(_charge_of_record(entry.record))
     receipt = _read_small_json(failure_receipt_path(cache_path))
     if isinstance(receipt, dict) and receipt.get("schema_version") in READABLE_FAILED_RUN_SCHEMAS:
         found.extend(entry for entry in receipt.get("earlier") or [] if isinstance(entry, dict))
@@ -1318,14 +1415,48 @@ def earlier_possible_charges(cache_path: Path) -> list[dict[str, Any]]:
     return ordered[-EARLIER_KEEP:]
 
 
+def _remove_dead(dead: list[DeadRecord]) -> None:
+    """Removes records whose charges this attempt now carries, each only
+    while its name still holds the file read and no helper holds it."""
+    for entry in dead:
+        try:
+            fd = os.open(entry.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            continue
+        try:
+            seen = os.fstat(fd)
+            if (seen.st_ino, seen.st_dev) == entry.identity:
+                entry.path.unlink(missing_ok=True)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+
+@dataclass
+class SentRecord:
+    """This attempt's record and the open handle whose lock says it is in
+    flight. The lock goes with the process: a kill releases it."""
+    path: Path
+    handle: Any
+    attempt: str
+
+
 def _write_sent_record(cache_path: Path, *, settings: dict[str, Any], audio_sha256: str,
-                       estimate: dict[str, Any], earlier: list[dict[str, Any]]) -> tuple[int, int]:
-    """Durably, before the request leaves; returns the record's (inode,
-    device) so only this record is ever removed by this attempt."""
-    path = sent_record_path(cache_path)
+                       estimate: dict[str, Any], earlier: list[dict[str, Any]]) -> SentRecord:
+    """Durably, before the request leaves, under this attempt's own name and
+    locked before it is published, so no other attempt ever sees it unlocked
+    while this one lives."""
+    attempt = f"{time.time_ns()}-{os.urandom(4).hex()}"
+    path = sent_record_path(cache_path, attempt)
     ceiling = estimate.get("usd_max")
-    atomic_write_json(path, {
+    payload = json.dumps({
         "schema_version": SENT_RECORD_SCHEMA,
+        "attempt": attempt,
         "sent_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "sent_ns": time.time_ns(),
         "audio_sha256": audio_sha256,
@@ -1337,23 +1468,46 @@ def _write_sent_record(cache_path: Path, *, settings: dict[str, Any], audio_sha2
         "estimate": estimate,
         "pid": os.getpid(),
         "earlier": earlier,
-    })
-    seen = os.stat(path)
-    return seen.st_ino, seen.st_dev
-
-
-def _drop_sent_record(cache_path: Path, identity: tuple[int, int] | None) -> None:
-    """Removes this attempt's record, and only while it is still this one: a
-    record another helper wrote over it since is another request in flight."""
-    if identity is None:
-        return
-    path = sent_record_path(cache_path)
+    }, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    handle = os.fdopen(fd, "wb")
     try:
-        now = os.stat(path)
-    except OSError:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        handle.write(payload)
+        handle.flush()
+        os.fsync(fd)
+        os.replace(temporary, path)
+        _sync_directory(path.parent)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        handle.close()
+        raise
+    return SentRecord(path, handle, attempt)
+
+
+def _drop_sent_record(record: SentRecord | None) -> None:
+    """Removes this attempt's record (its own name, nobody else's), then gives
+    the lock back before the handle is closed."""
+    if record is None or record.handle.closed:
         return
-    if (now.st_ino, now.st_dev) == identity:
-        path.unlink(missing_ok=True)
+    try:
+        try:
+            now = os.stat(record.path)
+            mine = os.fstat(record.handle.fileno())
+        except OSError:
+            return
+        if (now.st_ino, now.st_dev) == (mine.st_ino, mine.st_dev):
+            record.path.unlink(missing_ok=True)
+            _sync_directory(record.path.parent)
+    finally:
+        try:
+            fcntl.flock(record.handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            record.handle.close()
 
 
 AUDIO_CHANGED_REASON = ("the track's audio file changed on disk during the job, so nothing "
@@ -1402,6 +1556,22 @@ def receipt_applies(receipt: dict[str, Any], envelope: dict[str, Any]) -> bool:
     answered = answer_time_ns(envelope)
     failed = receipt_time_ns(receipt)
     return answered is None or failed is None or failed > answered
+
+
+def _receipt_identity(cache_path: Path) -> tuple[int, int] | None:
+    try:
+        seen = os.stat(failure_receipt_path(cache_path))
+    except OSError:
+        return None
+    return seen.st_ino, seen.st_dev
+
+
+def _drop_receipt_if(cache_path: Path, identity: tuple[int, int] | None) -> None:
+    """Removes the receipt only while it is still the one read at the start
+    of this attempt: a receipt written since (another helper's failure, by a
+    rename, so another inode) stays."""
+    if identity is not None and _receipt_identity(cache_path) == identity:
+        failure_receipt_path(cache_path).unlink(missing_ok=True)
 
 
 def _drop_older_receipt(cache_path: Path, answered_ns: int) -> None:
@@ -1545,13 +1715,15 @@ def analyze_to_cache(
     selected_format = (audio_format or audio_path.suffix.lstrip(".")).lower()
     if not selected_format:
         raise AnalysisValidationError("audio format is required")
-    receipt_path = failure_receipt_path(cache_path)
-    # What earlier attempts may have cost, before their receipt goes: it rides
-    # forward in whatever this attempt writes (J1-3).
-    earlier = earlier_possible_charges(cache_path)
-    # A receipt from an earlier attempt describes that attempt, not this one.
-    receipt_path.unlink(missing_ok=True)
-    sent: tuple[int, int] | None = None
+    # What earlier attempts may have cost: it rides forward in whatever this
+    # attempt writes (J1-3). The records and the receipt it was read from are
+    # removed only once this attempt's own record or receipt carries it (a
+    # kill in between must not lose it), and a record another helper still
+    # holds is a request in flight, not an earlier charge (J3-1).
+    dead = _dead_records(cache_path)
+    earlier = earlier_possible_charges(cache_path, dead)
+    earlier_receipt = _receipt_identity(cache_path)
+    sent: SentRecord | None = None
 
     def not_sent(reason: str, settings: dict[str, Any]) -> RuntimeError:
         """A run that stopped before anything left: its receipt says so, and
@@ -1616,6 +1788,10 @@ def analyze_to_cache(
     # record, which is the only word on disk that the request was sent.
     sent = _write_sent_record(cache_path, settings=settings, audio_sha256=audio_hash,
                               estimate=estimate, earlier=earlier)
+    # This record now carries what the earlier ones said: they are done with.
+    # A receipt from an earlier attempt describes that attempt, not this one.
+    _remove_dead(dead)
+    _drop_receipt_if(cache_path, earlier_receipt)
     try:
         response = submit_request(payload, transport=transport, sleeper=sleeper,
                                   settings=settings, model=requested)
@@ -1628,7 +1804,7 @@ def analyze_to_cache(
             audio_sha256=audio_hash, estimate=estimate, message=str(error),
             may_be_billed=False, kind=error.kind,
             detail=error.detail, earlier=earlier)
-        _drop_sent_record(cache_path, sent)
+        _drop_sent_record(sent)
         raise
     except SentUnanswered as error:
         message = unanswered_message(str(error), estimate)
@@ -1638,7 +1814,7 @@ def analyze_to_cache(
             may_be_billed=True,
             kind="timed_out" if isinstance(error.__cause__, TimeoutError) else "unanswered",
             earlier=earlier)
-        _drop_sent_record(cache_path, sent)
+        _drop_sent_record(sent)
         raise FailedRun(message) from error
 
     def failed(reason: str, detail: str | None = None) -> FailedRun:
@@ -1646,7 +1822,7 @@ def analyze_to_cache(
             cache_path, reason=reason, response=response, settings=settings,
             audio_sha256=audio_hash, detail=detail, estimate=estimate, earlier=earlier)
         # The receipt now says what this call cost; the record is answered.
-        _drop_sent_record(cache_path, sent)
+        _drop_sent_record(sent)
         return FailedRun(failure_message(reason, response, estimate))
 
     name = model_label(requested)
@@ -1696,7 +1872,7 @@ def analyze_to_cache(
     atomic_write_json(cache_path, envelope)
     # The answer is in hand: the record of this request, and the earlier
     # possible charges it carried for the same cache, are done with.
-    _drop_sent_record(cache_path, sent)
+    _drop_sent_record(sent)
     _drop_older_receipt(cache_path, answered_ns)
     return envelope
 

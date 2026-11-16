@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -1014,15 +1015,79 @@ class Killed(BaseException):
     after it runs. A BaseException, so no `except Exception` catches it."""
 
 
+# A helper process whose request is in flight or that is killed in the middle
+# of it, for real: a SIGKILL runs no `finally` and the kernel gives its `flock`
+# back, which is what tells a record in flight from one a killed helper left.
+ATTEMPT_SCRIPT = r"""
+import io, json, os, signal, sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import semantic_openrouter
+audio, cache, mode, gate = Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4], Path(sys.argv[5])
+answer = json.loads(sys.argv[6])
+
+class Body(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *exc): self.close()
+
+def transport(request, timeout):
+    gate.with_suffix(".sending").write_text("sending")
+    if mode == "killed":
+        os.kill(os.getpid(), signal.SIGKILL)
+    while not gate.exists():
+        time.sleep(0.01)
+    if gate.read_text() == "kill":
+        os.kill(os.getpid(), signal.SIGKILL)
+    return Body(json.dumps(answer).encode())
+
+semantic_openrouter.analyze_to_cache(audio, cache, audio_duration=8.0, model=sys.argv[7],
+                                     transport=transport, sleeper=lambda s: None,
+                                     encoder=lambda b, f, e, **k: b)
+"""
+
+
+class Attempt:
+    """Another helper on the same job folder, in its own process."""
+
+    def __init__(self, case: "LaneTestCase", mode: str) -> None:
+        self.gate = case.ws.root / f"gate-{id(self)}"
+        self.process = subprocess.Popen(
+            [sys.executable, "-c", ATTEMPT_SCRIPT, str(ROOT / "tools"), str(case.ws.audio),
+             str(case.ws.cache), mode, str(self.gate), json.dumps(response(answer())), case.MODEL],
+            env={**os.environ, "OPENROUTER_API_KEY": SENTINEL_KEY},
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if mode == "killed":
+            self.process.wait(timeout=30)
+            return
+        sending = self.gate.with_suffix(".sending")
+        deadline = time.monotonic() + 30
+        while not sending.exists():
+            if self.process.poll() is not None or time.monotonic() > deadline:
+                raise AssertionError(f"the attempt never sent: {self.process.stderr.read()!r}")
+            time.sleep(0.01)
+
+    def finish(self, how: str = "answer") -> int:
+        self.gate.write_text(how)
+        return self.process.wait(timeout=30)
+
+
 class ARequestThatLeftIsRecorded(LaneTestCase):
     """Defect J1-3 (2026-11-16): Cancel, a closed window and the 40-minute
     deadline killed the helper with nothing on disk saying a request had left.
     A record is written before it leaves; an answer or a receipt replaces it;
-    one still there was sent and never answered."""
+    one still there was sent and never answered.
+
+    J3-1: one record per attempt, locked while it is in flight, removed only
+    by the attempt that wrote it."""
+
+    def records(self) -> list[Path]:
+        return semantic_openrouter.sent_record_paths(self.ws.cache)
 
     @property
     def record(self) -> Path:
-        return semantic_openrouter.sent_record_path(self.ws.cache)
+        records = self.records()
+        self.assertEqual(len(records), 1, records)
+        return records[0]
 
     def test_the_record_is_on_disk_before_the_request_leaves_and_a_kill_leaves_it(self) -> None:
         seen: list[dict] = []
@@ -1038,7 +1103,8 @@ class ARequestThatLeftIsRecorded(LaneTestCase):
         self.assertEqual(len(seen), 1, "written before the send")
         record = json.loads(self.record.read_text())
         self.assertEqual(record, seen[0])
-        self.assertEqual(record["schema_version"], "musializer.semantic-request-sent/v1")
+        self.assertEqual(record["schema_version"], "musializer.semantic-request-sent/v2")
+        self.assertEqual(self.record.name, f"semantic.cache.sent-{record['attempt']}.json")
         self.assertEqual(record["usd_max"], 0.033, "the most it can cost, rounded up")
         self.assertEqual(record["model_label"], "MiMo")
         self.assertIsInstance(record["sent_ns"], int)
@@ -1048,28 +1114,23 @@ class ARequestThatLeftIsRecorded(LaneTestCase):
 
     def test_an_answer_or_a_receipt_replaces_the_record(self) -> None:
         self.run_lane(response(answer()))
-        self.assertFalse(self.record.exists(), "answered")
+        self.assertEqual(self.records(), [], "answered")
         self.ws.cache.unlink()
         with self.assertRaises(semantic_openrouter.FailedRun):
             self.run_lane(CUT_OFF)
-        self.assertFalse(self.record.exists(), "the receipt says what it cost")
+        self.assertEqual(self.records(), [], "the receipt says what it cost")
         with self.assertRaises(semantic_openrouter.Refused):
             self.run_lane(refusal(402))
-        self.assertFalse(self.record.exists(), "refused: nothing billed")
+        self.assertEqual(self.records(), [], "refused: nothing billed")
         gateway = urllib.error.HTTPError(semantic_openrouter.OPENROUTER_URL, 502, "gateway",
                                          {}, io.BytesIO(b""))
         with self.assertRaises(semantic_openrouter.FailedRun):
             self.run_lane(gateway)
-        self.assertFalse(self.record.exists())
+        self.assertEqual(self.records(), [])
         self.assertTrue(json.loads(self.ws.receipt.read_text())["may_be_billed"])
 
     def test_a_new_attempt_carries_the_earlier_possible_charge_until_an_answer(self) -> None:
-        def killed(request, timeout: float):  # noqa: ANN001
-            raise Killed()
-        with self.assertRaises(Killed):
-            semantic_openrouter.analyze_to_cache(
-                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
-                transport=killed, sleeper=lambda _s: None)
+        Attempt(self, "killed")
         first = json.loads(self.record.read_text())
         # A second attempt that is refused: nothing billed this time, and the
         # first attempt's possible charge is still said, in its receipt.
@@ -1078,30 +1139,52 @@ class ARequestThatLeftIsRecorded(LaneTestCase):
         receipt = json.loads(self.ws.receipt.read_text())
         self.assertEqual([entry["at_ns"] for entry in receipt["earlier"]], [first["sent_ns"]])
         self.assertEqual(receipt["earlier"][0]["kind"], "unanswered")
-        # A third that is killed again carries both forward in its record.
-        with self.assertRaises(Killed):
-            semantic_openrouter.analyze_to_cache(
-                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
-                transport=killed, sleeper=lambda _s: None)
+        # A third that is killed again carries both forward in its record,
+        # and the first record, now carried, is gone.
+        Attempt(self, "killed")
         third = json.loads(self.record.read_text())
         self.assertEqual([entry["at_ns"] for entry in third["earlier"]], [first["sent_ns"]])
         # An answer is in hand: the record and what it carried are done with.
         self.run_lane(response(answer()))
-        self.assertFalse(self.record.exists())
+        self.assertEqual(self.records(), [])
         self.assertFalse(self.ws.receipt.exists())
 
-    def test_a_record_another_helper_wrote_meanwhile_is_not_removed(self) -> None:
-        def overwritten(request, timeout: float):  # noqa: ANN001
-            # Another helper on the same cache sends its own request now; it
-            # writes its record as every record is written, by a rename.
-            semantic_openrouter.atomic_write_json(self.record, {"schema_version": "x",
-                                                                "theirs": True})
-            return FakeHTTPResponse(json.dumps(response(answer())).encode())
-        semantic_openrouter.analyze_to_cache(
-            self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
-            transport=overwritten, sleeper=lambda _s: None)
-        self.assertTrue(json.loads(self.record.read_text())["theirs"])
+    def test_two_helpers_on_one_folder_never_remove_each_others_record(self) -> None:
+        """The review's case: B's request is in flight while A sends and
+        answers. A removes its own record only; B's is neither carried by A as
+        an earlier charge nor removed. Then B is killed mid-request: its
+        record is still there, and the next attempt carries B's possible
+        charge."""
+        theirs = Attempt(self, "hold")
+        b_record = json.loads(self.record.read_text())
+        fake, _ = self.run_lane(response(answer()))
+        self.assertEqual(len(fake.sent), 1)
+        self.assertEqual([json.loads(path.read_text())["attempt"] for path in self.records()],
+                         [b_record["attempt"]], "A removed only its own record")
+        self.assertEqual(theirs.finish("kill"), -9)
+        self.assertEqual(json.loads(self.record.read_text()), b_record,
+                         "B's possible charge still has its record")
+        self.ws.cache.unlink()
+        with self.assertRaises(semantic_openrouter.Refused):
+            self.run_lane(refusal(402))
+        receipt = json.loads(self.ws.receipt.read_text())
+        self.assertEqual([entry["at_ns"] for entry in receipt["earlier"]], [b_record["sent_ns"]])
 
+    def test_a_record_in_flight_is_not_an_earlier_charge(self) -> None:
+        theirs = Attempt(self, "hold")
+        self.assertEqual(semantic_openrouter.earlier_possible_charges(self.ws.cache), [])
+        self.assertEqual(theirs.finish("answer"), 0)
+        self.assertEqual(self.records(), [], "B answered and removed its own")
+
+    def test_a_record_left_by_the_j1_build_is_still_carried(self) -> None:
+        legacy = semantic_openrouter.sent_record_path(self.ws.cache)
+        legacy.write_text(json.dumps({
+            "schema_version": "musializer.semantic-request-sent/v1", "sent_ns": 1_700_000_000_000_000_000,
+            "sent_utc": "2023-11-14T22:13:20Z", "usd_max": 0.073, "earlier": []}))
+        with self.assertRaises(semantic_openrouter.Refused):
+            self.run_lane(refusal(402))
+        receipt = json.loads(self.ws.receipt.read_text())
+        self.assertEqual([entry["at_ns"] for entry in receipt["earlier"]], [1_700_000_000_000_000_000])
 
 class AChangedFileIsNeverPaidFor(LaneTestCase):
     """Defect J1-1 (2026-11-16): a track file replaced after loading.

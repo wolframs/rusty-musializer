@@ -192,16 +192,37 @@ fn listening_notice(
     Some((failure.message, notice))
 }
 
-/// The listening request this job sent and never saw answered: the helper's
-/// record, when it was written since `since_ns` (J1-3).
+/// Every sent record in a job folder, each read through a cap (J3-1: one per
+/// attempt, `diagnosis::is_sent_record_name`), oldest name first.
+fn sent_records(output_dir: &Path) -> Vec<Vec<u8>> {
+    let Ok(entries) = std::fs::read_dir(output_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<std::ffi::OsString> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .filter(|name| name.to_str().is_some_and(diagnosis::is_sent_record_name))
+        .take(diagnosis::SENT_RECORDS_MAX)
+        .collect();
+    names.sort();
+    names
+        .iter()
+        .filter_map(|name| read_bounded(&output_dir.join(name)))
+        .collect()
+}
+
+/// The listening request this job sent and never saw answered: the newest
+/// helper record written since `since_ns` (J1-3).
 fn sent_since(output_dir: &str, since_ns: u128) -> Option<diagnosis::PossibleCharge> {
     if output_dir.is_empty() {
         return None;
     }
-    let bytes = read_bounded(&Path::new(output_dir).join(diagnosis::SENT_RECORD_NAME))?;
-    diagnosis::sent_request(&bytes)
+    sent_records(Path::new(output_dir))
+        .iter()
+        .filter_map(|bytes| diagnosis::sent_request(bytes))
         .map(|(this, _)| this)
         .filter(|this| this.at_ns >= since_ns)
+        .max_by_key(|this| this.at_ns)
 }
 
 /// What a job that died after its request left, with no receipt, tells the
@@ -226,9 +247,9 @@ fn sent_unanswered_notice(
 /// have been billed and have no answer after them (J1-3): read from the job
 /// folder the next Start would use.
 fn earlier_charges_sentence(output_dir: &Path) -> Option<String> {
-    let record = read_bounded(&output_dir.join(diagnosis::SENT_RECORD_NAME));
+    let records = sent_records(output_dir);
     let receipt = read_bounded(&output_dir.join(diagnosis::LISTENING_RECEIPT_NAME));
-    if record.is_none() && receipt.is_none() {
+    if records.is_empty() && receipt.is_none() {
         return None;
     }
     let answered_ns = std::fs::metadata(output_dir.join(diagnosis::LISTENING_CACHE_NAME))
@@ -236,7 +257,7 @@ fn earlier_charges_sentence(output_dir: &Path) -> Option<String> {
         .ok()
         .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|elapsed| elapsed.as_nanos());
-    let charges = diagnosis::possible_charges(record.as_deref(), receipt.as_deref(), answered_ns);
+    let charges = diagnosis::possible_charges(&records, receipt.as_deref(), answered_ns);
     diagnosis::possible_charge_sentence(&charges)
 }
 
@@ -6187,6 +6208,35 @@ mod tests {
             "An earlier listening request for this track was sent on 2026-11-16 10:02 UTC and \
              never answered; it may have been billed (at most 0.073 USD)."
         );
+    }
+
+    /// J3-1: each attempt writes its own record; the panel reads every one
+    /// the helper could have written, and nothing else in the folder.
+    #[test]
+    fn every_attempts_record_is_read_and_only_records_are() {
+        let scratch = Scratch::new("sent-attempts");
+        let folder = scratch.0.display().to_string();
+        let record = |at: u64| {
+            format!(
+                r#"{{"schema_version":"musializer.semantic-request-sent/v2","sent_ns":{at},
+                   "sent_utc":"2026-11-16T10:02:33Z","usd_max":0.073}}"#
+            )
+        };
+        for (name, at) in [
+            ("semantic.cache.sent-1000-0a1b2c3d.json", 1_000),
+            ("semantic.cache.sent-3000-ffffffff.json", 3_000),
+            // Not a record's name: a temporary, another cache's, a wrong tag.
+            (".semantic.cache.sent-5000-00000000.json.abc.tmp", 5_000),
+            ("other.cache.sent-6000-00000000.json", 6_000),
+            ("semantic.cache.sent-7000-XYZ.json", 7_000),
+        ] {
+            std::fs::write(scratch.join(name), record(at)).expect("record");
+        }
+        assert_eq!(sent_records(&scratch.0).len(), 2);
+        assert_eq!(sent_since(&folder, 500).map(|sent| sent.at_ns), Some(3_000));
+        assert_eq!(sent_since(&folder, 3_500), None);
+        let charges = diagnosis::possible_charges(&sent_records(&scratch.0), None, None);
+        assert_eq!(charges.len(), 2);
     }
 
     /// Audit B2, at the seam the panel actually uses: the log the helper wrote

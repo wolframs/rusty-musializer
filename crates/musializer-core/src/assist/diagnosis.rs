@@ -150,10 +150,45 @@ pub fn listening_failure(receipt: &[u8], since_ns: u128) -> Option<ListeningFail
 /// The record the listening helper writes **before** its request leaves
 /// (`tools/semantic_openrouter.py`, `sent_record_path`; defect J1-3,
 /// 2026-11-16). One still there is a request that was sent and never answered.
+/// The one name the J1 build used; since J3-1 each attempt writes its own,
+/// `semantic.cache.sent-<attempt>.json` ([`is_sent_record_name`]).
 pub const SENT_RECORD_NAME: &str = "semantic.cache.sent.json";
 
-/// Its schema.
-pub const SENT_RECORD_SCHEMA: &str = "musializer.semantic-request-sent/v1";
+/// Its schemas: the J1 record (one per cache) and the J3 one (one per
+/// attempt).
+pub const SENT_RECORD_SCHEMAS: [&str; 2] = [
+    "musializer.semantic-request-sent/v1",
+    "musializer.semantic-request-sent/v2",
+];
+
+/// Records read from one job folder at most; a folder with more is not one
+/// the helper wrote.
+pub const SENT_RECORDS_MAX: usize = 64;
+
+/// Whether a job folder's entry is a sent record: the J1 name, or
+/// `semantic.cache.sent-<digits>-<8 hex>.json` (the helper's
+/// `ATTEMPT_PATTERN`).
+#[must_use]
+pub fn is_sent_record_name(name: &str) -> bool {
+    if name == SENT_RECORD_NAME {
+        return true;
+    }
+    let Some(attempt) = name
+        .strip_prefix("semantic.cache.sent-")
+        .and_then(|rest| rest.strip_suffix(".json"))
+    else {
+        return false;
+    };
+    let Some((time, tag)) = attempt.split_once('-') else {
+        return false;
+    };
+    (1..=20).contains(&time.len())
+        && time.bytes().all(|byte| byte.is_ascii_digit())
+        && tag.len() == 8
+        && tag
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+}
 
 /// The listening helper's answer cache, whose modification time says an
 /// answer was written after a record or receipt.
@@ -214,7 +249,7 @@ pub fn sent_request(record: &[u8]) -> Option<(PossibleCharge, Vec<PossibleCharge
         return None;
     }
     let value: serde_json::Value = serde_json::from_slice(record).ok()?;
-    if value.get("schema_version")?.as_str()? != SENT_RECORD_SCHEMA {
+    if !SENT_RECORD_SCHEMAS.contains(&value.get("schema_version")?.as_str()?) {
         return None;
     }
     let this = charge(&value, true)?;
@@ -237,12 +272,12 @@ pub fn sent_request(record: &[u8]) -> Option<(PossibleCharge, Vec<PossibleCharge
 /// cache was last written; anything at or before it is answered.
 #[must_use]
 pub fn possible_charges(
-    record: Option<&[u8]>,
+    records: &[Vec<u8>],
     receipt: Option<&[u8]>,
     answered_ns: Option<u128>,
 ) -> Vec<PossibleCharge> {
     let mut found = Vec::new();
-    if let Some((this, earlier)) = record.and_then(sent_request) {
+    for (this, earlier) in records.iter().filter_map(|record| sent_request(record)) {
         found.extend(earlier);
         found.push(this);
     }
@@ -804,7 +839,7 @@ mod tests {
     #[test]
     fn a_request_sent_and_never_answered_is_said_before_the_next_start() {
         let record = sent(2_000, 0.073, "");
-        let charges = possible_charges(Some(&record), None, None);
+        let charges = possible_charges(std::slice::from_ref(&record), None, None);
         assert_eq!(charges.len(), 1);
         assert_eq!(
             possible_charge_sentence(&charges).as_deref(),
@@ -813,8 +848,8 @@ mod tests {
                  and never answered; it may have been billed (at most 0.073 USD)."
             )
         );
-        assert!(possible_charges(Some(&record), None, Some(2_000)).is_empty());
-        assert!(possible_charges(Some(&record), None, Some(1_000)).len() == 1);
+        assert!(possible_charges(std::slice::from_ref(&record), None, Some(2_000)).is_empty());
+        assert!(possible_charges(std::slice::from_ref(&record), None, Some(1_000)).len() == 1);
         assert_eq!(possible_charge_sentence(&[]), None);
         let (this, _) = sent_request(&record).expect("a record");
         assert_eq!(
@@ -836,7 +871,11 @@ mod tests {
                 "failed_utc":"2026-11-15T20:00:00Z","may_be_billed":true,
                 "estimate":{{"usd_max":0.0721}},"earlier":[{earlier}]}}"#
         );
-        let charges = possible_charges(Some(&record), Some(receipt.as_bytes()), None);
+        let charges = possible_charges(
+            std::slice::from_ref(&record),
+            Some(receipt.as_bytes()),
+            None,
+        );
         assert_eq!(charges.len(), 3, "{charges:?}");
         assert_eq!(
             possible_charge_sentence(&charges).as_deref(),
@@ -845,7 +884,7 @@ mod tests {
                  0.219 USD together); the last was on 2026-11-16 10:02 UTC."
             )
         );
-        let only_receipt = possible_charges(None, Some(receipt.as_bytes()), Some(1_500));
+        let only_receipt = possible_charges(&[], Some(receipt.as_bytes()), Some(1_500));
         assert_eq!(
             possible_charge_sentence(&only_receipt).as_deref(),
             Some(
@@ -855,7 +894,30 @@ mod tests {
         );
         let not_billed = r#"{"schema_version":"musializer.semantic-failed-run/v1",
             "failed_ns":2000,"may_be_billed":false}"#;
-        assert!(possible_charges(None, Some(not_billed.as_bytes()), None).is_empty());
+        assert!(possible_charges(&[], Some(not_billed.as_bytes()), None).is_empty());
+    }
+
+    /// The names the helper writes (`ATTEMPT_PATTERN`) and nothing else.
+    #[test]
+    fn a_sent_records_name_is_the_helpers_and_nothing_else() {
+        for name in [
+            "semantic.cache.sent.json",
+            "semantic.cache.sent-1763287353000000000-0a1b2c3d.json",
+            "semantic.cache.sent-1-00000000.json",
+        ] {
+            assert!(is_sent_record_name(name), "{name}");
+        }
+        for name in [
+            "semantic.cache.sent-.json",
+            "semantic.cache.sent-123-0A1B2C3D.json",
+            "semantic.cache.sent-123-0a1b2c3.json",
+            "semantic.cache.sent-123456789012345678901-0a1b2c3d.json",
+            ".semantic.cache.sent-1-00000000.json.x.tmp",
+            "semantic.cache.sent-1-00000000.json.tmp",
+            "semantic.cache.failed.json",
+        ] {
+            assert!(!is_sent_record_name(name), "{name}");
+        }
     }
 
     /// A sentence already ending in punctuation is not given a second stop.
