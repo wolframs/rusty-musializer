@@ -984,3 +984,41 @@ playhead to A's times. A control drawn for one object must carry that object's
 identity into the command it issues (`SeekOnTrack { track_slot }`) and the
 handler must refuse when the object is no longer the one in front of the user.
 Found 2026-11-16 (J3-5).
+
+## A possible charge derived from files that get replaced is lost when they are
+
+Three reviews of the Feelings path found charges lost or doubled, each time in
+a file that another attempt replaces or removes: one receipt per folder, a
+record removed after a receipt, a list kept to its newest sixteen. Keep one
+append-only ledger keyed by the attempt, append to it before the file that told
+of the charge can be replaced or removed, and let the other files be messages
+(`semantic_openrouter.py`, `pending_charges`, `sweep`). Symptom: two killed or
+failed helpers on one folder and the next card names one charge, or one
+killed helper and the card names two. Found by the third review (J4),
+2026-11-16.
+
+## `os.write` may write less than it was given
+
+A short write (a full disk, a signal) returns the count it wrote, and an
+`fsync` after it succeeds: the lines past the count are gone and nothing
+raised. Write until every byte is out, then sync, and only then remove what the
+lines replace (`_append_ledger`). Symptom: a ledger whose last line is torn and
+records already removed. Found by the third review (J4-6), 2026-11-16.
+
+## Acknowledging "what is there now" acknowledges what nobody was shown
+
+Start put behind the user every possible charge on disk at the listening step;
+one that appeared after the card was drawn was logged and never said. Carry the
+ids the card drew into the run and acknowledge those, no others
+(`DrawnCommitment`, `--acknowledge-charge`). The same holds for any promise a
+card makes ("Cost: nothing"): carry what it was made for (`--reuse-answer`) and
+refuse when it no longer holds. Found by the third review (J4-2, J4-3),
+2026-11-16.
+
+## A child's pipe read only after it exits holds 64 KiB
+
+`query_semantic_status` waited for the exit, then read stdout: an answer longer
+than the pipe's buffer blocks the child on its write, and the wait ends at the
+timeout, as no answer. Read while the child runs, with a cap, and bound the
+join after the exit. Found 2026-11-16 (J4), when the status began naming every
+pending charge.

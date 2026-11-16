@@ -593,3 +593,19 @@ path".
 | `semantic_repairs` was written and read by nothing | Counted too (`semantic_repair_counts`) and said on the staged card, with the reused-answer line that was read but never drawn | The user reviewed an answer the application had changed without being told |
 | A row of a staged answer sought the current track | It switches to the answer's track first (the track list's guard), then seeks there only (`SeekOnTrack`); the switch starts playback as the track list's does | A row is a place in the song the answer was made for |
 
+
+## The Feelings charge ledger (J4, 2026-11-16)
+
+Decided by the lead after the third review (`FEATURE_PARITY_PLAN.md`, "In
+flight — Start on Feelings"), built by J4. Details and words:
+`ASSIST_PIPELINE.md`, "One ledger of possible charges (J4)".
+
+| Before | Now | Why |
+| --- | --- | --- |
+| Possible charges were derived from the sent records, the one may-be-billed receipt and J3's log of acknowledged charges, each time they were read | One append-only ledger per job folder (`semantic.cache.charges.jsonl`, `musializer.semantic-charge/v2`), keyed by attempt: `possible` before the file that told of it can go, `answered`, `acknowledged`; pending = possible − acknowledged − answered; a receipt is only a message | A second helper's receipt or answer replaced the first's receipt, a record and a receipt of one attempt counted twice, the newest 16 were kept, a short write lost lines: every one a file that got replaced |
+| Start acknowledged every possible charge on disk at the listening step, and the helper at its start | Only the ids the confirmation drew, carried by Start (`--acknowledge-charge`); the helper acknowledges nothing | A charge that appeared after the card was drawn was logged and never shown |
+| The panel read the job folder for charges every two seconds | It draws what `semantic-status` names; the status is asked again when a card opens anew | One reader of what is pending (the helper's), and the ids the card drew are the ids the status named; a charge that appears while a card is open is drawn by the next card |
+| "Cost: nothing" was a reading of the folder when the card was drawn | Start carries the saved answer's key (`--reuse-answer`); with no saved answer to reuse the run refuses and sends nothing (an answer of another key for the same settings is still free and is reused) ("The saved answer the card offered to reuse is no longer there, …") | The card's word must be the run's; a gone or replaced answer made the run pay |
+| Several charges whose last has no time read "…; the last was." | The clause is left out | The sentence ended on nothing |
+| The status query's answer was read after its process exited, capped at 64 KiB | Read while it runs, capped at 1 MiB | It names every pending charge; past the pipe's 64 KiB the child would block until the 15 s timeout killed it |
+| The J3 log's lines kept to its last 1 MiB | The ledger is read whole up to 16 MiB; past that, or unreadable, the card says it could not be read | A line dropped from the front is a charge lost; an unreadable ledger is not an empty one |

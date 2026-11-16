@@ -582,8 +582,8 @@ anchor/block and forced aligners, the Antigravity aligner. ffprobe's failure
 is swallowed on purpose (no embedded lyrics).
 
 **A request that left is recorded.** (J3 below gave each attempt its own
-record, put a read warning behind the user and changed these sentences; the
-words here are J1's.) Cancel, a closed window and the deadline
+record, put a read warning behind the user and changed these sentences; J4
+replaced `earlier` and the log with the ledger; the words here are J1's.) Cancel, a closed window and the deadline
 kill the helper's process group, and nothing on disk said a request was in
 flight. The helper writes `semantic.cache.sent.json` before the request
 leaves, durably, and removes its own (only while it is still its own) once an
@@ -809,14 +809,11 @@ and billed (at most 0.073 USD). Nothing was saved."; the quit dialog, "Cancel
 the running analysis job; the listening request may already have been sent to
 OpenRouter and billed (at most 0.073 USD)." The way out: the confirmation
 shows each possible charge once, saying what happens to the note, and the
-Start pressed after reading it appends it to `semantic.cache.charges.jsonl`
-(`acknowledge_possible_charges`: one synced line per charge, append-only,
-under `semantic.cache.charges.lock`, then the killed helpers' records are
-removed). The orchestrator does this at the listening step, whether that run
-sends or reuses; the helper also does at its start (a command-line run).
-Nothing is carried forward (`earlier` stays empty); the panel and the helper
-leave out what the log holds. A Start cancelled before the listening step
-logs nothing, so the note shows again.
+Start pressed after reading it puts it in the job folder's log, so it is not
+said again. Nothing is carried forward. **Replaced by J4** (below): J3's log
+took every charge on disk at the listening step, and at the helper's start
+too, whether the card had shown it or not; J4's ledger takes only the ids the
+card drew, and holds every possible charge from the moment it is known.
 
 Report lines: `assist feelings:` gains `track=current|other:N|gone` and
 `notes@`; `assist feelings notes:` (the notes as drawn, or `none`);
@@ -844,8 +841,8 @@ restored byte for byte (`cmp` against a saved copy):
 | The manifest's counts not read (`semantic_repairs` ignoring `semantic_repair_counts`) | `the_repairs_made_to_an_answer_are_said_in_the_cards_words`; gate: feelings 6 (the uncounted sentence drawn) |
 | `_repair_counts` always empty | `RepairsAreCountedForTheCard` (2 tests) |
 | `AnswerTrack::of` always `Current` | `a_staged_answer_belongs_to_its_track_and_says_so_elsewhere`; gate: feelings 7 twice (no note; no switch, and `SeekOnTrack` kept the current track's playhead at 30.000 instead of moving it) |
-| The log not filtered by the panel | `a_request_sent_and_never_answered_is_said_before_the_next_start`; gate: billed-behind (the logged receipt's line drawn again: "… on 2026-11-16 11:00 UTC, may have been billed …") |
-| `acknowledge_possible_charges` appending nothing | `test_an_earlier_possible_charge_is_logged_once_at_the_next_start` and four more in `ARequestThatLeftIsRecorded` |
+| The log not filtered by the panel (since J4 the helper's `pending_charges` filters, and the panel draws what `semantic-status` names) | `a_request_sent_and_never_answered_is_said_before_the_next_start`; gate: billed-behind (the logged receipt's line drawn again: "… on 2026-11-16 11:00 UTC, may have been billed …") |
+| `acknowledge_possible_charges` appending nothing (the function is gone since J4; its controls are J4's) | `test_an_earlier_possible_charge_is_logged_once_at_the_next_start` and four more in `ARequestThatLeftIsRecorded` |
 | `sent_clause` back to "had already been sent" | `a_stop_after_the_request_left_says_it_may_have_been_billed`; gate: cancel, deadline |
 
 Not tried for real: any of this against OpenRouter (fake transports, real
@@ -855,6 +852,198 @@ acknowledgement (the gate calls the same function on the folder, then draws
 the card); a settings change through the AI settings dialog itself (the gate
 writes `assist.json` while the card is open); two application windows on one
 job folder.
+
+### One ledger of possible charges (J4, 2026-11-16)
+
+A third review, of J3's diff, found six defects, all in how possible charges
+are kept; the lead read each in the code and decided the design built here.
+Nothing sent to the model changed (`build_request`, the schema, the prompt and
+the provider block are J3's byte for byte; the body pins in
+`tests/test_semantic_openrouter.py` hold unchanged).
+
+Five of the six were one fault, three reviews old: a possible charge was
+derived from files that get replaced. (1) The may-be-billed receipt was one
+file per job folder: with two helpers, the second's receipt replaced the
+first's, or its answer removed it as older, and the first charge was in no
+record. (3) Start acknowledged every charge on disk at the listening step,
+including one that appeared after the card was drawn and was never shown.
+(4) A kill between publishing the receipt and removing the sent record left
+both, under different `(kind, at_ns)`, and one request was counted twice.
+(5) Only the newest 16 charges were kept, and every dead record was removed.
+(6) `os.write`'s count was ignored, so a short write followed by a good
+`fsync` lost lines, and the records were removed anyway. The sixth, (2): "Cost:
+nothing" bound nothing; a saved answer gone or replaced between the card and
+the press made the run pay.
+
+**The ledger.** `semantic.cache.charges.jsonl` (the J3 file, its lines now
+`musializer.semantic-charge/v2`; PHASE0 §6.7f) holds every possible charge of
+the job folder, one line per event, keyed by the attempt's id (the sent
+record's `attempt`; the receipt and the cached answer carry it too):
+
+- `possible`, appended **before** the file that told of it can be replaced or
+  removed: by the helper, just before it writes a may-be-billed receipt
+  (`by: receipt`); by a sweep, for a dead sent record or a file an earlier
+  build left, just before it removes the record (`by: sweep`).
+- `answered`, by a sweep, for a dead record whose attempt ended without a
+  possible charge: its answer is the cache (a kill after writing the answer,
+  before removing the record), or its receipt says it was refused or billed a
+  stated amount.
+- `acknowledged`, by the Start pressed after the confirmation showed it, for
+  exactly the ids the confirmation drew (`by: start`).
+
+Pending = possible − acknowledged − answered. Every append writes the whole
+buffer (`os.write` until every byte is out), `fsync`s, syncs the folder, under
+`semantic.cache.charges.lock`, and only then is a source removed; an append
+that fails is a `LedgerError` and the source stays: a may-be-billed attempt
+keeps its record (lock given back, so the next sweep reads it), a sweep
+removes nothing. A ledger that cannot be read (an error, not a regular file,
+over 16 MiB) is reported unreadable, never read as empty; a torn last line (a
+crash mid-append) is skipped, its source was never removed, and the next
+append starts on a line of its own. A receipt is now only a message: another
+helper's receipt or answer may replace it and nothing is lost. J3's
+per-attempt records and their `flock` are kept; no job-folder run lock is
+added.
+
+The sweep runs at the helper's start and at the orchestrator's listening step.
+It no longer acknowledges anything: J3's helper-start acknowledgement put
+behind the user charges nobody had shown them. An earlier build's receipt
+beside the cache is removed by the next attempt only after a sweep succeeded
+(it may be the only word of its charge); a success removes an older receipt
+under the same condition.
+
+**What earlier builds left is counted once.** v1 and v2 sent records, J1 and
+J3 receipts, J1's `earlier` lists and J3's log lines are read under the id the
+J3 log already used for them: `unanswered@<sent_ns>` for a record or an
+`earlier` entry, `may_be_billed@<failed_ns>` for a receipt (a receipt with
+only `failed_utc`, which J3 could not count, is placed at the end of its
+second). A J3 log line is that charge, possible and acknowledged. A J3
+receipt and a J3 record of the same attempt left by a kill cannot be told
+from two attempts (neither names the other), so they count as two: the safe
+side, and only for files a J3 build left in a window of milliseconds. The
+operator's real job folder from the current build
+(`build/analysis/050c5e1b3af2a397/` in the main checkout: a cache, the J3 lock,
+no log, no record, no receipt) reads, from a copy, as no pending charge and a
+readable ledger.
+
+**The card says what Start will be held to.** `semantic-status` (read-only)
+names every pending charge with its id (`pending_charges`), whether the
+ledger could be read (`ledger`), and the saved answer's `cache_key`. The
+panel no longer reads the folder for charges: it draws what the status names,
+and where it draws the card it keeps what it drew (the saved answer's key
+when it drew "Cost: nothing", the ids its charge line covers). Start, which
+the frame loop handles after that drawing, hands both to the run
+(`--reuse-answer KEY`, `--acknowledge-charge ID` per id; neither is secret,
+and only well-formed ids reach the argv). The status is asked again whenever
+a card opens anew (after a dismissal, a Start, a finished job), so a charge
+that appeared while a card was open stays pending and is drawn by the next
+card. A card with no status answer yet promised nothing and showed no charge:
+Start then acknowledges nothing and binds nothing.
+
+**Nothing is truncated (J4-5).** The card shows every pending charge: one
+sentence for one, and for several their count and summed ceiling ("3
+listening requests for this track may have been sent and billed (at most
+0.219 USD together); the last was on …"), so every charge it covers was shown
+and all of them are acknowledged. The status answer may be up to 1 MiB
+(`STATUS_OUTPUT_LIMIT`, was 64 KiB), about 3 000 charges, and is read while the
+query runs (read after its exit, an answer past the pipe's 64 KiB blocked the
+child until the 15-second timeout); an answer larger than that is no answer, the card keeps the paid wording and shows no charge line,
+and nothing is acknowledged, so no charge is lost.
+
+**"Cost: nothing" binds the run (J4-2).** With `--reuse-answer`, the
+orchestrator finds the saved answer through the same `saved_semantic_answer`
+as before; when there is none (gone, or replaced by an answer for other
+settings), it writes a receipt and sends nothing. An answer of another key the
+run would still reuse (one for the same settings, made under the bounded
+schema, replacing one from before it) is reused: nothing is sent either way,
+the staged notice says when that one was made, and the job log says it is not
+the one the card named (see the negative controls). The reverse, a
+card that showed a cost and an answer that has appeared since, reuses it and
+says so, as before ("Reused the answer saved on …; nothing was sent or billed
+this time."). The order at the listening step: the reuse check, then the
+acknowledgement (a refused run leaves the charges pending, so the next card,
+which shows what a new request costs, shows them too), then the sweep.
+
+**Every sentence the user reads, new or changed:**
+
+| Where | Words |
+| --- | --- |
+| notice, the saved answer gone | title "The saved answer is no longer there" — "The saved answer the card offered to reuse is no longer there, so nothing was sent or billed. Open the card again: it now says what a new request would cost." |
+| notice, the ledger refusing the acknowledgement | title "The listening request was not sent" — "Could not write the job folder's charge log (No space left on device), so the earlier requests the card showed were not put behind you; nothing was sent." |
+| card, the ledger unreadable | "This track's record of earlier listening requests could not be read, so this card may not show every request that may have been billed." |
+| card, several charges, the last with no time | "2 listening requests that used this track's job folder may have been sent and billed (at most 0.146 USD together). After Start …" (was "…; the last was." with nothing after "was") |
+
+Every other sentence is J3's and still true: "this note then moves to the job
+folder's log" is what the acknowledgement does. "Open the card again: it now
+says what a new request would cost" is true because the job's end forgets the
+status, and the card, opened again, asks it.
+
+Report lines: `assist commitment: reuse=<key|-> charges=<ids|->` (what Start
+carries); `assist charges:` gains `ids=`; `assist reuse:` gains `charges=` and
+`ledger=`; `assist notes:` gains `ledger-unreadable=`. Gate:
+`tools/headless_check.sh --skip-render`, J1 block: the stand-in's
+`semantic-status` answers through the real `pending_charges`, and its run
+acknowledges through the real `acknowledge_charges` and refuses with the real
+receipt writer; `billed-look` and `billed-press` (a killed helper's record and
+a may-be-billed receipt drawn as "2 listening requests … (at most 0.146 USD
+together)", a third request killed after the card's status was taken, the
+press carrying exactly the two drawn ids, read from the stand-in's argv);
+`billed-behind` (the next card says only the third); `answer-gone` (the card
+drew "Cost: nothing", the press carried its key, the notice above).
+
+Tests: `tests/test_semantic_openrouter.py`, `TheLedgerKeepsEveryCharge` (two
+real concurrent helpers for finding 1, real helpers `SIGKILL`ed at each point
+of a may-be-billed ending and after an answer or a refusal for finding 4,
+forty charges for 5, a seven-byte `os.write` and a full disk for 6, an
+unreadable and a torn ledger, every legacy file at once, the gone and the
+replaced answer for 2); the J3 classes rewritten for the ledger;
+`tests/test_helper_argv.py` (the two flags, ids refused); Rust
+`diagnosis` (`status_charges`, `is_charge_id`), `runtime::process::assist`
+(`the_cards_commitment_rides_along_and_nothing_else`) and the panel
+(`start_carries_what_the_card_drew_and_nothing_else`);
+`tests/test_cross_language_pins.py` (record schemas and ids on both sides).
+
+**Negative controls (J4, 2026-11-16)**, each perturbed, seen to fail, and
+restored byte for byte (`cmp` against a saved copy; the tree clean after):
+
+| Perturbation | What failed |
+| --- | --- |
+| One `os.write`, its count ignored | `test_a_short_write_is_finished_not_lost` |
+| The record removed though the ledger refused the line | `test_a_may_be_billed_ending_the_ledger_refuses_keeps_its_record` |
+| The `possible` line appended after the receipt, not before | `test_a_kill_anywhere_in_a_may_be_billed_ending_is_one_charge` (killed at the receipt: no charge of that kind), `test_a_second_helpers_answer_does_not_erase_the_first_ones_charge` |
+| A receipt's charge under its legacy id, not its attempt | `test_a_kill_anywhere_in_a_may_be_billed_ending_is_one_charge` (two charges for one request) |
+| A dead record of the cache's attempt not read as answered | `test_a_kill_after_an_answer_or_a_refusal_is_no_charge` |
+| Start acknowledging every pending charge, not the ids given | `test_start_acknowledges_exactly_the_charges_the_card_showed`, `test_a_start_with_nothing_shown_acknowledges_nothing` |
+| Pending kept to the newest sixteen | `test_every_charge_is_kept_however_many` |
+| An unreadable ledger read as empty | `test_a_ledger_that_cannot_be_read_is_said_not_read_as_empty` |
+| A sweep removing records the ledger refused | `test_a_ledger_that_cannot_be_written_keeps_every_source` |
+| J1 `earlier` lists not read | `test_files_left_by_the_j1_and_j3_builds_are_counted_once` |
+| J3 log lines not read | the same |
+| The reuse key ignored by the run | `test_a_saved_answer_gone_since_the_card_was_drawn_is_not_paid_for`, `test_the_command_line_carries_the_commitment` |
+| A free answer of another key refused | `test_another_answer_for_the_same_settings_is_reused_not_refused` |
+| The acknowledgement's refusal swallowed | `test_a_ledger_that_cannot_be_written_keeps_every_source` |
+| The status naming no charges | `test_the_record_and_the_status_name_the_same_request_by_one_digest` |
+| `is_charge_id` (Rust) accepting anything | `a_charge_id_is_an_attempt_or_a_legacy_id_and_nothing_else` |
+| A status charge with no time dropped | `every_pending_charge_is_counted_and_summed_up` |
+| The runtime not filtering ids | `the_cards_commitment_rides_along_and_nothing_else` |
+| The status answer not read while the query runs | `a_long_status_answer_is_read_whole_and_a_too_long_one_is_none` |
+| Start's commitment not filtered by track | `start_carries_what_the_card_drew_and_nothing_else` |
+| Gate: Start carrying no charges and no key (both at once) | billed-press ("the card drew unanswered@…,may_be_billed@…, Start carried <none>"), billed-behind (all three drawn again), answer-gone (the stand-in's "the run was not given the card's key (got None)") |
+
+One control first came back missed: the run compared the card's key with the
+answer it found and refused on a mismatch, and comparing by presence alone
+failed no test. The only accepted answer of another key is one for the same
+settings (made under the bounded schema, replacing one from before it); it
+costs nothing, and refusing it would have said "it now says what a new
+request would cost" over a card that would say "Cost: nothing". So the run
+refuses only a send: such an answer is reused, its own date is said, the log
+names the replacement, and a test pins it (the control above).
+
+Not tried for real: any of this against OpenRouter (fake transports; real
+helper processes in the tests, killed with `SIGKILL`; a stand-in helper in the
+gate, which calls the real ledger functions); a disk that fills during a real
+append (simulated by a refusing or short `os.write`); two application windows
+on one job folder (two helper processes are what the folder sees, and those
+are tested); a status answer over 1 MiB.
 
 ### Local performed-phrase recovery (2026-09-08)
 

@@ -1759,14 +1759,44 @@ the Feelings path".
 | --- | --- | --- |
 | `musializer.semantic-request-sent/v2` | `semantic.cache.sent-<ns>-<8 hex>.json`, one per attempt (`ATTEMPT_PATTERN`, `diagnosis::is_sent_record_name`) | v1's fields plus `attempt` (the name's identity), `request_key` (`canonical_sha256({"audio_sha256", **request})`, the cache key its answer would carry) and `model`. Written to a temporary name, `flock`ed exclusively, synced, renamed, folder synced; the lock is held until the attempt removes its own name. A record nobody holds was left by a killed helper. `earlier` is always empty. v1 (`semantic.cache.sent.json`) is still read |
 | `musializer.semantic-failed-run/v1` (J3) | `semantic.cache.failed.json` | adds `request_key`; `earlier` is always empty since J3 |
-| `musializer.semantic-charge-acknowledged/v1` | `semantic.cache.charges.jsonl`, one JSON line per possible charge, append-only, synced | a charge's `kind` (`unanswered`, `may_be_billed`), `at_ns`, `at_utc`, `usd_max`, `audio_sha256`, `request_key`, `model`, then `acknowledged_ns`, `acknowledged_utc`, `by` (`start`: the orchestrator's listening step; `helper`: the helper's start). A charge in it is not said again. Read from its last 1 MiB |
-| `semantic.cache.charges.lock` | job folder | the `flock` that serializes acknowledgements; empty |
+| `musializer.semantic-charge-acknowledged/v1` | `semantic.cache.charges.jsonl`, one JSON line per possible charge, append-only, synced | a charge's `kind` (`unanswered`, `may_be_billed`), `at_ns`, `at_utc`, `usd_max`, `audio_sha256`, `request_key`, `model`, then `acknowledged_ns`, `acknowledged_utc`, `by` (`start`: the orchestrator's listening step; `helper`: the helper's start). J3 wrote it; since J4 (6.7f) it is only read, as acknowledged charges, and the file holds the ledger's v2 lines |
+| `semantic.cache.charges.lock` | job folder | the `flock` that serializes appends to the log (since J4, the ledger); empty |
 | `request_key` | `musializer.semantic-status/v1` | the next Start's request as one digest, when the track is measured |
 | `semantic_repair_counts` | `assist-manifest.json`, beside `semantic_repairs` | `{joined, shortened, cleaned}`: how many of each repair `bridge_fit` made; absent when nothing was repaired, and for an answer cached by the J1 build whose repairs were named but not counted |
 | `provenance.repair_counts` | semantic artifact | the same counts, on a cached answer that was repaired |
 | `MUSIALIZER_ASSIST_PROBE_STAGE_TRACK` | probe seam | `N`: stage the probe's bridge for track N rather than the current one |
 | `assist feelings notes:` | report line | the staged card's notes as drawn, or `none` |
 | `ShellCommand::SeekOnTrack { track_slot, seconds }` | shell command | a seek applied only while that track is current |
+
+### 6.7f The Feelings charge ledger (J4, 2026-11-16)
+
+Changes to 6.7d and 6.7e. Rules and words: `ASSIST_PIPELINE.md`, "One ledger
+of possible charges (J4)". Read before changing anything that writes, removes
+or reads a sent record, a listening receipt or the ledger; update in the same
+commit.
+
+| Name | Where | Contents |
+| --- | --- | --- |
+| charge id | ledger, status, argv | an attempt `<1-20 digits>-<8 hex>` (J4 files), or `unanswered@<sent_ns>` (a v1 or v2 record, a J1 `earlier` entry, a J3 log line) / `may_be_billed@<failed_ns>` (a J1 or J3 receipt). `semantic_openrouter.is_charge_id`, `diagnosis::is_charge_id`; anything else is refused by the parser and never put on the argv |
+| `musializer.semantic-charge/v2` | `semantic.cache.charges.jsonl`, one JSON line each, append-only | `id`, `state` (`possible`, `acknowledged`, `answered`), `logged_ns`, `logged_utc`, `by` (`receipt`: a may-be-billed receipt's helper, before writing it; `sweep`: a dead record or an earlier build's file, before removing it; `start`: the Start pressed after the card showed it). A `possible` line also has `kind` (`unanswered`, `may_be_billed`), `at_ns`, `at_utc`, `usd_max`, `audio_sha256`, `request_key`, `model`. Pending = possible − acknowledged − answered. Each append writes every byte (`os.write` until done), fsyncs, syncs the folder, under `semantic.cache.charges.lock`, and only then is a source removed. Read whole up to 16 MiB; larger, not a regular file or an error reads as **unreadable**, never as empty; a line that does not parse (a torn end) is skipped, and the next append starts on a line of its own |
+| `musializer.semantic-charge-acknowledged/v1` (J3) | the same file | still read: its charge, by legacy id, as possible and acknowledged |
+| `musializer.semantic-request-sent/v3` | `semantic.cache.sent-<attempt>.json` | v2's fields without `earlier`; `attempt` is the charge id. v1 and v2 still read, by legacy id |
+| `attempt` | `musializer.semantic-failed-run/v1` receipt; `musializer.analysis-cache/v1` envelope (top level) | the attempt the receipt ends, or `null` when it ended before its record was written; the attempt whose answer the cache is. A dead record of the cache's attempt, or of a receipt that is not `may_be_billed`, is `answered`. A receipt no longer carries `earlier` |
+| `pending_charges`, `ledger` | `musializer.semantic-status/v1` | every pending charge, oldest first, `{id, kind, at_ns, at_utc, usd_max, audio_sha256, request_key, model}`, in every state (also `unmeasured`); `ledger`: `ok` or `unreadable` |
+| `saved_answer.cache_key` | the same | the saved answer's cache key, which Start carries back |
+| `--reuse-answer HEX` | `external_analysis.py assist` | the cache key of the saved answer the card said is reused; with no saved answer the run would reuse, it writes a receipt (`kind: answer_gone`) and sends nothing; one of another key for the same settings is reused, with a line in the job log |
+| `--acknowledge-charge ID` | the same, repeatable | a charge the card showed; appended `acknowledged` at the listening step, before anything is sent. A ledger that refuses the lines refuses the run (`kind: not_sent`) |
+| `answer_gone` | receipt `kind` | the headline "The saved answer is no longer there" |
+| `STATUS_OUTPUT_LIMIT` | `runtime::process::assist` | 1 MiB (was 64 KiB): the status names every pending charge |
+| `assist commitment:` | report line | what Start carries: `reuse=<key or ->` `charges=<ids or ->` |
+| `assist charges:` | report line | gains `ids=` (the ids the line covers) before `line=` |
+| `assist reuse:` | report line | gains `charges=` and `ledger=` |
+| `assist notes:` | report line | gains `ledger-unreadable=` |
+
+Removed: `EARLIER_KEEP`, `earlier_possible_charges`, `acknowledged_charges`,
+`acknowledge_possible_charges` (Python); `CHARGE_LOG_NAME`,
+`CHARGE_LOG_SCHEMA`, `CHARGE_LOG_TAIL_BYTES`, `acknowledged_charges`,
+`possible_charges` (Rust): the panel no longer reads the folder for charges.
 
 ### 6.7b The generation store's records (VG H4, H4b, H4c; 2026-11-14)
 
