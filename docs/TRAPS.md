@@ -882,3 +882,13 @@ disappears with the processes. The same review found the copy's reader
 inheriting the helper's whole environment, key included: a child that only
 decodes gets a short allowlist. Found 2026-11-15 (review of the Gemini lane).
 
+## A saved project's bytes move with the playhead
+
+A save writes `metadata.playhead_seconds`, and moving the playhead never
+dirties the project, so a probe that seeks (`time=`, a row press) and then
+saves for another reason writes a file that differs from the one before by
+that key alone. The step back's byte-for-byte check failed on exactly this
+(`"playhead_seconds":30` in the restored file, absent from the reference) while
+every lane was identical. Compare saved projects with that key masked, as
+`look_assist_check.sh`'s feelings group does, or seek nowhere. Found 2026-11-16
+(J2).

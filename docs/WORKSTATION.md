@@ -356,6 +356,23 @@ under [Open work](#open-work) and tracked in the live queue.
    selecting a section shows it; the captions tables rest one row per entry;
    Add a voice and This line / Section N give lines a voice; the kinds carry
    glyphs.
+3d. **Assist: looking at a staged Feelings answer (J2).** *Built 2026-11-16 on
+   a branch for the lead to integrate.* The staged card in the Assist view
+   lists the sections that came back, in the column's vocabulary: a micro head
+   `SECTIONS · N` with the marks' names over their columns, an energy strip of
+   the whole song, then rows (span; one line of the model's words, all of them
+   when the row is open; energy as a bar, tension as a comb, mood as a stem
+   from a centre line), five at a time, scrolling inside the card. A row press
+   opens the row and seeks just inside its section; the row under the playhead
+   wears `ui_cue_now`, the open one the selection tint and outline (never the
+   accent). The staged cues stand on the timeline's bottom edge as dashed
+   ghosts beside the placed ones. A sentence above Apply says what Apply
+   replaces and what stays; after Apply the card that applied carries one
+   more line, "3 earlier cues kept" with **Put back**, until the lane or the
+   project changes, then "Earlier cues gone · …". The record and the decisions
+   are in [ASSIST_PIPELINE.md](ASSIST_PIPELINE.md) ("Looking at a staged
+   feelings answer") and the J2 rows of [DIVERGENCES.md](DIVERGENCES.md); the
+   check is the `feelings` group of `tools/look_assist_check.sh`.
 
 The welcome theme gate was repaired in the WX-5a polish after the theme menu's
 rows changed order.

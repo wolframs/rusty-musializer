@@ -559,6 +559,75 @@ updates the target track; Discard clears the candidate without changing editor
 content. The batch `--analysis-bridge FILE` path is intentionally different: it
 applies immediately because it has no interactive review step.
 
+### Looking at a staged feelings answer (J2, 2026-11-16)
+
+A paid listening answer used to stage as "Feeling cues: 3 → 9" and nothing
+else, and Apply replaced the lane blind and for good. The model's sections are
+an opinion (in the lead's three real calls one song was cut well, another had
+a slightly quieter stretch called a quiet breakdown and a hook's return placed
+eight seconds early), so looking before applying is the feature:
+
+- **The candidate keeps what the review needs.** `AnalysisCandidate::prepare`
+  carries each semantic cue's end and the model's words beside the event lane
+  as `FeelingSection`s (`feeling_sections()`); the lane, and what Apply writes,
+  are unchanged. No `.musi`, bridge or Apply change was needed.
+- **The staged card lists the sections**
+  (`app::ui::panels::assist::feelings`): a head `SECTIONS · N` with the marks'
+  names, an energy strip of the whole song (a column per section as tall as
+  its energy, the one under the playhead in ink), then one row per section:
+  its span, a line of the model's words (all of them, wrapped to six lines,
+  when the row is open, with how sure the model was), and three marks — energy
+  a solid bar, tension a comb on the same scale, mood (valence, −1…1) a stem
+  from a centre line ending in a dot. Five rows show; the list scrolls inside
+  the card (the wheel over the rows moves the list, then the column), and the
+  row under the playhead is tinted and comes into view as the song plays.
+- **A row is a place in the song.** Pressing it opens it and seeks 50 ms into
+  the section (`FeelingSection::seek_seconds`, the TRAPS rule on seeking onto
+  a boundary), paused or playing. The strip is not a control.
+- **The staged cues are on the timeline** while they are staged for the
+  current track: a dashed line standing on a thin ring at the lane's bottom,
+  beside the placed cues they would replace (solid lines, heads at the top)
+  and the user's own markers (filled heads). Discard takes them away with the
+  candidate.
+- **Apply says what it does first**: "Apply replaces the 3 earlier feeling
+  cues with the 11 from this answer. Your own markers, the scene plan and the
+  lyrics stay as they are. You can put the earlier cues back afterwards." Each
+  clause is what `apply_candidate_to_track` does (the semantic lane whole, the
+  lyric lane and the plan only when staged, `manual_events` never), pinned by
+  `a_feelings_apply_touches_neither_markers_nor_plan_and_steps_back_exactly`.
+- **One step back.** An Apply that replaces feeling cues remembers the lane and
+  its `.musi` analysis-lane record (`FeelingsStepBack` on the session); the card
+  that applied offers **Put back** ("3 earlier cues kept"). It is offered while
+  the lane is what that Apply wrote on the track it wrote it to: another such
+  Apply replaces the memory with its own, a closed project or any change to the
+  lane (another revision or other cues: an edit, an import, a reopen, a
+  followed treatment) ends it, and the card then says "Earlier cues gone ·
+  project closed" or "· edited since". Putting back restores the cues and the
+  record in its old place (or removes the record the Apply added) and dirties
+  the project, as the Apply did, so autosave writes it; the gate compares the
+  saved file byte for byte with the one before Apply. No general undo.
+- **A reused answer** is said in the head when the job's manifest says so. The
+  key is the other agent's of the same wave; the reader takes
+  `semantic_reused` (true, or an object with `answered_utc`/`made_utc` or
+  `words`), `semantic_reuse` and `semantic_answer`/`semantic_cache` with
+  `reused: true` (`semantic_reuse_words`). Nothing depends on it.
+
+Report lines: `assist feelings:` (rows by id with rects and spans, `now=`,
+`open=`, `first=`, `shown=`), `assist feelings nav:` (a press and its seek),
+`staged feelings:` (staged, ghosts drawn, placed cues replaced),
+`assist step back:` (`state=offered|gone:closed|gone:edited|none`, the card,
+the button's rect). Probe seams: `MUSIALIZER_ASSIST_PROBE_STAGE=bridge|armed|applied`
+stages `MUSIALIZER_ASSIST_PROBE_DIR`'s `result.bridge.tsv` against the current
+track through `load_candidate` (armed: Apply's first press taken; applied: its
+second press's request sent, so the run continues after a real Apply);
+`MUSIALIZER_ASSIST_PROBE_FEELINGS_OPEN=N` and `…_SCROLL=N` for captures;
+`tools/feelings_fixture.py` writes the job folder from a real answer or an
+invented one. The gate is `tools/look_assist_check.sh`'s `feelings` group.
+
+Left: the energy strip is not pressable; the step back covers the feeling
+cues only, also after a Full assist Apply (the lyrics and plan it replaced
+are not remembered); at 960x640 with a row open the Apply row needs a scroll.
+
 ## Lyrics decision tree
 
 The production path separates three questions that one model should not be
