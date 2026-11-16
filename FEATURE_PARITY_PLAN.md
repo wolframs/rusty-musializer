@@ -121,8 +121,29 @@ then fix / preempt issues in the code, before I test it myself? :)"
   ("nothing was sent or billed this time"); Start with the saved answer set
   aside made one paid call (6 sections staged, 0.0115 USD reported), and no
   sent record was left behind.
-- [ ] A third review, of J3's diff only (GPT-6.1-Sol, started 2026-11-16):
-  take what must be fixed before a person presses Start, queue the rest here.
+- [x] A third review, of J3's diff only (GPT-6.1-Sol, 2026-11-16): six
+  findings, all confirmed in the code by the lead, all in how possible charges
+  are kept. (1) A may-be-billed receipt is one shared file: a second helper's
+  receipt or answer replaces it, and the first charge is in no record. (2)
+  "Cost: nothing" is not binding: if the saved answer is gone or replaced
+  between the card and the press, the run pays. (3) Start acknowledges every
+  charge on disk, not the ones the card showed. (4) A kill between writing the
+  receipt and removing the sent record counts one request twice. (5) Sixteen
+  charges are kept and all dead records removed. (6) `os.write`'s count is
+  ignored when the charge log is appended.
+  **The lead's decision (2026-11-16), his to overrule:** 1, 3, 4, 5 and 6 are
+  one design fault, three reviews old: possible charges are derived from files
+  that get replaced. J4 ends it with one append-only ledger per job folder,
+  keyed by attempt: a charge is appended when it becomes possible (a
+  may-be-billed receipt, a dead sent record swept), acknowledged by the ids
+  the card showed, never truncated, written whole. 2 is closed by Start
+  carrying the saved answer's key, and the run refusing to send without it.
+  **The release does not wait for J4**: every one of the six needs a second
+  process on the same track's folder, a kill inside a few milliseconds,
+  seventeen killed runs or a full disk, and none is on the path of one person
+  pressing Start in one window. The operator is told.
+- [ ] J4: the ledger and the binding reuse (one agent, own worktree), then its
+  review, then merged; its record to the archive.
 - [ ] One full `tools/verify.sh` with nothing else running (the run on
   `4950511` failed two frame-timing parts under another agent's load: the
   headless gate's 120 ms intervention and poster frames), release build; the
