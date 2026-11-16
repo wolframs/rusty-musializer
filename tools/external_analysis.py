@@ -2544,6 +2544,10 @@ def run_assist(
     semantic_repair_counts: dict[str, int] = {}
     semantic_reused: dict[str, Any] | None = None
     if mode in {"mimo", "all"}:
+        # This Start was pressed after the confirmation showed the earlier
+        # possible charges: they are logged and not said again (J3-7),
+        # whether this run sends or reuses.
+        semantic_adapter.acknowledge_possible_charges(paths["semantic"], by="start")
         # The one reuse decision, shared with `semantic-status`, which is how
         # the confirmation knows before Start that this run sends nothing (J1-6).
         request_identity, envelope = saved_semantic_answer(

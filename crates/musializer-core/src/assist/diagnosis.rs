@@ -190,9 +190,40 @@ pub fn is_sent_record_name(name: &str) -> bool {
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-/// The listening helper's answer cache, whose modification time says an
-/// answer was written after a record or receipt.
+/// The listening helper's answer cache.
 pub const LISTENING_CACHE_NAME: &str = "semantic.cache.json";
+
+/// The log of possible charges already put behind the user (J3-7,
+/// `tools/semantic_openrouter.py`, `charge_log_path`): the Start pressed after
+/// the confirmation showed one appends it, and it is not said again.
+pub const CHARGE_LOG_NAME: &str = "semantic.cache.charges.jsonl";
+
+/// Its lines' schema.
+pub const CHARGE_LOG_SCHEMA: &str = "musializer.semantic-charge-acknowledged/v1";
+
+/// The tail of the log read: older lines than this name charges long put
+/// behind, and a record that old is gone.
+pub const CHARGE_LOG_TAIL_BYTES: usize = 1 << 20;
+
+/// `(unanswered, at_ns)` of every possible charge the log holds.
+#[must_use]
+pub fn acknowledged_charges(log: &[u8]) -> std::collections::HashSet<(bool, u128)> {
+    let tail = &log[log.len().saturating_sub(CHARGE_LOG_TAIL_BYTES)..];
+    tail.split(|byte| *byte == b'\n')
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .filter(|entry| {
+            entry
+                .get("schema_version")
+                .and_then(serde_json::Value::as_str)
+                == Some(CHARGE_LOG_SCHEMA)
+        })
+        .filter_map(|entry| {
+            let kind = entry.get("kind")?.as_str()?;
+            let at = entry.get("at_ns")?.as_u64()?;
+            Some((kind == "unanswered", u128::from(at)))
+        })
+        .collect()
+}
 
 /// One attempt that may have been billed and is not answered.
 #[derive(Clone, Debug, PartialEq)]
@@ -344,15 +375,16 @@ pub fn sent_request(record: &[u8]) -> Option<(PossibleCharge, Vec<PossibleCharge
     Some((this, earlier))
 }
 
-/// Every attempt beside a listening cache that may have been billed and has
-/// no answer after it: a record still there, a receipt that says "may have
-/// been billed", and what each carried forward. `answered_ns` is when the
-/// cache was last written; anything at or before it is answered.
+/// Every attempt beside a listening cache that may have been billed and is
+/// not yet put behind the user: a record a killed helper left, a receipt that
+/// says "may have been billed", and what each carried forward (the J1 build),
+/// less what the log holds (J3-7). An answering attempt removes its own
+/// record, so a record still there was never answered.
 #[must_use]
 pub fn possible_charges(
     records: &[Vec<u8>],
     receipt: Option<&[u8]>,
-    answered_ns: Option<u128>,
+    log: Option<&[u8]>,
 ) -> Vec<PossibleCharge> {
     let mut found = Vec::new();
     for (this, earlier) in records.iter().filter_map(|record| sent_request(record)) {
@@ -390,7 +422,8 @@ pub fn possible_charges(
             }
         }
     }
-    found.retain(|entry| answered_ns.is_none_or(|answered| entry.at_ns > answered));
+    let behind = log.map(acknowledged_charges).unwrap_or_default();
+    found.retain(|entry| !behind.contains(&(entry.unanswered, entry.at_ns)));
     found.sort_by_key(|entry| (entry.at_ns, entry.unanswered));
     found.dedup_by(|a, b| a.at_ns == b.at_ns && a.unanswered == b.unanswered);
     found
@@ -431,14 +464,17 @@ pub fn possible_charge_sentence(
         ChargeRelation::Unknown
     };
     let subject = relation.subject();
+    // J3-7: the way out, said where the warning is: the Start pressed after
+    // reading it puts it in the job folder's log, and it is not said again.
     let again = if relations.contains(&ChargeRelation::SameRequest) {
         if next.reuses {
-            " This Start reuses a saved answer and sends nothing."
+            " This Start reuses a saved answer and sends nothing; this note then moves to the \
+             job folder's log."
         } else {
-            " Start sends the same request again."
+            " Start sends the same request again; this note then moves to the job folder's log."
         }
     } else {
-        ""
+        " After Start this note moves to the job folder's log."
     };
     let sentence = if charges.len() > 1 {
         format!(
@@ -471,9 +507,11 @@ pub fn possible_charge_sentence(
 /// closed window).
 #[must_use]
 pub fn sent_clause(sent: &PossibleCharge) -> String {
+    // J3-7: the record is written before the first byte leaves, so a helper
+    // killed just after writing it had not sent anything; "had already been
+    // sent" asserted more than is known.
     format!(
-        "the listening request had already been sent to OpenRouter and may have been \
-         billed{}",
+        "the listening request may already have been sent to OpenRouter and billed{}",
         at_most(std::slice::from_ref(sent), false)
     )
 }
@@ -950,17 +988,33 @@ mod tests {
             Some(
                 "A listening request that used this track's job folder was started on \
                  2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at \
-                 most 0.073 USD)."
+                 most 0.073 USD). After Start this note moves to the job folder's log."
             )
         );
-        assert!(possible_charges(std::slice::from_ref(&record), None, Some(2_000)).is_empty());
-        assert!(possible_charges(std::slice::from_ref(&record), None, Some(1_000)).len() == 1);
+        // J3-7: once the log holds it, it is not said again; another
+        // charge in the log changes nothing.
+        let log = |kind: &str, at: u64| {
+            format!(
+                "{{\"schema_version\":\"{CHARGE_LOG_SCHEMA}\",\"kind\":\"{kind}\",\"at_ns\":{at}}}\n"
+            )
+        };
+        let behind = log("unanswered", 2_000);
+        assert!(
+            possible_charges(std::slice::from_ref(&record), None, Some(behind.as_bytes()))
+                .is_empty()
+        );
+        for other in [log("unanswered", 1_000), log("may_be_billed", 2_000)] {
+            assert_eq!(
+                possible_charges(std::slice::from_ref(&record), None, Some(other.as_bytes())).len(),
+                1
+            );
+        }
         assert_eq!(possible_charge_sentence(&[], &NextStart::default()), None);
         let (this, _) = sent_request(&record).expect("a record");
         assert_eq!(
             sent_clause(&this),
-            "the listening request had already been sent to OpenRouter and may have been \
-             billed (at most 0.073 USD)"
+            "the listening request may already have been sent to OpenRouter and billed (at most \
+             0.073 USD)"
         );
     }
 
@@ -986,15 +1040,20 @@ mod tests {
             possible_charge_sentence(&charges, &NextStart::default()).as_deref(),
             Some(
                 "3 listening requests that used this track's job folder may have been sent and \
-                 billed (at most 0.219 USD together); the last was on 2026-11-16 10:02 UTC."
+                 billed (at most 0.219 USD together); the last was on 2026-11-16 10:02 UTC. After \
+                 Start this note moves to the job folder's log."
             )
         );
-        let only_receipt = possible_charges(&[], Some(receipt.as_bytes()), Some(1_500));
+        let only_receipt = possible_charges(&[], Some(receipt.as_bytes()), None)
+            .into_iter()
+            .filter(|charge| !charge.unanswered)
+            .collect::<Vec<_>>();
         assert_eq!(
             possible_charge_sentence(&only_receipt, &NextStart::default()).as_deref(),
             Some(
                 "A listening request that used this track's job folder, on 2026-11-15 20:00 \
-                 UTC, may have been billed (at most 0.073 USD)."
+                 UTC, may have been billed (at most 0.073 USD). After Start this note moves to the \
+                 job folder's log."
             )
         );
         let not_billed = r#"{"schema_version":"musializer.semantic-failed-run/v1",
@@ -1029,7 +1088,7 @@ mod tests {
             say(record(&track, &mine), &next),
             "A listening request for this track and these settings was started on 2026-11-16 \
              10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). \
-             Start sends the same request again."
+             Start sends the same request again; this note then moves to the job folder's log."
         );
         assert_eq!(
             say(
@@ -1041,18 +1100,20 @@ mod tests {
             ),
             "A listening request for this track and these settings was started on 2026-11-16 \
              10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). \
-             This Start reuses a saved answer and sends nothing."
+             This Start reuses a saved answer and sends nothing; this note then moves to the job \
+             folder's log."
         );
         assert_eq!(
             say(record(&track, &"c".repeat(64)), &next),
             "A listening request for this track with other settings was started on 2026-11-16 \
-             10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD)."
+             10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). \
+             After Start this note moves to the job folder's log."
         );
         assert_eq!(
             say(record(&"d".repeat(64), &mine), &next),
             "A listening request for other audio that was at this track's path was started on \
              2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at most \
-             0.073 USD)."
+             0.073 USD). After Start this note moves to the job folder's log."
         );
         assert_eq!(
             say(
@@ -1063,7 +1124,8 @@ mod tests {
                 }
             ),
             "A listening request for this track was started on 2026-11-16 10:02 UTC and never \
-             answered; it may have been sent and billed (at most 0.073 USD)."
+             answered; it may have been sent and billed (at most 0.073 USD). After Start this \
+             note moves to the job folder's log."
         );
     }
 

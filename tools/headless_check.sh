@@ -3160,15 +3160,29 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
             j1_run "billed-$kind" "$T" 90 "" J1_STATUS=none J1_REQUEST_KEY="$J1_KEY" || J1_FAILED=1
             j1_expect "billed-$kind" "assist notes:" "earlier-charges=true" || J1_FAILED=1
             case "$kind" in
-                same) words="A listening request for this track and these settings was started on 2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). Start sends the same request again." ;;
-                settings) words="A listening request for this track with other settings was started on 2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD)." ;;
-                audio) words="A listening request for other audio that was at this track's path was started on 2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD)." ;;
+                same) words="A listening request for this track and these settings was started on 2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). Start sends the same request again; this note then moves to the job folder's log." ;;
+                settings) words="A listening request for this track with other settings was started on 2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). After Start this note moves to the job folder's log." ;;
+                audio) words="A listening request for other audio that was at this track's path was started on 2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). After Start this note moves to the job folder's log." ;;
             esac
             j1_expect "billed-$kind" "assist charges:" "line=$words" || J1_FAILED=1
         done
         # The line as drawn, wrapped, still carries the amount and the
         # same-request clause.
-        j1_expect billed-same "assist notes:" "billed (at most 0.073 USD). Start sends the same request again." || J1_FAILED=1
+        j1_expect billed-same "assist notes:" "billed (at most 0.073 USD). Start sends the same request again;" || J1_FAILED=1
+        # J3-7: the Start pressed after reading the warning puts it in the
+        # job folder's log (the helper's own `acknowledge_possible_charges`,
+        # which the listening step calls), and the next card says nothing.
+        python3 - "$J1_BILLED/semantic.cache.json" <<'ACK'
+import sys
+from pathlib import Path
+sys.path.insert(0, "tools")
+import semantic_openrouter
+logged = semantic_openrouter.acknowledge_possible_charges(Path(sys.argv[1]), by="start")
+print(f"  acknowledged {len(logged)} possible charge(s)")
+ACK
+        j1_run billed-behind "$T" 90 "" J1_STATUS=none J1_REQUEST_KEY="$J1_KEY" || J1_FAILED=1
+        j1_expect billed-behind "assist notes:" "earlier-charges=false" || J1_FAILED=1
+        j1_expect billed-behind "assist charges:" "line=none" || J1_FAILED=1
     else
         echo "FAIL: j1-billed: no job folder reported" >&2; J1_FAILED=1
     fi
@@ -3181,12 +3195,12 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
         T="$(j1_track cancel)"
         j1_run cancel "$T" 300 ",click=$J1_START,click-after=40" J1_STATUS=none J1_ASSIST=hang \
             MUSIALIZER_ASSIST_PROBE_STOP=cancel@1.5 || J1_FAILED=1
-        j1_expect cancel "assist notice:" "severity=warning title=Analysis cancelled after the request was sent | The analysis was stopped at your request, but the listening request had already been sent to OpenRouter and may have been billed (at most 0.073 USD). Nothing was applied to this project." || J1_FAILED=1
+        j1_expect cancel "assist notice:" "severity=warning title=Analysis cancelled during the listening request | The analysis was stopped at your request, but the listening request may already have been sent to OpenRouter and billed (at most 0.073 USD). Nothing was applied to this project." || J1_FAILED=1
 
         T="$(j1_track deadline)"
         j1_run deadline "$T" 300 ",click=$J1_START,click-after=40" J1_STATUS=none J1_ASSIST=hang \
             MUSIALIZER_ASSIST_PROBE_STOP=deadline@1.5 || J1_FAILED=1
-        j1_expect deadline "assist notice:" "title=Analysis reached its time limit | The helper ran for 40 minutes without finishing and was stopped; the listening request had already been sent to OpenRouter and may have been billed (at most 0.073 USD)." || J1_FAILED=1
+        j1_expect deadline "assist notice:" "title=Analysis reached its time limit | The helper ran for 40 minutes without finishing and was stopped; the listening request may already have been sent to OpenRouter and billed (at most 0.073 USD)." || J1_FAILED=1
 
         T="$(j1_track changed)"
         j1_run changed "$T" 240 ",click=$J1_START,click-after=90" J1_STATUS=none J1_REPLACE_AUDIO="$T" \

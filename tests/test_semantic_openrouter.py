@@ -1315,25 +1315,75 @@ class ARequestThatLeftIsRecorded(LaneTestCase):
         self.assertEqual(self.records(), [])
         self.assertTrue(json.loads(self.ws.receipt.read_text())["may_be_billed"])
 
-    def test_a_new_attempt_carries_the_earlier_possible_charge_until_an_answer(self) -> None:
+    def logged(self) -> list[dict]:
+        path = semantic_openrouter.charge_log_path(self.ws.cache)
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_an_earlier_possible_charge_is_logged_once_at_the_next_start(self) -> None:
+        """J3-7: a killed helper's record is said at the next confirmation,
+        and the Start pressed after it puts it in the log, where it stays;
+        it is not carried into later attempts, so it does not nag at every
+        later Start."""
         Attempt(self, "killed")
         first = json.loads(self.record.read_text())
-        # A second attempt that is refused: nothing billed this time, and the
-        # first attempt's possible charge is still said, in its receipt.
         with self.assertRaises(semantic_openrouter.Refused):
             self.run_lane(refusal(402))
+        self.assertEqual(self.records(), [], "logged, then removed")
         receipt = json.loads(self.ws.receipt.read_text())
-        self.assertEqual([entry["at_ns"] for entry in receipt["earlier"]], [first["sent_ns"]])
-        self.assertEqual(receipt["earlier"][0]["kind"], "unanswered")
-        # A third that is killed again carries both forward in its record,
-        # and the first record, now carried, is gone.
-        Attempt(self, "killed")
-        third = json.loads(self.record.read_text())
-        self.assertEqual([entry["at_ns"] for entry in third["earlier"]], [first["sent_ns"]])
-        # An answer is in hand: the record and what it carried are done with.
+        self.assertEqual(receipt["earlier"], [], "not carried forward")
+        logged = self.logged()
+        self.assertEqual([(e["kind"], e["at_ns"]) for e in logged],
+                         [("unanswered", first["sent_ns"])])
+        self.assertEqual(logged[0]["schema_version"],
+                         "musializer.semantic-charge-acknowledged/v1")
+        self.assertEqual(logged[0]["request_key"], first["request_key"])
+        self.assertEqual(logged[0]["by"], "helper")
+        # Asked again (the orchestrator's Start, another attempt): nothing new.
+        self.assertEqual(semantic_openrouter.acknowledge_possible_charges(self.ws.cache, by="start"), [])
+        with self.assertRaises(semantic_openrouter.Refused):
+            self.run_lane(refusal(402))
+        self.assertEqual(len(self.logged()), 1)
+        # A may-be-billed receipt is logged once too, and stays beside the
+        # cache for the reuse path's words.
+        gateway = urllib.error.HTTPError(semantic_openrouter.OPENROUTER_URL, 502, "gateway",
+                                         {}, io.BytesIO(b""))
+        with self.assertRaises(semantic_openrouter.FailedRun):
+            self.run_lane(gateway)
+        timed = json.loads(self.ws.receipt.read_text())
+        logged = semantic_openrouter.acknowledge_possible_charges(self.ws.cache, by="start")
+        self.assertEqual([(e["kind"], e["at_ns"]) for e in logged],
+                         [("may_be_billed", timed["failed_ns"])])
+        self.assertTrue(self.ws.receipt.exists())
+
+    def test_a_start_that_reuses_a_saved_answer_also_puts_the_charge_behind(self) -> None:
+        (self.ws.root / "measured.json").write_text(json.dumps(measured_document(self.ws.audio)))
         self.run_lane(response(answer()))
+        Attempt(self, "killed")
+        first = json.loads(self.record.read_text())
+
+        def never(argv, **_kwargs):  # noqa: ANN001
+            self.fail(f"a saved answer was there, and the run sent: {argv}")
+        with patch.object(external_analysis, "build_scene_plan", return_value={"sections": []}), \
+                patch.object(external_analysis, "build_bridge", return_value=""):
+            manifest = external_analysis.run_assist(
+                self.ws.audio, self.ws.root, audio_duration=DURATION, mode="mimo",
+                allow_dotenv=False, runner=never)
+        self.assertEqual(manifest["cache_status"]["semantic"], "reused")
+        self.assertEqual([(e["at_ns"], e["by"]) for e in self.logged()],
+                         [(first["sent_ns"], "start")])
         self.assertEqual(self.records(), [])
-        self.assertFalse(self.ws.receipt.exists())
+
+    def test_the_log_is_appended_before_a_record_is_removed(self) -> None:
+        Attempt(self, "killed")
+        with patch.object(semantic_openrouter, "_remove_dead",
+                          side_effect=AssertionError("removed")) as removed:
+            with self.assertRaises(AssertionError):
+                semantic_openrouter.acknowledge_possible_charges(self.ws.cache, by="start")
+            removed.assert_called_once()
+        self.assertEqual(len(self.logged()), 1, "on disk before any removal")
+        self.assertEqual(len(self.records()), 1)
 
     def test_two_helpers_on_one_folder_never_remove_each_others_record(self) -> None:
         """The review's case: B's request is in flight while A sends and
@@ -1353,8 +1403,7 @@ class ARequestThatLeftIsRecorded(LaneTestCase):
         self.ws.cache.unlink()
         with self.assertRaises(semantic_openrouter.Refused):
             self.run_lane(refusal(402))
-        receipt = json.loads(self.ws.receipt.read_text())
-        self.assertEqual([entry["at_ns"] for entry in receipt["earlier"]], [b_record["sent_ns"]])
+        self.assertEqual([entry["at_ns"] for entry in self.logged()], [b_record["sent_ns"]])
 
     def test_a_record_in_flight_is_not_an_earlier_charge(self) -> None:
         theirs = Attempt(self, "hold")
@@ -1362,15 +1411,15 @@ class ARequestThatLeftIsRecorded(LaneTestCase):
         self.assertEqual(theirs.finish("answer"), 0)
         self.assertEqual(self.records(), [], "B answered and removed its own")
 
-    def test_a_record_left_by_the_j1_build_is_still_carried(self) -> None:
+    def test_a_record_left_by_the_j1_build_is_still_logged(self) -> None:
         legacy = semantic_openrouter.sent_record_path(self.ws.cache)
         legacy.write_text(json.dumps({
             "schema_version": "musializer.semantic-request-sent/v1", "sent_ns": 1_700_000_000_000_000_000,
             "sent_utc": "2023-11-14T22:13:20Z", "usd_max": 0.073, "earlier": []}))
         with self.assertRaises(semantic_openrouter.Refused):
             self.run_lane(refusal(402))
-        receipt = json.loads(self.ws.receipt.read_text())
-        self.assertEqual([entry["at_ns"] for entry in receipt["earlier"]], [1_700_000_000_000_000_000])
+        self.assertEqual([entry["at_ns"] for entry in self.logged()], [1_700_000_000_000_000_000])
+        self.assertFalse(legacy.exists())
 
 class AChangedFileIsNeverPaidFor(LaneTestCase):
     """Defect J1-1 (2026-11-16): a track file replaced after loading.

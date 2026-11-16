@@ -232,7 +232,7 @@ fn sent_unanswered_notice(
     log_path: &str,
 ) -> (String, AssistNotice) {
     let sentence = format!(
-        "The helper stopped before an answer came, after {}. Nothing was saved.",
+        "The helper stopped before an answer came; {}. Nothing was saved.",
         diagnosis::sent_clause(sent)
     );
     let notice = AssistNotice::new(
@@ -252,13 +252,26 @@ fn earlier_charges_sentence(output_dir: &Path, next: &diagnosis::NextStart<'_>) 
     if records.is_empty() && receipt.is_none() {
         return None;
     }
-    let answered_ns = std::fs::metadata(output_dir.join(diagnosis::LISTENING_CACHE_NAME))
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|elapsed| elapsed.as_nanos());
-    let charges = diagnosis::possible_charges(&records, receipt.as_deref(), answered_ns);
+    // J3-7: what the Start after an earlier confirmation put behind the
+    // user is in the log and not said again.
+    let log = read_tail(
+        &output_dir.join(diagnosis::CHARGE_LOG_NAME),
+        diagnosis::CHARGE_LOG_TAIL_BYTES,
+    );
+    let charges = diagnosis::possible_charges(&records, receipt.as_deref(), log.as_deref());
     diagnosis::possible_charge_sentence(&charges, next)
+}
+
+/// The last `limit` bytes of a file that only grows, or `None`.
+fn read_tail(path: &Path, limit: usize) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(length.saturating_sub(limit as u64)))
+        .ok()?;
+    let mut bytes = Vec::new();
+    file.take(limit as u64).read_to_end(&mut bytes).ok()?;
+    Some(bytes)
 }
 
 /// The per-track job folder a Start would use (`plug.c:3262-3280`).
@@ -321,7 +334,7 @@ fn stopped_notice(
         return match reason {
             StopReason::Cancelled => AssistNotice::new(
                 Severity::Warning,
-                "Analysis cancelled after the request was sent",
+                "Analysis cancelled during the listening request",
                 format!(
                     "The analysis was stopped at your request, but {clause}. Nothing was \
                      applied to this project."
@@ -6399,32 +6412,35 @@ mod tests {
         assert_eq!(cancelled.severity, Severity::Warning);
         assert_eq!(
             cancelled.title,
-            "Analysis cancelled after the request was sent"
+            "Analysis cancelled during the listening request"
         );
         assert_eq!(
             cancelled.detail,
-            "The analysis was stopped at your request, but the listening request had already \
-             been sent to OpenRouter and may have been billed (at most 0.073 USD). Nothing was \
-             applied to this project."
+            "The analysis was stopped at your request, but the listening request may already \
+             have been sent to OpenRouter and billed (at most 0.073 USD). Nothing was applied \
+             to this project."
         );
         let timed_out = stopped_notice(StopReason::TimedOut, log, Some(&sent));
         assert!(timed_out.detail.starts_with(&format!(
             "The helper ran for {} minutes without finishing and was stopped; the listening \
-             request had already been sent to OpenRouter and may have been billed (at most \
-             0.073 USD).",
+             request may already have been sent to OpenRouter and billed (at most 0.073 USD).",
             JOB_TIMEOUT.as_secs() / 60
         )));
         assert!(timed_out.detail.ends_with(log));
         let failing = stopped_notice(StopReason::Failing, log, Some(&sent));
         assert!(failing
             .detail
-            .contains("may have been billed (at most 0.073 USD)"));
+            .contains("may already have been sent to OpenRouter and billed (at most 0.073 USD)"));
         for notice in [&cancelled, &timed_out, &failing] {
             assert!(notice.detail.len() < musializer_core::ui::notice::DETAIL_CAPACITY);
         }
         let (sentence, died) = sent_unanswered_notice(&sent, log);
         assert_eq!(died.title, "The listening request may have been billed");
-        assert!(sentence.ends_with("Nothing was saved."), "{sentence}");
+        assert_eq!(
+            sentence,
+            "The helper stopped before an answer came; the listening request may already have \
+             been sent to OpenRouter and billed (at most 0.073 USD). Nothing was saved."
+        );
 
         // And the next confirmation for this track says it before Start.
         let line =
@@ -6432,7 +6448,8 @@ mod tests {
         assert_eq!(
             line,
             "A listening request that used this track's job folder was started on 2026-11-16 \
-             10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD)."
+             10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). \
+             After Start this note moves to the job folder's log."
         );
     }
 

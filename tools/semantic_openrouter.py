@@ -1450,6 +1450,87 @@ def earlier_possible_charges(cache_path: Path, dead: list[DeadRecord] | None = N
     return ordered[-EARLIER_KEEP:]
 
 
+# The way a possible charge is put behind the user (J3-7, 2026-11-16). A
+# record a killed helper left was carried into every later attempt until an
+# answer came, so a track whose next attempts kept failing said "may have been
+# billed" at every Start for ever. Now the next confirmation shows it once,
+# and the Start pressed after reading it appends it here and stops saying it:
+# one line per possible charge, appended and synced, never rewritten
+# (docs/TRAPS.md, "Replacing a record of possible spending erases a possible
+# charge"). The panel and the helper both leave out what is logged.
+CHARGE_LOG_SCHEMA = "musializer.semantic-charge-acknowledged/v1"
+CHARGE_LOG_MAX_BYTES = 1 << 20
+
+
+def charge_log_path(cache_path: Path) -> Path:
+    return cache_path.with_name(f"{cache_path.stem}.charges.jsonl")
+
+
+def acknowledged_charges(cache_path: Path) -> set[tuple[str, int]]:
+    """`(kind, at_ns)` of every possible charge already put behind the user."""
+    path = charge_log_path(cache_path)
+    try:
+        with path.open("rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            handle.seek(max(0, size - CHARGE_LOG_MAX_BYTES))
+            text = handle.read(CHARGE_LOG_MAX_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return set()
+    keys: set[tuple[str, int]] = set()
+    for line in text.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if (isinstance(entry, dict) and entry.get("schema_version") == CHARGE_LOG_SCHEMA
+                and isinstance(entry.get("kind"), str) and isinstance(entry.get("at_ns"), int)):
+            keys.add((entry["kind"], entry["at_ns"]))
+    return keys
+
+
+def acknowledge_possible_charges(cache_path: Path, *, by: str) -> list[dict[str, Any]]:
+    """Puts every possible charge beside this cache behind the user: called
+    when a Start that the confirmation warned about has been pressed (the
+    orchestrator's listening step) and when the helper starts. Each charge
+    not yet logged is appended to the log and synced; only then are the
+    records of killed helpers removed. A record still locked is a request in
+    flight and is left alone. Returns what was logged now."""
+    lock_path = cache_path.with_name(f"{cache_path.stem}.charges.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        dead = _dead_records(cache_path)
+        logged = acknowledged_charges(cache_path)
+        now_ns = time.time_ns()
+        fresh = [entry for entry in earlier_possible_charges(cache_path, dead)
+                 if isinstance(entry.get("at_ns"), int)
+                 and (str(entry.get("kind")), entry["at_ns"]) not in logged]
+        if fresh:
+            lines = "".join(json.dumps({
+                "schema_version": CHARGE_LOG_SCHEMA, **entry,
+                "acknowledged_ns": now_ns,
+                "acknowledged_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "by": by,
+            }, ensure_ascii=False, sort_keys=True) + "\n" for entry in fresh)
+            log = os.open(charge_log_path(cache_path),
+                          os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC, 0o600)
+            try:
+                os.write(log, lines.encode("utf-8"))
+                os.fsync(log)
+            finally:
+                os.close(log)
+            _sync_directory(cache_path.parent)
+        # Logged (now or before): the records of killed helpers are done with.
+        _remove_dead(dead)
+        return fresh
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def _remove_dead(dead: list[DeadRecord]) -> None:
     """Removes records whose charges this attempt now carries, each only
     while its name still holds the file read and no helper holds it."""
@@ -1881,9 +1962,11 @@ def _analyze_to_cache(
     # removed only once this attempt's own record or receipt carries it (a
     # kill in between must not lose it), and a record another helper still
     # holds is a request in flight, not an earlier charge (J3-1).
-    dead = _dead_records(cache_path)
-    earlier = earlier_possible_charges(cache_path, dead)
     earlier_receipt = _receipt_identity(cache_path)
+    # Earlier possible charges are put behind the user at the Start that
+    # follows the confirmation showing them (J3-7), not carried forward.
+    acknowledge_possible_charges(cache_path, by="helper")
+    earlier: list[dict[str, Any]] = []
     state.earlier = earlier
     sent: SentRecord | None = None
 
@@ -1954,9 +2037,8 @@ def _analyze_to_cache(
     sent = _write_sent_record(cache_path, settings=settings, audio_sha256=audio_hash,
                               estimate=estimate, earlier=earlier)
     state.sent = sent
-    # This record now carries what the earlier ones said: they are done with.
-    # A receipt from an earlier attempt describes that attempt, not this one.
-    _remove_dead(dead)
+    # A receipt from an earlier attempt describes that attempt, not this one;
+    # what it may have cost is in the log already.
     _drop_receipt_if(cache_path, earlier_receipt)
     try:
         response = submit_request(payload, transport=transport, sleeper=sleeper,
