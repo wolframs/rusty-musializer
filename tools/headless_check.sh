@@ -2987,7 +2987,10 @@ fi
 #   plain       the confirmation as it was: the paid-call cost line
 #   saved       a saved answer exists: "Cost: nothing ..."
 #   catalog     the saved model list predates the model: one quiet line
-#   billed      an earlier request was sent and never answered
+#   billed-*    an earlier request was started and never answered, said
+#               against this Start's request: same, other settings, other
+#               audio (J3-2); billed-behind: put behind by the log (J3-7)
+#   settings-*  the AI settings change while the card is open (J3-4)
 #   no-credit   Start, and the listening step refused for credit
 #   cancel      Start, the request leaves, Cancel
 #   deadline    Start, the request leaves, the deadline
@@ -3172,6 +3175,10 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
         # J3-7: the Start pressed after reading the warning puts it in the
         # job folder's log (the helper's own `acknowledge_possible_charges`,
         # which the listening step calls), and the next card says nothing.
+        # A may-be-billed receipt too: it stays beside the cache, so only the
+        # log keeps it from being said again.
+        printf '{"schema_version":"musializer.semantic-failed-run/v1","failed_ns":%s,"failed_utc":"2026-11-16T11:00:00Z","kind":"timed_out","message":"x","may_be_billed":true,"estimate":{"usd_max":0.073},"audio_sha256":"%s","request_key":"%s","earlier":[]}\n' \
+            "$(date +%s%N)" "$J1_AUDIO_SHA" "$J1_KEY" >"$J1_BILLED/semantic.cache.failed.json"
         python3 - "$J1_BILLED/semantic.cache.json" <<'ACK'
 import sys
 from pathlib import Path
@@ -3183,6 +3190,9 @@ ACK
         j1_run billed-behind "$T" 90 "" J1_STATUS=none J1_REQUEST_KEY="$J1_KEY" || J1_FAILED=1
         j1_expect billed-behind "assist notes:" "earlier-charges=false" || J1_FAILED=1
         j1_expect billed-behind "assist charges:" "line=none" || J1_FAILED=1
+        if [ ! -f "$J1_BILLED/semantic.cache.failed.json" ]; then
+            echo "FAIL: j1-billed-behind: the receipt the log has to answer for is gone" >&2; J1_FAILED=1
+        fi
     else
         echo "FAIL: j1-billed: no job folder reported" >&2; J1_FAILED=1
     fi
