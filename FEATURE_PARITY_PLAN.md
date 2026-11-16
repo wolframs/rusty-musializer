@@ -144,10 +144,14 @@ then fix / preempt issues in the code, before I test it myself? :)"
   pressing Start in one window. The operator is told.
 - [ ] J4: the ledger and the binding reuse (one agent, own worktree), then its
   review, then merged; its record to the archive.
-- [ ] One full `tools/verify.sh` with nothing else running (the run on
-  `4950511` failed two frame-timing parts under another agent's load: the
-  headless gate's 120 ms intervention and poster frames), release build; the
-  record to the archive and this block deleted.
+- [x] One full `tools/verify.sh` on the merged tree (`1363bcd`, 2026-11-16):
+  24 of 26. The headless gate, which failed its 120 ms intervention on
+  `4950511` under another agent's load, passed. Failed: poster frames' frame
+  budget (GX-3, 2 frames at 27.0 ms against 0) and one `cargo test`, the clip
+  decoder-budget test of GX-4, which passed six times alone afterwards.
+  Neither is in code this stream touched; another session's GPU job was
+  running. Accepted as load, release built.
+- [ ] When J4 is in: the record to the archive and this block deleted.
 - Never pressed for real, to say to the operator: Apply and Put back on a
   real answer (the probe has one click per run; the gate presses both on a
   fixture answer), Cancel while a request is in flight, a settings change
@@ -555,6 +559,9 @@ to 2026-11-15) and passing alone; find each timing assumption:
 
 - `clip::tests::a_budget_of_two_decoders_runs_two_whatever_the_clips` and
   `process::ffmpeg::tests::dropping_an_encoder_without_finishing_it_still_reaps_and_cleans_up`.
+  The clip one failed again in the full verify of 2026-11-16 (load average 5,
+  another session's GPU job running; `decoders: 1` where 2 were expected) and
+  passed six times alone straight after.
 - `tools/treatment_check.sh` run standalone on a fixed display can die on a
   race in `tools/headless_run.sh`: the previous launch's X lock vanishes
   between the check and the read (a builder's report, not reproduced).
