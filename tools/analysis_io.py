@@ -119,3 +119,57 @@ def string_list(value: Any, field: str) -> list[str]:
     if not isinstance(value, list):
         raise AnalysisValidationError(f"{field} must be an array of strings")
     return [text(item, field) for item in value if text(item, field)]
+
+
+# A child step's own reason, kept where its parent reads it (docs/TRAPS.md, "A
+# helper's own reason dies at `_run`"): `external_analysis._run` reports a
+# failed child as "python3 exited with code 1", and what the child knew about
+# why is lost unless it writes it down. One small document per step, beside
+# the step's output; the parent deletes it before the step runs and reads it,
+# for its schema, its step and its audio, only when the step failed.
+STEP_FAILURE_SCHEMA = "musializer.step-failed/v1"
+STEP_FAILURE_MAX_BYTES = 64 * 1024
+
+
+def step_failure_path(output: str | os.PathLike[str]) -> Path:
+    """Where the step that writes ``output`` leaves its reason."""
+    output = Path(output)
+    return output.with_name(f"{output.stem}.failed.json")
+
+
+def write_step_failure(path: str | os.PathLike[str], *, step: str, message: str,
+                       audio: str | os.PathLike[str] | None = None) -> None:
+    """Best effort: a failure to write the reason must not hide the failure."""
+    import time
+    digest = None
+    if audio is not None:
+        try:
+            digest = sha256_file(audio)
+        except OSError:
+            digest = None
+    try:
+        atomic_write_json(path, {
+            "schema_version": STEP_FAILURE_SCHEMA, "step": step,
+            "failed_ns": time.time_ns(), "audio_sha256": digest,
+            "message": " ".join(message.split()),
+        })
+    except OSError:
+        pass
+
+
+def read_step_failure(path: str | os.PathLike[str], *, step: str,
+                      audio_sha256: str | None) -> str | None:
+    """The step's own sentence, or None when there is none for this audio."""
+    try:
+        if Path(path).stat().st_size > STEP_FAILURE_MAX_BYTES:
+            return None
+        value = read_json(path)
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(value, dict) or value.get("schema_version") != STEP_FAILURE_SCHEMA
+            or value.get("step") != step or not isinstance(value.get("message"), str)):
+        return None
+    recorded = value.get("audio_sha256")
+    if audio_sha256 is not None and recorded is not None and recorded != audio_sha256:
+        return None
+    return " ".join(value["message"].split())[:300] or None

@@ -76,6 +76,30 @@ impl<'a> AuthorizedCredential<'a> {
 /// on the deadline.
 pub const JOB_TIMEOUT: Duration = Duration::from_secs(2400);
 
+/// Where the key a job is handed came from, which a refused key's sentence
+/// names (`tools/semantic_openrouter.py`, `KEY_ORIGIN_VARIABLE`). Never the
+/// key, and only beside one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredentialOrigin {
+    /// The `0600` file AI settings → OpenRouter writes.
+    Settings,
+    /// The `OPENROUTER_API_KEY` the application was started with.
+    Environment,
+}
+
+impl CredentialOrigin {
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Settings => "settings",
+            Self::Environment => "environment",
+        }
+    }
+}
+
+/// The variable that carries [`CredentialOrigin::token`] to the helper.
+pub const CREDENTIAL_ORIGIN_VARIABLE: &str = "MUSIALIZER_OPENROUTER_FROM";
+
 /// How long a stopping job is given to honour `SIGTERM` before the supervisor
 /// escalates to `SIGKILL` on the whole group (`src/plug.c:3998`).
 pub const ESCALATION_DELAY: Duration = Duration::from_secs(2);
@@ -239,6 +263,8 @@ pub struct AssistSpec<'a> {
     /// authorizes one. It goes into the child's **environment** and nowhere
     /// else: never argv (E2), never a log (E3), never the manifest (E4).
     pub credential: Option<AuthorizedCredential<'a>>,
+    /// Where `credential` came from; passed only beside one.
+    pub credential_origin: CredentialOrigin,
     /// Whether any route in this job's frozen graph asks for zero data
     /// retention — [`ExecutionSnapshot::requires_zdr`](musializer_core::assist::execution::ExecutionSnapshot::requires_zdr).
     /// The snapshot is the sole authority on what is sent (§6), which is what
@@ -437,9 +463,11 @@ impl AssistJob {
         match spec.credential {
             Some(AuthorizedCredential(secret)) => {
                 command.env(CREDENTIAL_VARIABLE, secret.expose());
+                command.env(CREDENTIAL_ORIGIN_VARIABLE, spec.credential_origin.token());
             }
             None => {
                 command.env_remove(CREDENTIAL_VARIABLE);
+                command.env_remove(CREDENTIAL_ORIGIN_VARIABLE);
             }
         }
 
@@ -702,6 +730,7 @@ mod tests {
             // test below sets it both ways.
             zdr_required: mode.uses_model(),
             credential: None,
+            credential_origin: CredentialOrigin::Settings,
             local_runtimes: LocalRuntimeOverrides::default(),
         }
     }
@@ -966,6 +995,10 @@ mod tests {
             "a local-only job's child saw the credential"
         );
         assert!(!environ.contains("OPENROUTER_API_KEY="));
+        assert!(
+            !environ.contains("MUSIALIZER_OPENROUTER_FROM="),
+            "no key, no origin"
+        );
         assert!(!argv.iter().any(|value| value.contains("MUSICANARY")));
     }
 
@@ -985,11 +1018,17 @@ mod tests {
         spec.execution_snapshot = Some(&snapshot_path);
         spec.credential =
             Some(AuthorizedCredential::for_snapshot(&remote, &secret).expect("authorized"));
+        spec.credential_origin = CredentialOrigin::Environment;
         let (argv, environ) = child_report(&spec);
         assert!(
             environ.contains(&format!("OPENROUTER_API_KEY={CANARY}")),
             "the authorized child did not receive the credential"
         );
+        // J1-2: where the key came from rides beside it, so a refused key's
+        // sentence says where to replace it.
+        assert!(environ
+            .lines()
+            .any(|line| line == "MUSIALIZER_OPENROUTER_FROM=environment"));
         assert!(
             !argv.iter().any(|value| value.contains("MUSICANARY")),
             "no flag may take a key (E2): {argv:?}"

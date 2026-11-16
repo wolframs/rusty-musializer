@@ -842,6 +842,140 @@ def _content(response: dict[str, Any]) -> str:
     raise AnalysisValidationError("OpenRouter completion content is not text")
 
 
+# How long a sentence the person reads may be. The helper's words reach the
+# Assist panel two ways: the panel reads the receipt and shows the message
+# whole (its notice keeps 224 bytes, `core::assist::diagnosis::CAUSE_MAX_BYTES`
+# + 64), and the job log carries it behind "External analysis failed: ", where
+# the panel's fallback reader clips at 160 bytes (`CAUSE_MAX_BYTES`). So what
+# happened and what it cost come first and fit in 160; the next step follows
+# and the whole fits in 224. Both numbers are pinned by
+# tests/test_cross_language_pins.py.
+ESSENTIAL_MAX_BYTES = 160
+MESSAGE_MAX_BYTES = 224
+ELLIPSIS = "..."
+
+
+def bounded(head: str, variable: str, tail: str, after: str = "") -> str:
+    """``head + variable + tail + after``, sized for the panel.
+
+    Only ``variable`` (a provider's words, a schema error, a reason) is
+    shortened, at a character boundary and with an ellipsis, so that
+    ``head + variable + tail`` fits in ``ESSENTIAL_MAX_BYTES``: the head says
+    what happened and the tail what it cost, and both survive whatever a
+    provider or a schema says. ``after`` is the next step, which follows.
+    """
+    room = (ESSENTIAL_MAX_BYTES - len(head.encode("utf-8")) - len(tail.encode("utf-8")))
+    encoded = variable.encode("utf-8")
+    if len(encoded) > room:
+        keep = max(0, room - len(ELLIPSIS))
+        variable = encoded[:keep].decode("utf-8", "ignore").rstrip() + ELLIPSIS
+        if len(variable.encode("utf-8")) > room:
+            variable = ""
+    # The next step is this file's own fixed words, never a provider's.
+    assert len(after.encode("utf-8")) <= MESSAGE_MAX_BYTES - ESSENTIAL_MAX_BYTES, after
+    return f"{head}{variable}{tail}{after}"
+
+
+class Refused(RuntimeError):
+    """The request was refused before a model ran, or never left whole.
+
+    Nothing was billed. ``kind`` says which refusal it was, for the receipt
+    and the panel's headline; the message is the sentence the person reads,
+    with the next step in it.
+    """
+
+    def __init__(self, message: str, *, kind: str, status: int | None = None,
+                 detail: str | None = None, sent: bool = True) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.status = status
+        self.detail = detail
+        # Whether the request reached OpenRouter at all (a refusal) or not
+        # (no key, no connection): the sentence says "billed" or "sent".
+        self.sent = sent
+
+
+# What a refused request's sentence says about where the key came from. The
+# application sets this beside the key (never the key itself): "settings" for
+# the 0600 file AI settings writes, "environment" for the OPENROUTER_API_KEY
+# the application was started with.
+KEY_ORIGIN_VARIABLE = "MUSIALIZER_OPENROUTER_FROM"
+
+
+def _provider_message(error: urllib.error.HTTPError) -> str | None:
+    """OpenRouter's own sentence from an error body, bounded, or None."""
+    try:
+        raw = error.read(4096)
+    except Exception:  # noqa: BLE001 - a body that cannot be read says nothing
+        return None
+    try:
+        body = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    message = None
+    if isinstance(body, dict):
+        inner = body.get("error")
+        message = inner.get("message") if isinstance(inner, dict) else body.get("message")
+    if not isinstance(message, str):
+        return None
+    return " ".join(message.split())[:300] or None
+
+
+def privacy_constraints(settings: dict[str, Any] | None) -> list[str]:
+    """The routing constraints a request carried, in the words a person set
+    them with (AI settings: Privacy and Routing)."""
+    settings = settings or {}
+    named: list[str] = []
+    if settings.get("zero_data_retention"):
+        named.append("zero data retention")
+    if settings.get("provider_only"):
+        named.append("only " + ", ".join(map(str, settings["provider_only"])))
+    if settings.get("provider_ignore"):
+        named.append("not " + ", ".join(map(str, settings["provider_ignore"])))
+    if settings.get("max_price"):
+        named.append("a price limit")
+    if settings.get("allow_fallbacks") is False:
+        named.append("no fallbacks")
+    return named
+
+
+def refusal_message(status: int, settings: dict[str, Any] | None, model: str,
+                    provider_message: str | None) -> tuple[str, str]:
+    """``(kind, sentence)`` for a clear refusal: what happened, that nothing
+    was billed, and what to do next."""
+    billed = "; nothing was billed."
+    if status == 401:
+        origin = os.environ.get(KEY_ORIGIN_VARIABLE, "").strip()
+        if origin == "environment":
+            return "key_rejected", bounded(
+                "OpenRouter refused the OPENROUTER_API_KEY this app was started with "
+                "(HTTP 401)", "", billed, " Add a working key in AI settings \u2192 OpenRouter.")
+        if origin == "settings":
+            return "key_rejected", bounded(
+                "OpenRouter refused the key saved in AI settings \u2192 OpenRouter (HTTP 401)",
+                "", billed, " Replace it there, then start again.")
+        return "key_rejected", bounded(
+            "OpenRouter refused the API key (HTTP 401)", "", billed,
+            " Replace it in AI settings \u2192 OpenRouter, then start again.")
+    if status == 402:
+        return "no_credit", bounded(
+            "OpenRouter refused the request: the account needs credit (HTTP 402)", "",
+            billed, " Add credit at openrouter.ai, then start again.")
+    if status == 404:
+        named = privacy_constraints(settings)
+        if named:
+            return "no_endpoint", bounded(
+                f"No OpenRouter endpoint for {model_label(model)} fits ", ", ".join(named),
+                f" (HTTP 404){billed}",
+                " Relax it in AI settings, or refresh the model list there.")
+        return "no_endpoint", bounded(
+            "OpenRouter has no endpoint for ", model, f" (HTTP 404){billed}",
+            " Refresh the model list in AI settings \u2192 OpenRouter.")
+    said = f": {provider_message}" if provider_message else ""
+    return "refused", bounded(f"OpenRouter refused the request (HTTP {status}", said,
+                              f"){billed}")
+
+
 class SentUnanswered(RuntimeError):
     """The request left and no usable answer came back: it may have been billed.
 
@@ -861,6 +995,8 @@ def submit_request(
     now: Callable[[], float] = time.time,
     timeout: float = DEFAULT_TIMEOUT,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
+    settings: dict[str, Any] | None = None,
+    model: str = MODEL,
 ) -> dict[str, Any]:
     """Sends the request once, and again only where it was not processed.
 
@@ -872,7 +1008,10 @@ def submit_request(
     """
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY is not set in the process environment")
+        raise Refused(
+            "No OpenRouter key reached the listening step; nothing was sent. Add one in "
+            "AI settings \u2192 OpenRouter, then start again.",
+            kind="no_key", sent=False)
     encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     last_error: BaseException | None = None
     for attempt in range(1, max_attempts + 1):
@@ -892,12 +1031,19 @@ def submit_request(
             last_error = error
             code = error.code
             headers = error.headers
+            said = _provider_message(error) if code in REFUSED_STATUSES else None
             error.close()
             if code in TRANSIENT_STATUSES and attempt < max_attempts:
                 sleeper(_retry_delay(headers, attempt, now))
                 continue
-            if code in REFUSED_STATUSES or code in TRANSIENT_STATUSES:
-                raise RuntimeError(f"OpenRouter request failed with HTTP {code}") from error
+            if code in TRANSIENT_STATUSES:
+                raise Refused(
+                    f"OpenRouter rate-limited the request {attempt} times (HTTP {code}); "
+                    "nothing was billed. Wait a minute, then start again.",
+                    kind="rate_limited", status=code) from error
+            if code in REFUSED_STATUSES:
+                kind, message = refusal_message(code, settings, model, said)
+                raise Refused(message, kind=kind, status=code, detail=said) from error
             raise SentUnanswered(
                 f"OpenRouter answered HTTP {code} after the request was sent") from error
         except urllib.error.URLError as error:
@@ -905,8 +1051,11 @@ def submit_request(
             # OpenRouter whole, so nothing can have been processed.
             last_error = error
             if attempt == max_attempts:
-                raise RuntimeError(
-                    f"could not reach OpenRouter ({error.reason}); nothing was sent") from error
+                reason = " ".join(str(error.reason).split())
+                raise Refused(
+                    bounded("Could not reach OpenRouter (", reason, "); nothing was sent.",
+                            " Check the connection, then start again."),
+                    kind="unreachable", detail=reason, sent=False) from error
             sleeper(_retry_delay(None, attempt, now))
             continue
         except TimeoutError as error:
@@ -1084,7 +1233,10 @@ def _drop_older_receipt(cache_path: Path, answered_ns: int) -> None:
 
 def failure_message(reason: str, response: dict[str, Any] | None,
                     estimate: dict[str, Any] | None = None) -> str:
-    return f"{reason}. Nothing was saved; {_cost_clause(response or {}, estimate)}."
+    """The reason, then what was billed: the reason is shortened, never the
+    bill, so the amount is always inside the 160 bytes the panel keeps."""
+    return bounded("", reason,
+                   f". Nothing was saved; {_cost_clause(response or {}, estimate)}.")
 
 
 def unanswered_message(reason: str, estimate: dict[str, Any] | None = None) -> str:
@@ -1095,14 +1247,14 @@ def unanswered_message(reason: str, estimate: dict[str, Any] | None = None) -> s
     ceiling = (estimate or {}).get("usd_max")
     bound = (f" (at most {ceil_usd(ceiling, 3):.3f} USD)"
              if isinstance(ceiling, (int, float)) else "")
-    return f"{reason}; it may have been billed{bound}. Nothing was saved or sent again."
+    return bounded("", reason, f"; it may have been billed{bound}. Nothing was saved or sent again.")
 
 
 def _write_failure_receipt(
     cache_path: Path, *, reason: str, response: dict[str, Any] | None,
     settings: dict[str, Any], audio_sha256: str, detail: str | None = None,
     estimate: dict[str, Any] | None = None, message: str | None = None,
-    may_be_billed: bool = False,
+    may_be_billed: bool = False, kind: str | None = None,
 ) -> dict[str, Any]:
     """The record of a failed run, beside (never in) the cache.
 
@@ -1121,6 +1273,11 @@ def _write_failure_receipt(
         # answer older than it (H4d), and two helpers can end in one second.
         "failed_ns": time.time_ns(),
         "reason": reason,
+        # Which failure it was, for the panel's headline: `key_rejected`,
+        # `no_credit`, `no_endpoint`, `refused`, `rate_limited`, `no_key`,
+        # `unreachable`, `not_sent`, `unanswered` or `unusable_answer`.
+        "kind": kind or ("unanswered" if may_be_billed else
+                         "unusable_answer" if response else "not_sent"),
         "message": message or failure_message(reason, response, estimate),
         # The request left and nothing says whether the model ran: counted as
         # possibly billed, up to the estimate's maximum.
@@ -1188,11 +1345,12 @@ def analyze_to_cache(
         """A run that stopped before anything left: its receipt says so, and
         that nothing can have been billed (the parent reads the sentence from
         the receipt, since a child's own words die at `_run`)."""
+        message = bounded("", f"{reason[:1].upper()}{reason[1:]}", ".")
         _write_failure_receipt(
             cache_path, reason=reason, response=None, settings=settings,
-            audio_sha256=audio_hash, message=f"{reason[:1].upper()}{reason[1:]}.",
-            may_be_billed=False)
-        return RuntimeError(reason)
+            audio_sha256=audio_hash, message=message, may_be_billed=False,
+            kind="not_sent")
+        return RuntimeError(message)
 
     # The parent hashed the file when the job started; this snapshot is read
     # minutes later, after the measured step. A file replaced in between would
@@ -1243,13 +1401,25 @@ def analyze_to_cache(
         raise not_sent(oversize, settings)
     estimate = estimate_cost(requested, audio_duration)
     try:
-        response = submit_request(payload, transport=transport, sleeper=sleeper)
+        response = submit_request(payload, transport=transport, sleeper=sleeper,
+                                  settings=settings, model=requested)
+    except Refused as error:
+        # Refused before a model ran, or never sent: nothing billed, and the
+        # sentence says why and what to do. A receipt, because a child's own
+        # words die at `_run` ("python3 exited with code 1").
+        _write_failure_receipt(
+            cache_path, reason=str(error), response=None, settings=settings,
+            audio_sha256=audio_hash, estimate=estimate, message=str(error),
+            may_be_billed=False, kind=error.kind,
+            detail=error.detail)
+        raise
     except SentUnanswered as error:
         message = unanswered_message(str(error), estimate)
         _write_failure_receipt(
             cache_path, reason=str(error), response=None, settings=settings,
             audio_sha256=audio_hash, estimate=estimate, message=message,
-            may_be_billed=True)
+            may_be_billed=True,
+            kind="timed_out" if isinstance(error.__cause__, TimeoutError) else "unanswered")
         raise FailedRun(message) from error
 
     def failed(reason: str, detail: str | None = None) -> FailedRun:

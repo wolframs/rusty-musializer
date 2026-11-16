@@ -33,7 +33,9 @@ from analysis_io import (
     canonical_sha256,
     duration,
     read_json,
+    read_step_failure,
     sha256_file,
+    step_failure_path,
 )
 from import_whisper import normalize_whisper
 import force_align_lyrics
@@ -2085,10 +2087,21 @@ def run_assist(
         accept=_measured_cache_accepts,
     )
     if measured is None:
-        _run(
-            [sys.executable, str(ROOT / "tools/analyze_audio.py"), str(audio), str(paths["measured"])],
-            timeout=external_timeout, env=_safe_local_env(), runner=runner,
-        )
+        # The measurement's own reason (a missing FFmpeg, a file FFmpeg cannot
+        # read), not "python3 exited with code 1" (defect J1-2).
+        measured_receipt = step_failure_path(paths["measured"])
+        measured_receipt.unlink(missing_ok=True)
+        try:
+            _run(
+                [sys.executable, str(ROOT / "tools/analyze_audio.py"), str(audio),
+                 str(paths["measured"]), "--failure-receipt", str(measured_receipt)],
+                timeout=external_timeout, env=_safe_local_env(), runner=runner,
+            )
+        except RuntimeError as error:
+            words = read_step_failure(measured_receipt, step="measured", audio_sha256=audio_sha)
+            if words is None:
+                raise
+            raise RuntimeError(words) from error
         measured = _cache_matches(
             paths["measured"], "musializer.measured-analysis/v1", audio_sha,
             accept=_measured_cache_accepts,

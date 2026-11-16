@@ -20,6 +20,14 @@ from typing import Any
 try:
     import numpy as np
 except ImportError as error:  # pragma: no cover - exercised only on incomplete hosts
+    # Before argparse exists: the reason still has to reach the parent, which
+    # passes `--failure-receipt PATH` (`external_analysis.run_assist`).
+    if "--failure-receipt" in sys.argv[:-1]:
+        from analysis_io import write_step_failure
+        write_step_failure(
+            sys.argv[sys.argv.index("--failure-receipt") + 1], step="measured",
+            message="could not start the measurement: NumPy is not installed for python3. "
+                    "Install it (the python3-numpy package), then start again; nothing was sent.")
     raise SystemExit("tools/analyze_audio.py requires NumPy") from error
 
 from analysis_io import (
@@ -27,6 +35,7 @@ from analysis_io import (
     atomic_write_json,
     canonical_sha256,
     sha256_file,
+    write_step_failure,
 )
 
 
@@ -474,6 +483,25 @@ def analyze_to_cache(audio_path: str | Path, output_path: str | Path, **settings
     return document
 
 
+def measurement_failure(error: BaseException, ffmpeg: str = "ffmpeg") -> str:
+    """The sentence the person reads when measuring the track failed: under
+    the 160 bytes the Assist panel keeps, with what to do and that nothing
+    left the machine (the measured step runs before anything is sent).
+
+    A missing FFmpeg starts "could not start", which the panel reads as a
+    tool that could not run (`core::assist::diagnosis::classify`)."""
+    if shutil.which(ffmpeg) is None:
+        return ("could not start FFmpeg, which measuring the track needs: it is not "
+                "installed or not on PATH. Install FFmpeg, then start again; nothing was sent.")
+    detail = " ".join(str(error).split())
+    tail = "); nothing was sent."
+    head = "measuring the track failed ("
+    room = 160 - len(head.encode()) - len(tail.encode())
+    if len(detail.encode()) > room:
+        detail = detail.encode()[:room - 3].decode("utf-8", "ignore").rstrip() + "..."
+    return f"{head}{detail}{tail}"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("audio", type=Path)
@@ -483,6 +511,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--window", type=int, default=DEFAULT_WINDOW)
     parser.add_argument("--hop", type=int, default=DEFAULT_HOP)
     parser.add_argument("--ffmpeg", default="ffmpeg")
+    parser.add_argument("--failure-receipt", type=Path,
+                        help="where to leave the reason a run failed, for the parent to read")
     args = parser.parse_args(argv)
     try:
         document = analyze_to_cache(
@@ -496,6 +526,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     except (OSError, AnalysisValidationError) as error:
         print(f"Measured analysis failed: {error}", file=sys.stderr)
+        if args.failure_receipt is not None:
+            write_step_failure(args.failure_receipt, step="measured",
+                               message=measurement_failure(error, args.ffmpeg),
+                               audio=args.audio)
         return 1
     print(
         f"analyzed {document['audio']['duration_seconds']:.3f}s into "

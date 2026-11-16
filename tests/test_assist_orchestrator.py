@@ -24,6 +24,7 @@ because that file was being edited in parallel when this one was written.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -34,6 +35,7 @@ from unittest.mock import AsyncMock, Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
+import analysis_io  # noqa: E402
 import atomic_cache  # noqa: E402
 import external_analysis  # noqa: E402
 
@@ -394,6 +396,55 @@ class AuthoredRouteTests(unittest.TestCase):
                         allow_dotenv=False, runner=Mock(side_effect=AssertionError('Unexpected process')))
                 self.assertEqual(discover.call_args.kwargs['reference'], authored)
                 wording.assert_not_called()
+
+
+class MeasuredStepReasonTests(unittest.TestCase):
+    """Defect J1-2: with no cached measurement, a missing FFmpeg died behind
+    "python3 exited with code 1". The step writes its reason; the parent
+    raises it."""
+
+    def test_a_missing_ffmpeg_is_named_by_the_real_step(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "track.wav"
+            audio.write_bytes(b"RIFF-not-really-audio")
+            receipt = root / "measured.failed.json"
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "analyze_audio.py"), str(audio),
+                 str(root / "measured.json"), "--failure-receipt", str(receipt)],
+                env={"PATH": str(root / "nowhere")}, capture_output=True, text=True,
+                check=False, timeout=60)
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            words = external_analysis.read_step_failure(
+                receipt, step="measured",
+                audio_sha256=external_analysis.sha256_file(audio))
+            self.assertEqual(
+                words,
+                "could not start FFmpeg, which measuring the track needs: it is not "
+                "installed or not on PATH. Install FFmpeg, then start again; nothing was sent.")
+            self.assertLessEqual(len(words.encode()), 160)
+            # Another track's receipt is not this one's reason.
+            self.assertIsNone(external_analysis.read_step_failure(
+                receipt, step="measured", audio_sha256="0" * 64))
+
+    def test_the_parent_raises_the_steps_words(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "track.wav"
+            audio.write_bytes(b"RIFF-not-really-audio")
+
+            def runner(argv, **_kwargs):  # noqa: ANN001
+                self.assertTrue(argv[1].endswith("analyze_audio.py"), argv)
+                path = argv[argv.index("--failure-receipt") + 1]
+                analysis_io.write_step_failure(
+                    path, step="measured", message="could not start FFmpeg: test words",
+                    audio=audio)
+                return subprocess.CompletedProcess(argv, 1, "", "")
+
+            with self.assertRaises(RuntimeError) as raised:
+                external_analysis.run_assist(audio, root / "out", audio_duration=10.0,
+                                             mode="mimo", allow_dotenv=False, runner=runner)
+            self.assertEqual(str(raised.exception), "could not start FFmpeg: test words")
 
 
 if __name__ == "__main__":

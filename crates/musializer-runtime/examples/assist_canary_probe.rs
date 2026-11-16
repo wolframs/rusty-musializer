@@ -244,6 +244,7 @@ fn run_execution_probe(output: &Path, helper: &Path, audio: &Path) -> Result<(),
             execution_snapshot: Some(&snapshot_path),
             zdr_required: snapshot.requires_zdr(),
             credential,
+            credential_origin: musializer_runtime::process::assist::CredentialOrigin::Settings,
             local_runtimes: LocalRuntimeOverrides::default(),
         };
         // `--dry-run` and `--request-dump` are not `AssistSpec`'s to add — it

@@ -47,6 +47,106 @@ pub const CAUSE_MAX_BYTES: usize = 160;
 /// helper's children can grow.
 const SCAN_LIMIT: usize = 4096;
 
+/// The listening helper's failure receipt, beside its cache in the job folder
+/// (`tools/semantic_openrouter.py`, `failure_receipt_path`). Pinned by
+/// `tests/test_cross_language_pins.py`.
+pub const LISTENING_RECEIPT_NAME: &str = "semantic.cache.failed.json";
+
+/// The receipt schemas the panel reads: the helper's own, and the one it
+/// wrote as `tools/mimo_openrouter.py` until 2026-11-15.
+pub const LISTENING_RECEIPT_SCHEMAS: [&str; 2] = [
+    "musializer.semantic-failed-run/v1",
+    "musializer.mimo-failed-run/v1",
+];
+
+/// The longest message a receipt carries, and the most of it the panel's
+/// notice keeps ([`CAUSE_MAX_BYTES`] + 64, the bound [`notice_detail`]
+/// applies). Pinned against the helper's `MESSAGE_MAX_BYTES`.
+pub const RECEIPT_MESSAGE_MAX_BYTES: usize = CAUSE_MAX_BYTES + 64;
+
+/// Bytes of a receipt read; a larger one is not a receipt.
+pub const RECEIPT_MAX_BYTES: usize = 1 << 20;
+
+/// What the listening step's own receipt says about why it failed (defect
+/// J1-2, 2026-11-16).
+///
+/// The job log carries the same sentence behind [`FAILURE_PREFIX`], clipped at
+/// [`CAUSE_MAX_BYTES`]; the receipt carries it whole, and with the two facts a
+/// headline needs: which failure it was and whether it may have been billed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ListeningFailure {
+    /// `key_rejected`, `no_credit`, `no_endpoint`, `refused`, `rate_limited`,
+    /// `no_key`, `unreachable`, `not_sent`, `timed_out`, `unanswered` or
+    /// `unusable_answer`; anything else is read as an unknown failure.
+    pub kind: String,
+    /// The helper's sentence, sanitized and bounded.
+    pub message: String,
+    pub may_be_billed: bool,
+    pub reported_cost_usd: Option<f64>,
+}
+
+impl ListeningFailure {
+    /// The notice title, by what the person has to do about it.
+    #[must_use]
+    pub fn headline(&self) -> &'static str {
+        if self.may_be_billed {
+            return "The listening request may have been billed";
+        }
+        if self.reported_cost_usd.is_some() || self.kind == "unusable_answer" {
+            return "The listening answer could not be used";
+        }
+        match self.kind.as_str() {
+            "key_rejected" => "OpenRouter refused the key",
+            "no_credit" => "The OpenRouter account needs credit",
+            "no_endpoint" => "No OpenRouter endpoint fits these settings",
+            "refused" => "OpenRouter refused the request",
+            "rate_limited" => "OpenRouter is rate-limiting requests",
+            "unreachable" => "OpenRouter could not be reached",
+            "no_key" | "not_sent" => "The listening request was not sent",
+            _ => "The listening step failed",
+        }
+    }
+}
+
+/// Reads a listening receipt, when it is one and describes an attempt that
+/// failed at or after `since_ns` (nanoseconds since the epoch; the job's
+/// start): a receipt from an earlier job explains nothing about this one.
+#[must_use]
+pub fn listening_failure(receipt: &[u8], since_ns: u128) -> Option<ListeningFailure> {
+    if receipt.len() > RECEIPT_MAX_BYTES {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(receipt).ok()?;
+    let schema = value.get("schema_version")?.as_str()?;
+    if !LISTENING_RECEIPT_SCHEMAS.contains(&schema) {
+        return None;
+    }
+    let failed = value.get("failed_ns")?.as_u64()?;
+    if u128::from(failed) < since_ns {
+        return None;
+    }
+    let message = sanitized(value.get("message")?.as_str()?, RECEIPT_MESSAGE_MAX_BYTES);
+    if message.is_empty() {
+        return None;
+    }
+    Some(ListeningFailure {
+        kind: value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        message,
+        may_be_billed: value
+            .get("may_be_billed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        reported_cost_usd: value
+            .get("reported_cost_usd")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|cost| cost.is_finite() && *cost >= 0.0),
+    })
+}
+
 /// The title used when the log names no cause at all — an empty log, a killed
 /// process, a helper that died before it could print.
 pub const UNDIAGNOSED_HEADLINE: &str = "Analysis failed";
@@ -438,6 +538,64 @@ mod tests {
             diagnosis.cause.headline(),
             "A tool the analysis needs could not run"
         );
+    }
+
+    fn receipt(kind: &str, message: &str, billed: bool, cost: Option<f64>, at: u64) -> Vec<u8> {
+        serde_json::json!({
+            "schema_version": "musializer.semantic-failed-run/v1",
+            "failed_ns": at, "kind": kind, "message": message,
+            "may_be_billed": billed, "reported_cost_usd": cost,
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    /// J1-2: each kind the helper writes reaches its own headline, every
+    /// headline fits a title, and what may have been billed decides first.
+    #[test]
+    fn every_listening_failure_has_a_headline_that_says_what_to_do() {
+        let kinds = [
+            ("key_rejected", "OpenRouter refused the key"),
+            ("no_credit", "The OpenRouter account needs credit"),
+            ("no_endpoint", "No OpenRouter endpoint fits these settings"),
+            ("refused", "OpenRouter refused the request"),
+            ("rate_limited", "OpenRouter is rate-limiting requests"),
+            ("unreachable", "OpenRouter could not be reached"),
+            ("no_key", "The listening request was not sent"),
+            ("not_sent", "The listening request was not sent"),
+            ("unusable_answer", "The listening answer could not be used"),
+            ("something new", "The listening step failed"),
+        ];
+        for (kind, headline) in kinds {
+            let failure =
+                listening_failure(&receipt(kind, "words.", false, None, 10), 5).expect(kind);
+            assert_eq!(failure.headline(), headline, "{kind}");
+            assert!(headline.len() < TITLE_CAPACITY);
+        }
+        let billed = listening_failure(&receipt("timed_out", "w.", true, None, 10), 5).unwrap();
+        assert_eq!(
+            billed.headline(),
+            "The listening request may have been billed"
+        );
+        let paid = listening_failure(&receipt("", "w.", false, Some(0.0131), 10), 5).unwrap();
+        assert_eq!(paid.headline(), "The listening answer could not be used");
+        assert_eq!(paid.reported_cost_usd, Some(0.0131));
+    }
+
+    /// A receipt from before the job started, another schema, or one with no
+    /// words, is not this job's reason; a long message is bounded where it
+    /// is read.
+    #[test]
+    fn only_this_jobs_receipt_is_read_and_it_is_bounded() {
+        assert!(listening_failure(&receipt("no_credit", "w.", false, None, 4), 5).is_none());
+        assert!(listening_failure(&receipt("no_credit", "", false, None, 9), 5).is_none());
+        assert!(listening_failure(b"not json", 0).is_none());
+        let other = br#"{"schema_version":"x/v1","failed_ns":9,"message":"m"}"#;
+        assert!(listening_failure(other, 0).is_none());
+        let long = "é".repeat(1000);
+        let failure = listening_failure(&receipt("refused", &long, false, None, 9), 0).unwrap();
+        assert!(failure.message.len() <= RECEIPT_MESSAGE_MAX_BYTES);
+        assert!(notice_detail(&failure.message, "/tmp/x.log").len() < DETAIL_CAPACITY);
     }
 
     /// A sentence already ending in punctuation is not given a second stop.

@@ -449,5 +449,41 @@ class HelperFailureSentence(unittest.TestCase):
             self.assertEqual(line.split(prefix, 1)[1], sentence)
 
 
+class ListeningReceipt(unittest.TestCase):
+    """Defect J1-2: the listening helper's receipt as the panel reads it —
+    where it lies, what it is called, how long its words may be, and where the
+    key's origin rides."""
+
+    def test_the_panel_reads_the_file_the_helper_writes(self) -> None:
+        self.assertEqual(
+            rust_str_const(DIAGNOSIS_RS, "LISTENING_RECEIPT_NAME"),
+            semantic_openrouter.failure_receipt_path(Path("semantic.cache.json")).name)
+        source = rust_source(DIAGNOSIS_RS)
+        for schema in semantic_openrouter.READABLE_FAILED_RUN_SCHEMAS:
+            self.assertIn(f'"{schema}"', source)
+
+    def test_the_words_fit_what_the_panel_keeps(self) -> None:
+        cause = re.search(r"\bconst\s+CAUSE_MAX_BYTES\s*:\s*usize\s*=\s*([0-9_]+)\s*;",
+                          rust_source(DIAGNOSIS_RS))
+        self.assertIsNotNone(cause)
+        self.assertEqual(semantic_openrouter.ESSENTIAL_MAX_BYTES, int(cause.group(1)))
+        self.assertIn("RECEIPT_MESSAGE_MAX_BYTES: usize = CAUSE_MAX_BYTES + 64;",
+                      rust_source(DIAGNOSIS_RS))
+        self.assertEqual(semantic_openrouter.MESSAGE_MAX_BYTES,
+                         semantic_openrouter.ESSENTIAL_MAX_BYTES + 64)
+
+    def test_the_key_origin_variable_is_the_one_the_runtime_sets(self) -> None:
+        runtime = ROOT / "crates" / "musializer-runtime" / "src" / "process" / "assist.rs"
+        self.assertEqual(rust_str_const(runtime, "CREDENTIAL_ORIGIN_VARIABLE"),
+                         semantic_openrouter.KEY_ORIGIN_VARIABLE)
+        # And the helper's environment filter lets it through to the child.
+        import os
+        from unittest.mock import patch
+        with patch.dict(os.environ, {semantic_openrouter.KEY_ORIGIN_VARIABLE: "settings"}):
+            self.assertEqual(
+                external_analysis._openrouter_env(allow_dotenv=False).get(
+                    semantic_openrouter.KEY_ORIGIN_VARIABLE), "settings")
+
+
 if __name__ == "__main__":
     unittest.main()

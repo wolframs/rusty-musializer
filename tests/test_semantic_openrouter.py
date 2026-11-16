@@ -279,10 +279,17 @@ class FailedRuns(LaneTestCase):
                         self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
                         transport=fake, sleeper=lambda _seconds: None)
                 self.assertNotIsInstance(raised.exception, semantic_openrouter.FailedRun)
-                self.assertEqual(str(raised.exception),
-                                 f"OpenRouter request failed with HTTP {status}")
+                message = str(raised.exception)
+                self.assertIn(f"(HTTP {status})", message)
+                self.assertIn("nothing was billed", message)
                 self.assertEqual(len(fake.sent), 1)
-                self.assertFalse(self.ws.receipt.exists())
+                # J1-2: a refusal keeps its reason in a receipt the panel reads,
+                # and says it cost nothing.
+                receipt = json.loads(self.ws.receipt.read_text())
+                self.assertFalse(receipt["may_be_billed"])
+                self.assertEqual(receipt["message"], message)
+                self.assertIn(receipt["kind"], {"key_rejected", "no_credit", "no_endpoint",
+                                                "refused"})
 
     def test_a_timeout_or_a_dropped_answer_may_be_billed_and_is_not_resent(self) -> None:
         import http.client
@@ -637,6 +644,152 @@ class FailedRunReachesTheUser(LaneTestCase):
         self.assertIsNone(external_analysis._semantic_failure(self.ws.cache, "a" * 64))
 
 
+def refusal(status: int, body: bytes = b"", headers: dict | None = None) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(semantic_openrouter.OPENROUTER_URL, status, "refused",
+                                  headers or {}, io.BytesIO(body))
+
+
+class EveryFailureLeavesItsReason(LaneTestCase):
+    """Defect J1-2 (2026-11-16): a refused key, no credit, no endpoint, a rate
+    limit after the retries and an unreachable network raised a plain error;
+    only a possibly-billed failure wrote a receipt, and the panel read "python3
+    exited with code 1". Each now writes one, with what happened, whether
+    anything may have been billed, and the next step, in words that fit."""
+
+    def refused_with(self, *bodies: object, settings_zdr: bool = False) -> dict:
+        fake = FakeOpenRouter(*bodies)
+        with self.assertRaises(semantic_openrouter.Refused) as raised:
+            semantic_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=self.MODEL,
+                transport=fake, sleeper=lambda _s: None, encoder=fake_encoder,
+                zero_data_retention=settings_zdr, allow_fallbacks=not settings_zdr)
+        self.assertFalse(self.ws.cache.exists())
+        receipt = json.loads(self.ws.receipt.read_text())
+        self.assertEqual(receipt["message"], str(raised.exception))
+        self.assertFalse(receipt["may_be_billed"])
+        self.assert_fits(receipt["message"])
+        self.assertNotIn(SENTINEL_KEY, self.ws.receipt.read_text())
+        return receipt
+
+    def assert_fits(self, message: str) -> None:
+        encoded = message.encode("utf-8")
+        self.assertLessEqual(len(encoded), semantic_openrouter.MESSAGE_MAX_BYTES, message)
+        essential = encoded[:semantic_openrouter.ESSENTIAL_MAX_BYTES].decode("utf-8", "ignore")
+        self.assertTrue("nothing was billed" in essential or "nothing was sent" in essential
+                        or "Nothing was sent" in essential, message)
+
+    def test_a_rejected_key_says_where_the_key_is_set(self) -> None:
+        for origin, words in (("settings", "the key saved in AI settings \u2192 OpenRouter"),
+                              ("environment", "the OPENROUTER_API_KEY this app was started with"),
+                              ("", "the API key")):
+            with self.subTest(origin=origin), patch.dict(
+                    os.environ, {semantic_openrouter.KEY_ORIGIN_VARIABLE: origin}):
+                receipt = self.refused_with(refusal(401))
+                self.assertEqual(receipt["kind"], "key_rejected")
+                self.assertIn(words, receipt["message"])
+                self.assertIn("AI settings \u2192 OpenRouter", receipt["message"])
+
+    def test_no_credit_says_the_account_needs_credit(self) -> None:
+        receipt = self.refused_with(refusal(402))
+        self.assertEqual(receipt["kind"], "no_credit")
+        self.assertEqual(
+            receipt["message"],
+            "OpenRouter refused the request: the account needs credit (HTTP 402); nothing "
+            "was billed. Add credit at openrouter.ai, then start again.")
+
+    def test_no_endpoint_names_the_privacy_setting_and_the_refresh(self) -> None:
+        body = json.dumps({"error": {"message": "No endpoints found matching your data "
+                                                "policy (Zero data retention)"}}).encode()
+        receipt = self.refused_with(refusal(404, body), settings_zdr=True)
+        self.assertEqual(receipt["kind"], "no_endpoint")
+        self.assertEqual(
+            receipt["message"],
+            f"No OpenRouter endpoint for {semantic_openrouter.model_label(self.MODEL)} fits "
+            "zero data retention, no fallbacks (HTTP 404); nothing was billed. Relax it in AI "
+            "settings, or refresh the model list there.")
+        self.assertIn("data policy", receipt["detail"], "OpenRouter's own words are kept")
+
+    def test_a_rate_limit_after_the_retries_says_wait(self) -> None:
+        limited = [refusal(429, headers={"Retry-After": "0"}) for _ in range(3)]
+        receipt = self.refused_with(*limited)
+        self.assertEqual(receipt["kind"], "rate_limited")
+        self.assertEqual(
+            receipt["message"],
+            "OpenRouter rate-limited the request 3 times (HTTP 429); nothing was billed. "
+            "Wait a minute, then start again.")
+
+    def test_an_unreachable_network_says_nothing_was_sent(self) -> None:
+        down = [urllib.error.URLError(OSError(-3, "Temporary failure in name resolution"))
+                for _ in range(3)]
+        receipt = self.refused_with(*down)
+        self.assertEqual(receipt["kind"], "unreachable")
+        self.assertTrue(receipt["message"].startswith("Could not reach OpenRouter ("))
+        self.assertIn("nothing was sent. Check the connection", receipt["message"])
+
+    def test_no_key_says_where_to_add_one(self) -> None:
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
+            fake = FakeOpenRouter()
+            with self.assertRaises(semantic_openrouter.Refused):
+                semantic_openrouter.analyze_to_cache(
+                    self.ws.audio, self.ws.cache, audio_duration=DURATION, model=self.MODEL,
+                    transport=fake, sleeper=lambda _s: None, encoder=fake_encoder)
+        receipt = json.loads(self.ws.receipt.read_text())
+        self.assertEqual(receipt["kind"], "no_key")
+        self.assertIn("nothing was sent", receipt["message"])
+        self.assertEqual(fake.sent, [])
+
+    def test_a_long_provider_sentence_never_pushes_out_what_it_cost(self) -> None:
+        # Under the 4 KiB the helper reads of an error body; a longer one is
+        # not read as words at all.
+        body = json.dumps({"error": {"message": "\u00e9" * 1500}}, ensure_ascii=False).encode()
+        receipt = self.refused_with(refusal(400, body))
+        self.assertEqual(receipt["kind"], "refused")
+        self.assertTrue(receipt["message"].endswith("...); nothing was billed."),
+                        receipt["message"])
+
+    def test_the_bill_survives_the_longest_schema_failure(self) -> None:
+        # The "Also" of J1: the schema-failure sentence ends with what was
+        # billed, and a long reason pushed it past the panel's 160 bytes. The
+        # reason is shortened now, never the bill, for every cost clause.
+        reason = "Gemini's answer does not fit the schema (" + "\u00e9" * 200 + ")"
+        estimate = semantic_openrouter.estimate_cost(GEMINI, 3600.0)
+        for response_body in ({"usage": {"cost": 12.3456789}}, {}):
+            with self.subTest(reported=bool(response_body)):
+                message = semantic_openrouter.failure_message(reason, response_body, estimate)
+                self.assertLessEqual(len(message.encode()),
+                                     semantic_openrouter.ESSENTIAL_MAX_BYTES, message)
+                self.assertTrue(message.endswith(" USD for it." if response_body
+                                                 else " USD)."), message)
+        message = semantic_openrouter.unanswered_message("x" * 400, estimate)
+        self.assertLessEqual(len(message.encode()), semantic_openrouter.ESSENTIAL_MAX_BYTES)
+        self.assertIn("it may have been billed (at most", message)
+
+    def test_the_parent_raises_the_receipts_words_not_the_exit_code(self) -> None:
+        def runner(argv, **_kwargs):  # noqa: ANN001
+            try:
+                semantic_openrouter.analyze_to_cache(
+                    Path(argv[2]), Path(argv[3]), audio_duration=float(argv[5]),
+                    model=argv[argv.index("--model") + 1],
+                    transport=FakeOpenRouter(refusal(402)), sleeper=lambda _s: None)
+            except RuntimeError as error:
+                return subprocess.CompletedProcess(argv, 1, "", f"Semantic analysis failed: {error}\n")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        def cache(path, *_args, **kwargs):  # noqa: ANN001
+            if path.name == "measured.json":
+                return {"audio": {"duration_seconds": DURATION}}
+            return None
+
+        with patch.object(external_analysis, "_cache_matches", side_effect=cache), \
+                self.assertRaises(RuntimeError) as raised:
+            external_analysis.run_assist(
+                self.ws.audio, self.ws.root, audio_duration=DURATION, mode="mimo",
+                semantic_cache=self.ws.cache, allow_dotenv=False, runner=runner)
+        self.assertTrue(str(raised.exception).startswith(
+            "OpenRouter refused the request: the account needs credit"), str(raised.exception))
+        self.assertNotIn("exited with code", str(raised.exception))
+
+
 class AChangedFileIsNeverPaidFor(LaneTestCase):
     """Defect J1-1 (2026-11-16): a track file replaced after loading.
 
@@ -887,8 +1040,11 @@ class GeminiLane(LaneTestCase):
         with self.assertRaises(RuntimeError) as raised:
             self.run_lane_as(GEMINI, refused)
         self.assertNotIsInstance(raised.exception, semantic_openrouter.FailedRun)
-        self.assertEqual(str(raised.exception), "OpenRouter request failed with HTTP 404")
-        self.assertFalse(self.ws.receipt.exists())
+        self.assertEqual(
+            str(raised.exception),
+            "OpenRouter has no endpoint for google/gemini-3.8-flash (HTTP 404); nothing was "
+            "billed. Refresh the model list in AI settings \u2192 OpenRouter.")
+        self.assertFalse(json.loads(self.ws.receipt.read_text())["may_be_billed"])
         del fake
         unclear = urllib.error.HTTPError(semantic_openrouter.OPENROUTER_URL, 524,
                                          "timeout", {}, io.BytesIO(b""))

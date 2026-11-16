@@ -79,7 +79,7 @@ use musializer_runtime::assist::plan::{self, ExecutionPlan, PlanInputs};
 use musializer_runtime::font::UiFonts;
 use musializer_runtime::process::assist::{
     read_log_tail, AssistJob, AssistMode as JobMode, AssistPoll, AssistSpec, AuthorizedCredential,
-    LocalRuntimeOverrides, StopReason, JOB_TIMEOUT,
+    CredentialOrigin, LocalRuntimeOverrides, StopReason, JOB_TIMEOUT,
 };
 use musializer_runtime::process::font_import::find_assist_helper;
 use musializer_runtime::process::reveal::{self, RevealState};
@@ -163,6 +163,41 @@ fn failed_notice(log_path: &Path) -> (String, AssistNotice) {
         diagnosis::notice_detail(&sentence, &log),
     );
     (sentence, notice)
+}
+
+/// What a job whose listening step failed tells the user, from the step's own
+/// receipt (defect J1-2, 2026-11-16).
+///
+/// The log's last line carries the same sentence, clipped at
+/// `diagnosis::CAUSE_MAX_BYTES`, and its headline was "The analysis could not
+/// produce a valid result" for a refused key and a missing credit alike. The
+/// receipt says which failure it was and whether it may have been billed, so
+/// the headline names the thing to do. `None` when there is no receipt written
+/// since `since_ns` (this job's start), which leaves the log's reading.
+fn listening_notice(
+    output_dir: &str,
+    since_ns: u128,
+    log_path: &str,
+) -> Option<(String, AssistNotice)> {
+    if output_dir.is_empty() {
+        return None;
+    }
+    let bytes = read_bounded(&Path::new(output_dir).join(diagnosis::LISTENING_RECEIPT_NAME))?;
+    let failure = diagnosis::listening_failure(&bytes, since_ns)?;
+    let notice = AssistNotice::new(
+        Severity::Error,
+        failure.headline(),
+        diagnosis::notice_detail(&failure.message, log_path),
+    );
+    Some((failure.message, notice))
+}
+
+/// Nanoseconds since the epoch, the clock the helper's receipts are stamped
+/// with (`time.time_ns()`).
+fn wall_clock_ns() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos())
 }
 
 /// What a supervisor-requested stop tells the user (audit B11).
@@ -267,6 +302,9 @@ pub struct AssistController {
     /// The route graph that produced the staged candidate, read back from the
     /// manifest so its model ids are the observed ones (§6).
     staged_snapshot: Option<ExecutionSnapshot>,
+    /// When the running job started, on the wall clock the helper stamps its
+    /// receipts and records with: one written before this is an earlier job's.
+    job_started_ns: u128,
 }
 
 impl AssistController {
@@ -281,6 +319,7 @@ impl AssistController {
             session: SessionCredentials::empty(),
             running_snapshot: None,
             staged_snapshot: None,
+            job_started_ns: 0,
         }
     }
 
@@ -512,6 +551,13 @@ impl AssistController {
         let secret = stored.as_ref().or_else(|| self.session.openrouter());
         let credential = secret
             .and_then(|secret| AuthorizedCredential::for_snapshot(&resolved.snapshot, secret));
+        // Where the key came from, never the key: a refused key's sentence
+        // says where to replace it (defect J1-2).
+        let credential_origin = if stored.is_some() {
+            CredentialOrigin::Settings
+        } else {
+            CredentialOrigin::Environment
+        };
 
         // The dialog's local-runtime overrides reach the helper as flags, which
         // is what makes them win over an inherited `MUSIALIZER_WHISPER_BIN`
@@ -550,6 +596,7 @@ impl AssistController {
             execution_snapshot: Some(&snapshot_path),
             zdr_required: resolved.snapshot.requires_zdr(),
             credential,
+            credential_origin,
             local_runtimes: LocalRuntimeOverrides {
                 performed_lyrics: resolved.local_runtimes.performed_lyrics,
                 whisper_bin,
@@ -573,9 +620,11 @@ impl AssistController {
                     .map(Path::new),
             },
         };
+        let started_ns = wall_clock_ns();
         match AssistJob::start(&spec, self.nonce) {
             Ok(job) => {
                 self.nonce = job.artifacts().nonce;
+                self.job_started_ns = started_ns;
                 self.running_snapshot = Some(resolved.snapshot.clone());
                 let session = &mut workspace.assist;
                 session.bridge_path = job.bridge_path().display().to_string();
@@ -655,7 +704,9 @@ impl AssistController {
                 self.job = None;
                 let session = &mut workspace.assist;
                 session.job_state = AssistJobState::Failed;
-                let (sentence, notice) = failed_notice(Path::new(&session.log_path));
+                let (sentence, notice) =
+                    listening_notice(&session.output_dir, self.job_started_ns, &session.log_path)
+                        .unwrap_or_else(|| failed_notice(Path::new(&session.log_path)));
                 session.failure_detail = sentence;
                 vec![notice]
             }
@@ -5404,6 +5455,37 @@ mod tests {
         assert!(!titles.contains(&notice.title), "and it is a fifth title");
     }
 
+    /// J1-2: a failed listening step's receipt, written since the job
+    /// started, makes the notice: the headline by what to do, the helper's
+    /// whole sentence, the log path beside it. An earlier job's receipt does
+    /// not, and the log's reading is what is left.
+    #[test]
+    fn a_failed_listening_step_says_what_happened_and_what_to_do() {
+        let scratch = Scratch::new("listening-receipt");
+        let folder = scratch.0.display().to_string();
+        let message = "OpenRouter refused the request: the account needs credit (HTTP 402); \
+                       nothing was billed. Add credit at openrouter.ai, then start again.";
+        std::fs::write(
+            scratch.join(diagnosis::LISTENING_RECEIPT_NAME),
+            serde_json::json!({
+                "schema_version": "musializer.semantic-failed-run/v1",
+                "failed_ns": 2_000u64, "kind": "no_credit", "message": message,
+                "may_be_billed": false, "reported_cost_usd": null,
+            })
+            .to_string(),
+        )
+        .expect("receipt");
+        let (sentence, notice) =
+            listening_notice(&folder, 1_000, "/tmp/mz/mimo-1.log").expect("a notice");
+        assert_eq!(sentence, message);
+        assert_eq!(notice.severity, Severity::Error);
+        assert_eq!(notice.title, "The OpenRouter account needs credit");
+        assert!(notice.detail.starts_with(message), "{}", notice.detail);
+        assert!(notice.detail.ends_with("Log: /tmp/mz/mimo-1.log"));
+        assert!(listening_notice(&folder, 3_000, "/tmp/x.log").is_none());
+        assert!(listening_notice("", 0, "/tmp/x.log").is_none());
+    }
+
     /// H4c: the manifest of a run that staged an earlier semantic answer after a
     /// failed attempt makes a warning with the helper's words, within the
     /// tray's capacity; a manifest without the key makes none.
@@ -5471,6 +5553,7 @@ mod tests {
             session: SessionCredentials::empty(),
             running_snapshot: None,
             staged_snapshot: None,
+            job_started_ns: 0,
         }
     }
 
@@ -5491,6 +5574,7 @@ mod tests {
             expected_audio_sha256: None,
             execution_snapshot: None,
             credential: None,
+            credential_origin: CredentialOrigin::Settings,
             zdr_required: false,
             local_runtimes: LocalRuntimeOverrides::default(),
         };
