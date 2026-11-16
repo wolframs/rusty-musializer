@@ -1680,6 +1680,77 @@ def _semantic_failure(cache_path: Path, audio_sha: str, *, since_ns: int = 0) ->
     return " ".join(receipt["message"].split())[:300] or None
 
 
+def saved_semantic_answer(
+    audio: Path, cache_path: Path, *, audio_sha: str, measured_duration: float, zdr: bool,
+    semantic_route: dict[str, Any], route_identity: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """The request's identity, and the cached answer this run would reuse
+    instead of sending, or None. The single place that decides reuse."""
+    request_identity = _semantic_request_identity(
+        audio, audio_sha=audio_sha, measured_duration=measured_duration, zdr=zdr,
+        semantic=semantic_route,
+    )
+    envelope = _cache_matches(
+        cache_path, "musializer.analysis-cache/v1", audio_sha,
+        accept=lambda value: _semantic_cache_accepts(
+            value, request_identity=request_identity, execution_route=route_identity),
+    )
+    return request_identity, envelope
+
+
+def saved_answer_words(envelope: dict[str, Any]) -> str | None:
+    """`2026-11-15 18:53 UTC`: when a cached answer was made."""
+    generation = (((envelope.get("normalized") or {}).get("provenance") or {})
+                  .get("generation") or {})
+    made = _utc_words(generation.get("created")
+                      or (envelope.get("raw_response") or {}).get("created"))
+    if made is None and isinstance(envelope.get("answered_ns"), int):
+        made = _utc_words(envelope["answered_ns"] / 1e9)
+    return made
+
+
+SEMANTIC_STATUS_VERSION = "musializer.semantic-status/v1"
+
+
+def semantic_status(audio: Path, output_dir: Path, *, execution_snapshot: Path | None,
+                    zdr: bool = False, semantic_cache: Path | None = None) -> dict[str, Any]:
+    """What a Feelings Start for this track and these settings would do with
+    the listening request, read from the job folder and nothing else: no
+    network, no audio device, no model, no write (J1-6, 2026-11-16).
+
+    The confirmation asks this before Start so a second Start on an unchanged
+    track says "this run sends nothing and costs nothing" instead of the
+    paid-call wording, through the same `saved_semantic_answer` the run uses.
+    Without a cached measurement the answer is unknown (the identity holds
+    the measured duration), and the confirmation keeps the paid wording.
+    """
+    snapshot = read_execution_snapshot(execution_snapshot)
+    route = _semantic_route(execution_route(snapshot, "TC-SEMANTIC"))
+    zdr = bool(zdr or route["zdr_required"])
+    audio_sha = sha256_file(audio)
+    cache_path = semantic_cache or output_dir / "semantic.cache.json"
+    status: dict[str, Any] = {"schema_version": SEMANTIC_STATUS_VERSION,
+                              "audio_sha256": audio_sha, "saved_answer": None}
+    measured = _cache_matches(output_dir / "measured.json", "musializer.measured-analysis/v1",
+                              audio_sha, accept=_measured_cache_accepts)
+    if measured is None:
+        status["state"] = "unmeasured"
+        return status
+    _, envelope = saved_semantic_answer(
+        audio, cache_path, audio_sha=audio_sha,
+        measured_duration=duration(measured.get("audio", {}).get("duration_seconds")),
+        zdr=zdr, semantic_route=route, route_identity=route_identity(snapshot, "TC-SEMANTIC"))
+    if envelope is None:
+        status["state"] = "none"
+        return status
+    status["state"] = "saved"
+    status["saved_answer"] = {
+        "made_utc": saved_answer_words(envelope),
+        "model": (envelope.get("request") or {}).get("model"),
+    }
+    return status
+
+
 def _set_aside(path: Path) -> Path | None:
     """Moves a cache the later steps refuse out of the way, keeping it beside
     the others for the record (`<name>.refused-<ns>.json`)."""
@@ -2437,19 +2508,14 @@ def run_assist(
     semantic: dict[str, Any] | None = None
     semantic_failure: dict[str, Any] | None = None
     semantic_repairs: list[str] = []
+    semantic_reused: dict[str, Any] | None = None
     if mode in {"mimo", "all"}:
-        request_identity = _semantic_request_identity(
-            audio, audio_sha=audio_sha, measured_duration=measured_duration, zdr=zdr,
-            semantic=semantic_route,
-        )
-        accepts = lambda value: _semantic_cache_accepts(
-            value, request_identity=request_identity,
-            execution_route=routes["TC-SEMANTIC"],
-        )
-        envelope = _cache_matches(
-            paths["semantic"], "musializer.analysis-cache/v1", audio_sha,
-            accept=accepts,
-        )
+        # The one reuse decision, shared with `semantic-status`, which is how
+        # the confirmation knows before Start that this run sends nothing (J1-6).
+        request_identity, envelope = saved_semantic_answer(
+            audio, paths["semantic"], audio_sha=audio_sha,
+            measured_duration=measured_duration, zdr=zdr,
+            semantic_route=semantic_route, route_identity=routes["TC-SEMANTIC"])
         if envelope is None:
             # An answer to this very request that the bridge cannot take is
             # set aside, not left to be refused on every run (J1-4).
@@ -2498,6 +2564,7 @@ def run_assist(
             cache_status["semantic"] = "generated"
         else:
             cache_status["semantic"] = "reused"
+            semantic_reused = {"made_utc": saved_answer_words(envelope)}
             semantic_failure = _semantic_latest_failure(paths["semantic"], audio_sha, envelope)
             if semantic_failure is not None:
                 print(f"warning: {semantic_failure['words']}", file=sys.stderr)
@@ -2534,7 +2601,7 @@ def run_assist(
         mode=mode, audio_sha=audio_sha, measured_duration=measured_duration,
         cache_status=cache_status, paths=paths, plan=plan, lyrics=lyrics, semantic=semantic,
         performed_lyrics=use_performed_lyrics, semantic_latest_failure=semantic_failure,
-        semantic_repairs=semantic_repairs,
+        semantic_repairs=semantic_repairs, semantic_reused=semantic_reused,
         execution_snapshot=observe_execution(
             snapshot,
             whisper=whisper_lane if mode in {"lyrics", "all", "sections"} else None,
@@ -2623,6 +2690,7 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
                           performed_lyrics: bool = False,
                           semantic_latest_failure: dict[str, Any] | None = None,
                           semantic_repairs: list[str] | None = None,
+                          semantic_reused: dict[str, Any] | None = None,
                           ) -> dict[str, Any]:
     """`assist-manifest.json`, as the Assist panel reads it.
 
@@ -2690,6 +2758,10 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
     # nothing was.
     if semantic and semantic_repairs:
         manifest["semantic_repairs"] = list(semantic_repairs)
+    # A saved answer staged with nothing sent (J1-6): when it was made, for
+    # the staged result's words. Absent when this run paid.
+    if semantic and semantic_reused is not None:
+        manifest["semantic_reused"] = semantic_reused
     # Same rule for the localization block, and the same reason: it is the third
     # LT1 marker, so a run without a lyrics lane must not carry the key at all
     # rather than carry it as null (review LT1-R, R1).
@@ -2802,6 +2874,14 @@ def build_parser() -> argparse.ArgumentParser:
     assist.add_argument("--new-process-group", action="store_true", help=argparse.SUPPRESS)
     assist.add_argument("--dry-run", action="store_true"); assist.add_argument("--request-dump", type=Path)
 
+    status = sub.add_parser(
+        "semantic-status",
+        help="say, without sending anything, whether a Feelings run would reuse a saved answer")
+    status.add_argument("audio", type=Path); status.add_argument("output_dir", type=Path)
+    status.add_argument("--execution-snapshot", type=Path)
+    status.add_argument("--semantic-cache", type=Path)
+    status.add_argument("--zdr", action="store_true")
+
     return parser
 
 
@@ -2834,6 +2914,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.reference.read_text(encoding="utf-8"),
                 f"file:{args.reference.name}")
             run_lyric_sync(args.lyrics, reference, args.output)
+        elif args.command == "semantic-status":
+            print(json.dumps(semantic_status(
+                args.audio, args.output_dir, execution_snapshot=args.execution_snapshot,
+                zdr=args.zdr, semantic_cache=args.semantic_cache), ensure_ascii=False))
         elif args.command == "import-mimo":
             atomic_write_json(args.output, import_mimo_export(args.export, args.audio, args.duration))
         elif args.command == "assist":

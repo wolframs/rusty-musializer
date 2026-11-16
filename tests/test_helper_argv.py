@@ -172,6 +172,23 @@ class HelperArgv(unittest.TestCase):
         self.assertEqual(composed, listed)
 
 
+class StatusArgv(unittest.TestCase):
+    """J1-6: the confirmation's `semantic-status` query, by the same argument."""
+
+    def test_the_status_argv_is_accepted_and_every_flag_is_listed(self) -> None:
+        source = ASSIST_RS.read_text(encoding="utf-8")
+        start = source.index("fn status_command(spec: &StatusSpec<'_>)")
+        end = source.index("\n}\n", start)
+        composed = set(re.findall(r'"(--[a-z-]+)"', source[start:end]))
+        self.assertEqual(composed, {"--execution-snapshot", "--zdr"})
+        self.assertIn('"semantic-status"', source[start:end])
+        args = external_analysis.build_parser().parse_args(
+            ["semantic-status", "/tmp/track.wav", "/tmp/musializer",
+             "--execution-snapshot", "/tmp/musializer/status.json", "--zdr"])
+        self.assertEqual(args.command, "semantic-status")
+        self.assertTrue(args.zdr)
+
+
 # --- The doctor's argv, by the same argument (audit B1) ---------------------
 
 DOCTOR_UNCONDITIONAL = [

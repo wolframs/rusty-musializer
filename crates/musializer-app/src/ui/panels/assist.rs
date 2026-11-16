@@ -413,10 +413,13 @@ impl AssistController {
     /// directory of the running executable, not the working directory.
     #[must_use]
     pub fn new(application_directory: &Path) -> Self {
+        let helper = find_assist_helper(application_directory);
+        // The confirmation's saved-answer query runs the same helper (J1-6).
+        let _ = ASSIST_HELPER.set(helper.clone());
         Self {
             job: None,
             nonce: 0,
-            helper: find_assist_helper(application_directory),
+            helper,
             session: SessionCredentials::empty(),
             running_snapshot: None,
             staged_snapshot: None,
@@ -794,6 +797,10 @@ impl AssistController {
             workspace.assist.job_state = AssistJobState::TimingOut;
         }
 
+        if !matches!(poll, AssistPoll::Running) {
+            // The folder the confirmation asked about has changed.
+            forget_semantic_status();
+        }
         match poll {
             AssistPoll::Running => Vec::new(),
             AssistPoll::Stopped(reason) => {
@@ -962,10 +969,16 @@ impl AssistController {
                 session.candidate_mode = mode;
                 session.candidate_track = index;
                 session.candidate_first_lyric = preview;
+                // J1-6: a reused answer says so, and from when.
+                let reused = semantic_reused_words(&output_dir)
+                    .map(|made| format!(" {made}"))
+                    .unwrap_or_default();
                 vec![AssistNotice::new(
                     Severity::Success,
                     "Analysis ready for review",
-                    format!("Validated suggestions for {name} are staged in the Assist panel."),
+                    format!(
+                        "Validated suggestions for {name} are staged in the Assist panel.{reused}"
+                    ),
                 )]
                 .into_iter()
                 .chain(semantic_failure)
@@ -1404,6 +1417,204 @@ fn load_candidate(path: &Path, track: &Track, lanes: Lanes) -> Result<LoadedCand
         audio_sha256: computed,
         audio_stamp: stamp,
     })
+}
+
+/// What the staged result says when its feelings are a saved answer reused
+/// with nothing sent (J1-6), from the manifest's `semantic_reused`.
+fn semantic_reused_words(output_dir: &str) -> Option<String> {
+    if output_dir.is_empty() {
+        return None;
+    }
+    let bytes = read_bounded(&Path::new(output_dir).join(ASSIST_MANIFEST_NAME))?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let reused = manifest.get("semantic_reused")?;
+    Some(
+        match reused.get("made_utc").and_then(serde_json::Value::as_str) {
+            Some(made) => format!(
+                "The feelings are the saved answer from {}; nothing was sent or billed this time.",
+                diagnosis_text(made)
+            ),
+            None => {
+                "The feelings are a saved answer; nothing was sent or billed this time.".to_string()
+            }
+        },
+    )
+}
+
+/// A short helper-written phrase made safe to draw.
+fn diagnosis_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control() && !diagnosis::is_bidi_control(*character))
+        .take(40)
+        .collect()
+}
+
+/// The resolved helper, for the confirmation's status query; set once by
+/// [`AssistController::new`].
+static ASSIST_HELPER: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+
+/// What the helper says a Feelings Start for this track and these settings
+/// would do with the listening request (J1-6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SavedAnswer {
+    /// Not asked, or no answer in time: the paid-call wording stands.
+    Unknown,
+    Pending,
+    /// The run would send (no saved answer, or none for these settings).
+    Sends,
+    /// A saved answer would be reused; when it was made.
+    Saved(String),
+}
+
+enum StatusSlot {
+    Pending(std::sync::mpsc::Receiver<Option<String>>),
+    Done(SavedAnswer),
+}
+
+thread_local! {
+    /// `(key, slot)`: the confirmation's status query, asked once per track,
+    /// digest and route, off the frame thread.
+    static SEMANTIC_STATUS: std::cell::RefCell<Option<(String, StatusSlot)>> = const {
+        std::cell::RefCell::new(None)
+    };
+    static LAST_REUSE_REPORT: std::cell::RefCell<String> = const {
+        std::cell::RefCell::new(String::new())
+    };
+}
+
+/// Forgets the status answer: a job that ended may have written the cache.
+fn forget_semantic_status() {
+    SEMANTIC_STATUS.with(|slot| *slot.borrow_mut() = None);
+}
+
+/// The `assist reuse:` report line, printed when it changes.
+fn report_reuse(line: &str) {
+    LAST_REUSE_REPORT.with(|last| {
+        let mut last = last.borrow_mut();
+        if *last != line {
+            println!("assist reuse:    {line}");
+            last.clear();
+            last.push_str(line);
+        }
+    });
+}
+
+/// Reads the helper's `semantic-status` answer.
+fn parse_semantic_status(answer: Option<&str>) -> SavedAnswer {
+    let Some(value) =
+        answer.and_then(|text| serde_json::from_str::<serde_json::Value>(text.trim()).ok())
+    else {
+        return SavedAnswer::Unknown;
+    };
+    if value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        != Some("musializer.semantic-status/v1")
+    {
+        return SavedAnswer::Unknown;
+    }
+    match value.get("state").and_then(serde_json::Value::as_str) {
+        Some("saved") => SavedAnswer::Saved(
+            value
+                .get("saved_answer")
+                .and_then(|saved| saved.get("made_utc"))
+                .and_then(serde_json::Value::as_str)
+                .map(diagnosis_text)
+                .unwrap_or_default(),
+        ),
+        Some("none") => SavedAnswer::Sends,
+        _ => SavedAnswer::Unknown,
+    }
+}
+
+/// Asks the helper, once per key and off the frame thread, whether the next
+/// Start would reuse a saved answer; returns what is known this frame.
+fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> SavedAnswer {
+    use musializer_core::assist::contracts::ContractId;
+    let Some(helper) = ASSIST_HELPER.get().cloned().flatten() else {
+        return SavedAnswer::Unknown;
+    };
+    let Some(semantic) = plan.snapshot.contract(ContractId::Semantic) else {
+        return SavedAnswer::Unknown;
+    };
+    let folder = track_output_dir(track);
+    let zdr = plan.snapshot.requires_zdr();
+    let key = format!(
+        "{}|{}|{}|{}|{zdr}",
+        folder.display(),
+        track.file_path.display(),
+        track.audio_sha256,
+        semantic.compact()
+    );
+    SEMANTIC_STATUS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some((cached, state)) = slot.as_mut() {
+            if *cached == key {
+                if let StatusSlot::Pending(receiver) = state {
+                    match receiver.try_recv() {
+                        Ok(answer) => {
+                            *state = StatusSlot::Done(parse_semantic_status(answer.as_deref()))
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => return SavedAnswer::Pending,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            *state = StatusSlot::Done(SavedAnswer::Unknown);
+                        }
+                    }
+                }
+                let StatusSlot::Done(answer) = state else {
+                    return SavedAnswer::Pending;
+                };
+                report_reuse(&format!("dir={} state={answer:?}", folder.display()));
+                return answer.clone();
+            }
+        }
+        // A snapshot holding only the listening route: the query reads that
+        // route's identity and nothing else (the other routes may need a
+        // confirmation this preview does not have).
+        let mut preview = plan.snapshot.clone();
+        preview
+            .contracts
+            .retain(|entry| entry.contract == ContractId::Semantic);
+        let snapshot_path = folder.join("assist-execution.status.json");
+        let written = std::fs::create_dir_all(&folder).is_ok()
+            && preview
+                .to_bytes()
+                .is_ok_and(|bytes| std::fs::write(&snapshot_path, bytes).is_ok());
+        if !written {
+            *slot = Some((key, StatusSlot::Done(SavedAnswer::Unknown)));
+            return SavedAnswer::Unknown;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let audio = track.file_path.clone();
+        std::thread::spawn(move || {
+            let answer = musializer_runtime::process::assist::query_semantic_status(
+                &musializer_runtime::process::assist::StatusSpec {
+                    helper: &helper,
+                    audio: &audio,
+                    output_dir: &folder,
+                    execution_snapshot: &snapshot_path,
+                    zdr_required: zdr,
+                },
+            );
+            let _ = sender.send(answer);
+        });
+        *slot = Some((key, StatusSlot::Pending(receiver)));
+        SavedAnswer::Pending
+    })
+}
+
+/// The confirmation's cost line when a saved answer will be reused (J1-6).
+fn saved_answer_sentence(made: &str) -> String {
+    if made.is_empty() {
+        "Cost: nothing. A saved answer for this track and these settings is reused, so this \
+         run sends nothing to OpenRouter."
+            .to_string()
+    } else {
+        format!(
+            "Cost: nothing. A saved answer for this track and these settings, from {made}, is \
+             reused, so this run sends nothing to OpenRouter."
+        )
+    }
 }
 
 /// The confirmation's line for a model the saved OpenRouter model list
@@ -4111,6 +4322,16 @@ impl Shell {
                 .filter(|_| assist_ui_state::mode_lanes(session.mode()).semantics)
                 .and(track)
                 .and_then(confirmation_earlier_charges),
+            saved_answer: routes
+                .as_ref()
+                .filter(|_| assist_ui_state::mode_lanes(session.mode()).semantics)
+                .zip(track)
+                .and_then(
+                    |(plan, track)| match confirmation_saved_answer(track, plan) {
+                        SavedAnswer::Saved(made) => Some(made),
+                        _ => None,
+                    },
+                ),
         };
         let route_lines: Vec<(String, raylib::prelude::Color)> = routes
             .as_ref()
@@ -5234,6 +5455,8 @@ struct ConfirmationNotes {
     audio_refusal: Option<String>,
     /// Earlier attempts for this track that may have been billed (J1-3).
     earlier_charges: Option<String>,
+    /// When the saved answer the next Start would reuse was made (J1-6).
+    saved_answer: Option<String>,
 }
 
 thread_local! {
@@ -5324,7 +5547,16 @@ fn column_route_lines(
                 color::ui_ink()
             },
         ));
-        if let Some(line) = semantic_cost_line(entry, duration_seconds) {
+        if let (Some(made), musializer_core::assist::contracts::ContractId::Semantic) =
+            (&notes.saved_answer, entry.contract)
+        {
+            // J1-6: the cost line would promise a call this run never makes.
+            lines.extend(
+                wrap(&saved_answer_sentence(made))
+                    .into_iter()
+                    .map(|line| (line, color::ui_ink())),
+            );
+        } else if let Some(line) = semantic_cost_line(entry, duration_seconds) {
             lines.push((line, color::ui_muted()));
         }
     }
@@ -5521,6 +5753,97 @@ mod tests {
             None,
             "and Start stays open"
         );
+    }
+
+    /// J1-6: when the helper says a saved answer would be reused, the cost
+    /// line becomes "Cost: nothing", with when it was made; otherwise the
+    /// paid wording stands. And the staged result says it was reused.
+    #[test]
+    fn a_saved_answer_is_said_before_start_and_after_the_run() {
+        use musializer_core::assist::settings::AssistSettings;
+        assert_eq!(
+            parse_semantic_status(Some(
+                r#"{"schema_version":"musializer.semantic-status/v1","state":"saved",
+                    "saved_answer":{"made_utc":"2026-11-15 18:53 UTC"}}"#
+            )),
+            SavedAnswer::Saved("2026-11-15 18:53 UTC".to_string())
+        );
+        for (answer, expected) in [
+            (
+                Some(r#"{"schema_version":"musializer.semantic-status/v1","state":"none"}"#),
+                SavedAnswer::Sends,
+            ),
+            (
+                Some(r#"{"schema_version":"musializer.semantic-status/v1","state":"unmeasured"}"#),
+                SavedAnswer::Unknown,
+            ),
+            (
+                Some(r#"{"schema_version":"other/v1","state":"saved"}"#),
+                SavedAnswer::Unknown,
+            ),
+            (Some("not json"), SavedAnswer::Unknown),
+            (None, SavedAnswer::Unknown),
+        ] {
+            assert_eq!(parse_semantic_status(answer), expected, "{answer:?}");
+        }
+
+        let plan = ExecutionPlan {
+            snapshot: execution::resolve(
+                &AssistSettings::default(),
+                execution::WorkflowKind::Mimo,
+                false,
+                &execution::ExecutionFacts::default(),
+            ),
+            blocks: Vec::new(),
+            codex: None,
+            credential_source: plan::CredentialSource::File,
+            settings_error: None,
+            settings_path: None,
+            credential_lookup: "default".to_string(),
+            ask_resolved_to_none: Vec::new(),
+            local_runtimes: musializer_core::assist::settings::LocalRuntimes::default(),
+            doctor: execution::DoctorReading::NotTaken,
+            catalog_predates: Vec::new(),
+        };
+        let unwrapped = |text: &str| vec![text.to_string()];
+        let paid = column_route_lines(
+            &plan,
+            Some(200.0),
+            &ConfirmationNotes::default(),
+            &unwrapped,
+        );
+        assert!(paid.iter().any(|(line, _)| line.starts_with("Cost: about")));
+        let notes = ConfirmationNotes {
+            saved_answer: Some("2026-11-15 18:53 UTC".to_string()),
+            ..ConfirmationNotes::default()
+        };
+        let free = column_route_lines(&plan, Some(200.0), &notes, &unwrapped);
+        assert!(!free.iter().any(|(line, _)| line.starts_with("Cost: about")));
+        assert!(free.iter().any(|(line, _)| line
+            == "Cost: nothing. A saved answer for this track and these settings, from \
+                2026-11-15 18:53 UTC, is reused, so this run sends nothing to OpenRouter."));
+
+        let scratch = Scratch::new("reused");
+        let folder = scratch.0.display().to_string();
+        std::fs::write(
+            scratch.join(ASSIST_MANIFEST_NAME),
+            r#"{"schema_version":"musializer.assist-manifest/v1",
+                "semantic_reused":{"made_utc":"2026-11-15 18:53 UTC"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            semantic_reused_words(&folder).as_deref(),
+            Some(
+                "The feelings are the saved answer from 2026-11-15 18:53 UTC; nothing was sent \
+                 or billed this time."
+            )
+        );
+        std::fs::write(
+            scratch.join(ASSIST_MANIFEST_NAME),
+            r#"{"schema_version":"musializer.assist-manifest/v1"}"#,
+        )
+        .unwrap();
+        assert_eq!(semantic_reused_words(&folder), None);
     }
 
     #[test]
@@ -6185,7 +6508,7 @@ mod tests {
         assert!(!set_aside_refused_semantic(&bridge, &scratch.0));
         assert!(cache.exists());
         // Nor is a bridge the reader takes.
-        std::fs::write(&bridge, format!("{head}")).unwrap();
+        std::fs::write(&bridge, &head).unwrap();
         assert!(!set_aside_refused_semantic(&bridge, &scratch.0));
         assert!(cache.exists());
         assert!(format!("x {SEMANTIC_SET_ASIDE}").len() < 250);

@@ -277,7 +277,7 @@ pub fn possible_charges(
             }
         }
     }
-    found.retain(|entry| answered_ns.map_or(true, |answered| entry.at_ns > answered));
+    found.retain(|entry| answered_ns.is_none_or(|answered| entry.at_ns > answered));
     found.sort_by_key(|entry| (entry.at_ns, entry.unanswered));
     found.dedup_by(|a, b| a.at_ns == b.at_ns && a.unanswered == b.unanswered);
     found

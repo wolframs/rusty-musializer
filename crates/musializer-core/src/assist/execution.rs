@@ -1736,7 +1736,7 @@ pub fn catalog_predates(snapshot: &ExecutionSnapshot, facts: &PreflightFacts) ->
     snapshot
         .contracts
         .iter()
-        .filter_map(|entry| RouteFacts::from_snapshot(entry))
+        .filter_map(RouteFacts::from_snapshot)
         .filter(|route| {
             matches!(evaluate_route(route, facts),
                 RouteVerdict::Unknown(ref reason) if reason == CATALOG_PREDATES_MODEL)

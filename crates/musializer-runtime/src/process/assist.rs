@@ -294,6 +294,82 @@ pub struct LocalRuntimeOverrides<'a> {
     pub performed_lyrics: bool,
 }
 
+/// What the confirmation asks the helper before Start: whether a Feelings run
+/// for this track and these settings would reuse a saved answer
+/// (`external_analysis.py semantic-status`; defect J1-6, 2026-11-16).
+#[derive(Debug, Clone, Copy)]
+pub struct StatusSpec<'a> {
+    pub helper: &'a Path,
+    pub audio: &'a Path,
+    pub output_dir: &'a Path,
+    /// A snapshot holding the `TC-SEMANTIC` route the next Start would use.
+    pub execution_snapshot: &'a Path,
+    pub zdr_required: bool,
+}
+
+/// The longest the status query may take; past it, the answer is unknown
+/// and the confirmation keeps its paid-call wording.
+pub const STATUS_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Bytes of the status query's answer read.
+pub const STATUS_OUTPUT_LIMIT: u64 = 64 * 1024;
+
+/// The query's argv, pinned against the helper's parser by
+/// `tests/test_helper_argv.py`.
+fn status_command(spec: &StatusSpec<'_>) -> Command {
+    let mut command = Command::new("python3");
+    command
+        .arg(spec.helper)
+        .arg("semantic-status")
+        .arg(spec.audio)
+        .arg(spec.output_dir)
+        .arg("--execution-snapshot")
+        .arg(spec.execution_snapshot);
+    if spec.zdr_required {
+        command.arg("--zdr");
+    }
+    // It reads files only; it is never handed the key.
+    command
+        .env_remove(CREDENTIAL_VARIABLE)
+        .env_remove(CREDENTIAL_ORIGIN_VARIABLE)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    command
+}
+
+/// Runs the status query, blocking for at most [`STATUS_TIMEOUT`], and
+/// returns its JSON answer, or `None` when there is none in time. For a
+/// background thread: it opens no socket, but it hashes the track.
+#[must_use]
+pub fn query_semantic_status(spec: &StatusSpec<'_>) -> Option<String> {
+    use std::io::Read;
+    let mut child = status_command(spec).spawn().ok()?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut output = String::new();
+                child
+                    .stdout
+                    .take()?
+                    .take(STATUS_OUTPUT_LIMIT)
+                    .read_to_string(&mut output)
+                    .ok()?;
+                return status.success().then_some(output);
+            }
+            Ok(None) if started.elapsed() < STATUS_TIMEOUT => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 /// How much of a job log is read back to find the helper's cause line.
 ///
 /// The helper prints its diagnosis immediately before returning 1
@@ -894,6 +970,41 @@ mod tests {
             .expect("the flag");
         assert_eq!(with[at + 1], digest);
         assert!(!argv_of(None).contains(&"--expect-audio-hash".to_string()));
+    }
+
+    /// J1-6: the status query hands the helper its subcommand, the track, the
+    /// folder and the snapshot, never the key, and its answer comes back.
+    #[test]
+    fn the_status_query_is_asked_without_the_key_and_answers() {
+        let scratch = Scratch::new("status");
+        let helper = scratch.fake_helper(
+            "helper.py",
+            "print('\\n'.join(sys.argv[1:]))\n\
+             print('key=' + str(os.environ.get('OPENROUTER_API_KEY')))",
+        );
+        let snapshot = scratch.join("s.json");
+        let spec = StatusSpec {
+            helper: &helper,
+            audio: Path::new("/tmp/track.wav"),
+            output_dir: &scratch.0,
+            execution_snapshot: &snapshot,
+            zdr_required: true,
+        };
+        let answer = query_semantic_status(&spec).expect("an answer");
+        let lines: Vec<&str> = answer.lines().collect();
+        assert_eq!(lines[0], "semantic-status");
+        assert_eq!(lines[1], "/tmp/track.wav");
+        assert_eq!(lines[3], "--execution-snapshot");
+        assert_eq!(lines[5], "--zdr");
+        assert_eq!(lines[6], "key=None", "never the key");
+        let failing = scratch.fake_helper("failing.py", "sys.exit(3)");
+        assert_eq!(
+            query_semantic_status(&StatusSpec {
+                helper: &failing,
+                ..spec
+            }),
+            None
+        );
     }
 
     /// Audit A4. The Privacy pane's ZDR toggle used to change `assist.json` and

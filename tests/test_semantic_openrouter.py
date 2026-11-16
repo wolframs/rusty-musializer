@@ -928,6 +928,74 @@ class LegacyAnswersStillCount(LaneTestCase):
         self.assertTrue(self.ws.cache.exists())
 
 
+def measured_document(audio: Path) -> dict:
+    """A measured cache `_measured_cache_accepts` takes, for `audio`."""
+    settings = {"sample_rate": external_analysis.MEASURED_SAMPLE_RATE,
+                "channels": external_analysis.MEASURED_CHANNELS,
+                "window_size": external_analysis.MEASURED_WINDOW,
+                "hop_size": external_analysis.MEASURED_HOP}
+    return {
+        "schema_version": "musializer.measured-analysis/v1",
+        "audio": {"sha256": external_analysis.sha256_file(audio), "duration_seconds": DURATION},
+        "analysis": {"analyzer_version": external_analysis.MEASURED_ANALYZER_VERSION, **settings},
+        "provenance": {"adapter": "tools/analyze_audio.py",
+                       "adapter_version": external_analysis.MEASURED_ANALYZER_VERSION,
+                       "source_kind": "offline_measured_analysis",
+                       "request_settings": settings},
+    }
+
+
+class TheConfirmationKnowsASavedAnswer(LaneTestCase):
+    """Defect J1-6 (2026-11-16): a second Start on an unchanged track showed
+    the paid-call wording and then reused the saved answer. `semantic-status`
+    answers before Start, through the one reuse decision the run itself makes,
+    so "this run sends nothing" is said exactly when the run sends nothing."""
+
+    def status(self) -> dict:
+        return external_analysis.semantic_status(self.ws.audio, self.ws.root,
+                                                 execution_snapshot=None)
+
+    def test_unknown_without_a_measurement_none_without_an_answer_then_saved(self) -> None:
+        self.assertEqual(self.status()["state"], "unmeasured")
+        (self.ws.root / "measured.json").write_text(json.dumps(measured_document(self.ws.audio)))
+        self.assertEqual(self.status()["state"], "none")
+        self.run_lane(response(answer()))
+        status = self.status()
+        self.assertEqual(status["state"], "saved")
+        self.assertEqual(status["saved_answer"]["made_utc"], "2026-11-14 18:53 UTC")
+        self.assertEqual(status["schema_version"], "musializer.semantic-status/v1")
+
+    def test_saved_means_the_run_sends_nothing_and_none_means_it_does(self) -> None:
+        (self.ws.root / "measured.json").write_text(json.dumps(measured_document(self.ws.audio)))
+        self.run_lane(response(answer()))
+        self.assertEqual(self.status()["state"], "saved")
+
+        def never(argv, **_kwargs):  # noqa: ANN001
+            self.fail(f"the status said saved, and the run sent: {argv}")
+        with patch.object(external_analysis, "build_scene_plan", return_value={"sections": []}), \
+                patch.object(external_analysis, "build_bridge", return_value=""):
+            manifest = external_analysis.run_assist(
+                self.ws.audio, self.ws.root, audio_duration=DURATION, mode="mimo",
+                allow_dotenv=False, runner=never)
+        self.assertEqual(manifest["cache_status"]["semantic"], "reused")
+        self.assertEqual(manifest["semantic_reused"], {"made_utc": "2026-11-14 18:53 UTC"})
+        # Another setting is another request: the status says so, and the run
+        # would send.
+        other = external_analysis.semantic_status(self.ws.audio, self.ws.root,
+                                                  execution_snapshot=None, zdr=True)
+        self.assertEqual(other["state"], "none")
+
+    def test_the_command_line_prints_it_and_sends_nothing(self) -> None:
+        (self.ws.root / "measured.json").write_text(json.dumps(measured_document(self.ws.audio)))
+        fake = FakeOpenRouter()
+        with patch("urllib.request.urlopen", fake), \
+                patch("sys.stdout", new_callable=io.StringIO) as out:
+            code = external_analysis.main(["semantic-status", str(self.ws.audio), str(self.ws.root)])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out.getvalue())["state"], "none")
+        self.assertEqual(fake.sent, [])
+
+
 class Killed(BaseException):
     """What a SIGKILL of the process group looks like from inside: nothing
     after it runs. A BaseException, so no `except Exception` catches it."""
