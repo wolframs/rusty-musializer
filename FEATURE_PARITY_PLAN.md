@@ -105,8 +105,17 @@ then fix / preempt issues in the code, before I test it myself? :)"
   staged and listed, the ghosts on the timeline, then a third press reusing
   the answer and saying so. About 0.05 USD in all. Record:
   `docs/ASSIST_PIPELINE.md`, "Starting Feelings safely".
-- [ ] Review of the fixes, one full `tools/verify.sh`, release build; the
-  record to the archive and this block deleted.
+- [ ] Review of the fixes: GPT-6.1-Sol, 2026-11-16, seven more findings, all
+  taken (the lead's decision; one agent on them): two helpers deleting each
+  other's sent record; an earlier-charge warning not tied to the audio and the
+  request; `bridge_fit`'s repairs not shown to the user; the saved-answer
+  query cached under a key that leaves out provider settings ("Cost: nothing"
+  then a paid call); a row of a staged answer seeking whatever track is
+  current; an audio-read failure without a receipt; a stop before the request
+  left reported as sent, with no way to put the warning behind one.
+- [ ] After those: a real press again if anything sent changed, one full
+  `tools/verify.sh`, release build; the record to the archive and this block
+  deleted.
 
 **The operator's, from the 2026-11-14 follow-up** (record in the archive,
 "The 2026-11-14 follow-up"):
