@@ -1834,6 +1834,30 @@ class TheLedgerKeepsEveryCharge(LaneTestCase):
         self.assertLessEqual(len(semantic_openrouter.ANSWER_GONE_MESSAGE.encode()),
                              semantic_openrouter.ESSENTIAL_MAX_BYTES)
 
+    def test_another_answer_for_the_same_settings_is_reused_not_refused(self) -> None:
+        """The card named an answer made before the schema stated its bounds;
+        one made since replaced it, for the same settings. Nothing is sent
+        either way, so it is reused, and the staged words name its own date."""
+        _, current = self.run_lane(response(answer()))
+        identity = external_analysis._semantic_request_identity(
+            self.ws.audio, audio_sha=current["request"]["audio_sha256"],
+            measured_duration=DURATION, zdr=False)
+        legacy = semantic_openrouter.legacy_request_identity(identity)
+        old = json.loads(json.dumps(current))
+        old["request"] = legacy
+        old["cache_key"] = semantic_openrouter.canonical_sha256(legacy)
+        old["normalized"]["provenance"]["request_settings"] = {
+            key: value for key, value in legacy.items() if key != "audio_sha256"}
+        self.ws.cache.write_text(json.dumps(old))
+        card = self.status()
+        self.assertEqual(card["saved_answer"]["cache_key"], old["cache_key"])
+        self.ws.cache.write_text(json.dumps(current))
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            manifest = self.start(reuse_answer=card["saved_answer"]["cache_key"])
+        self.assertEqual(manifest["cache_status"]["semantic"], "reused")
+        self.assertIn("Reused the answer saved on 2026-11-14 18:53 UTC", manifest["semantic_reused"]["words"])
+        self.assertIn("the saved answer the confirmation named was replaced", err.getvalue())
+
     def test_a_card_that_showed_a_cost_reuses_an_answer_that_appeared(self) -> None:
         self.assertEqual(self.status()["state"], "none")
         self.run_lane(response(answer()))   # another window's run, say

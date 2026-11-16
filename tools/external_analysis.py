@@ -2571,10 +2571,18 @@ def run_assist(
                             if key != "audio_sha256"}
         # J4-2: the card said "Cost: nothing" for the answer with this key.
         # Gone, or replaced by one for other settings, since the card was
-        # drawn: this run refuses to pay for what the card said was free. The
-        # reverse (the card showed a cost, an answer has appeared) reuses it
-        # and says so.
-        if reuse_answer and (envelope is None or envelope.get("cache_key") != reuse_answer):
+        # drawn: this run refuses to pay for what the card said was free. An
+        # answer of another key that this run would still reuse (an answer
+        # made under the bounded schema replacing one from before it, for
+        # the same settings) costs nothing either: it is reused, the staged
+        # notice says when it was made, and the log says it is not the one
+        # the card named. The reverse (the card showed a cost, an answer has
+        # appeared) reuses it and says so.
+        if reuse_answer and envelope is not None and envelope.get("cache_key") != reuse_answer:
+            print("warning: the saved answer the confirmation named was replaced by another "
+                  "for the same settings; that one is reused, and nothing is sent",
+                  file=sys.stderr)
+        if reuse_answer and envelope is None:
             semantic_adapter.write_start_refusal(
                 paths["semantic"], kind="answer_gone",
                 message=semantic_adapter.ANSWER_GONE_MESSAGE, audio_sha256=audio_sha,
