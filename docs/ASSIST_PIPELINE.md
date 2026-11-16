@@ -1045,6 +1045,34 @@ append (simulated by a refusing or short `os.write`); two application windows
 on one job folder (two helper processes are what the folder sees, and those
 are tested); a status answer over 1 MiB.
 
+**The real presses on the J4 build (the lead, 2026-11-16)**, through the
+window (headless, the operator's settings copied, his key read by the app;
+about 0.07 USD in all): Start on the saved answer reused it and sent nothing;
+Start with the answer set aside made one call and staged it, with no sent
+record and no ledger left; then a helper killed with `SIGKILL` half a second
+after its sent record appeared. The window said "The listening request may
+have been billed … (at most 0.071 USD). Nothing was saved."; the next
+confirmation carried "A listening request for this track and these settings
+was started on 2026-11-16 18:38 UTC and never answered; it may have been sent
+and billed (at most 0.071 USD). Start sends the same request again; this note
+then moves to the job folder's log."; Start carried exactly that attempt's id
+(`assist commitment: reuse=- charges=<attempt>`), the ledger took an
+`acknowledged` and a swept `possible` line for it, the record was removed, a
+new answer was staged, and the card after that warned of nothing.
+
+**Start stays on screen when the card grows.** That press found the one thing
+the gate had stepped around with a taller window: the confirmation is brought
+into view when it opens, and the warning arrives with the status query a
+moment later, 45 px of it, so at 1280x720 Start and Cancel sat below the
+column's fold exactly when the card had something to say about money. A
+confirmation that grows while open is now brought into view again
+(`AssistColumn::shown_height`; only the confirmation, so a staged list that
+grows under a press does not jump away from the row pressed). The gate's
+`billed-fold` runs the warned card at 1280x720 and requires Start to end above
+the status strip. Negative control: with the growth ignored it fails ("Start
+is below the column's fold (y, height, status strip: 703 30 696)"); restored
+from a saved copy, it reads 643 30 696.
+
 ### Local performed-phrase recovery (2026-09-08)
 
 The recommended Timed lyrics workflow stays local, including tracks without

@@ -4485,6 +4485,9 @@ pub struct AssistColumn {
     /// The open card and its body last frame: a change brings the card into
     /// view once, so a state that opens below the fold is not missed.
     shown: Option<(AssistMode, AssistPanelContent)>,
+    /// The open card's height last frame: a confirmation that grows is
+    /// brought into view again, so its Start is not left below the fold.
+    shown_height: f32,
     /// The staged feelings list's scroll, open row and report (J2).
     feelings: feelings::FeelingsView,
 }
@@ -4902,17 +4905,29 @@ impl Shell {
             );
         }
         let shown = open_mode.map(|mode| (mode, panel_content));
-        if shown != self.assist_column.shown {
+        let open_index = open_mode.and_then(|mode| {
+            AssistMode::ALL
+                .iter()
+                .position(|candidate| *candidate == mode)
+        });
+        let open_height = open_index.map_or(0.0, |index| layout.cards[index].card.height);
+        // A confirmation grows after it has opened: what the job folder says
+        // (a saved answer, an earlier request that may have been billed)
+        // arrives with the status query, a moment later, and Start sits under
+        // those lines. At 1280x720 the warning pushed Start below the fold.
+        // Only the confirmation: a staged list that grows under a press must
+        // not jump away from the row that was pressed.
+        let grew = shown == self.assist_column.shown
+            && panel_content == AssistPanelContent::Confirmation
+            && open_height > self.assist_column.shown_height + 0.5;
+        if shown != self.assist_column.shown || grew {
             self.assist_column.shown = shown;
-            if let Some(index) = open_mode.and_then(|mode| {
-                AssistMode::ALL
-                    .iter()
-                    .position(|candidate| *candidate == mode)
-            }) {
+            if let Some(index) = open_index {
                 let offset = assist_ui_state::reveal_offset(&layout, layout.cards[index].card);
                 layout = assist_ui_state::assist_column_layout(head.body, &spec, offset);
             }
         }
+        self.assist_column.shown_height = open_height;
         self.assist_column.offset = layout.offset;
 
         let start_block = session.start_block();

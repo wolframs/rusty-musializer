@@ -3241,6 +3241,19 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
         # enough that the longer card's Start is not below the column's fold.
         j1_run billed-look "$T" 90 "" J1_STATUS=none J1_REQUEST_KEY="$J1_KEY" J1_SIZE=1280x900 || J1_FAILED=1
         J1_START_BILLED="$(j1_start_of billed-look)"
+        # At the default 1280x720 the same card grows after it has opened
+        # (the warning arrives with the status query) and must be brought
+        # into view again: its Start ends above the status strip, not below
+        # the column's fold where nobody finds it.
+        j1_run billed-fold "$T" 90 "" J1_STATUS=none J1_REQUEST_KEY="$J1_KEY" || J1_FAILED=1
+        fold="$(sed -n 's/^assist column:.* body=Confirmation start@[0-9.]*,\([0-9.]*\),[0-9.]*,\([0-9.]*\) .* status@[0-9.]*,\([0-9.]*\),.*/\1 \2 \3/p' \
+            "$J1_DIR/billed-fold.txt" | tail -1)"
+        if [ -n "$fold" ] && echo "$fold" | awk '{exit !($1 + $2 <= $3)}'; then
+            printf '  ok   %-10s %s\n' billed-fold "at 1280x720 Start (y, height, status strip: $fold) is inside the column"
+        else
+            echo "FAIL: j1-billed-fold: at 1280x720 Start is below the column's fold (y, height, status strip: ${fold:-<unreported>})" >&2
+            J1_FAILED=1
+        fi
         if [ -n "$J1_START_BILLED" ]; then
             : >"$J1_DIR_ABS/press-argv.log"
             j1_run billed-press "$T" 240 ",click=$J1_START_BILLED,click-after=60" J1_STATUS=none \
