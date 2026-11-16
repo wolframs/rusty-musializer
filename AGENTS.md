@@ -264,6 +264,10 @@ number disagrees, grep it there before debugging from scratch.
 - **A cache key made from a summary answers for requests it does not describe**: key by the exact bytes given, and re-check at the moment of commitment. See `docs/TRAPS.md`.
 - **A warning carried forward until success never stops for a failure that repeats**: show it where the decision is made, then log it. See `docs/TRAPS.md`.
 - **A control that acts on "current" acts on whatever is current when it is pressed**: carry the object's identity into the command. See `docs/TRAPS.md`.
+- **A possible charge derived from files that get replaced is lost when they are**: keep one append-only ledger keyed by attempt, append before the file that told of the charge can go, and treat the rest as messages. See `docs/TRAPS.md`.
+- **`os.write` may write less than it was given**: write until every byte is out, then sync, then remove what the lines replace. See `docs/TRAPS.md`.
+- **Acknowledging "what is there now" acknowledges what nobody was shown**: carry the ids, or the key, the card drew into the run and act on those only. See `docs/TRAPS.md`.
+- **A child's pipe read only after it exits holds 64 KiB**: read while it runs, with a cap, and bound the join. See `docs/TRAPS.md`.
 
 ## Judge by what a user or a file can observe
 
