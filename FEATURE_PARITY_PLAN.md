@@ -69,12 +69,34 @@ trace the 'pressing Start on Feelings in the app itself' routes and potential
 edge cases we don't address yet, then take its hints and go look yourself,
 then fix / preempt issues in the code, before I test it myself? :)"
 
-- [ ] GPT-6.1-Sol traces the route from the press to the staged result, with
-  the operator's own settings and caches as the first case, and lists what is
-  not handled.
-- [ ] The lead reads each hint in the code and decides: real, already
-  handled, or not worth it.
-- [ ] Fixes, each with its check.
+- [x] GPT-6.1-Sol traced the route from the press to the staged result, with
+  the operator's own settings and caches as the first case: seven findings
+  and a table of failure words.
+- [x] The lead read the code at each and decided. All seven are real:
+  1. The track's file replaced on disk after loading: the helper hashes the
+     new bytes and pays, the panel then rejects the answer against the old
+     hash. Decided: check the file before Start and refuse with words.
+  2. A refused key (401), no credit (402), no endpoint (404), a rate limit
+     and a connection failure reach the user as "python3 exited with code 1".
+     Decided: every failure writes a receipt with what to do next.
+  3. Cancel, a closed window or the 40-minute stop after the request left
+     leave no record that it may be billed. Decided: a record before the
+     request leaves, read by the panel and by the next Start.
+  4. A staged answer is shown as a count; sections, times and feel cannot be
+     looked at before Apply replaces the lane, and Apply cannot be undone.
+     Decided: a review list with seek, the staged cues on the timeline, one
+     step back after Apply.
+  5. An answer the model may give (over 256 sections, a summary over 2,047
+     bytes, a section under a millisecond) is cached and then refused on
+     every later run. Decided: bound it in the schema, check it before the
+     cache is written, and do not reuse an answer the bridge refuses.
+  6. The confirmation does not say the saved model list is older than the
+     model. Decided: one line there, with where to refresh; the wording that
+     offers a local route for this task goes.
+  7. A second Start on an unchanged track reuses the saved answer but shows
+     the paid-call wording. Decided: say reuse, before and after.
+- [ ] Fixes, each with its check: one agent on 1, 2, 3, 5, 6, 7 (money,
+  failures, caches), one on 4 (the review of a staged answer).
 - [ ] One real press of Start through the window's own path (headless, the
   operator's settings and key file, a benchmark excerpt; a few cents of the
   5 USD cap), read against what a user would see at each step.
