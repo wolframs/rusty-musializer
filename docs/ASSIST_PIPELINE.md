@@ -581,7 +581,9 @@ FFmpeg decode (they name the tool and the code), the Codex review, the
 anchor/block and forced aligners, the Antigravity aligner. ffprobe's failure
 is swallowed on purpose (no embedded lyrics).
 
-**A request that left is recorded.** Cancel, a closed window and the deadline
+**A request that left is recorded.** (J3 below gave each attempt its own
+record, put a read warning behind the user and changed these sentences; the
+words here are J1's.) Cancel, a closed window and the deadline
 kill the helper's process group, and nothing on disk said a request was in
 flight. The helper writes `semantic.cache.sent.json` before the request
 leaves, durably, and removes its own (only while it is still its own) once an
@@ -700,6 +702,159 @@ against a fake transport or a stand-in helper), a key rejected by the real
 service, the real `semantic-status` from the window (the gate's stand-in
 answers it; the real one is pinned by the Python tests), and a quit through
 the real dialog with a request in flight (the gate's dialogs are guarded).
+
+### Seven more defects on the Feelings path (J3, 2026-11-16)
+
+A review of J1 and J2 confirmed seven defects; all seven were real and are
+fixed here. Nothing sent to the model changed (request body, schema and
+provider block are byte for byte J1's).
+
+**One record per attempt (J3-1).** The J1 record had one name per cache, and
+an attempt learned which record was "its own" by `stat` after publishing it:
+with two helpers on one job folder, A could adopt B's record and remove it
+when A ended, and a B killed mid-request then left no word on disk. Each
+attempt now writes `semantic.cache.sent-<ns>-<8 hex>.json` (`attempt` inside
+too), holds an exclusive `flock` on it from before it is published (written
+to a temporary name, locked, synced, renamed) until it removes it, and removes
+only that name. Another attempt reads a record as an earlier charge only when
+it can take the lock (the kernel gave a killed helper's lock back); a locked
+record is a request in flight and is neither read nor removed. The J1 name and
+`…sent/v1` are still read. The panel reads every record name the helper can
+write (`diagnosis::is_sent_record_name`, at most 64).
+
+**Every failure leaves a receipt (J3-6).** `main` read the audio before the
+part that writes receipts. The file is now read inside `analyze_to_cache`,
+and a catch-all there writes the receipt any failure nobody named still owes,
+by how far the attempt got. Found by reading `main` and everything before the
+send: the audio read ("Could not read the track's audio file (No such file or
+directory); nothing was sent. Check that the file is still there, then start
+again."), an empty format, an unwritable `--request-dump` ("The listening
+step stopped before sending (…); nothing was sent."), any fault after the
+request left with no answer ("The listening step failed (…); it may have been
+billed (at most 0.033 USD). Nothing was saved or sent again."), and a cache
+that cannot be written after the answer was billed ("The answer could not be
+saved (No space left on device). Nothing was saved; OpenRouter billed 0.0106
+USD for it."). Removing the earlier receipt and records is best-effort and can
+no longer fail an attempt that has written its record. Left: an argv the
+parser refuses (exit 2) writes no receipt, because the cache path may be what
+was refused; the application builds the argv, pinned by
+`tests/test_helper_argv.py`.
+
+**"Cost: nothing" only for the settings the run sends (J3-4).** The status
+query was cached under `ContractSnapshot::compact()`, which leaves out the
+provider block. The key is now the digest of the exact snapshot bytes the
+query hands the helper (`status_key`), so any change to model, order, only,
+ignore, fallbacks, price limits, fallback policy or ZDR asks again. And Start
+compares the routes it resolves with the ones the card was drawn for
+(`boundary_confirmed` aside): settings written while the card was open (the
+dialog, another window) refuse Start with "The AI settings changed after this
+card was drawn, so it may not say what Start would do. It is drawn again now;
+read it, then start. Nothing was sent." and the card is resolved and asked
+again. Both directions are pinned through the window.
+
+**What was changed in the answer is said (J3-3).** The manifest counts the
+repairs too (`semantic_repair_counts`, from the cache's provenance for a new
+answer, from `bridge_fit` at reuse for an answer cached before repairs were
+recorded), and the staged card draws notes under its head: the reused-answer
+line (read since J2, never drawn) and "Fitted before staging: 2 sections
+shorter than a millisecond joined to neighbours, their words and marks
+dropped; 1 section's words shortened to fit." (cleaned characters: "unprintable
+characters replaced in 3 sections' words"; a J1 manifest that names repairs
+without counting: "The application changed this answer to fit before staging
+it.").
+
+**A row belongs to its answer's track (J3-5).** With another track current, a
+row press switches to the answer's track (the track list's lyric-draft guard
+first) and seeks with `ShellCommand::SeekOnTrack`, which `main` applies only
+while that track is current, so a refused switch moves nothing. The card
+notes "This answer is for other.wav; pressing a row switches to that track.",
+the row's hint reads "Switch to other.wav and listen from 0:24", and an answer
+whose track is closed moves nothing ("The track this answer is for is no
+longer open, so its rows move nothing."). The switch starts playback, as the
+track list does. The timeline's ghosts were already drawn only for the
+answer's own track; Put back acts on the track Apply wrote to, and its line
+names it when another is current ("3 earlier cues kept in Song A").
+
+**An earlier charge says what it was for (J3-2).** The sent record and the
+receipt carry `audio_sha256`, `request_key` (the request as one digest: the
+cache key its answer would carry) and `model`; `semantic-status` names the
+next Start's `request_key`. The confirmation's line, against what this Start
+would send:
+
+| Relation | Line (one record) |
+| --- | --- |
+| same request | A listening request for this track and these settings was started on 2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). Start sends the same request again; this note then moves to the job folder's log. |
+| same request, saved answer | … This Start reuses a saved answer and sends nothing; this note then moves to the job folder's log. |
+| other settings | A listening request for this track with other settings was started on … and never answered; it may have been sent and billed (at most 0.073 USD). After Start this note moves to the job folder's log. |
+| other audio | A listening request for other audio that was at this track's path was started on … |
+| settings not known yet | A listening request for this track was started on … |
+| a J1 record | A listening request that used this track's job folder was started on … |
+| a may-be-billed receipt | A listening request for this track and these settings, on 2026-11-15 20:00 UTC, may have been billed (at most 0.073 USD). … |
+| several | 3 listening requests for this track may have been sent and billed (at most 0.219 USD together); the last was on …. … |
+
+The J1 time filter (anything older than the cache's modification time counts
+as answered) is gone: an answering attempt removes its own record, so a record
+still there was never answered.
+
+**Words after a stop, and the way out (J3-7).** The record is written before
+the first byte leaves, so a helper killed just after writing it sent nothing.
+The stops now read: Cancel, "Analysis cancelled during the listening request"
+— "The analysis was stopped at your request, but the listening request may
+already have been sent to OpenRouter and billed (at most 0.073 USD). Nothing
+was applied to this project."; the deadline, "… and was stopped; the listening
+request may already have been sent to OpenRouter and billed (at most 0.073
+USD)."; a helper that died with no receipt, "The helper stopped before an
+answer came; the listening request may already have been sent to OpenRouter
+and billed (at most 0.073 USD). Nothing was saved."; the quit dialog, "Cancel
+the running analysis job; the listening request may already have been sent to
+OpenRouter and billed (at most 0.073 USD)." The way out: the confirmation
+shows each possible charge once, saying what happens to the note, and the
+Start pressed after reading it appends it to `semantic.cache.charges.jsonl`
+(`acknowledge_possible_charges`: one synced line per charge, append-only,
+under `semantic.cache.charges.lock`, then the killed helpers' records are
+removed). The orchestrator does this at the listening step, whether that run
+sends or reuses; the helper also does at its start (a command-line run).
+Nothing is carried forward (`earlier` stays empty); the panel and the helper
+leave out what the log holds. A Start cancelled before the listening step
+logs nothing, so the note shows again.
+
+Report lines: `assist feelings:` gains `track=current|other:N|gone` and
+`notes@`; `assist feelings notes:` (the notes as drawn, or `none`);
+`assist feelings nav:` gains `track=` and `switch=yes|refused`;
+`assist routing: stale-confirmation …` when Start refuses a stale card. Probe
+seam: `MUSIALIZER_ASSIST_PROBE_STAGE_TRACK=N` stages the bridge for track N.
+Gates: `tools/headless_check.sh --skip-render` (J1 block: `billed-same`,
+`billed-settings`, `billed-audio`, `billed-behind`, `settings-nothing-to-paid`,
+`settings-paid-to-nothing`, and the new stop words in `cancel` and `deadline`);
+`tools/look_assist_check.sh` feelings 6 (repairs and reuse notes) and 7 (a row
+of another track's answer).
+
+**Negative controls (J3, 2026-11-16)**, each perturbed, seen to fail, and
+restored byte for byte (`cmp` against a saved copy):
+
+| Perturbation | What failed |
+| --- | --- |
+| `_dead_records` and `_remove_dead` ignoring the lock (every record dead) | `test_two_helpers_on_one_folder_never_remove_each_others_record`, `test_a_record_in_flight_is_not_an_earlier_charge` |
+| `is_sent_record_name` accepting only the J1 name | `every_attempts_record_is_read_and_only_records_are` |
+| The catch-all receipt not written | `NoFailureEndsWithoutAReceipt` (5 tests) |
+| `request_key` not written into the record | `test_the_record_and_the_status_name_the_same_request_by_one_digest` |
+| `ChargeRelation` never `SameRequest` | `an_earlier_charge_says_whether_it_was_this_request`; gate: billed-same (2) |
+| The status key built from `compact()` again | `a_saved_answer_is_never_said_for_other_provider_settings`; gate: settings-nothing-to-paid (the card said "Cost: nothing" after the change) and settings-paid-to-nothing |
+| Start's stale-card check off | gate: settings-nothing-to-paid and settings-paid-to-nothing (the refusal never came, and the stand-in run started: "the run started for settings the card did not show") |
+| The manifest's counts not read (`semantic_repairs` ignoring `semantic_repair_counts`) | `the_repairs_made_to_an_answer_are_said_in_the_cards_words`; gate: feelings 6 (the uncounted sentence drawn) |
+| `_repair_counts` always empty | `RepairsAreCountedForTheCard` (2 tests) |
+| `AnswerTrack::of` always `Current` | `a_staged_answer_belongs_to_its_track_and_says_so_elsewhere`; gate: feelings 7 twice (no note; no switch, and `SeekOnTrack` kept the current track's playhead at 30.000 instead of moving it) |
+| The log not filtered by the panel | `a_request_sent_and_never_answered_is_said_before_the_next_start`; gate: billed-behind (the logged receipt's line drawn again: "… on 2026-11-16 11:00 UTC, may have been billed …") |
+| `acknowledge_possible_charges` appending nothing | `test_an_earlier_possible_charge_is_logged_once_at_the_next_start` and four more in `ARequestThatLeftIsRecorded` |
+| `sent_clause` back to "had already been sent" | `a_stop_after_the_request_left_says_it_may_have_been_billed`; gate: cancel, deadline |
+
+Not tried for real: any of this against OpenRouter (fake transports, real
+`SIGKILL`ed helper processes in the tests, a stand-in helper in the gates);
+a Start pressed through the window that runs the real orchestrator's
+acknowledgement (the gate calls the same function on the folder, then draws
+the card); a settings change through the AI settings dialog itself (the gate
+writes `assist.json` while the card is open); two application windows on one
+job folder.
 
 ### Local performed-phrase recovery (2026-09-08)
 

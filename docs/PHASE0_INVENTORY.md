@@ -1750,6 +1750,24 @@ Written so that nothing the user may pay for is unsaid. `ASSIST_PIPELINE.md`,
 | `assist notes:`, `assist notice:`, `assist reuse:`, `assist charges:` | report lines | the confirmation's route block as drawn; each notice handed to the tray; the status query's answer; the earlier-charges line and its job folder |
 | `catalog-predates=` | `assist routing:` report line | contracts whose model the saved model list predates |
 
+### 6.7e The Feelings records after J3 (2026-11-16)
+
+Changes to 6.7d. Rules and words: `ASSIST_PIPELINE.md`, "Seven more defects on
+the Feelings path".
+
+| Name | Where | Contents |
+| --- | --- | --- |
+| `musializer.semantic-request-sent/v2` | `semantic.cache.sent-<ns>-<8 hex>.json`, one per attempt (`ATTEMPT_PATTERN`, `diagnosis::is_sent_record_name`) | v1's fields plus `attempt` (the name's identity), `request_key` (`canonical_sha256({"audio_sha256", **request})`, the cache key its answer would carry) and `model`. Written to a temporary name, `flock`ed exclusively, synced, renamed, folder synced; the lock is held until the attempt removes its own name. A record nobody holds was left by a killed helper. `earlier` is always empty. v1 (`semantic.cache.sent.json`) is still read |
+| `musializer.semantic-failed-run/v1` (J3) | `semantic.cache.failed.json` | adds `request_key`; `earlier` is always empty since J3 |
+| `musializer.semantic-charge-acknowledged/v1` | `semantic.cache.charges.jsonl`, one JSON line per possible charge, append-only, synced | a charge's `kind` (`unanswered`, `may_be_billed`), `at_ns`, `at_utc`, `usd_max`, `audio_sha256`, `request_key`, `model`, then `acknowledged_ns`, `acknowledged_utc`, `by` (`start`: the orchestrator's listening step; `helper`: the helper's start). A charge in it is not said again. Read from its last 1 MiB |
+| `semantic.cache.charges.lock` | job folder | the `flock` that serializes acknowledgements; empty |
+| `request_key` | `musializer.semantic-status/v1` | the next Start's request as one digest, when the track is measured |
+| `semantic_repair_counts` | `assist-manifest.json`, beside `semantic_repairs` | `{joined, shortened, cleaned}`: how many of each repair `bridge_fit` made; absent when nothing was repaired, and for an answer cached by the J1 build whose repairs were named but not counted |
+| `provenance.repair_counts` | semantic artifact | the same counts, on a cached answer that was repaired |
+| `MUSIALIZER_ASSIST_PROBE_STAGE_TRACK` | probe seam | `N`: stage the probe's bridge for track N rather than the current one |
+| `assist feelings notes:` | report line | the staged card's notes as drawn, or `none` |
+| `ShellCommand::SeekOnTrack { track_slot, seconds }` | shell command | a seek applied only while that track is current |
+
 ### 6.7b The generation store's records (VG H4, H4b, H4c; 2026-11-14)
 
 Under `MUSIALIZER_GENERATED_DIR` (§ environment). Each JSON record is written

@@ -575,3 +575,21 @@ safely".
 | A missing key, no endpoint or a lost modality offered to "route this task locally" | Only for a contract this build can run locally (`ContractId::has_local_route`); never for `TC-SEMANTIC` | There is no local listening route to go to |
 | The confirmation showed the paid-call cost even when the run would reuse a saved answer | The helper's read-only `semantic-status` answers before Start through the same reuse decision as the run; a saved answer turns the cost line into "Cost: nothing …"; unknown keeps the paid wording | The question is the helper's to answer: a second implementation of the request identity in Rust could say "free" while Python pays |
 | Cancel was an info notice | A cancel after the request left is a warning | It carries a possible charge |
+
+## The Feelings path, second pass (J3, 2026-11-16)
+
+Decided by the agent fixing the seven defects a review of J1 and J2 confirmed.
+Details and words: `ASSIST_PIPELINE.md`, "Seven more defects on the Feelings
+path".
+
+| Before | Now | Why |
+| --- | --- | --- |
+| One sent record per cache, adopted by `stat` after publishing | One per attempt, under its own name, `flock`ed from before it is published until its attempt removes it | Two helpers on one folder removed each other's records, and a killed one's possible charge went unsaid |
+| A possible charge was carried into every later attempt until an answer came | The confirmation says it once; the Start pressed after reading it appends it to `semantic.cache.charges.jsonl` and it is not said again | A track whose later attempts kept failing warned at every Start for ever; a dismissal button would be one more control for a rare case, and pressing Start after reading the line is already the agreement to send again |
+| A record or receipt older than the cache's modification time counted as answered | No time filter; a record is removed only by its own attempt, so one still there was never answered | The time said nothing about which request the answer was for |
+| "An earlier listening request for this track was sent … and never answered; it may have been billed" | Says what it was for against what this Start sends (same request, other settings, other audio at the path, settings not known yet, a J1 record) and "was started … it may have been sent and billed" | The record is written before the first byte leaves; "for this track" was a folder |
+| Every stop said the request "had already been sent" | "may already have been sent to OpenRouter and billed"; Cancel's title "Analysis cancelled during the listening request" | The same window: a helper killed after writing its record and before sending sent nothing |
+| The status query was keyed by `ContractSnapshot::compact()` | By the digest of the snapshot bytes it hands the helper; Start refuses a card drawn for other routes and draws it again | The key left out the provider block, so "Cost: nothing" stood for settings that paid |
+| `semantic_repairs` was written and read by nothing | Counted too (`semantic_repair_counts`) and said on the staged card, with the reused-answer line that was read but never drawn | The user reviewed an answer the application had changed without being told |
+| A row of a staged answer sought the current track | It switches to the answer's track first (the track list's guard), then seeks there only (`SeekOnTrack`); the switch starts playback as the track list's does | A row is a place in the song the answer was made for |
+

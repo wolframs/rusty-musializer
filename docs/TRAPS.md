@@ -912,9 +912,11 @@ group; no `except` or `finally` runs, so a receipt written "when the call
 ends" is never written. A request that had already left was reported as
 "Nothing was applied", and the next Start paid again. Write a durable record
 before the request leaves (`semantic.cache.sent.json`), replace it with the
-answer or a receipt, and read one still there as "sent, never answered". Remove
-it only while it is still the record you wrote (compare the inode): another
-helper's record is another request in flight. Found 2026-11-16 (J1-3).
+answer or a receipt, and read one still there as "sent, never answered". Give
+each attempt its own record and remove only that one (see "An inode compared
+after publishing says nothing about whose record it is"). Found 2026-11-16
+(J1-3). The record precedes the first byte, so a kill just after it sent
+nothing: say "may have been sent", never "had been sent" (J3-7).
 
 ## An answer cached before the later steps check it is refused forever
 
@@ -941,3 +943,44 @@ reaches a release; a refused request costs nothing and a short excerpt costs a
 cent. State a bound the validator refuses in words (the description or the
 prompt) and enforce it on the answer.
 
+## An inode compared after publishing says nothing about whose record it is
+
+The J1 listening helper wrote its sent record by a rename and then took
+`stat` of the name to learn which record was its own. Another helper on the
+same job folder could rename its own record in between, so the first adopted
+the second's record and removed it when it ended; the second, killed
+mid-request, then left no word that it may have been billed. Ownership must be
+in the record before anyone can see it: a name of its own (an attempt id), and
+a lock taken before the record is published (lock a temporary file, sync,
+rename) and held until its owner removes it. Another process tells a record in
+flight (locked) from one a killed process left (the kernel released the lock)
+by trying the lock. Found 2026-11-16 (J3-1).
+
+## A cache key made from a summary answers for requests it does not describe
+
+The confirmation's saved-answer query was cached under
+`ContractSnapshot::compact()` (contract, route, model, boundary), while the
+answer depended on the provider block too. After a provider setting changed,
+the cached "saved" answer was shown for a request that would pay. Key a cached
+answer by the exact bytes the answering process was given (or their digest),
+never by a display summary of them, and re-check at the moment of commitment
+that the thing confirmed is the thing about to run. Found 2026-11-16 (J3-4).
+
+## A warning carried forward until success never stops for a failure that repeats
+
+The listening helper carried every possible charge into each later attempt's
+record and receipt until an answer came, so a track whose next attempts kept
+failing (a refused key, no credit) said "may have been billed" at every Start,
+for the same old request. A warning about possible spending needs an end that
+is not success: show it where the decision is made, and once that decision is
+taken after reading it, append it to a log (never rewrite the record) and stop
+showing it. Found 2026-11-16 (J3-7).
+
+## A control that acts on "current" acts on whatever is current when it is pressed
+
+The staged feelings card's rows sought the transport, which belongs to the
+current track; staged for track A, pressed while B was current, they moved B's
+playhead to A's times. A control drawn for one object must carry that object's
+identity into the command it issues (`SeekOnTrack { track_slot }`) and the
+handler must refuse when the object is no longer the one in front of the user.
+Found 2026-11-16 (J3-5).
