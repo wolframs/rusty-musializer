@@ -3009,6 +3009,22 @@ if args and args[0] == "semantic-status":
         # exporting the song again under the same name.
         pathlib.Path(touch).write_bytes(pathlib.Path(touch).read_bytes() + b"\0" * 64)
     state = os.environ.get("J1_STATUS", "none")
+    # J3-4: an answer saved for one provider order only, read from the
+    # snapshot the panel hands this query, as the real query reads it.
+    saved_order = os.environ.get("J1_SAVED_ORDER")
+    if saved_order is not None:
+        snapshot = json.loads(pathlib.Path(args[args.index("--execution-snapshot") + 1]).read_text())
+        order = ",".join((snapshot["contracts"][0].get("provider_constraints") or {}).get("order") or [])
+        state = "saved" if order == saved_order else "none"
+        with open(os.environ["J1_STATUS_LOG"], "a") as log:
+            log.write(f"order={order or '-'} state={state}\n")
+    # J3-4: the AI settings written while the card is open (the dialog, or
+    # another window), once.
+    rewrite = os.environ.get("J1_REWRITE_SETTINGS")
+    if rewrite:
+        target = pathlib.Path(os.environ["XDG_CONFIG_HOME"]) / "musializer" / "assist.json"
+        if not target.exists():
+            target.write_text(pathlib.Path(rewrite).read_text())
     answer = {"schema_version": "musializer.semantic-status/v1", "state": state,
               "saved_answer": None}
     if state == "saved":
@@ -3158,6 +3174,39 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
         if grep -q "^assist notice: .*account needs credit" "$J1_DIR/changed.txt"; then
             echo "FAIL: j1-changed: the helper ran for a changed file" >&2; J1_FAILED=1
         fi
+
+        # J3-4: the AI settings change while the card is open. Start refuses
+        # a card drawn for other routes, the card is drawn again, and its
+        # saved-answer line is asked again for the settings as they are now:
+        # "Cost: nothing" never stands for settings it was not computed for,
+        # and the paid wording never stands for settings with a saved answer.
+        printf '%s\n' '{"schema":"musializer.assist-settings/v1","active_profile":"j3","profiles":[{"id":"j3","label":"J3","routes":{"TC-SEMANTIC":{"contract":"TC-SEMANTIC","route_type":"openrouter","runtime_id":"openrouter","model_id":"google/gemini-3.8-flash","fallback":"none","provider":{"order":["google-vertex"],"allow_fallbacks":false,"zdr_required":true}}}}]}' \
+            >"$J1_DIR_ABS/settings-ordered.json"
+        for direction in nothing-to-paid paid-to-nothing; do
+            rm -rf "$J1_DIR_ABS/config-$direction"
+            cp -a "$ROUTE_CONFIG/keyed" "$J1_DIR_ABS/config-$direction"
+            if [ "$direction" = nothing-to-paid ]; then saved=""; else saved="google-vertex"; fi
+            T="$(j1_track "settings-$direction")"
+            : >"$J1_DIR_ABS/status-$direction.log"
+            j1_run "settings-$direction" "$T" 240 ",click=$J1_START,click-after=60" \
+                XDG_CONFIG_HOME="$J1_DIR_ABS/config-$direction" J1_SAVED_ORDER="$saved" \
+                J1_STATUS_LOG="$J1_DIR_ABS/status-$direction.log" \
+                J1_REWRITE_SETTINGS="$J1_DIR_ABS/settings-ordered.json" J1_ASSIST=no-credit || J1_FAILED=1
+            j1_expect "settings-$direction" "assist notice:" "title=Analysis could not start | The AI settings changed after this card was drawn, so it may not say what Start would do. It is drawn again now; read it, then start. Nothing was sent." || J1_FAILED=1
+            if [ "$direction" = nothing-to-paid ]; then
+                before="Cost: nothing. A saved answer"; after="Cost: about"
+            else
+                before="Cost: about"; after="Cost: nothing. A saved answer"
+            fi
+            if ! grep -q "^assist notes: .*$before" "$J1_DIR/settings-$direction.txt"; then
+                echo "FAIL: j1-settings-$direction: the card never said \"$before\" before the change" >&2; J1_FAILED=1
+            fi
+            j1_expect "settings-$direction" "assist notes:" "$after" || J1_FAILED=1
+            if grep -q "^assist notice: .*account needs credit" "$J1_DIR/settings-$direction.txt"; then
+                echo "FAIL: j1-settings-$direction: the run started for settings the card did not show" >&2; J1_FAILED=1
+            fi
+            echo "  status queries ($direction): $(tr '\n' ' ' <"$J1_DIR_ABS/status-$direction.log")"
+        done
     else
         echo "FAIL: j1: Start's place was not reported" >&2; J1_FAILED=1
     fi

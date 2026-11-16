@@ -675,6 +675,19 @@ impl AssistController {
                 block.sentence(),
             )];
         }
+        // J3-4: Start does what the card said, or nothing. The card's plan is
+        // resolved once and kept while it is open; settings written since (by
+        // the AI settings dialog, or another window) would make this run's
+        // routes, cost and saved-answer line other than the ones read. The
+        // card is then drawn again from the settings as they are, and its
+        // saved-answer query asked again for them.
+        if confirmation_drawn_for_other_routes(mode, &resolved) {
+            return vec![AssistNotice::new(
+                Severity::Warning,
+                "Analysis could not start",
+                CONFIRMATION_STALE,
+            )];
+        }
         let snapshot_path = match plan::write_snapshot(&output_dir, &resolved.snapshot) {
             Ok(path) => path,
             Err(error) => {
@@ -1588,25 +1601,45 @@ fn parse_semantic_status(answer: Option<&str>) -> SavedAnswer {
     }
 }
 
+/// The status query's key and the snapshot bytes it gives the helper: only
+/// the listening route, as the run's own snapshot carries it.
+///
+/// J3-4: the answer is for exactly those bytes, so the key is those bytes
+/// (every field the run's identity is made of: model, provider order, only and
+/// ignore, fallbacks, price limits, ZDR), never a summary of them.
+/// `ContractSnapshot::compact` left the provider block out, and an answer
+/// computed for other settings said "Cost: nothing" for a run that paid.
+fn status_key(track: &Track, snapshot: &ExecutionSnapshot) -> Option<(String, Vec<u8>)> {
+    use musializer_core::assist::contracts::ContractId;
+    snapshot.contract(ContractId::Semantic)?;
+    // The other routes may need a confirmation this preview does not have.
+    let mut preview = snapshot.clone();
+    preview
+        .contracts
+        .retain(|entry| entry.contract == ContractId::Semantic);
+    let bytes = preview.to_bytes().ok()?;
+    let key = format!(
+        "{}|{}|{}|{}|{}",
+        track_output_dir(track).display(),
+        track.file_path.display(),
+        track.audio_sha256,
+        snapshot.requires_zdr(),
+        musializer_core::project::sha256::digest_hex(&bytes),
+    );
+    Some((key, bytes))
+}
+
 /// Asks the helper, once per key and off the frame thread, whether the next
 /// Start would reuse a saved answer; returns what is known this frame.
 fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> SavedAnswer {
-    use musializer_core::assist::contracts::ContractId;
     let Some(helper) = ASSIST_HELPER.get().cloned().flatten() else {
         return SavedAnswer::Unknown;
     };
-    let Some(semantic) = plan.snapshot.contract(ContractId::Semantic) else {
+    let Some((key, preview_bytes)) = status_key(track, &plan.snapshot) else {
         return SavedAnswer::Unknown;
     };
     let folder = track_output_dir(track);
     let zdr = plan.snapshot.requires_zdr();
-    let key = format!(
-        "{}|{}|{}|{}|{zdr}",
-        folder.display(),
-        track.file_path.display(),
-        track.audio_sha256,
-        semantic.compact()
-    );
     SEMANTIC_STATUS.with(|slot| {
         let mut slot = slot.borrow_mut();
         if let Some((cached, state)) = slot.as_mut() {
@@ -1629,13 +1662,6 @@ fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> SavedAnswer
                 return answer.clone();
             }
         }
-        // A snapshot holding only the listening route: the query reads that
-        // route's identity and nothing else (the other routes may need a
-        // confirmation this preview does not have).
-        let mut preview = plan.snapshot.clone();
-        preview
-            .contracts
-            .retain(|entry| entry.contract == ContractId::Semantic);
         // Outside the job folder, and removed after the query: opening the
         // card creates nothing in the track's folder.
         let snapshot_path = std::env::temp_dir().join(format!(
@@ -1643,9 +1669,7 @@ fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> SavedAnswer
             std::process::id(),
             wall_clock_ns()
         ));
-        let written = preview
-            .to_bytes()
-            .is_ok_and(|bytes| std::fs::write(&snapshot_path, bytes).is_ok());
+        let written = std::fs::write(&snapshot_path, &preview_bytes).is_ok();
         if !written {
             *slot = Some((key, StatusSlot::Done(SavedAnswer::Unknown)));
             return SavedAnswer::Unknown;
@@ -2312,6 +2336,54 @@ fn confirmation_plan(
         *slot = Some((key, resolved.clone()));
         resolved
     })
+}
+
+/// What Start says when the card it was pressed on was drawn for other
+/// settings (J3-4).
+const CONFIRMATION_STALE: &str = "The AI settings changed after this card was drawn, so it may \
+    not say what Start would do. It is drawn again now; read it, then start. Nothing was sent.";
+
+/// Whether the confirmation last drawn for `mode` showed routes other than
+/// the ones Start just resolved (`boundary_confirmed` aside: the card's is
+/// false by design). When it did, the card's plan is forgotten so the next
+/// frame draws the current one. No card drawn for this mode: nothing to
+/// compare, as for a probe's direct Start.
+fn confirmation_drawn_for_other_routes(mode: AssistMode, resolved: &ExecutionPlan) -> bool {
+    let prefix = format!("{}|", job_mode(mode).argument());
+    CONFIRMATION_PLAN.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some((key, drawn)) = slot.as_ref() else {
+            return false;
+        };
+        if !key.starts_with(&prefix) {
+            return false;
+        }
+        let same = routes_agree(&drawn.snapshot, &resolved.snapshot);
+        if !same {
+            report_routing(&format!(
+                "stale-confirmation drawn={} start={}",
+                drawn.describe(),
+                resolved.describe()
+            ));
+            *slot = None;
+        }
+        !same
+    })
+}
+
+/// Two resolutions' routes are the same request graph: every contract row
+/// equal but for whether the user had confirmed it yet.
+fn routes_agree(drawn: &ExecutionSnapshot, start: &ExecutionSnapshot) -> bool {
+    drawn.contracts.len() == start.contracts.len()
+        && drawn
+            .contracts
+            .iter()
+            .zip(&start.contracts)
+            .all(|(drawn, start)| {
+                let mut drawn = drawn.clone();
+                drawn.boundary_confirmed = start.boundary_confirmed;
+                drawn == *start
+            })
 }
 
 /// Publishes the AI settings entry point's own evidence (tranche AP3).
@@ -5991,6 +6063,93 @@ mod tests {
         let unpriced = semantic_cost_line(semantic, None).expect("a line");
         assert!(unpriced.contains("needs the track's length"), "{unpriced}");
         assert!(!unpriced.contains("USD"), "{unpriced}");
+    }
+
+    /// J3-4: the saved-answer query is asked again whenever anything the
+    /// run's identity is made of changes, and Start refuses a card drawn for
+    /// other routes; whether the user had confirmed is not a route.
+    #[test]
+    fn a_saved_answer_is_never_said_for_other_provider_settings() {
+        use musializer_core::assist::contracts::{ContractId, FallbackPolicy};
+        use musializer_core::assist::settings::{AssistSettings, Provider};
+        let snapshot = execution::resolve(
+            &AssistSettings::default(),
+            execution::WorkflowKind::Mimo,
+            false,
+            &execution::ExecutionFacts::default(),
+        );
+        let scratch = Scratch::new("status-key");
+        let audio = scratch.join("song.wav");
+        let track = Track::new(audio, 120.0, SceneId::Spectrum, 7).expect("track");
+        let (key, bytes) = status_key(&track, &snapshot).expect("a semantic route");
+        assert_eq!(
+            ExecutionSnapshot::parse(&bytes)
+                .expect("the helper's snapshot")
+                .contracts
+                .len(),
+            1,
+            "only the listening route"
+        );
+        let changed = |change: &dyn Fn(&mut ContractSnapshot)| {
+            let mut other = snapshot.clone();
+            for entry in &mut other.contracts {
+                if entry.contract == ContractId::Semantic {
+                    change(entry);
+                }
+            }
+            other
+        };
+        let provider = |change: &dyn Fn(&mut Provider)| {
+            changed(&|entry: &mut ContractSnapshot| {
+                let mut constraints = entry
+                    .provider_constraints
+                    .clone()
+                    .unwrap_or_else(|| Provider::defaults_for(ContractId::Semantic));
+                change(&mut constraints);
+                entry.provider_constraints = Some(constraints);
+            })
+        };
+        let variants = [
+            (
+                "order",
+                provider(&|p| p.order = vec!["google-vertex".to_string()]),
+            ),
+            (
+                "only",
+                provider(&|p| p.only = vec!["google-ai-studio".to_string()]),
+            ),
+            (
+                "ignore",
+                provider(&|p| p.ignore = vec!["deepinfra".to_string()]),
+            ),
+            (
+                "fallbacks",
+                provider(&|p| p.allow_fallbacks = !p.allow_fallbacks),
+            ),
+            ("price", provider(&|p| p.max_price_audio = Some(1.5))),
+            (
+                "policy",
+                changed(&|entry| entry.fallback_policy = FallbackPolicy::LocalOnly),
+            ),
+            (
+                "model",
+                changed(&|entry| entry.model_id = "google/other".to_string()),
+            ),
+        ];
+        for (what, other) in &variants {
+            let (other_key, _) = status_key(&track, other).expect("a key");
+            assert_ne!(other_key, key, "{what} changes what the run sends");
+            assert!(!routes_agree(&snapshot, other), "{what}");
+        }
+        assert_eq!(
+            status_key(&track, &snapshot.clone()).map(|(k, _)| k),
+            Some(key)
+        );
+        let confirmed = changed(&|entry| entry.boundary_confirmed = true);
+        assert!(
+            routes_agree(&snapshot, &confirmed),
+            "pressing Start confirms, changes no route"
+        );
     }
 
     #[test]
