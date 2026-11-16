@@ -5251,3 +5251,132 @@ helper only: the helper's and the lane's Python tests and
 **Money in all** for the two waves and this change: about 1.03 to 1.17 USD of
 the 5 USD the operator allowed on 2026-11-14.
 
+## Start on Feelings, hardened before the operator's test (2026-11-16)
+
+Moved from `FEATURE_PARITY_PLAN.md` when it closed. Four outside reviews
+(GPT-6.1-Sol) and three builder rounds (J1 and J2, J3, J4), each review's
+findings read in the code by the lead before they were taken. The design
+record, every sentence the user reads and the negative controls are in
+`docs/ASSIST_PIPELINE.md` ("Starting Feelings safely (J1)", "Looking at a
+staged feelings answer (J2)", "Seven more defects on the Feelings path (J3)",
+and the J4 section after it); the formats in `docs/PHASE0_INVENTORY.md`
+§6.7e. What is left is queued as GX-5.
+
+What the rounds had in common, for whoever hardens the next paid path: the
+first three kept possible charges in files that get replaced, and each review
+found another way to lose one; the fourth round's append-only ledger keyed by
+attempt ended that. And what no fake could find was found by pressing for
+real: Google's refusal of `maxItems`, and a Start button pushed below the fold
+by the very warning it belonged to.
+
+Real requests for this record cost about 0.15 USD (the benchmark's and the
+earlier waves' 1.03 to 1.17 USD aside), all under the 5 USD the operator
+allowed on 2026-11-14.
+
+The operator, 2026-11-16: "Can you let a Sol code review worker
+trace the 'pressing Start on Feelings in the app itself' routes and potential
+edge cases we don't address yet, then take its hints and go look yourself,
+then fix / preempt issues in the code, before I test it myself? :)"
+
+- [x] GPT-6.1-Sol traced the route from the press to the staged result, with
+  the operator's own settings and caches as the first case: seven findings
+  and a table of failure words.
+- [x] The lead read the code at each and decided. All seven are real:
+  1. The track's file replaced on disk after loading: the helper hashes the
+     new bytes and pays, the panel then rejects the answer against the old
+     hash. Decided: check the file before Start and refuse with words.
+  2. A refused key (401), no credit (402), no endpoint (404), a rate limit
+     and a connection failure reach the user as "python3 exited with code 1".
+     Decided: every failure writes a receipt with what to do next.
+  3. Cancel, a closed window or the 40-minute stop after the request left
+     leave no record that it may be billed. Decided: a record before the
+     request leaves, read by the panel and by the next Start.
+  4. A staged answer is shown as a count; sections, times and feel cannot be
+     looked at before Apply replaces the lane, and Apply cannot be undone.
+     Decided: a review list with seek, the staged cues on the timeline, one
+     step back after Apply.
+  5. An answer the model may give (over 256 sections, a summary over 2,047
+     bytes, a section under a millisecond) is cached and then refused on
+     every later run. Decided: bound it in the schema, check it before the
+     cache is written, and do not reuse an answer the bridge refuses.
+  6. The confirmation does not say the saved model list is older than the
+     model. Decided: one line there, with where to refresh; the wording that
+     offers a local route for this task goes.
+  7. A second Start on an unchanged track reuses the saved answer but shows
+     the paid-call wording. Decided: say reuse, before and after.
+- [x] Fixes, each with its check: one agent on 1, 2, 3, 5, 6, 7 (money,
+  failures, caches), one on 4 (the review of a staged answer). Merged.
+- [x] One real press of Start through the window's own path (headless, a
+  copy of the operator's settings, his key file read by the application, the
+  benchmark's cat excerpt). The first press failed unbilled: fix 5 had put
+  `maxItems` into the schema and Google refuses that keyword. Isolated with
+  three real calls, fixed (the bound in words), pressed again: seven sections
+  staged and listed, the ghosts on the timeline, then a third press reusing
+  the answer and saying so. About 0.05 USD in all. Record:
+  `docs/ASSIST_PIPELINE.md`, "Starting Feelings safely".
+- [x] Review of the fixes: GPT-6.1-Sol, 2026-11-16, seven more findings, all
+  taken (the lead's decision; one agent on them): two helpers deleting each
+  other's sent record; an earlier-charge warning not tied to the audio and the
+  request; `bridge_fit`'s repairs not shown to the user; the saved-answer
+  query cached under a key that leaves out provider settings ("Cost: nothing"
+  then a paid call); a row of a staged answer seeking whatever track is
+  current; an audio-read failure without a receipt; a stop before the request
+  left reported as sent, with no way to put the warning behind one.
+  Merged 2026-11-16 (J3, nine commits; record: `docs/ASSIST_PIPELINE.md`,
+  "Seven more defects on the Feelings path (J3)"). Nothing sent to the model
+  changed.
+- [x] Real presses on the merged build, through the window (headless, the
+  job folder under `build/analysis/`): Start on the saved answer reused it
+  ("nothing was sent or billed this time"); Start with the saved answer set
+  aside made one paid call (6 sections staged, 0.0115 USD reported), and no
+  sent record was left behind.
+- [x] A third review, of J3's diff only (GPT-6.1-Sol, 2026-11-16): six
+  findings, all confirmed in the code by the lead, all in how possible charges
+  are kept. (1) A may-be-billed receipt is one shared file: a second helper's
+  receipt or answer replaces it, and the first charge is in no record. (2)
+  "Cost: nothing" is not binding: if the saved answer is gone or replaced
+  between the card and the press, the run pays. (3) Start acknowledges every
+  charge on disk, not the ones the card showed. (4) A kill between writing the
+  receipt and removing the sent record counts one request twice. (5) Sixteen
+  charges are kept and all dead records removed. (6) `os.write`'s count is
+  ignored when the charge log is appended.
+  **The lead's decision (2026-11-16), his to overrule:** 1, 3, 4, 5 and 6 are
+  one design fault, three reviews old: possible charges are derived from files
+  that get replaced. J4 ends it with one append-only ledger per job folder,
+  keyed by attempt: a charge is appended when it becomes possible (a
+  may-be-billed receipt, a dead sent record swept), acknowledged by the ids
+  the card showed, never truncated, written whole. 2 is closed by Start
+  carrying the saved answer's key, and the run refusing to send without it.
+  **The release does not wait for J4**: every one of the six needs a second
+  process on the same track's folder, a kill inside a few milliseconds,
+  seventeen killed runs or a full disk, and none is on the path of one person
+  pressing Start in one window. The operator is told.
+- [x] J4: the ledger and the binding reuse, merged 2026-11-16 (six commits;
+  record: `docs/ASSIST_PIPELINE.md`, the J4 section). Nothing sent to the
+  model changed. One thing built differently from the lead's design, and
+  right: a saved answer of another key for the same settings is reused, not
+  refused. The lead then pressed Start for real on it, including a helper
+  killed after sending, the warning on the next card and the Start that puts
+  it behind (record in the same section), and fixed what that found: the
+  warned card's Start was below the fold at 1280x720.
+- [x] A fourth review, of J4 and that fix (GPT-6.1-Sol, 2026-11-16): the six
+  earlier findings closed but for one path, taken and fixed by the lead (a
+  refused Start wrote its receipt over an earlier build's may-be-billed
+  receipt before any sweep; record in `docs/ASSIST_PIPELINE.md`); two lesser
+  findings queued as GX-5. No fifth review: the fix is one function with its
+  test, and the review found the design sound.
+- [x] One full `tools/verify.sh` on the final commit (`7d316be`, 2026-11-16):
+  26 of 26, with another session's GPU job running. Release built on it and
+  pressed once (the saved answer reused, `assist commitment: reuse=<key>
+  charges=-`).
+- [x] One full `tools/verify.sh` on the merged tree (`1363bcd`, 2026-11-16):
+  24 of 26. The headless gate, which failed its 120 ms intervention on
+  `4950511` under another agent's load, passed. Failed: poster frames' frame
+  budget (GX-3, 2 frames at 27.0 ms against 0) and one `cargo test`, the clip
+  decoder-budget test of GX-4, which passed six times alone afterwards.
+  Neither is in code this stream touched; another session's GPU job was
+  running. Accepted as load, release built.
+- Never pressed for real, to say to the operator: Apply and Put back on a
+  real answer (the probe has one click per run; the gate presses both on a
+  fixture answer), Cancel while a request is in flight, a settings change
+  through the AI dialog while the card is open, two windows on one track.
