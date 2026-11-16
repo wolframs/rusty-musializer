@@ -145,6 +145,10 @@ pub struct ExecutionPlan {
     /// and no report at all were one picture (audit B5). `describe()` prints
     /// which, so a capture can tell them apart.
     pub doctor: execution::DoctorReading,
+    /// Contracts whose model the saved OpenRouter model list predates
+    /// ([`execution::catalog_predates`]): not a refusal, said in one quiet
+    /// line on the confirmation (J1-5).
+    pub catalog_predates: Vec<musializer_core::assist::contracts::ContractId>,
 }
 
 impl ExecutionPlan {
@@ -461,25 +465,24 @@ pub fn resolve(inputs: &PlanInputs<'_>) -> ExecutionPlan {
                 discover::Options::thorough(),
             )
         });
-    let blocks = execution::preflight(
-        &snapshot,
-        &PreflightFacts {
-            credential: credential_source.fact(),
-            catalog_fetched_utc: catalog
-                .as_ref()
-                .and_then(|(revision, _)| revision.split_once('@'))
-                .map(|(_, fetched)| fetched.to_string()),
-            catalog_models: catalog.map(|(_, models)| models),
-            codex: codex
-                .as_ref()
-                .map_or(execution::CodexFact::Unknown, codex_fact),
-            local_runtimes: doctor_runtimes,
-            // The picker's filters are the dialog's; this side has no way to
-            // count what they would leave, and inventing a zero would refuse a
-            // job for a fact nobody measured.
-            eligible_models: None,
-        },
-    );
+    let preflight_facts = PreflightFacts {
+        credential: credential_source.fact(),
+        catalog_fetched_utc: catalog
+            .as_ref()
+            .and_then(|(revision, _)| revision.split_once('@'))
+            .map(|(_, fetched)| fetched.to_string()),
+        catalog_models: catalog.map(|(_, models)| models),
+        codex: codex
+            .as_ref()
+            .map_or(execution::CodexFact::Unknown, codex_fact),
+        local_runtimes: doctor_runtimes,
+        // The picker's filters are the dialog's; this side has no way to
+        // count what they would leave, and inventing a zero would refuse a
+        // job for a fact nobody measured.
+        eligible_models: None,
+    };
+    let blocks = execution::preflight(&snapshot, &preflight_facts);
+    let catalog_predates = execution::catalog_predates(&snapshot, &preflight_facts);
     ExecutionPlan {
         snapshot,
         blocks,
@@ -495,6 +498,7 @@ pub fn resolve(inputs: &PlanInputs<'_>) -> ExecutionPlan {
         ),
         local_runtimes: settings.local_runtimes.clone(),
         doctor,
+        catalog_predates,
     }
 }
 

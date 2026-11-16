@@ -503,8 +503,14 @@ tracks and leaves the dark half of the scale untested.
 - *A cached OpenRouter catalog older than 2026-11-15* (the operator's is
   2026-09-01, before Gemini 3.8 Flash existed): it does not list the model, and
   until this change that refused the job ("has no eligible endpoint"). Now it
-  reads "Catalog older than this model; refresh it" and does not refuse;
-  opening AI settings with refresh-on-open refreshes it.
+  reads "Catalog older than this model; refresh it" and does not refuse.
+  Nothing refreshes it by itself: the settings field `refresh_on_open` is
+  saved but not wired in this build (the control says "Refresh on open: not
+  wired"), so the list is refreshed only by **AI settings → OpenRouter →
+  Refresh now**, with network access on. Since J1-5 (2026-11-16) the Start
+  confirmation says so too, in one quiet line under the routes: "The saved
+  model list is older than google/gemini-3.8-flash. Refresh it in AI
+  settings → OpenRouter → Refresh now."
 
 Not tried for real: a refusal or failure from Gemini (every failure path is
 tested against synthetic responses only), a track long enough to hit the size

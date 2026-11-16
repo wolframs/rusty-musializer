@@ -288,6 +288,29 @@ impl ContractId {
         }
     }
 
+    /// Whether this build can run the contract without leaving the machine.
+    ///
+    /// A refusal's repair offers "route this task locally" only where that
+    /// exists: `TC-SEMANTIC` has OpenRouter as its only executor, and a
+    /// sentence that sends the user looking for a local listening model sends
+    /// them looking for nothing (defect J1-5, 2026-11-16).
+    #[must_use]
+    pub fn has_local_route(self) -> bool {
+        [RouteType::Builtin, RouteType::LocalProc]
+            .into_iter()
+            .any(|route_type| {
+                [
+                    "builtin-analyzer",
+                    "builtin-planner",
+                    "local-transcript",
+                    "whisper.cpp",
+                    "mms-ctc",
+                ]
+                .into_iter()
+                .any(|runtime| self.runtime_is_implemented(route_type, runtime))
+            })
+    }
+
     /// Whether the adapter itself exists, before its selected model is checked.
     /// This lets the UI keep a model picker enabled when it is the control that
     /// can repair an unsupported model selection.

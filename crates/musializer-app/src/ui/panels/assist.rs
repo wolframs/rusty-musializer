@@ -1406,6 +1406,15 @@ fn load_candidate(path: &Path, track: &Track, lanes: Lanes) -> Result<LoadedCand
     })
 }
 
+/// The confirmation's line for a model the saved OpenRouter model list
+/// predates (J1-5).
+fn catalog_predates_sentence(model_id: &str) -> String {
+    format!(
+        "The saved model list is older than {model_id}. Refresh it in AI settings \u{2192} \
+         OpenRouter \u{2192} Refresh now."
+    )
+}
+
 /// What a refused result adds when the listening answer was to blame.
 const SEMANTIC_SET_ASIDE: &str = "The listening answer was the part that did not fit and was \
     set aside, so the next Start asks again and may cost again.";
@@ -5326,6 +5335,17 @@ fn column_route_lines(
                 .map(|line| (line, color::ui_danger())),
         );
     }
+    // J1-5: the evaluator's non-blocking verdict, which the AI settings show
+    // and this card did not: one quiet line, and where the refresh is.
+    for contract in &plan.catalog_predates {
+        if let Some(entry) = snapshot.contract(*contract) {
+            lines.extend(
+                wrap(&catalog_predates_sentence(&entry.model_id))
+                    .into_iter()
+                    .map(|line| (line, color::ui_muted())),
+            );
+        }
+    }
     if let Some(charges) = &notes.earlier_charges {
         lines.extend(
             wrap(charges)
@@ -5461,6 +5481,48 @@ impl Shell {
 mod tests {
     use super::*;
 
+    /// J1-5: the evaluator's "older than this model" verdict reaches the
+    /// confirmation in one quiet line naming where the refresh is, and only
+    /// when the plan carries it.
+    #[test]
+    fn a_model_list_older_than_the_model_is_said_quietly_on_the_confirmation() {
+        use musializer_core::assist::{contracts::ContractId, settings::AssistSettings};
+        let mut plan = ExecutionPlan {
+            snapshot: execution::resolve(
+                &AssistSettings::default(),
+                execution::WorkflowKind::Mimo,
+                false,
+                &execution::ExecutionFacts::default(),
+            ),
+            blocks: Vec::new(),
+            codex: None,
+            credential_source: plan::CredentialSource::File,
+            settings_error: None,
+            settings_path: None,
+            credential_lookup: "default".to_string(),
+            ask_resolved_to_none: Vec::new(),
+            local_runtimes: musializer_core::assist::settings::LocalRuntimes::default(),
+            doctor: execution::DoctorReading::NotTaken,
+            catalog_predates: Vec::new(),
+        };
+        let unwrapped = |text: &str| vec![text.to_string()];
+        let notes = ConfirmationNotes::default();
+        let expected = "The saved model list is older than google/gemini-3.8-flash. Refresh it \
+                        in AI settings \u{2192} OpenRouter \u{2192} Refresh now.";
+        let plain = column_route_lines(&plan, Some(200.0), &notes, &unwrapped);
+        assert!(!plain.iter().any(|(line, _)| line == expected));
+        plan.catalog_predates = vec![ContractId::Semantic];
+        let stale = column_route_lines(&plan, Some(200.0), &notes, &unwrapped);
+        let found: Vec<_> = stale.iter().filter(|(line, _)| line == expected).collect();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1, color::ui_muted(), "a quiet line, not a warning");
+        assert_eq!(
+            start_refusal(true, None, Some(&plan)),
+            None,
+            "and Start stays open"
+        );
+    }
+
     #[test]
     fn the_semantic_route_shows_its_cost_and_no_other_route_does() {
         use musializer_core::assist::{contracts::ContractId, settings::AssistSettings};
@@ -5577,6 +5639,7 @@ mod tests {
             ask_resolved_to_none: Vec::new(),
             local_runtimes: musializer_core::assist::settings::LocalRuntimes::default(),
             doctor: execution::DoctorReading::NotTaken,
+            catalog_predates: Vec::new(),
         };
         let clear = plan(Vec::new());
         assert_eq!(start_refusal(true, None, Some(&clear)), None);

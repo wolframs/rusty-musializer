@@ -1285,9 +1285,10 @@ impl ExecutionBlock {
             ),
             Self::NoCredential(contract) => format!(
                 "{} ({}) is routed to OpenRouter and no key is configured. Add one in AI \
-                 settings \u{2192} OpenRouter, or route this task locally.",
+                 settings \u{2192} OpenRouter{}.",
                 contract.human_label(),
                 contract.token(),
+                or_locally(*contract),
             ),
             Self::CredentialRefused {
                 contract,
@@ -1343,9 +1344,10 @@ impl ExecutionBlock {
                 constraint,
             } => format!(
                 "{} ({}) has no eligible endpoint: {constraint}. Relax the constraint in AI \
-                 settings, or route this task locally. It is never weakened silently.",
+                 settings{}. It is never weakened silently.",
                 contract.human_label(),
                 contract.token(),
+                or_locally(*contract),
             ),
             Self::ModalityLost {
                 contract,
@@ -1354,12 +1356,21 @@ impl ExecutionBlock {
             } => format!(
                 "{} ({}) is routed to {model_id}, and the last catalog refresh no longer reports \
                  that model as accepting {modality} input. Choose a model that does in AI \
-                 settings \u{2192} Routing, or route this task locally. It is never re-pointed at \
-                 another model for you.",
+                 settings \u{2192} Routing{}. It is never re-pointed at another model for you.",
                 contract.human_label(),
                 contract.token(),
+                or_locally(*contract),
             ),
         }
+    }
+}
+
+/// ", or route this task locally" where this build can (J1-5), else nothing.
+fn or_locally(contract: ContractId) -> &'static str {
+    if contract.has_local_route() {
+        ", or route this task locally"
+    } else {
+        ""
     }
 }
 
@@ -1714,6 +1725,24 @@ pub fn catalog_predates_model(fetched_utc: Option<&str>, model_id: &str) -> bool
             })
     };
     iso(day) && iso(listed_on) && day < listed_on
+}
+
+/// The contracts whose route reads [`CATALOG_PREDATES_MODEL`]: not a refusal,
+/// and not nothing either. The settings dialog shows it beside the route; the
+/// Start confirmation shows it in one quiet line, with where the refresh is
+/// (defect J1-5, 2026-11-16: it showed only route identities and refusals).
+#[must_use]
+pub fn catalog_predates(snapshot: &ExecutionSnapshot, facts: &PreflightFacts) -> Vec<ContractId> {
+    snapshot
+        .contracts
+        .iter()
+        .filter_map(|entry| RouteFacts::from_snapshot(entry))
+        .filter(|route| {
+            matches!(evaluate_route(route, facts),
+                RouteVerdict::Unknown(ref reason) if reason == CATALOG_PREDATES_MODEL)
+        })
+        .map(|route| route.contract)
+        .collect()
 }
 
 /// Everything that must be true before a process is spawned (§5 invariant 4).
@@ -2223,7 +2252,27 @@ mod tests {
         let sentence = blocks[0].sentence();
         assert!(sentence.contains("TC-SEMANTIC"), "{sentence}");
         assert!(sentence.contains("AI settings"), "{sentence}");
-        assert!(sentence.contains("route this task locally"), "{sentence}");
+        // J1-5: the listening contract has no local route in this build, so
+        // the repair names only what can be done; a contract that has one
+        // still offers it.
+        assert!(!sentence.contains("route this task locally"), "{sentence}");
+        assert!(
+            sentence.ends_with("Add one in AI settings \u{2192} OpenRouter."),
+            "{sentence}"
+        );
+        assert!(ExecutionBlock::NoCredential(ContractId::Coarse)
+            .sentence()
+            .contains("or route this task locally"));
+        assert!(!ContractId::Semantic.has_local_route());
+        for contract in [
+            ContractId::Measured,
+            ContractId::Coarse,
+            ContractId::Align,
+            ContractId::Wording,
+            ContractId::Plan,
+        ] {
+            assert!(contract.has_local_route(), "{contract:?}");
+        }
     }
 
     /// Audit A10 + A4. The consent sentence is a function of the resolved
@@ -3361,6 +3410,11 @@ mod tests {
             ..PreflightFacts::with_credential(true)
         };
         assert!(preflight(&snapshot, &stale).is_empty());
+        // J1-5: not a refusal, and not nothing: the confirmation is told.
+        assert_eq!(
+            catalog_predates(&snapshot, &stale),
+            vec![ContractId::Semantic]
+        );
         let fresh = PreflightFacts {
             catalog_models: catalog.clone(),
             catalog_fetched_utc: Some("2026-11-16T08:00:00Z".to_string()),
@@ -3369,6 +3423,10 @@ mod tests {
         let blocks = preflight(&snapshot, &fresh);
         assert_eq!(blocks.len(), 1);
         assert!(blocks[0].sentence().contains("google/gemini-3.8-flash"));
+        assert!(
+            catalog_predates(&snapshot, &fresh).is_empty(),
+            "a refusal is not a note"
+        );
         // An unknown or malformed date is no reason to discount the catalog.
         for fetched in [None, Some("unknown"), Some("2026-9-1T00:00:00Z")] {
             let facts = PreflightFacts {

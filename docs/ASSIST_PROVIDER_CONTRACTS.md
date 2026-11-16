@@ -202,7 +202,7 @@ local_runtimes
 
 catalog
   network_allowed   bool      false = manual Refresh only, never on open
-  refresh_on_open   bool
+  refresh_on_open   bool      saved, not executed in this build ("Refresh on open: not wired")
   last_filters      map<string,string>   e.g. {input_modalities: "audio", output_modalities: "text"}
   last_refresh_utc  string?   RFC 3339; display only
   show_experimental bool      unlocks non-recommended models in pickers
