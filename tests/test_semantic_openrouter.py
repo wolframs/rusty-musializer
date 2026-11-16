@@ -1010,6 +1010,102 @@ class TheConfirmationKnowsASavedAnswer(LaneTestCase):
         self.assertEqual(fake.sent, [])
 
 
+class NoFailureEndsWithoutAReceipt(LaneTestCase):
+    """Defect J3-6 (2026-11-16): `main` read the audio before the part that
+    writes receipts, so a file removed after the job hashed it printed an
+    error and the panel read "python3 exited with code 1" again. Every way the
+    helper ends in failure now leaves a receipt that says whether the request
+    had left: the file read, a format nobody named, a request dump that cannot
+    be written, and a cache that cannot be written after the answer was
+    billed."""
+
+    def receipt(self) -> dict:
+        return json.loads(self.ws.receipt.read_text())
+
+    def test_an_audio_file_gone_before_it_is_read_says_so_and_nothing_was_sent(self) -> None:
+        self.ws.audio.unlink()
+        fake = FakeOpenRouter()
+        with patch("urllib.request.urlopen", fake), \
+                patch("sys.stderr", new_callable=io.StringIO):
+            code = semantic_openrouter.main([
+                str(self.ws.audio), str(self.ws.cache), "--duration", str(DURATION),
+                "--model", self.MODEL, "--expect-sha256", "ab" * 32])
+        self.assertEqual(code, 1)
+        self.assertEqual(fake.sent, [])
+        receipt = self.receipt()
+        self.assertEqual(receipt["kind"], "not_sent")
+        self.assertFalse(receipt["may_be_billed"])
+        self.assertEqual(receipt["audio_sha256"], "ab" * 32, "the job's hash, which it is looked up by")
+        self.assertEqual(receipt["message"],
+                         "Could not read the track's audio file (No such file or directory); "
+                         "nothing was sent. Check that the file is still there, then start again.")
+        self.assertEqual(semantic_openrouter.sent_record_paths(self.ws.cache), [])
+
+    def test_a_format_nobody_named_is_not_sent_and_says_so(self) -> None:
+        audio = self.ws.root / "song"
+        audio.write_bytes(b"RIFF-not-really-audio")
+        with self.assertRaises(external_analysis.AnalysisValidationError):
+            semantic_openrouter.analyze_to_cache(
+                audio, self.ws.cache, audio_duration=DURATION, model=self.MODEL,
+                transport=FakeOpenRouter(), sleeper=lambda _s: None)
+        self.assertEqual(self.receipt()["message"],
+                         "The listening step stopped before sending (audio format is required); "
+                         "nothing was sent.")
+
+    def test_a_request_dump_that_cannot_be_written_is_not_sent(self) -> None:
+        blocker = self.ws.root / "a-file"
+        blocker.write_text("")
+        fake = FakeOpenRouter(response(answer()))
+        with self.assertRaises(OSError):
+            semantic_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=self.MODEL,
+                transport=fake, sleeper=lambda _s: None, encoder=fake_encoder,
+                request_dump=blocker / "dump.json")
+        self.assertEqual(fake.sent, [])
+        receipt = self.receipt()
+        self.assertEqual(receipt["kind"], "not_sent")
+        self.assertTrue(receipt["message"].startswith("The listening step stopped before sending ("))
+        self.assertTrue(receipt["message"].endswith("); nothing was sent."))
+
+    def test_a_cache_that_cannot_be_written_after_the_answer_says_what_it_cost(self) -> None:
+        real = semantic_openrouter.atomic_write_json
+
+        def refusing(path, value):  # noqa: ANN001
+            if Path(path) == self.ws.cache:
+                raise OSError(28, "No space left on device")
+            return real(path, value)
+
+        with patch.object(semantic_openrouter, "atomic_write_json", refusing), \
+                self.assertRaises(OSError):
+            self.run_lane(response(answer()))
+        receipt = self.receipt()
+        self.assertEqual(receipt["kind"], "unusable_answer")
+        self.assertEqual(receipt["reported_cost_usd"], 0.010596)
+        self.assertEqual(receipt["message"],
+                         "The answer could not be saved (No space left on device). Nothing was "
+                         "saved; OpenRouter billed 0.0106 USD for it.")
+        self.assertEqual(semantic_openrouter.sent_record_paths(self.ws.cache), [],
+                         "the receipt now says how the call ended")
+
+    def test_a_failure_after_the_request_left_with_no_answer_may_have_been_billed(self) -> None:
+        def broken(request, timeout: float):  # noqa: ANN001
+            raise ZeroDivisionError("an unexpected fault")
+        with self.assertRaises(semantic_openrouter.FailedRun):
+            # A fault inside the transport is a cut-short answer (SentUnanswered).
+            semantic_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=self.MODEL,
+                transport=broken, sleeper=lambda _s: None, encoder=fake_encoder)
+        self.assertTrue(self.receipt()["may_be_billed"])
+        with patch.object(semantic_openrouter, "submit_request",
+                          side_effect=KeyError("missing")), self.assertRaises(KeyError):
+            self.run_lane()
+        receipt = self.receipt()
+        self.assertTrue(receipt["may_be_billed"])
+        self.assertEqual(receipt["kind"], "unanswered")
+        self.assertIn("it may have been billed (at most 0.033 USD)", receipt["message"])
+        self.assertEqual(semantic_openrouter.sent_record_paths(self.ws.cache), [])
+
+
 class Killed(BaseException):
     """What a SIGKILL of the process group looks like from inside: nothing
     after it runs. A BaseException, so no `except Exception` catches it."""

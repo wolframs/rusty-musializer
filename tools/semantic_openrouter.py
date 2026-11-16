@@ -1432,6 +1432,10 @@ def _remove_dead(dead: list[DeadRecord]) -> None:
             seen = os.fstat(fd)
             if (seen.st_ino, seen.st_dev) == entry.identity:
                 entry.path.unlink(missing_ok=True)
+        except OSError:
+            # Left in place, it is read again next time: counted twice at
+            # worst, never lost.
+            pass
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
@@ -1571,7 +1575,10 @@ def _drop_receipt_if(cache_path: Path, identity: tuple[int, int] | None) -> None
     of this attempt: a receipt written since (another helper's failure, by a
     rename, so another inode) stays."""
     if identity is not None and _receipt_identity(cache_path) == identity:
-        failure_receipt_path(cache_path).unlink(missing_ok=True)
+        try:
+            failure_receipt_path(cache_path).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _drop_older_receipt(cache_path: Path, answered_ns: int) -> None:
@@ -1688,7 +1695,121 @@ def decode_model_score(response: dict[str, Any]) -> Any:
         raise AnalysisValidationError("the completion is not valid JSON") from error
 
 
+@dataclass
+class _Attempt:
+    """What one attempt has done so far, for the receipt an unexpected
+    failure still owes (J3-6): whether it wrote its own, whether its request
+    left, what came back."""
+    audio_hash: str | None
+    settings: dict[str, Any] | None = None
+    estimate: dict[str, Any] | None = None
+    earlier: list[dict[str, Any]] | None = None
+    sent: SentRecord | None = None
+    response: dict[str, Any] | None = None
+    explained: bool = False
+
+
 def analyze_to_cache(
+    audio_path: Path,
+    cache_path: Path,
+    *,
+    audio_duration: float,
+    audio_format: str | None = None,
+    model: str = MODEL,
+    provider_order: list[str] | None = None,
+    provider_only: list[str] | None = None,
+    provider_ignore: list[str] | None = None,
+    allow_fallbacks: bool = True,
+    zero_data_retention: bool = False,
+    max_price: dict[str, float] | None = None,
+    transport: Transport = urllib.request.urlopen,
+    sleeper: Callable[[float], None] = time.sleep,
+    encoder: Callable[..., bytes] = encode_audio,
+    request_dump: Path | None = None,
+    expected_sha256: str | None = None,
+    _audio_bytes: bytes | None = None,
+    _prepared_request: tuple[dict[str, Any], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """One listening call for ``audio_path``, cached at ``cache_path``.
+
+    Every way this ends in failure leaves a receipt beside the cache (J1-2,
+    J3-6), because a child's own words die at the parent's ``_run`` ("python3
+    exited with code 1"): the named failures write theirs where they happen,
+    and anything else (a file removed before it was read, a disk that refuses
+    the cache after the answer was billed) is written here, saying whether the
+    request had left.
+    """
+    expected = (expected_sha256 or "").strip().lower() or None
+    state = _Attempt(audio_hash=expected)
+    try:
+        return _analyze_to_cache(
+            state, audio_path, cache_path, audio_duration=audio_duration,
+            audio_format=audio_format, model=model, provider_order=provider_order,
+            provider_only=provider_only, provider_ignore=provider_ignore,
+            allow_fallbacks=allow_fallbacks, zero_data_retention=zero_data_retention,
+            max_price=max_price, transport=transport, sleeper=sleeper, encoder=encoder,
+            request_dump=request_dump, expected_sha256=expected_sha256,
+            _audio_bytes=_audio_bytes, _prepared_request=_prepared_request,
+        )
+    except Exception as error:  # noqa: BLE001 - re-raised; only the receipt is added
+        if not state.explained:
+            fallback: dict[str, Any]
+            try:
+                fallback = request_settings(
+                    model=model, audio_duration=audio_duration,
+                    audio_format=(audio_format or audio_path.suffix.lstrip(".")).lower(),
+                    provider_order=provider_order, provider_only=provider_only,
+                    provider_ignore=provider_ignore, allow_fallbacks=allow_fallbacks,
+                    zero_data_retention=zero_data_retention, max_price=max_price)
+            except (ValueError, TypeError):
+                fallback = {"model": model}
+            _receipt_for_unexpected(cache_path, state, error, fallback)
+        raise
+
+
+def _receipt_for_unexpected(cache_path: Path, state: _Attempt, error: Exception,
+                            fallback_settings: dict[str, Any]) -> None:
+    """The receipt a failure nobody named still owes, by how far the attempt
+    got: before the request left (nothing billed), after it left with no
+    answer (may have been billed), or with an answer in hand (billed)."""
+    reason = " ".join(str(error).split()) or type(error).__name__
+    if isinstance(error, OSError) and error.strerror:
+        reason = error.strerror
+    settings = state.settings or fallback_settings
+    try:
+        if state.sent is not None and state.response is not None:
+            _write_failure_receipt(
+                cache_path, reason=f"The answer could not be saved ({reason})",
+                response=state.response, settings=settings, audio_sha256=state.audio_hash,
+                estimate=state.estimate, earlier=state.earlier)
+        elif state.sent is not None:
+            _write_failure_receipt(
+                cache_path, reason=reason, response=None, settings=settings,
+                audio_sha256=state.audio_hash, estimate=state.estimate,
+                message=unanswered_message(f"The listening step failed ({reason})", state.estimate),
+                may_be_billed=True, kind="unanswered", earlier=state.earlier)
+        else:
+            unread = state.settings is None and isinstance(error, OSError)
+            message = (bounded("Could not read the track's audio file (", reason,
+                               "); nothing was sent.",
+                               " Check that the file is still there, then start again.")
+                       if unread else
+                       bounded("The listening step stopped before sending (", reason,
+                               "); nothing was sent."))
+            _write_failure_receipt(
+                cache_path, reason=reason, response=None, settings=settings,
+                audio_sha256=state.audio_hash, message=message, may_be_billed=False,
+                kind="not_sent", earlier=state.earlier)
+    except OSError:
+        # The folder refuses even the receipt: the record, if any, still says
+        # the request may have left.
+        return
+    # The receipt now says how this attempt ended.
+    _drop_sent_record(state.sent)
+
+
+def _analyze_to_cache(
+    state: "_Attempt",
     audio_path: Path,
     cache_path: Path,
     *,
@@ -1712,6 +1833,7 @@ def analyze_to_cache(
     audio_bytes = _audio_bytes if _audio_bytes is not None else audio_path.read_bytes()
     audio_hash = hashlib.sha256(audio_bytes).hexdigest()
     expected = (expected_sha256 or "").strip().lower() or None
+    state.audio_hash = expected if expected is not None else audio_hash
     selected_format = (audio_format or audio_path.suffix.lstrip(".")).lower()
     if not selected_format:
         raise AnalysisValidationError("audio format is required")
@@ -1723,6 +1845,7 @@ def analyze_to_cache(
     dead = _dead_records(cache_path)
     earlier = earlier_possible_charges(cache_path, dead)
     earlier_receipt = _receipt_identity(cache_path)
+    state.earlier = earlier
     sent: SentRecord | None = None
 
     def not_sent(reason: str, settings: dict[str, Any]) -> RuntimeError:
@@ -1730,6 +1853,7 @@ def analyze_to_cache(
         that nothing can have been billed (the parent reads the sentence from
         the receipt, since a child's own words die at `_run`)."""
         message = bounded("", f"{reason[:1].upper()}{reason[1:]}", ".")
+        state.explained = True
         _write_failure_receipt(
             cache_path, reason=reason, response=None, settings=settings,
             audio_sha256=audio_hash, message=message, may_be_billed=False,
@@ -1777,6 +1901,7 @@ def analyze_to_cache(
         )
     else:
         payload, settings = _prepared_request
+    state.settings = settings
     if request_dump is not None:
         atomic_write_json(request_dump, redacted_request_dump(payload, settings, audio_hash))
     requested = str(settings.get("model") or model)
@@ -1784,10 +1909,12 @@ def analyze_to_cache(
     if oversize is not None:
         raise not_sent(oversize, settings)
     estimate = estimate_cost(requested, audio_duration)
+    state.estimate = estimate
     # The last thing before the request leaves: from here a kill leaves this
     # record, which is the only word on disk that the request was sent.
     sent = _write_sent_record(cache_path, settings=settings, audio_sha256=audio_hash,
                               estimate=estimate, earlier=earlier)
+    state.sent = sent
     # This record now carries what the earlier ones said: they are done with.
     # A receipt from an earlier attempt describes that attempt, not this one.
     _remove_dead(dead)
@@ -1796,6 +1923,7 @@ def analyze_to_cache(
         response = submit_request(payload, transport=transport, sleeper=sleeper,
                                   settings=settings, model=requested)
     except Refused as error:
+        state.explained = True
         # Refused before a model ran, or never sent: nothing billed, and the
         # sentence says why and what to do. A receipt, because a child's own
         # words die at `_run` ("python3 exited with code 1").
@@ -1807,6 +1935,7 @@ def analyze_to_cache(
         _drop_sent_record(sent)
         raise
     except SentUnanswered as error:
+        state.explained = True
         message = unanswered_message(str(error), estimate)
         _write_failure_receipt(
             cache_path, reason=str(error), response=None, settings=settings,
@@ -1817,7 +1946,10 @@ def analyze_to_cache(
         _drop_sent_record(sent)
         raise FailedRun(message) from error
 
+    state.response = response
+
     def failed(reason: str, detail: str | None = None) -> FailedRun:
+        state.explained = True
         _write_failure_receipt(
             cache_path, reason=reason, response=response, settings=settings,
             audio_sha256=audio_hash, detail=detail, estimate=estimate, earlier=earlier)
@@ -1903,9 +2035,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expect-sha256",
                         help="refuse, before sending, audio that does not hash to this")
     args = parser.parse_args(argv)
+    if not args.dry_run and args.cache is None:
+        parser.error("cache is required unless only inspecting help")
     try:
-        audio_snapshot = _snapshot_audio(args.audio)
-        audio_bytes, audio_hash = audio_snapshot
         audio_format = (args.audio_format or args.audio.suffix.lstrip(".")).lower()
         max_price = {
             name: value for name, value in (
@@ -1915,6 +2047,7 @@ def main(argv: list[str] | None = None) -> int:
             ) if value is not None
         }
         if args.dry_run:
+            audio_bytes, audio_hash = _snapshot_audio(args.audio)
             payload, settings = build_request(
                 prepare_audio(audio_bytes, audio_format, args.model),
                 audio_format=audio_format,
@@ -1933,10 +2066,10 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(json.dumps(dump, ensure_ascii=False, indent=2))
             return 0
-        if args.cache is None:
-            parser.error("cache is required unless only inspecting help")
-        # The audio is prepared (encoded, for a model that needs it) inside,
-        # where a failure to do so leaves the receipt the parent reads.
+        # The audio is read and prepared (encoded, for a model that needs it)
+        # inside, where every failure leaves the receipt the parent reads
+        # (J3-6: a file removed or made unreadable before it was read here
+        # printed its error and the panel read "python3 exited with code 1").
         analyze_to_cache(
             args.audio,
             args.cache,
@@ -1951,9 +2084,9 @@ def main(argv: list[str] | None = None) -> int:
             max_price=max_price,
             request_dump=args.request_dump,
             expected_sha256=args.expect_sha256,
-            _audio_bytes=audio_bytes,
         )
-    except (OSError, ValueError, RuntimeError) as error:
+    except Exception as error:  # noqa: BLE001 - the one line the log keeps; the receipt is written
+        # The receipt was written inside; this is the line the job log keeps.
         print(f"Semantic analysis failed: {error}", file=sys.stderr)
         return 1
     return 0
