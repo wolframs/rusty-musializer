@@ -790,6 +790,100 @@ class EveryFailureLeavesItsReason(LaneTestCase):
         self.assertNotIn("exited with code", str(raised.exception))
 
 
+class Killed(BaseException):
+    """What a SIGKILL of the process group looks like from inside: nothing
+    after it runs. A BaseException, so no `except Exception` catches it."""
+
+
+class ARequestThatLeftIsRecorded(LaneTestCase):
+    """Defect J1-3 (2026-11-16): Cancel, a closed window and the 40-minute
+    deadline killed the helper with nothing on disk saying a request had left.
+    A record is written before it leaves; an answer or a receipt replaces it;
+    one still there was sent and never answered."""
+
+    @property
+    def record(self) -> Path:
+        return semantic_openrouter.sent_record_path(self.ws.cache)
+
+    def test_the_record_is_on_disk_before_the_request_leaves_and_a_kill_leaves_it(self) -> None:
+        seen: list[dict] = []
+
+        def killed_mid_call(request, timeout: float):  # noqa: ANN001
+            seen.append(json.loads(self.record.read_text()))
+            raise Killed()
+
+        with self.assertRaises(Killed):
+            semantic_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
+                transport=killed_mid_call, sleeper=lambda _s: None)
+        self.assertEqual(len(seen), 1, "written before the send")
+        record = json.loads(self.record.read_text())
+        self.assertEqual(record, seen[0])
+        self.assertEqual(record["schema_version"], "musializer.semantic-request-sent/v1")
+        self.assertEqual(record["usd_max"], 0.033, "the most it can cost, rounded up")
+        self.assertEqual(record["model_label"], "MiMo")
+        self.assertIsInstance(record["sent_ns"], int)
+        self.assertNotIn(SENTINEL_KEY, self.record.read_text())
+        self.assertFalse(self.ws.cache.exists())
+        self.assertFalse(self.ws.receipt.exists())
+
+    def test_an_answer_or_a_receipt_replaces_the_record(self) -> None:
+        self.run_lane(response(answer()))
+        self.assertFalse(self.record.exists(), "answered")
+        self.ws.cache.unlink()
+        with self.assertRaises(semantic_openrouter.FailedRun):
+            self.run_lane(CUT_OFF)
+        self.assertFalse(self.record.exists(), "the receipt says what it cost")
+        with self.assertRaises(semantic_openrouter.Refused):
+            self.run_lane(refusal(402))
+        self.assertFalse(self.record.exists(), "refused: nothing billed")
+        gateway = urllib.error.HTTPError(semantic_openrouter.OPENROUTER_URL, 502, "gateway",
+                                         {}, io.BytesIO(b""))
+        with self.assertRaises(semantic_openrouter.FailedRun):
+            self.run_lane(gateway)
+        self.assertFalse(self.record.exists())
+        self.assertTrue(json.loads(self.ws.receipt.read_text())["may_be_billed"])
+
+    def test_a_new_attempt_carries_the_earlier_possible_charge_until_an_answer(self) -> None:
+        def killed(request, timeout: float):  # noqa: ANN001
+            raise Killed()
+        with self.assertRaises(Killed):
+            semantic_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
+                transport=killed, sleeper=lambda _s: None)
+        first = json.loads(self.record.read_text())
+        # A second attempt that is refused: nothing billed this time, and the
+        # first attempt's possible charge is still said, in its receipt.
+        with self.assertRaises(semantic_openrouter.Refused):
+            self.run_lane(refusal(402))
+        receipt = json.loads(self.ws.receipt.read_text())
+        self.assertEqual([entry["at_ns"] for entry in receipt["earlier"]], [first["sent_ns"]])
+        self.assertEqual(receipt["earlier"][0]["kind"], "unanswered")
+        # A third that is killed again carries both forward in its record.
+        with self.assertRaises(Killed):
+            semantic_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
+                transport=killed, sleeper=lambda _s: None)
+        third = json.loads(self.record.read_text())
+        self.assertEqual([entry["at_ns"] for entry in third["earlier"]], [first["sent_ns"]])
+        # An answer is in hand: the record and what it carried are done with.
+        self.run_lane(response(answer()))
+        self.assertFalse(self.record.exists())
+        self.assertFalse(self.ws.receipt.exists())
+
+    def test_a_record_another_helper_wrote_meanwhile_is_not_removed(self) -> None:
+        def overwritten(request, timeout: float):  # noqa: ANN001
+            # Another helper on the same cache sends its own request now; it
+            # writes its record as every record is written, by a rename.
+            semantic_openrouter.atomic_write_json(self.record, {"schema_version": "x",
+                                                                "theirs": True})
+            return FakeHTTPResponse(json.dumps(response(answer())).encode())
+        semantic_openrouter.analyze_to_cache(
+            self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
+            transport=overwritten, sleeper=lambda _s: None)
+        self.assertTrue(json.loads(self.record.read_text())["theirs"])
+
+
 class AChangedFileIsNeverPaidFor(LaneTestCase):
     """Defect J1-1 (2026-11-16): a track file replaced after loading.
 

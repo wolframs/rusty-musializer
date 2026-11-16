@@ -1152,6 +1152,97 @@ def _cost_clause(response: dict[str, Any], estimate: dict[str, Any] | None = Non
     return "OpenRouter reported no cost for it"
 
 
+# The record written **before** a request leaves (defect J1-3, 2026-11-16).
+#
+# Cancel, a closed window and the parent's 40-minute deadline kill this process
+# group; nothing else on disk would say that a request was in flight, the user
+# read "Nothing was applied", and the next Start could pay again without a word.
+# So: a durable record before the POST, removed when the call ends in an answer
+# (the cache) or in a receipt (which says what it cost); one still there is a
+# request that was sent and never answered. Possible charges a new attempt
+# replaces are carried forward in its record and receipt (`earlier`), and
+# cleared only when an answer is in hand (docs/TRAPS.md, "Replacing a record of
+# possible spending erases a possible charge").
+SENT_RECORD_SCHEMA = "musializer.semantic-request-sent/v1"
+EARLIER_KEEP = 16
+
+
+def sent_record_path(cache_path: Path) -> Path:
+    return cache_path.with_name(f"{cache_path.stem}.sent.json")
+
+
+def _read_small_json(path: Path) -> Any:
+    try:
+        with path.open("rb") as handle:
+            if os.fstat(handle.fileno()).st_size > 1 << 20:
+                return None
+            return json.loads(handle.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def earlier_possible_charges(cache_path: Path) -> list[dict[str, Any]]:
+    """Every attempt beside this cache that may have been billed and is not
+    yet answered: a sent record still there, a receipt that says "may have
+    been billed", and what each of them carried forward."""
+    found: list[dict[str, Any]] = []
+    record = _read_small_json(sent_record_path(cache_path))
+    if isinstance(record, dict) and record.get("schema_version") == SENT_RECORD_SCHEMA:
+        found.extend(entry for entry in record.get("earlier") or [] if isinstance(entry, dict))
+        found.append({"kind": "unanswered", "at_utc": record.get("sent_utc"),
+                      "at_ns": record.get("sent_ns"), "usd_max": record.get("usd_max")})
+    receipt = _read_small_json(failure_receipt_path(cache_path))
+    if isinstance(receipt, dict) and receipt.get("schema_version") in READABLE_FAILED_RUN_SCHEMAS:
+        found.extend(entry for entry in receipt.get("earlier") or [] if isinstance(entry, dict))
+        if receipt.get("may_be_billed"):
+            found.append({"kind": "may_be_billed", "at_utc": receipt.get("failed_utc"),
+                          "at_ns": receipt.get("failed_ns"),
+                          "usd_max": (receipt.get("estimate") or {}).get("usd_max")})
+    unique: dict[tuple[Any, Any], dict[str, Any]] = {}
+    for entry in found:
+        unique[(entry.get("kind"), entry.get("at_ns"))] = entry
+    ordered = sorted(unique.values(), key=lambda entry: entry.get("at_ns") or 0)
+    return ordered[-EARLIER_KEEP:]
+
+
+def _write_sent_record(cache_path: Path, *, settings: dict[str, Any], audio_sha256: str,
+                       estimate: dict[str, Any], earlier: list[dict[str, Any]]) -> tuple[int, int]:
+    """Durably, before the request leaves; returns the record's (inode,
+    device) so only this record is ever removed by this attempt."""
+    path = sent_record_path(cache_path)
+    ceiling = estimate.get("usd_max")
+    atomic_write_json(path, {
+        "schema_version": SENT_RECORD_SCHEMA,
+        "sent_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "sent_ns": time.time_ns(),
+        "audio_sha256": audio_sha256,
+        "request": settings,
+        "model_label": model_label(str(settings.get("model") or MODEL)),
+        # The most it can cost, rounded up at the precision every sentence
+        # shows it (`ceil_usd`).
+        "usd_max": ceil_usd(ceiling, 3) if isinstance(ceiling, (int, float)) else None,
+        "estimate": estimate,
+        "pid": os.getpid(),
+        "earlier": earlier,
+    })
+    seen = os.stat(path)
+    return seen.st_ino, seen.st_dev
+
+
+def _drop_sent_record(cache_path: Path, identity: tuple[int, int] | None) -> None:
+    """Removes this attempt's record, and only while it is still this one: a
+    record another helper wrote over it since is another request in flight."""
+    if identity is None:
+        return
+    path = sent_record_path(cache_path)
+    try:
+        now = os.stat(path)
+    except OSError:
+        return
+    if (now.st_ino, now.st_dev) == identity:
+        path.unlink(missing_ok=True)
+
+
 AUDIO_CHANGED_REASON = ("the track's audio file changed on disk during the job, so nothing "
                         "was sent. Open the file again, then start")
 
@@ -1255,6 +1346,7 @@ def _write_failure_receipt(
     settings: dict[str, Any], audio_sha256: str, detail: str | None = None,
     estimate: dict[str, Any] | None = None, message: str | None = None,
     may_be_billed: bool = False, kind: str | None = None,
+    earlier: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The record of a failed run, beside (never in) the cache.
 
@@ -1295,6 +1387,9 @@ def _write_failure_receipt(
         "reported_cost_usd": reported_cost_usd(response),
         "content_characters": None if content is None else len(content),
         "content_start": None if content is None else content[:FAILED_CONTENT_KEEP],
+        # Earlier attempts that may have been billed, carried forward from the
+        # record and receipt this attempt replaced (J1-3).
+        "earlier": earlier or [],
     }
     atomic_write_json(failure_receipt_path(cache_path), receipt)
     return receipt
@@ -1338,8 +1433,12 @@ def analyze_to_cache(
     if not selected_format:
         raise AnalysisValidationError("audio format is required")
     receipt_path = failure_receipt_path(cache_path)
+    # What earlier attempts may have cost, before their receipt goes: it rides
+    # forward in whatever this attempt writes (J1-3).
+    earlier = earlier_possible_charges(cache_path)
     # A receipt from an earlier attempt describes that attempt, not this one.
     receipt_path.unlink(missing_ok=True)
+    sent: tuple[int, int] | None = None
 
     def not_sent(reason: str, settings: dict[str, Any]) -> RuntimeError:
         """A run that stopped before anything left: its receipt says so, and
@@ -1349,7 +1448,7 @@ def analyze_to_cache(
         _write_failure_receipt(
             cache_path, reason=reason, response=None, settings=settings,
             audio_sha256=audio_hash, message=message, may_be_billed=False,
-            kind="not_sent")
+            kind="not_sent", earlier=earlier)
         return RuntimeError(message)
 
     # The parent hashed the file when the job started; this snapshot is read
@@ -1400,6 +1499,10 @@ def analyze_to_cache(
     if oversize is not None:
         raise not_sent(oversize, settings)
     estimate = estimate_cost(requested, audio_duration)
+    # The last thing before the request leaves: from here a kill leaves this
+    # record, which is the only word on disk that the request was sent.
+    sent = _write_sent_record(cache_path, settings=settings, audio_sha256=audio_hash,
+                              estimate=estimate, earlier=earlier)
     try:
         response = submit_request(payload, transport=transport, sleeper=sleeper,
                                   settings=settings, model=requested)
@@ -1411,7 +1514,8 @@ def analyze_to_cache(
             cache_path, reason=str(error), response=None, settings=settings,
             audio_sha256=audio_hash, estimate=estimate, message=str(error),
             may_be_billed=False, kind=error.kind,
-            detail=error.detail)
+            detail=error.detail, earlier=earlier)
+        _drop_sent_record(cache_path, sent)
         raise
     except SentUnanswered as error:
         message = unanswered_message(str(error), estimate)
@@ -1419,13 +1523,17 @@ def analyze_to_cache(
             cache_path, reason=str(error), response=None, settings=settings,
             audio_sha256=audio_hash, estimate=estimate, message=message,
             may_be_billed=True,
-            kind="timed_out" if isinstance(error.__cause__, TimeoutError) else "unanswered")
+            kind="timed_out" if isinstance(error.__cause__, TimeoutError) else "unanswered",
+            earlier=earlier)
+        _drop_sent_record(cache_path, sent)
         raise FailedRun(message) from error
 
     def failed(reason: str, detail: str | None = None) -> FailedRun:
         _write_failure_receipt(
             cache_path, reason=reason, response=response, settings=settings,
-            audio_sha256=audio_hash, detail=detail, estimate=estimate)
+            audio_sha256=audio_hash, detail=detail, estimate=estimate, earlier=earlier)
+        # The receipt now says what this call cost; the record is answered.
+        _drop_sent_record(cache_path, sent)
         return FailedRun(failure_message(reason, response, estimate))
 
     name = model_label(requested)
@@ -1463,6 +1571,9 @@ def analyze_to_cache(
         "answered_ns": answered_ns,
     }
     atomic_write_json(cache_path, envelope)
+    # The answer is in hand: the record of this request, and the earlier
+    # possible charges it carried for the same cache, are done with.
+    _drop_sent_record(cache_path, sent)
     _drop_older_receipt(cache_path, answered_ns)
     return envelope
 

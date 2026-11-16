@@ -147,6 +147,198 @@ pub fn listening_failure(receipt: &[u8], since_ns: u128) -> Option<ListeningFail
     })
 }
 
+/// The record the listening helper writes **before** its request leaves
+/// (`tools/semantic_openrouter.py`, `sent_record_path`; defect J1-3,
+/// 2026-11-16). One still there is a request that was sent and never answered.
+pub const SENT_RECORD_NAME: &str = "semantic.cache.sent.json";
+
+/// Its schema.
+pub const SENT_RECORD_SCHEMA: &str = "musializer.semantic-request-sent/v1";
+
+/// The listening helper's answer cache, whose modification time says an
+/// answer was written after a record or receipt.
+pub const LISTENING_CACHE_NAME: &str = "semantic.cache.json";
+
+/// One attempt that may have been billed and is not answered.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PossibleCharge {
+    pub at_ns: u128,
+    /// `2026-11-16 10:02 UTC`, or empty when the record has no time.
+    pub at_words: String,
+    /// The most it can have cost, already rounded up at the thousandth.
+    pub usd_max: Option<f64>,
+    /// Sent and never answered (a record), rather than answered by a status
+    /// that may have been billed (a receipt).
+    pub unanswered: bool,
+}
+
+fn utc_words(value: Option<&serde_json::Value>) -> String {
+    let Some(text) = value.and_then(serde_json::Value::as_str) else {
+        return String::new();
+    };
+    let bytes = text.as_bytes();
+    if text.len() >= 16 && bytes.get(10) == Some(&b'T') && text.is_char_boundary(16) {
+        format!("{} {} UTC", &text[..10], &text[11..16])
+    } else {
+        String::new()
+    }
+}
+
+fn charge(entry: &serde_json::Value, unanswered: bool) -> Option<PossibleCharge> {
+    let (time, utc) = if entry.get("at_ns").is_some() {
+        ("at_ns", "at_utc")
+    } else if unanswered {
+        ("sent_ns", "sent_utc")
+    } else {
+        ("failed_ns", "failed_utc")
+    };
+    Some(PossibleCharge {
+        at_ns: u128::from(entry.get(time)?.as_u64()?),
+        at_words: utc_words(entry.get(utc)),
+        usd_max: entry
+            .get("usd_max")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|usd| usd.is_finite() && *usd >= 0.0),
+        unanswered: entry
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .map_or(unanswered, |kind| kind == "unanswered"),
+    })
+}
+
+/// The sent record, when it is one: the request it describes and the earlier
+/// possible charges it carried forward.
+#[must_use]
+pub fn sent_request(record: &[u8]) -> Option<(PossibleCharge, Vec<PossibleCharge>)> {
+    if record.len() > RECEIPT_MAX_BYTES {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(record).ok()?;
+    if value.get("schema_version")?.as_str()? != SENT_RECORD_SCHEMA {
+        return None;
+    }
+    let this = charge(&value, true)?;
+    let earlier = value
+        .get("earlier")
+        .and_then(serde_json::Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| charge(entry, true))
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((this, earlier))
+}
+
+/// Every attempt beside a listening cache that may have been billed and has
+/// no answer after it: a record still there, a receipt that says "may have
+/// been billed", and what each carried forward. `answered_ns` is when the
+/// cache was last written; anything at or before it is answered.
+#[must_use]
+pub fn possible_charges(
+    record: Option<&[u8]>,
+    receipt: Option<&[u8]>,
+    answered_ns: Option<u128>,
+) -> Vec<PossibleCharge> {
+    let mut found = Vec::new();
+    if let Some((this, earlier)) = record.and_then(sent_request) {
+        found.extend(earlier);
+        found.push(this);
+    }
+    if let Some(value) = receipt
+        .filter(|bytes| bytes.len() <= RECEIPT_MAX_BYTES)
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+        .filter(|value| {
+            value
+                .get("schema_version")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|schema| LISTENING_RECEIPT_SCHEMAS.contains(&schema))
+        })
+    {
+        if let Some(earlier) = value.get("earlier").and_then(serde_json::Value::as_array) {
+            found.extend(earlier.iter().filter_map(|entry| charge(entry, false)));
+        }
+        if value
+            .get("may_be_billed")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            let usd_max = value
+                .get("estimate")
+                .and_then(|estimate| estimate.get("usd_max"))
+                .and_then(serde_json::Value::as_f64)
+                .map(crate::assist::cost::ceil_thousandths);
+            if let Some(mut this) = charge(&value, false) {
+                this.usd_max = usd_max;
+                // Answered, by a status that may have been billed.
+                this.unanswered = false;
+                found.push(this);
+            }
+        }
+    }
+    found.retain(|entry| answered_ns.map_or(true, |answered| entry.at_ns > answered));
+    found.sort_by_key(|entry| (entry.at_ns, entry.unanswered));
+    found.dedup_by(|a, b| a.at_ns == b.at_ns && a.unanswered == b.unanswered);
+    found
+}
+
+/// `"(at most 0.073 USD)"`, or nothing when no charge names a ceiling.
+fn at_most(charges: &[PossibleCharge], together: bool) -> String {
+    let known: Vec<f64> = charges.iter().filter_map(|entry| entry.usd_max).collect();
+    if known.is_empty() || known.len() != charges.len() {
+        return String::new();
+    }
+    let total = crate::assist::cost::ceil_thousandths(known.iter().sum());
+    format!(
+        " (at most {total:.3} USD{})",
+        if together { " together" } else { "" }
+    )
+}
+
+/// The confirmation's sentence about earlier attempts that may have been
+/// billed, or `None` when there are none (J1-3).
+#[must_use]
+pub fn possible_charge_sentence(charges: &[PossibleCharge]) -> Option<String> {
+    let last = charges.last()?;
+    let when = if last.at_words.is_empty() {
+        String::new()
+    } else {
+        format!(" on {}", last.at_words)
+    };
+    Some(if charges.len() > 1 {
+        format!(
+            "{} earlier listening requests for this track may have been billed{}; the last \
+             was{when}.",
+            charges.len(),
+            at_most(charges, true),
+        )
+    } else if last.unanswered {
+        format!(
+            "An earlier listening request for this track was sent{when} and never answered; it \
+             may have been billed{}.",
+            at_most(charges, false),
+        )
+    } else {
+        format!(
+            "The last listening request for this track{when} may have been billed{}.",
+            at_most(charges, false),
+        )
+    })
+}
+
+/// What a stopped job adds when its request had already left: the clause
+/// every stop message carries (Cancel, the deadline, a torn-down job, a
+/// closed window).
+#[must_use]
+pub fn sent_clause(sent: &PossibleCharge) -> String {
+    format!(
+        "the listening request had already been sent to OpenRouter and may have been \
+         billed{}",
+        at_most(std::slice::from_ref(sent), false)
+    )
+}
+
 /// The title used when the log names no cause at all — an empty log, a killed
 /// process, a helper that died before it could print.
 pub const UNDIAGNOSED_HEADLINE: &str = "Analysis failed";
@@ -596,6 +788,74 @@ mod tests {
         let failure = listening_failure(&receipt("refused", &long, false, None, 9), 0).unwrap();
         assert!(failure.message.len() <= RECEIPT_MESSAGE_MAX_BYTES);
         assert!(notice_detail(&failure.message, "/tmp/x.log").len() < DETAIL_CAPACITY);
+    }
+
+    fn sent(at: u64, usd: f64, earlier: &str) -> Vec<u8> {
+        format!(
+            r#"{{"schema_version":"musializer.semantic-request-sent/v1","sent_ns":{at},
+                "sent_utc":"2026-11-16T10:02:33Z","usd_max":{usd},"earlier":[{earlier}]}}"#
+        )
+        .into_bytes()
+    }
+
+    /// J1-3: a record still there is a request sent and never answered, and
+    /// the sentence says so with what it may have cost; an answer written
+    /// after it settles it.
+    #[test]
+    fn a_request_sent_and_never_answered_is_said_before_the_next_start() {
+        let record = sent(2_000, 0.073, "");
+        let charges = possible_charges(Some(&record), None, None);
+        assert_eq!(charges.len(), 1);
+        assert_eq!(
+            possible_charge_sentence(&charges).as_deref(),
+            Some(
+                "An earlier listening request for this track was sent on 2026-11-16 10:02 UTC \
+                 and never answered; it may have been billed (at most 0.073 USD)."
+            )
+        );
+        assert!(possible_charges(Some(&record), None, Some(2_000)).is_empty());
+        assert!(possible_charges(Some(&record), None, Some(1_000)).len() == 1);
+        assert_eq!(possible_charge_sentence(&[]), None);
+        let (this, _) = sent_request(&record).expect("a record");
+        assert_eq!(
+            sent_clause(&this),
+            "the listening request had already been sent to OpenRouter and may have been \
+             billed (at most 0.073 USD)"
+        );
+    }
+
+    /// A receipt that may have been billed, and what records and receipts
+    /// carried forward, are counted once each and summed, rounded up.
+    #[test]
+    fn earlier_possible_charges_are_counted_once_and_summed_up() {
+        let earlier =
+            r#"{"kind":"unanswered","at_ns":1000,"at_utc":"2026-11-15T09:00:00Z","usd_max":0.073}"#;
+        let record = sent(3_000, 0.073, earlier);
+        let receipt = format!(
+            r#"{{"schema_version":"musializer.semantic-failed-run/v1","failed_ns":2000,
+                "failed_utc":"2026-11-15T20:00:00Z","may_be_billed":true,
+                "estimate":{{"usd_max":0.0721}},"earlier":[{earlier}]}}"#
+        );
+        let charges = possible_charges(Some(&record), Some(receipt.as_bytes()), None);
+        assert_eq!(charges.len(), 3, "{charges:?}");
+        assert_eq!(
+            possible_charge_sentence(&charges).as_deref(),
+            Some(
+                "3 earlier listening requests for this track may have been billed (at most \
+                 0.219 USD together); the last was on 2026-11-16 10:02 UTC."
+            )
+        );
+        let only_receipt = possible_charges(None, Some(receipt.as_bytes()), Some(1_500));
+        assert_eq!(
+            possible_charge_sentence(&only_receipt).as_deref(),
+            Some(
+                "The last listening request for this track on 2026-11-15 20:00 UTC may have \
+                 been billed (at most 0.073 USD)."
+            )
+        );
+        let not_billed = r#"{"schema_version":"musializer.semantic-failed-run/v1",
+            "failed_ns":2000,"may_be_billed":false}"#;
+        assert!(possible_charges(None, Some(not_billed.as_bytes()), None).is_empty());
     }
 
     /// A sentence already ending in punctuation is not given a second stop.

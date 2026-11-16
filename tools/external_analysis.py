@@ -1631,7 +1631,7 @@ def _semantic_request_identity(
     return {"audio_sha256": audio_sha, **settings}
 
 
-def _semantic_failure(cache_path: Path, audio_sha: str) -> str | None:
+def _semantic_failure(cache_path: Path, audio_sha: str, *, since_ns: int = 0) -> str | None:
     """The helper's own sentence for a failed run, read from its receipt.
 
     `_run` reports a failed child as "python3 exited with code 1", which says
@@ -1651,6 +1651,9 @@ def _semantic_failure(cache_path: Path, audio_sha: str) -> str | None:
             or receipt.get("schema_version") not in semantic_adapter.READABLE_FAILED_RUN_SCHEMAS
             or receipt.get("audio_sha256") != audio_sha
             or not isinstance(receipt.get("message"), str)):
+        return None
+    failed = semantic_adapter.receipt_time_ns(receipt)
+    if since_ns and (failed is None or failed < since_ns):
         return None
     # One line, bounded: it becomes the job's diagnosis line.
     return " ".join(receipt["message"].split())[:300] or None
@@ -2380,13 +2383,16 @@ def run_assist(
                 command.extend([f"--max-price-{name}", f"{value:.9g}"])
             if not semantic_route["allow_fallbacks"]: command.append("--no-fallbacks")
             if zdr: command.append("--zdr")
-            # A receipt left by an earlier attempt must not explain this one.
-            semantic_adapter.failure_receipt_path(paths["semantic"]).unlink(missing_ok=True)
+            # A receipt left by an earlier attempt must not explain this one:
+            # only one written since this attempt started is read. It is not
+            # removed here, because the helper carries what it may have cost
+            # forward before removing it (J1-3).
+            attempt_ns = time.time_ns()
             try:
                 _run(command, timeout=external_timeout,
                      env=_openrouter_env(allow_dotenv=allow_dotenv), runner=runner)
             except RuntimeError as error:
-                failure = _semantic_failure(paths["semantic"], audio_sha)
+                failure = _semantic_failure(paths["semantic"], audio_sha, since_ns=attempt_ns)
                 if failure is None:
                     raise
                 raise RuntimeError(failure) from error

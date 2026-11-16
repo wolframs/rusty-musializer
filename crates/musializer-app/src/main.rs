@@ -1669,7 +1669,8 @@ fn run(
             let discards_work = app.workspace.any_unsaved_work()
                 || app.shell.lyric_draft_is_dirty(&app.workspace)
                 || app.shell.route_edit_is_dirty();
-            if confirm_close(&mut app, export.is_some(), &mut close_warned) {
+            let analysis_sent = assist.sent_request_clause(&app.workspace);
+            if confirm_close(&mut app, export.is_some(), analysis_sent, &mut close_warned) {
                 if discards_work {
                     if let Err(error) = recovery_store.discard() {
                         eprintln!("warning: explicit discard could not remove recovery: {error}");
@@ -5409,7 +5410,12 @@ fn mark_current_track_dirty(app: &mut App, now_seconds: f64) {
 /// refuses the **first** request and says why, in the tray and on stderr, and
 /// honours the second. That is finite, it never loses work without having said
 /// so, and it is the smallest invention that satisfies both halves.
-fn confirm_close(app: &mut App, exporting: bool, already_warned: &mut bool) -> bool {
+fn confirm_close(
+    app: &mut App,
+    exporting: bool,
+    analysis_sent: Option<String>,
+    already_warned: &mut bool,
+) -> bool {
     let dirty = app
         .workspace
         .tracks()
@@ -5455,7 +5461,13 @@ fn confirm_close(app: &mut App, exporting: bool, already_warned: &mut bool) -> b
         items.push_str("\n- Cancel the running video export.");
     }
     if app.workspace.assist.is_active() {
-        items.push_str("\n- Cancel the running analysis job.");
+        // J1-3: quitting kills a request that may already have been billed.
+        match &analysis_sent {
+            Some(clause) => {
+                items.push_str(&format!("\n- Cancel the running analysis job ({clause})."))
+            }
+            None => items.push_str("\n- Cancel the running analysis job."),
+        }
     }
     if dirty > 0 {
         items.push_str(&format!(

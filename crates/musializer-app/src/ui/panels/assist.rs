@@ -192,6 +192,62 @@ fn listening_notice(
     Some((failure.message, notice))
 }
 
+/// The listening request this job sent and never saw answered: the helper's
+/// record, when it was written since `since_ns` (J1-3).
+fn sent_since(output_dir: &str, since_ns: u128) -> Option<diagnosis::PossibleCharge> {
+    if output_dir.is_empty() {
+        return None;
+    }
+    let bytes = read_bounded(&Path::new(output_dir).join(diagnosis::SENT_RECORD_NAME))?;
+    diagnosis::sent_request(&bytes)
+        .map(|(this, _)| this)
+        .filter(|this| this.at_ns >= since_ns)
+}
+
+/// What a job that died after its request left, with no receipt, tells the
+/// user: the helper never said how the call ended, so it may have been billed.
+fn sent_unanswered_notice(
+    sent: &diagnosis::PossibleCharge,
+    log_path: &str,
+) -> (String, AssistNotice) {
+    let sentence = format!(
+        "The helper stopped before an answer came, after {}. Nothing was saved.",
+        diagnosis::sent_clause(sent)
+    );
+    let notice = AssistNotice::new(
+        Severity::Error,
+        "The listening request may have been billed",
+        diagnosis::notice_detail(&sentence, log_path),
+    );
+    (sentence, notice)
+}
+
+/// The confirmation's line about earlier attempts for this track that may
+/// have been billed and have no answer after them (J1-3): read from the job
+/// folder the next Start would use.
+fn earlier_charges_sentence(output_dir: &Path) -> Option<String> {
+    let record = read_bounded(&output_dir.join(diagnosis::SENT_RECORD_NAME));
+    let receipt = read_bounded(&output_dir.join(diagnosis::LISTENING_RECEIPT_NAME));
+    if record.is_none() && receipt.is_none() {
+        return None;
+    }
+    let answered_ns = std::fs::metadata(output_dir.join(diagnosis::LISTENING_CACHE_NAME))
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_nanos());
+    let charges = diagnosis::possible_charges(record.as_deref(), receipt.as_deref(), answered_ns);
+    diagnosis::possible_charge_sentence(&charges)
+}
+
+/// The per-track job folder a Start would use (`plug.c:3262-3280`).
+fn track_output_dir(track: &Track) -> PathBuf {
+    PathBuf::from(format!(
+        "{ANALYSIS_ROOT}/{:016x}",
+        workspace_hash(&track.file_path, track.duration_seconds)
+    ))
+}
+
 /// Nanoseconds since the epoch, the clock the helper's receipts are stamped
 /// with (`time.time_ns()`).
 fn wall_clock_ns() -> u128 {
@@ -213,8 +269,53 @@ fn wall_clock_ns() -> u128 {
 /// severity [`Severity::dwell`] keeps on screen until it is dismissed. That
 /// distinction is the whole point: a deadline hit arrives forty minutes in,
 /// which is exactly when nobody is looking.
-fn stopped_notice(reason: StopReason, log_path: &str) -> AssistNotice {
+///
+/// **A request that had already left changes all three** (defect J1-3,
+/// 2026-11-16): the helper writes a record before its request leaves, and a
+/// stop that finds one written since the job started says the request may
+/// have been billed and the most it can have cost. A cancel is then a
+/// warning, not a confirmation.
+fn stopped_notice(
+    reason: StopReason,
+    log_path: &str,
+    sent: Option<&diagnosis::PossibleCharge>,
+) -> AssistNotice {
     let minutes = JOB_TIMEOUT.as_secs() / 60;
+    if let Some(sent) = sent {
+        let clause = diagnosis::sent_clause(sent);
+        return match reason {
+            StopReason::Cancelled => AssistNotice::new(
+                Severity::Warning,
+                "Analysis cancelled after the request was sent",
+                format!(
+                    "The analysis was stopped at your request, but {clause}. Nothing was \
+                     applied to this project."
+                ),
+            ),
+            StopReason::TimedOut => AssistNotice::new(
+                Severity::Error,
+                "Analysis reached its time limit",
+                diagnosis::notice_detail(
+                    &format!(
+                        "The helper ran for {minutes} minutes without finishing and was \
+                         stopped; {clause}."
+                    ),
+                    log_path,
+                ),
+            ),
+            StopReason::Failing => AssistNotice::new(
+                Severity::Error,
+                "Analysis was torn down",
+                diagnosis::notice_detail(
+                    &format!(
+                        "The helper could not be confirmed stopped, so the job was torn \
+                         down; {clause}."
+                    ),
+                    log_path,
+                ),
+            ),
+        };
+    }
     match reason {
         StopReason::Cancelled => AssistNotice::new(
             Severity::Info,
@@ -495,10 +596,7 @@ impl AssistController {
                     .flatten(),
             )
         };
-        let output_dir = PathBuf::from(format!(
-            "{ANALYSIS_ROOT}/{:016x}",
-            workspace_hash(&audio, duration)
-        ));
+        let output_dir = track_output_dir(&workspace.tracks()[index]);
 
         // §5 invariant 3: the route graph is resolved **here**, once, and the
         // result is what provenance records. Pressing Start is the confirmation
@@ -662,6 +760,18 @@ impl AssistController {
             return Vec::new();
         };
         workspace.assist.elapsed_seconds = job.elapsed().as_secs_f64();
+        if let Some((reason, after)) = probe_stop() {
+            if job.stopping().is_none() && job.elapsed().as_secs_f64() >= after {
+                workspace.assist.job_state = if job.request_stop(reason) {
+                    match reason {
+                        StopReason::TimedOut => AssistJobState::TimingOut,
+                        _ => AssistJobState::Cancelling,
+                    }
+                } else {
+                    AssistJobState::Failing
+                };
+            }
+        }
         let poll = match job.poll() {
             Ok(poll) => poll,
             Err(error) => {
@@ -694,8 +804,9 @@ impl AssistController {
                     StopReason::TimedOut => AssistJobState::TimedOut,
                     StopReason::Failing => AssistJobState::Failed,
                 };
-                let notice = stopped_notice(reason, &session.log_path);
-                if reason != StopReason::Cancelled {
+                let sent = sent_since(&session.output_dir, self.job_started_ns);
+                let notice = stopped_notice(reason, &session.log_path, sent.as_ref());
+                if reason != StopReason::Cancelled || sent.is_some() {
                     session.failure_detail = notice.detail.clone();
                 }
                 vec![notice]
@@ -706,6 +817,10 @@ impl AssistController {
                 session.job_state = AssistJobState::Failed;
                 let (sentence, notice) =
                     listening_notice(&session.output_dir, self.job_started_ns, &session.log_path)
+                        .or_else(|| {
+                            sent_since(&session.output_dir, self.job_started_ns)
+                                .map(|sent| sent_unanswered_notice(&sent, &session.log_path))
+                        })
                         .unwrap_or_else(|| failed_notice(Path::new(&session.log_path)));
                 session.failure_detail = sentence;
                 vec![notice]
@@ -848,6 +963,17 @@ impl AssistController {
                 .collect()
             }
         }
+    }
+
+    /// What quitting now would leave behind, for the close confirmation: the
+    /// clause a running job's request adds when it had already left (J1-3).
+    #[must_use]
+    pub fn sent_request_clause(&self, workspace: &Workspace) -> Option<String> {
+        if !self.is_running() {
+            return None;
+        }
+        sent_since(&workspace.assist.output_dir, self.job_started_ns)
+            .map(|sent| diagnosis::sent_clause(&sent))
     }
 
     /// `request_assist_job_cancel` (`plug.c:4088-4091`).
@@ -2573,6 +2699,27 @@ fn probe_artifacts(session: &mut AssistSession) {
     session.output_dir = directory;
 }
 
+/// `cancel@SECONDS` or `deadline@SECONDS`: once a real job has run that long,
+/// stop it as Cancel or the 40-minute deadline would (J1-3). The headless gate
+/// pins the words a stop after a sent request produces; nothing else can wait
+/// forty minutes. Inert when unset or malformed.
+pub const PROBE_STOP_VARIABLE: &str = "MUSIALIZER_ASSIST_PROBE_STOP";
+
+fn probe_stop() -> Option<(StopReason, f64)> {
+    let value = std::env::var(PROBE_STOP_VARIABLE).ok()?;
+    let (word, seconds) = value.trim().split_once('@')?;
+    let seconds: f64 = seconds
+        .parse()
+        .ok()
+        .filter(|s: &f64| s.is_finite() && *s >= 0.0)?;
+    let reason = match word {
+        "cancel" => StopReason::Cancelled,
+        "deadline" => StopReason::TimedOut,
+        _ => return None,
+    };
+    Some((reason, seconds))
+}
+
 /// Which mode a probed candidate was run in (review LT1-R, R11).
 ///
 /// `probe_candidate` hard-coded [`Lanes::ALL`], so the panel state a *lyrics*
@@ -3909,6 +4056,11 @@ impl Shell {
         let wrap_note = |text: &str| wrap_to_width(text, inner, 6, &measure_route);
         let confirmation_notes = ConfirmationNotes {
             audio_refusal: audio_check.as_ref().and_then(AudioCheck::refusal),
+            earlier_charges: routes
+                .as_ref()
+                .filter(|_| assist_ui_state::mode_lanes(session.mode()).semantics)
+                .and(track)
+                .and_then(confirmation_earlier_charges),
         };
         let route_lines: Vec<(String, raylib::prelude::Color)> = routes
             .as_ref()
@@ -5030,6 +5182,56 @@ struct AssistOpenTexts<'a> {
 struct ConfirmationNotes {
     /// The file changed on disk since its digest was taken (defect J1-1).
     audio_refusal: Option<String>,
+    /// Earlier attempts for this track that may have been billed (J1-3).
+    earlier_charges: Option<String>,
+}
+
+thread_local! {
+    /// `(job folder, when, sentence)`: the confirmation's earlier-charges
+    /// line, read again at most every two seconds while the card is open.
+    static CONFIRMATION_CHARGES: std::cell::RefCell<Option<(PathBuf, std::time::Instant, Option<String>)>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+fn confirmation_earlier_charges(track: &Track) -> Option<String> {
+    const RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
+    let folder = track_output_dir(track);
+    CONFIRMATION_CHARGES.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some((path, at, sentence)) = slot.as_ref() {
+            if *path == folder && at.elapsed() < RECHECK {
+                return sentence.clone();
+            }
+        }
+        let sentence = earlier_charges_sentence(&folder);
+        report_charges(&format!(
+            "dir={} line={}",
+            folder.display(),
+            sentence.as_deref().unwrap_or("none")
+        ));
+        *slot = Some((folder, std::time::Instant::now(), sentence.clone()));
+        sentence
+    })
+}
+
+thread_local! {
+    static LAST_CHARGES_REPORT: std::cell::RefCell<String> = const {
+        std::cell::RefCell::new(String::new())
+    };
+}
+
+/// The `assist charges:` report line, printed when it changes: the job folder
+/// the confirmation read and the line it drew from it.
+fn report_charges(line: &str) {
+    LAST_CHARGES_REPORT.with(|last| {
+        let mut last = last.borrow_mut();
+        if *last != line {
+            println!("assist charges:  {line}");
+            last.clear();
+            last.push_str(line);
+        }
+    });
 }
 
 fn column_route_lines(
@@ -5081,6 +5283,13 @@ fn column_route_lines(
             wrap(refusal)
                 .into_iter()
                 .map(|line| (line, color::ui_danger())),
+        );
+    }
+    if let Some(charges) = &notes.earlier_charges {
+        lines.extend(
+            wrap(charges)
+                .into_iter()
+                .map(|line| (line, color::ui_warning())),
         );
     }
     let raises = execution::any_fallback_can_raise_boundary(&snapshot.contracts);
@@ -5361,9 +5570,9 @@ mod tests {
     #[test]
     fn every_supervisor_stop_says_something_and_a_cancel_is_not_an_error() {
         let log = "/tmp/mz/assist-all-000.log";
-        let cancelled = stopped_notice(StopReason::Cancelled, log);
-        let timed_out = stopped_notice(StopReason::TimedOut, log);
-        let failing = stopped_notice(StopReason::Failing, log);
+        let cancelled = stopped_notice(StopReason::Cancelled, log, None);
+        let timed_out = stopped_notice(StopReason::TimedOut, log, None);
+        let failing = stopped_notice(StopReason::Failing, log, None);
 
         assert_eq!(cancelled.severity, Severity::Info);
         assert!(!cancelled.severity.dwell().persistent, "a cancel expires");
@@ -5398,6 +5607,66 @@ mod tests {
             assert!(notice.title.len() < musializer_core::ui::notice::TITLE_CAPACITY);
             assert!(notice.detail.len() < musializer_core::ui::notice::DETAIL_CAPACITY);
         }
+    }
+
+    /// J1-3: a stop that finds the helper's record of a request that had
+    /// already left says so, with the most it can have cost, in every stop;
+    /// a cancel is then a warning. A record from before the job started is an
+    /// earlier job's and changes nothing.
+    #[test]
+    fn a_stop_after_the_request_left_says_it_may_have_been_billed() {
+        let scratch = Scratch::new("sent-stop");
+        let folder = scratch.0.display().to_string();
+        std::fs::write(
+            scratch.join(diagnosis::SENT_RECORD_NAME),
+            r#"{"schema_version":"musializer.semantic-request-sent/v1","sent_ns":5000,
+               "sent_utc":"2026-11-16T10:02:33Z","usd_max":0.073,"earlier":[]}"#,
+        )
+        .expect("record");
+        assert!(
+            sent_since(&folder, 6_000).is_none(),
+            "an earlier job's record"
+        );
+        let sent = sent_since(&folder, 4_000).expect("this job's record");
+        let log = "/tmp/mz/mimo-000.log";
+        let cancelled = stopped_notice(StopReason::Cancelled, log, Some(&sent));
+        assert_eq!(cancelled.severity, Severity::Warning);
+        assert_eq!(
+            cancelled.title,
+            "Analysis cancelled after the request was sent"
+        );
+        assert_eq!(
+            cancelled.detail,
+            "The analysis was stopped at your request, but the listening request had already \
+             been sent to OpenRouter and may have been billed (at most 0.073 USD). Nothing was \
+             applied to this project."
+        );
+        let timed_out = stopped_notice(StopReason::TimedOut, log, Some(&sent));
+        assert!(timed_out.detail.starts_with(&format!(
+            "The helper ran for {} minutes without finishing and was stopped; the listening \
+             request had already been sent to OpenRouter and may have been billed (at most \
+             0.073 USD).",
+            JOB_TIMEOUT.as_secs() / 60
+        )));
+        assert!(timed_out.detail.ends_with(log));
+        let failing = stopped_notice(StopReason::Failing, log, Some(&sent));
+        assert!(failing
+            .detail
+            .contains("may have been billed (at most 0.073 USD)"));
+        for notice in [&cancelled, &timed_out, &failing] {
+            assert!(notice.detail.len() < musializer_core::ui::notice::DETAIL_CAPACITY);
+        }
+        let (sentence, died) = sent_unanswered_notice(&sent, log);
+        assert_eq!(died.title, "The listening request may have been billed");
+        assert!(sentence.ends_with("Nothing was saved."), "{sentence}");
+
+        // And the next confirmation for this track says it before Start.
+        let line = earlier_charges_sentence(&scratch.0).expect("a line");
+        assert_eq!(
+            line,
+            "An earlier listening request for this track was sent on 2026-11-16 10:02 UTC and \
+             never answered; it may have been billed (at most 0.073 USD)."
+        );
     }
 
     /// Audit B2, at the seam the panel actually uses: the log the helper wrote
