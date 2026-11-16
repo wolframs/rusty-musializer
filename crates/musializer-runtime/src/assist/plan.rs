@@ -169,7 +169,7 @@ impl ExecutionPlan {
     pub fn describe(&self) -> String {
         format!(
             "profile={} contracts={} remote={} audio-leaves={} credential={} ask-as-none={} \
-             blocks={} doctor={} snapshot={}",
+             blocks={} doctor={} catalog-predates={} snapshot={}",
             self.snapshot.profile_id,
             self.snapshot
                 .contracts
@@ -199,6 +199,15 @@ impl ExecutionPlan {
                     .join(",")
             },
             self.doctor.token(),
+            if self.catalog_predates.is_empty() {
+                "none".to_string()
+            } else {
+                self.catalog_predates
+                    .iter()
+                    .map(|contract| contract.token())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            },
             self.snapshot.snapshot_schema,
         )
     }

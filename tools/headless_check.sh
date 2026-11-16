@@ -2972,6 +2972,202 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# J1 (2026-11-16): the Feelings Start path, through the window.
+#
+# Nobody had pressed Start against the real service; these runs press it
+# against a stand-in helper and pin the words a user reads where they are
+# drawn: the confirmation's route block (`assist notes:`) and every notice
+# the Assist controller hands the tray (`assist notice:`). The stand-in is a
+# test double for `tools/external_analysis.py` (MUSIALIZER_ASSIST_HELPER):
+# it writes the receipt or the sent record the real helper writes, which the
+# Python lane tests pin, and answers `semantic-status` the way the real
+# query does. Nothing opens a socket; the gate's stub key never leaves.
+#
+#   plain       the confirmation as it was: the paid-call cost line
+#   saved       a saved answer exists: "Cost: nothing ..."
+#   catalog     the saved model list predates the model: one quiet line
+#   billed      an earlier request was sent and never answered
+#   no-credit   Start, and the listening step refused for credit
+#   cancel      Start, the request leaves, Cancel
+#   deadline    Start, the request leaves, the deadline
+#   changed     Start after the track's file was replaced
+# ---------------------------------------------------------------------------
+echo "=== J1: the Feelings start path ==="
+J1_DIR="$OUT_DIR/j1-feelings"
+rm -rf "$J1_DIR"
+mkdir -p "$J1_DIR/cache-stale/musializer"
+J1_DIR_ABS="$(cd "$J1_DIR" && pwd)"
+J1_HELPER="$J1_DIR_ABS/fake-external-analysis.py"
+cat >"$J1_HELPER" <<'PY'
+import json, os, pathlib, sys, time
+args = sys.argv[1:]
+if args and args[0] == "semantic-status":
+    touch = os.environ.get("J1_REPLACE_AUDIO")
+    if touch:
+        # The track's file replaced after loading, as a person would by
+        # exporting the song again under the same name.
+        pathlib.Path(touch).write_bytes(pathlib.Path(touch).read_bytes() + b"\0" * 64)
+    state = os.environ.get("J1_STATUS", "none")
+    answer = {"schema_version": "musializer.semantic-status/v1", "state": state,
+              "saved_answer": None}
+    if state == "saved":
+        answer["saved_answer"] = {"made_utc": "2026-11-15 18:53 UTC", "model": "google/gemini-3.8-flash"}
+    print(json.dumps(answer))
+    sys.exit(0)
+out = pathlib.Path(args[2])
+behaviour = os.environ.get("J1_ASSIST", "")
+now = time.time_ns()
+if behaviour == "no-credit":
+    message = ("OpenRouter refused the request: the account needs credit (HTTP 402); nothing "
+               "was billed. Add credit at openrouter.ai, then start again.")
+    (out / "semantic.cache.failed.json").write_text(json.dumps({
+        "schema_version": "musializer.semantic-failed-run/v1", "failed_ns": now,
+        "failed_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "kind": "no_credit", "message": message, "may_be_billed": False,
+        "reported_cost_usd": None, "earlier": []}))
+    print(f"External analysis failed: {message}", file=sys.stderr)
+    sys.exit(1)
+if behaviour == "hang":
+    (out / "semantic.cache.sent.json").write_text(json.dumps({
+        "schema_version": "musializer.semantic-request-sent/v1", "sent_ns": now,
+        "sent_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "usd_max": 0.073, "earlier": []}))
+    time.sleep(120)
+sys.exit(3)
+PY
+# A catalog fetched before Gemini 3.8 Flash was listed, which does not list it.
+printf '{"schema_version":"musializer.openrouter-catalog/v1","fetched_at_utc":"2026-09-01T21:00:28Z","models":[{"id":"xiaomi/mimo-v2.5","input_modalities":["audio","text"]}]}\n' \
+    >"$J1_DIR/cache-stale/musializer/openrouter-models-v1.json"
+J1_STALE_CACHE="$J1_DIR_ABS/cache-stale"
+
+j1_run() {
+    # j1_run NAME TRACK FRAMES PROBE_EXTRA [VAR=VALUE ...]
+    local name="$1" track="$2" frames="$3" extra="$4"
+    shift 4
+    local log="$J1_DIR/$name.txt"
+    set +e
+    env -u MUSIALIZER_ASSIST_HELPER -u OPENROUTER_API_KEY \
+        WAYLAND_DISPLAY="$MZ_NO_WAYLAND" \
+        DISPLAY="$DISPLAY_NUM" \
+        PULSE_SERVER="unix:/nonexistent/musializer-headless-check" \
+        XDG_CONFIG_HOME="$ROUTE_CONFIG/keyed" \
+        XDG_CACHE_HOME="$ROUTE_CACHE" \
+        MUSIALIZER_ASSIST_PROBE_LANES=mimo \
+        MUSIALIZER_ASSIST_HELPER="$J1_HELPER" \
+        "$@" \
+        $MZ_GL ./target/debug/musializer --mute "$track" \
+            --size 1280x720 \
+            --probe-frames "$frames" \
+            --probe-shot "$J1_DIR/$name.png" \
+            --ui-probe "panel=assist,play=0,assist=confirm$extra" \
+        >"$log" 2>&1
+    local status=$?
+    set -e
+    if [ "$status" -ne 0 ] || [ ! -f "$J1_DIR/$name.png" ]; then
+        echo "FAIL: j1-$name exited $status or drew nothing; see $log" >&2
+        return 1
+    fi
+    if grep -q -- "$ROUTE_STUB_KEY" "$log"; then
+        echo "FAIL: j1-$name printed the stub credential" >&2
+        return 1
+    fi
+    return 0
+}
+
+j1_expect() {
+    # j1_expect NAME REPORT_PREFIX FIXED_TEXT: the last such report line holds it.
+    local name="$1" prefix="$2" text="$3" line
+    line="$(sed -n "s/^$prefix *//p" "$J1_DIR/$name.txt" | tail -1)"
+    case "$line" in
+        *"$text"*) printf '  ok   %-10s %s\n' "$name" "$text" ;;
+        *) echo "FAIL: j1-$name: no '$prefix' line with \"$text\"; got: ${line:-<none>}" >&2
+           return 1 ;;
+    esac
+}
+
+j1_track() {
+    # A private copy per run: its own job folder (the folder is keyed by the
+    # path), and one the "changed" run may replace.
+    cp "$FIXTURE" "$J1_DIR_ABS/$1.wav"
+    echo "$J1_DIR_ABS/$1.wav"
+}
+
+J1_FAILED=0
+if [ "$ASSIST_WIRED" -eq 1 ]; then
+    T="$(j1_track plain)"
+    j1_run plain "$T" 90 "" J1_STATUS=none || J1_FAILED=1
+    j1_expect plain "assist notes:" "saved-answer=false" || J1_FAILED=1
+    j1_expect plain "assist notes:" "Cost: about" || J1_FAILED=1
+    j1_expect plain "assist reuse:" "state=Sends" || J1_FAILED=1
+    # Where Start is, from this run's own report, for the runs that press it.
+    J1_START="$(sed -n 's/^assist column:.* body=Confirmation start@\([0-9.]*\),\([0-9.]*\),\([0-9.]*\),\([0-9.]*\).*/\1 \2 \3 \4/p' \
+        "$J1_DIR/plain.txt" | tail -1 | awk '{printf "%dx%d", $1 + $3 / 2, $2 + $4 / 2}')"
+    J1_FOLDER="$(sed -n 's/^assist charges: *dir=\([^ ]*\) .*/\1/p' "$J1_DIR/plain.txt" | tail -1)"
+    echo "  start at $J1_START; the plain track's job folder is ${J1_FOLDER:-<unreported>}"
+
+    T="$(j1_track saved)"
+    j1_run saved "$T" 90 "" J1_STATUS=saved || J1_FAILED=1
+    j1_expect saved "assist notes:" "Cost: nothing. A saved answer for this track and these" || J1_FAILED=1
+    j1_expect saved "assist notes:" "2026-11-15 18:53 UTC, is reused, so this run sends nothing" || J1_FAILED=1
+    j1_expect saved "assist notes:" "saved-answer=true" || J1_FAILED=1
+
+    T="$(j1_track catalog)"
+    j1_run catalog "$T" 90 "" J1_STATUS=none XDG_CACHE_HOME="$J1_STALE_CACHE" || J1_FAILED=1
+    j1_expect catalog "assist routing:" "catalog-predates=TC-SEMANTIC" || J1_FAILED=1
+    j1_expect catalog "assist notes:" "The saved model list is older than" || J1_FAILED=1
+    j1_expect catalog "assist notes:" "Refresh now." || J1_FAILED=1
+    j1_expect catalog "assist routing:" "blocks=none" || J1_FAILED=1
+
+    # An earlier request that was sent and never answered, in the folder the
+    # next Start uses: written there by the hand of a killed helper.
+    T="$(j1_track billed)"
+    j1_run billed-first "$T" 30 "" J1_STATUS=none || J1_FAILED=1
+    J1_BILLED="$(sed -n 's/^assist charges: *dir=\([^ ]*\) .*/\1/p' "$J1_DIR/billed-first.txt" | tail -1)"
+    if [ -n "$J1_BILLED" ]; then
+        mkdir -p "$J1_BILLED"
+        printf '{"schema_version":"musializer.semantic-request-sent/v1","sent_ns":%s,"sent_utc":"2026-11-16T10:02:33Z","usd_max":0.073,"earlier":[]}\n' \
+            "$(date +%s%N)" >"$J1_BILLED/semantic.cache.sent.json"
+        j1_run billed "$T" 90 "" J1_STATUS=none || J1_FAILED=1
+        j1_expect billed "assist notes:" "earlier-charges=true" || J1_FAILED=1
+        j1_expect billed "assist notes:" "An earlier listening request for this track was" || J1_FAILED=1
+        j1_expect billed "assist notes:" "may have been billed (at most 0.073 USD)." || J1_FAILED=1
+    else
+        echo "FAIL: j1-billed: no job folder reported" >&2; J1_FAILED=1
+    fi
+
+    if [ -n "$J1_START" ]; then
+        T="$(j1_track nocredit)"
+        j1_run no-credit "$T" 240 ",click=$J1_START,click-after=40" J1_STATUS=none J1_ASSIST=no-credit || J1_FAILED=1
+        j1_expect no-credit "assist notice:" "title=The OpenRouter account needs credit | OpenRouter refused the request: the account needs credit (HTTP 402); nothing was billed." || J1_FAILED=1
+
+        T="$(j1_track cancel)"
+        j1_run cancel "$T" 300 ",click=$J1_START,click-after=40" J1_STATUS=none J1_ASSIST=hang \
+            MUSIALIZER_ASSIST_PROBE_STOP=cancel@1.5 || J1_FAILED=1
+        j1_expect cancel "assist notice:" "severity=warning title=Analysis cancelled after the request was sent | The analysis was stopped at your request, but the listening request had already been sent to OpenRouter and may have been billed (at most 0.073 USD). Nothing was applied to this project." || J1_FAILED=1
+
+        T="$(j1_track deadline)"
+        j1_run deadline "$T" 300 ",click=$J1_START,click-after=40" J1_STATUS=none J1_ASSIST=hang \
+            MUSIALIZER_ASSIST_PROBE_STOP=deadline@1.5 || J1_FAILED=1
+        j1_expect deadline "assist notice:" "title=Analysis reached its time limit | The helper ran for 40 minutes without finishing and was stopped; the listening request had already been sent to OpenRouter and may have been billed (at most 0.073 USD)." || J1_FAILED=1
+
+        T="$(j1_track changed)"
+        j1_run changed "$T" 240 ",click=$J1_START,click-after=90" J1_STATUS=none J1_REPLACE_AUDIO="$T" \
+            J1_ASSIST=no-credit || J1_FAILED=1
+        j1_expect changed "assist notice:" "title=Analysis could not start | This track's audio file changed on disk after it was loaded, so no result could match it. Open the file again (or reopen the project), then start. Nothing was sent." || J1_FAILED=1
+        if grep -q "^assist notice: .*account needs credit" "$J1_DIR/changed.txt"; then
+            echo "FAIL: j1-changed: the helper ran for a changed file" >&2; J1_FAILED=1
+        fi
+    else
+        echo "FAIL: j1: Start's place was not reported" >&2; J1_FAILED=1
+    fi
+    # The job folders these tracks made, gone with the scratch tracks.
+    for folder in $(sed -n 's/^assist charges: *dir=\([^ ]*\) .*/\1/p' "$J1_DIR"/*.txt | sort -u); do
+        case "$folder" in ./build/analysis/*) rm -rf "$folder" ;; esac
+    done
+fi
+[ "$J1_FAILED" -eq 0 ] || SWEEP_FAILED=1
+
 if [ "$SKIP_RENDER" -eq 0 ]; then
 # ---------------------------------------------------------------------------
 # Tranche LT1: unresolved lines and review flags, by name and time range.

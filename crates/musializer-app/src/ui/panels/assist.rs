@@ -248,6 +248,20 @@ fn track_output_dir(track: &Track) -> PathBuf {
     ))
 }
 
+/// One `assist notice:` report line per notice this module hands the tray:
+/// the words a user reads, for the headless gate to pin (J1). Probe runs
+/// only, like every report line; the strings are the tray's own.
+fn report_notices(notices: &[AssistNotice]) {
+    for notice in notices {
+        println!(
+            "assist notice:   severity={} title={} | {}",
+            notice.severity.label().to_lowercase(),
+            notice.title,
+            notice.detail
+        );
+    }
+}
+
 /// Nanoseconds since the epoch, the clock the helper's receipts are stamped
 /// with (`time.time_ns()`).
 fn wall_clock_ns() -> u128 {
@@ -493,6 +507,17 @@ impl AssistController {
     /// drawing pair has closed: every arm of this either spawns, signals, reads a
     /// file or rewrites a track.
     pub fn handle(
+        &mut self,
+        request: AssistRequest,
+        workspace: &mut Workspace,
+        now: f64,
+    ) -> AssistOutcome {
+        let outcome = self.handle_request(request, workspace, now);
+        report_notices(&outcome.notices);
+        outcome
+    }
+
+    fn handle_request(
         &mut self,
         request: AssistRequest,
         workspace: &mut Workspace,
@@ -759,6 +784,12 @@ impl AssistController {
     /// the bridge still has to parse, still has to match this audio's digest, and
     /// still has to produce a lane the mode authorized (`plug.c:4051-4076`).
     pub fn poll(&mut self, workspace: &mut Workspace) -> Vec<AssistNotice> {
+        let notices = self.poll_job(workspace);
+        report_notices(&notices);
+        notices
+    }
+
+    fn poll_job(&mut self, workspace: &mut Workspace) -> Vec<AssistNotice> {
         let Some(job) = self.job.as_mut() else {
             return Vec::new();
         };
@@ -1601,6 +1632,40 @@ fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> SavedAnswer
         *slot = Some((key, StatusSlot::Pending(receiver)));
         SavedAnswer::Pending
     })
+}
+
+thread_local! {
+    static LAST_NOTES_REPORT: std::cell::RefCell<String> = const {
+        std::cell::RefCell::new(String::new())
+    };
+}
+
+/// The `assist notes:` report line: the confirmation's route block as drawn,
+/// line by line, so the gate pins the words of each new state (J1-1, -3, -5,
+/// -6) where they are drawn, and which states are on.
+fn report_confirmation_notes(
+    notes: &ConfirmationNotes,
+    lines: &[(String, raylib::prelude::Color)],
+) {
+    let line = format!(
+        "audio-refused={} earlier-charges={} saved-answer={} lines={}",
+        notes.audio_refusal.is_some(),
+        notes.earlier_charges.is_some(),
+        notes.saved_answer.is_some(),
+        lines
+            .iter()
+            .map(|(text, _)| text.as_str())
+            .collect::<Vec<_>>()
+            .join(" / ")
+    );
+    LAST_NOTES_REPORT.with(|last| {
+        let mut last = last.borrow_mut();
+        if *last != line {
+            println!("assist notes:    {line}");
+            last.clear();
+            last.push_str(&line);
+        }
+    });
 }
 
 /// The confirmation's cost line when a saved answer will be reused (J1-6).
@@ -4344,6 +4409,9 @@ impl Shell {
                 )
             })
             .unwrap_or_default();
+        if routes.is_some() {
+            report_confirmation_notes(&confirmation_notes, &route_lines);
+        }
         let running_text = wrap_to_width(
             "No percentage is reported, so none is drawn. Playback stays available, and nothing changes until you apply a result.",
             inner,
