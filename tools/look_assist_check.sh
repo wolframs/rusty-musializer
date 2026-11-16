@@ -5,7 +5,7 @@
 #
 #   tools/look_assist_check.sh [OUTPUT_DIR]      # default build/look-assist-check
 #
-# LOOK_ASSIST_ONLY=look|assist|dialog|captures runs one group (the negative
+# LOOK_ASSIST_ONLY=look|assist|feelings|dialog|captures runs one group (the negative
 # controls use it); LOOK_ASSIST_BIN names a different binary, so a control
 # never replaces the build. Every launch goes through tools/headless_run.sh:
 # private Xvfb, unreachable Wayland and audio, no file dialogs, a private
@@ -38,6 +38,19 @@
 #   dialog 1. the AI dialog's corner is rounded (not the surface colour) and
 #           its header row is the dialog's own surface exactly (opaque fills,
 #           compared exactly); the old square, raised skin fails both;
+#   feelings 1. a staged feelings answer (J2) lists every section as a row
+#           addressed by id, and its cues are ghosts on the timeline beside
+#           the 3 placed cues and the user's 2 markers, which stay drawn;
+#   feelings 2. a row press moves the playhead strictly inside its section
+#           and opens the row; a press on the energy strip moves nothing;
+#   feelings 3. Confirm apply saves the answer's cues; markers and plan
+#           are untouched in the saved file;
+#   feelings 4. after a real Apply the card offers Put back; the press
+#           restores the saved project byte for byte (the playhead aside),
+#           and the control without the press keeps the applied cues;
+#   feelings 5. Discard takes the ghosts off the timeline;
+#   feelings captures. both appearances at 1280x720, a 300 px column and
+#           960x640, a row open, every rect inside the column.
 #   captures. Look (plain, and with a Surprise trial and the route editor
 #           open), Assist in every state, and the dialog, at 960x640,
 #           1280x720, 1920x1080 and 150 %, dark and light. Each capture's
@@ -56,6 +69,19 @@
 #   - the dialog drawn square with a raised header (the old skin's code went
 #     with the flip, so this is its look, restored by hand): dialog 1 fails,
 #     in both appearances.
+#
+# NEGATIVE CONTROLS for the feelings group, 2026-11-16 (J2), on the GPU, each
+# perturbed, watched fail, reverted byte for byte (cmp):
+#   - the ghosts' filter never matching: feelings 1 reads staged=0 ghosts=0;
+#   - the seek onto the section's start: feelings 2 reads playhead 83.000 for
+#     83.000-100.000;
+#   - AnalysisCandidate::apply skipping the semantics lane: feelings 3 finds
+#     the 3 earlier cues saved, and feelings 4's no-press control keeps 3;
+#   - the step back keeping the analysis-lane record Apply pushed: feelings 4
+#     finds `"analysis_lanes":[{"kind":"semantic_score",…` in the restored file;
+#   - Discard not clearing the candidate: feelings 5 reads ghosts=11;
+#   - the rows 40 px wider than the card: every feelings capture finds rows
+#     outside the column.
 # The GPU and CPU runs read the same verdicts and the same opaque-fill
 # colours (dialog 1 compares them exactly); the changed dot, an antialiased
 # disc, reads 25 ink pixels on the GPU and 21 on llvmpipe against a floor of
@@ -310,6 +336,195 @@ if wants assist; then
             *) fail "assist 3: AI settings at $settings left the dialog closed" ;;
         esac
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# The staged feelings answer, looked at before Apply (J2). Its own synthetic
+# project: make-fixture-wav audio as long as the answer, a two-section
+# treatment, three earlier feeling cues and two of the user's own markers
+# seeded by tools/feelings_fixture.py, which also writes the job folder the
+# panel stages from (MUSIALIZER_ASSIST_PROBE_STAGE). FEELINGS_ANSWER names a
+# real answer (a semantic cache) for realistic content; without one the
+# script's invented eleven sections stand in.
+if wants feelings; then
+    echo "=== Feelings review ==="
+    FD="$OUT/feelings"
+    mkdir -p "$FD"
+    ANSWER="${FEELINGS_ANSWER:-build/gemini-calls/three-excerpts.cache.json}"
+    [ -f "$ANSWER" ] || ANSWER=""
+    seconds="$(python3 - "$ANSWER" <<'PY'
+import json, sys
+path = sys.argv[1]
+if not path:
+    print(300)
+else:
+    document = json.load(open(path))
+    print(round(document.get("normalized", document)["segments"][-1]["end_seconds"]))
+PY
+)"
+    cargo run --quiet --bin make-fixture-wav -- "$FD/fixture.wav" "$seconds" >/dev/null
+    cat >"$FD/feelings.treatment.json" <<EOF
+{ "schema": "musializer.treatment/v1", "title": "Feelings Fixture",
+  "audio": { "path": "fixture.wav" },
+  "segments": [ { "at": 0, "scene": "spectrum" }, { "at": $((seconds / 2)), "scene": "cadence" } ] }
+EOF
+    MZ_STATE_DIR="$FD/state-seed" tools/headless_run.sh --treatment "$FD/feelings.treatment.json" \
+        --save-project "$FD/seed.musi" >"$FD/seed.log" 2>&1 || true
+    python3 tools/feelings_fixture.py "$FD/seed.musi" "$(ls "$FD"/seed.assets/audio/* | head -n 1)" \
+        "$FD/job" $ANSWER >"$FD/fixture.log"
+    # Saved once more by the application, so the reference is in its own
+    # bytes, not Python's.
+    MZ_STATE_DIR="$FD/state-norm" tools/headless_run.sh "$FD/seed.musi" \
+        --save-project "$FD/seed.musi" >"$FD/norm.log" 2>&1 || true
+    cp "$FD/seed.musi" "$FD/reference.musi"
+    # feel_run NAME STAGE PROBE [FRAMES] [args...]: a fresh copy of the project
+    # (the audio hard-linked), the column on Assist, a staged answer.
+    feel_run() {
+        local name="$1" stage="$2" probe="$3" frames="${4:-24}"
+        shift 4 || shift $#
+        local work="$FD/$name"
+        rm -rf "$work"
+        mkdir -p "$work"
+        cp "$FD/reference.musi" "$work/seed.musi"
+        cp -al "$FD/seed.assets" "$work/seed.assets"
+        MZ_STATE_DIR="$work/state" MUSIALIZER_ASSIST_PROBE_DIR="$FD/job" \
+            MUSIALIZER_ASSIST_PROBE_LANES=mimo MUSIALIZER_ASSIST_PROBE_STAGE="$stage" \
+            tools/headless_run.sh "$work/seed.musi" --ui-scale 100 "$@" \
+            --ui-probe "size=${FEEL_SIZE:-1280x720},column=assist,time=30,play=0,assist=candidate$probe" \
+            --probe-frames "$frames" --probe-shot "$work/shot.png" >"$work/log.txt" 2>&1 || true
+    }
+    playhead() { line_of transport "$1" | grep -o 'playhead=[0-9.]*' | cut -d= -f2; }
+
+    feel_run base bridge "" 24
+    BASE="$(line_of 'assist feelings' "$FD/base/log.txt")"
+    GHOSTS="$(line_of 'staged feelings' "$FD/base/log.txt")"
+    COLUMN="$(line_of 'assist column' "$FD/base/log.txt")"
+    want="$(sed -nE 's/.*sections=([0-9]+).*/\1/p' "$FD/fixture.log")"
+    # 1. Every section is listed, as rows with ids inside the column, and
+    #    every staged cue is a ghost on the timeline beside the placed ones.
+    case "$BASE" in
+        "sections=$want "*" rows=row0@"*) pass "feelings 1: $want sections listed, rows addressed by id" ;;
+        *) fail "feelings 1: [${BASE:0:200}], wanted sections=$want with rows" ;;
+    esac
+    case "$GHOSTS" in
+        "staged=$want ghosts=$want off-screen=0 replaced=3 "*) pass "feelings 1: $want staged cues drawn as ghosts, 3 placed ones replaced" ;;
+        *) fail "feelings 1: staged feelings [$GHOSTS]" ;;
+    esac
+    case "$(line_of timeline "$FD/base/log.txt")" in
+        *"markers=manual:2 semantic:3 "*) pass "feelings 1: the placed cues and the user's markers still drawn beside them" ;;
+        *) fail "feelings 1: timeline [$(line_of timeline "$FD/base/log.txt")]" ;;
+    esac
+
+    # 2. A row press moves the playhead strictly inside its section; a press
+    #    on the energy strip (not a control) moves nothing and opens nothing.
+    row=3
+    point="$(field "$BASE" "centre(rect('row$row'))")"
+    span="$(echo "$BASE" | grep -oE "row$row@[-0-9,]+\[[0-9.]+-[0-9.]+\]" | sed -E 's/.*\[(.*)\]/\1/')"
+    feel_run row bridge ",click=$point" 24
+    got="$(playhead "$FD/row/log.txt")"
+    nav="$(line_of 'assist feelings nav' "$FD/row/log.txt")"
+    if python3 -c "import sys; s, e = map(float, '$span'.split('-')); g = float('${got:-nan}'); sys.exit(0 if s < g < e else 1)" \
+        && [ "$nav" != "" ] && line_of 'assist feelings' "$FD/row/log.txt" | grep -q " open=$row "; then
+        pass "feelings 2: row $row at $point moved the playhead to $got, inside $span, and opened"
+    else
+        fail "feelings 2: row $row at $point: playhead [$got] for span [$span], nav [$nav]"
+    fi
+    gap="$(field "$BASE" "centre(rect('map'))")"
+    feel_run gap bridge ",click=$gap" 24
+    if [ "$(playhead "$FD/gap/log.txt")" = "30.000" ] && [ -z "$(line_of 'assist feelings nav' "$FD/gap/log.txt")" ] \
+        && line_of 'assist feelings' "$FD/gap/log.txt" | grep -q " open=none "; then
+        pass "feelings 2 control: a press on the energy strip at $gap moved nothing"
+    else
+        fail "feelings 2 control: the strip press at $gap moved the playhead to [$(playhead "$FD/gap/log.txt")]"
+    fi
+
+    # 3. Confirm apply (Apply's first press already taken) writes the answer
+    #    into the saved project and touches neither markers nor plan.
+    apply="$(field "$COLUMN" "centre(rect('apply'))")"
+    feel_run apply armed ",click=$apply" 220
+    verdict="$(python3 - "$FD/apply/seed.musi" "$FD/reference.musi" "$FD/job/result.bridge.tsv" <<'PY'
+import json, sys
+saved, reference = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
+starts = [int(line.split("\t")[2]) / 1000 for line in open(sys.argv[3]) if line.startswith("SEMANTIC\t")]
+got = [event["timestamp_seconds"] for event in saved["semantic_events"]]
+problems = []
+if got != starts:
+    problems.append(f"feeling cues at {got[:4]}..., wanted {starts[:4]}...")
+for key in ("manual_events", "scene_switches"):
+    if saved.get(key) != reference.get(key):
+        problems.append(f"{key} changed")
+print("ok" if not problems else "; ".join(problems))
+PY
+)"
+    [ "$verdict" = ok ] && pass "feelings 3: Confirm apply at $apply saved the $want cues; markers and plan untouched" \
+        || fail "feelings 3: $verdict"
+
+    # 4. After a real Apply, Put back restores the lane and its record byte
+    #    for byte in the saved project; the control (no press) keeps the
+    #    applied lane, so it is the press that restored it.
+    feel_run applied applied "" 24
+    STEP="$(line_of 'assist step back' "$FD/applied/log.txt")"
+    case "$STEP" in
+        "state=offered card=feelings earlier=3 applied=$want button@"*) pass "feelings 4: after Apply the card offers to put 3 cues back" ;;
+        *) fail "feelings 4: step back [$STEP]" ;;
+    esac
+    back="$(field "$STEP" "centre(rect('button'))")"
+    feel_run back applied ",click=$back,click-after=12" 220
+    feel_run kept applied "" 220
+    # The whole saved file, byte for byte, but for the playhead the probe
+    # moved (`metadata.playhead_seconds`, which a move never dirties).
+    same="$(python3 - "$FD/back/seed.musi" "$FD/reference.musi" <<'PY'
+import re, sys
+def text(path):
+    return re.sub(rb',\s*"playhead_seconds":\s*[0-9.e+-]+', b"", open(path, "rb").read())
+back, reference = text(sys.argv[1]), text(sys.argv[2])
+if back == reference:
+    print("yes")
+else:
+    at = next((i for i, (a, b) in enumerate(zip(back, reference)) if a != b), min(len(back), len(reference)))
+    print(f"no (first difference at byte {at}: {back[max(0, at - 40):at + 40]!r})")
+PY
+)"
+    applied_count="$(python3 -c "import json; print(len(json.load(open('$FD/kept/seed.musi'))['semantic_events']))")"
+    if [ "$same" = yes ] && [ "$applied_count" = "$want" ] \
+        && line_of 'assist step back' "$FD/back/log.txt" | grep -q '^state=none'; then
+        pass "feelings 4: Put back at $back restored the saved project byte for byte (playhead aside); without the press $applied_count cues stay"
+    else
+        fail "feelings 4: Put back at $back: same=$same, the control kept $applied_count cues (wanted $want)"
+    fi
+
+    # 5. Discard drops the staged answer and its ghosts.
+    discard="$(field "$COLUMN" "centre(rect('discard'))")"
+    feel_run discard bridge ",click=$discard" 24
+    case "$(line_of 'staged feelings' "$FD/discard/log.txt")" in
+        "staged=0 ghosts=0 "*) pass "feelings 5: Discard at $discard took the ghosts off the timeline" ;;
+        *) fail "feelings 5: after Discard [$(line_of 'staged feelings' "$FD/discard/log.txt")]" ;;
+    esac
+
+    # Captures: both appearances, 1280x720, the minimum column (a dragged
+    # 300) and the 960x640 window, a row open; every rect inside the column.
+    for theme in black-amber light-blue; do
+        for shape in "1280x720:" "1280x720:column-width=300" "960x640:"; do
+            size="${shape%%:*}"
+            extra="${shape#*:}"
+            tag="$size${extra:+-min}-$theme"
+            FEEL_SIZE="$size" MUSIALIZER_ASSIST_PROBE_FEELINGS_OPEN=2 \
+                feel_run "cap-$tag" bridge "${extra:+,$extra}" 24 --ui-theme "$theme"
+            verdict="$(python3 - "$(line_of column "$FD/cap-$tag/log.txt")" "$(line_of 'assist feelings' "$FD/cap-$tag/log.txt")" <<'PY'
+import re, sys
+column, view = sys.argv[1], sys.argv[2]
+m = re.search(r"rect=(-?\d+),(-?\d+),(-?\d+),(-?\d+)", column)
+if not view or not m:
+    print("no feelings or column line"); sys.exit()
+x, y, w, h = map(int, m.groups())
+bad = [r.group(0) for r in re.finditer(r"(\w+)@(-?\d+),(-?\d+),(-?\d+),(-?\d+)", view)
+       if int(r.group(2)) < x or int(r.group(2)) + int(r.group(4)) > x + w]
+print("ok" if not bad and " open=2 " in view else f"open row missing or outside x {x}..{x + w}: {bad[:3]}")
+PY
+)"
+            [ "$verdict" = ok ] && pass "feelings capture $tag" || fail "feelings capture $tag: $verdict"
+        done
+    done
 fi
 
 # ---------------------------------------------------------------------------

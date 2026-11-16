@@ -36,9 +36,11 @@ const OPEN_LINE: f32 = 16.0;
 /// most 2 047 bytes (`SUMMARY_MAX_BYTES`), which this fits at any column width
 /// the window allows only when cut, so the last line says it was.
 const OPEN_MAX_LINES: usize = 6;
-/// Rows on screen before the list scrolls inside the card. Six resting rows
-/// keep the Apply row on screen at 1280x720 with the card revealed.
-const LIST_MAX_ROWS: usize = 6;
+/// Rows on screen before the list scrolls inside the card. Five resting rows
+/// keep the Apply row on screen at 1280x720 with the card revealed, at the
+/// minimum column width too; six pushed it under the fold there (2026-11-16
+/// capture, a 300 px column with the Apply sentence on four lines).
+const LIST_MAX_ROWS: usize = 5;
 /// The `Sections 1-6 of 11` line under a list that scrolls.
 const TAIL_HEIGHT: f32 = 16.0;
 /// One line of the sentence that says what Apply does.
@@ -1113,8 +1115,8 @@ mod tests {
         assert_eq!(row_at(&sections, f64::NAN), None);
     }
 
-    /// Eleven resting rows: six on screen, the window fixed, the last page full
-    /// and a tail saying so; scrolling past the end lands on the last page.
+    /// Eleven resting rows: five on screen, the window fixed, the last page
+    /// full and a tail saying so; scrolling past the end lands on the last page.
     #[test]
     fn a_long_answer_scrolls_inside_a_fixed_window() {
         let heights = vec![ROW_HEIGHT; 11];
@@ -1123,8 +1125,8 @@ mod tests {
         assert_eq!(top.list.height, LIST_MAX_ROWS as f32 * ROW_HEIGHT);
         assert!(top.tail.is_some());
         let scrolled = geometry(10.0, 100.0, 300.0, &heights, 99, 2);
-        assert_eq!(scrolled.first, 5, "the last page starts at 11 - 6");
-        assert_eq!(scrolled.rows.first().map(|row| row.0), Some(5));
+        assert_eq!(scrolled.first, 6, "the last page starts at 11 - 5");
+        assert_eq!(scrolled.rows.first().map(|row| row.0), Some(6));
         assert_eq!(scrolled.rows.last().map(|row| row.0), Some(10));
         assert_eq!(scrolled.height, top.height, "scrolling never moves Apply");
         assert_eq!(scrolled.apply.y, top.apply.y);
