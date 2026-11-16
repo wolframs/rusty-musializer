@@ -556,3 +556,22 @@ through OpenRouter".
 | The `.musi` semantic analysis lane's `provenance.model` was always `xiaomi-mimo-v2.5` (`plug.c:3546-3560`) | The model the job's snapshot observed (`google/gemini-3.8-flash`, or `xiaomi/mimo-v2.5`), as the lyric lane already did; `xiaomi-mimo-v2.5` remains for a run with no snapshot | A project must not say MiMo produced cues Gemini produced. Older projects open unchanged (a free string) |
 | New answers named their maker `tools/mimo_openrouter.py` / `mimo_openrouter`; receipts `musializer.mimo-failed-run/v1` | `tools/semantic_openrouter.py` / `openrouter_semantic` and `musializer.semantic-failed-run/v1`; the old names are still accepted on read (cache reuse, receipts), and `analysis-provenance-v1.schema.json` lists both source kinds | The helper is not MiMo's; reading the old names keeps a MiMo user's answers |
 | A cached OpenRouter catalog that did not list the route's model always refused the job ("has no eligible endpoint") | A catalog fetched before the day this build records the model as listed (`cost::MODELS` `prices_listed_on`) reads "Catalog older than this model; refresh it" and does not refuse; one fetched since still refuses by name | The operator's catalog (2026-09-01) predates Gemini 3.8 Flash: it never saw the model and cannot show it gone. Without this the new default refused on first use with advice to relax a constraint |
+
+## The Feelings Start path (J1, 2026-11-16)
+
+Decided by the agent fixing the route traced before the first real Start (the
+lead's brief: the user never pays for what the application could have known
+would be thrown away, and is told, with the amount, whenever money may have
+been spent). Details and words: `ASSIST_PIPELINE.md`, "Starting Feelings
+safely".
+
+| Before | Now | Why |
+| --- | --- | --- |
+| A track's digest was taken at load and trusted for every later job | The digest carries the file's stamp; Start and the confirmation re-check it (one `stat`, a re-hash only when the stamp moved) and refuse a changed file; the helpers refuse a change after the press before anything leaves | A replaced file was paid for and its answer then refused as another track's |
+| A refusal (401, 402, 404, …), a rate limit after the retries and an unreachable network wrote no receipt; the panel read "python3 exited with code 1" | Every failure of the listening step writes a receipt with `kind` and a sentence that says what happened, what it cost and what to do; the notice is titled by `kind` | A first-time user could not tell a wrong key from no credit |
+| A Cancel, a closed window or the deadline after the request left said "Nothing was applied" and left no record | A durable sent record before the request leaves; each stop says the request may have been billed and the most it can have cost; the next confirmation says so before Start; possible charges a new attempt replaces ride forward until an answer is in hand | OpenRouter has no idempotency key; a silent second Start pays twice |
+| The model's schema stated no maximum of sections or summary length; an answer the bridge refused was cached and refused on every later run | 64 sections and 500 characters stated; harmless repairs made and named before caching; an answer no repair fits is a failed run; a cache the later steps refuse is set aside; the Python writer refuses what the Rust reader refuses | An answer is paid for once; a cache that cannot be used must not be reusable |
+| — | Answers made under the unbounded schema's identity (`model_output_schema_sha256` `1d1c6b45…`) are accepted when they fit | The bounds narrow the request without changing what a fitting answer is; paying again for an equivalent answer is the waste this tranche removes |
+| A missing key, no endpoint or a lost modality offered to "route this task locally" | Only for a contract this build can run locally (`ContractId::has_local_route`); never for `TC-SEMANTIC` | There is no local listening route to go to |
+| The confirmation showed the paid-call cost even when the run would reuse a saved answer | The helper's read-only `semantic-status` answers before Start through the same reuse decision as the run; a saved answer turns the cost line into "Cost: nothing …"; unknown keeps the paid wording | The question is the helper's to answer: a second implementation of the request identity in Rust could say "free" while Python pays |
+| Cancel was an info notice | A cancel after the request left is a warning | It carries a possible charge |

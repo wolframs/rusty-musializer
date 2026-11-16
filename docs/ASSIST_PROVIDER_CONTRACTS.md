@@ -149,6 +149,19 @@ Details and the numbers behind them: `ASSIST_PIPELINE.md`, "The feelings
 request" and "Gemini 3.8 Flash through OpenRouter", and `DIVERGENCES.md`, "The
 MiMo lane's request" and "The listening lane's model".
 
+Since J1 (2026-11-16) the contract also owes the user, before and after a
+call: a Start refused when the track's file no longer has the digest it was
+loaded with; a receipt for every failure, refusals included, with what it may
+have cost and the next step; a durable record before the request leaves, so
+Cancel, a closed window and the deadline can say a request may have been
+billed; bounds in the model's schema under the bridge's capacity, and nothing
+cached that the bridge cannot hold; and, before Start, whether a saved answer
+makes this run free, asked of the helper (`semantic-status`) rather than
+derived on the Rust side. A refusal for this contract never offers to "route
+this task locally": this build has no local listening route
+(`ContractId::has_local_route`). `ASSIST_PIPELINE.md`, "Starting Feelings
+safely".
+
 ## 2. Non-secret preferences record
 
 One versioned, atomically replaced file in the per-user config directory.

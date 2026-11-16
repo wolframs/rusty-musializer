@@ -892,3 +892,36 @@ that key alone. The step back's byte-for-byte check failed on exactly this
 every lane was identical. Compare saved projects with that key masked, as
 `look_assist_check.sh`'s feelings group does, or seek nowhere. Found 2026-11-16
 (J2).
+
+## A digest taken once describes the file at that moment
+
+`Track::audio_sha256` was computed when the track was loaded and trusted for
+every job after. The listening helper hashes the file as it is when it runs,
+so a file exported again under the same name was measured, sent and paid for
+under a new hash, and the panel then refused the result as another track's.
+Symptom: "Bridge audio does not match" after a job that cost money. Keep the
+file's stamp beside a digest (`project_files::FileStamp`: length, mtime,
+ctime, inode) and check it before anything is spent; re-hash before believing
+a moved stamp (a `touch` moves it without changing a byte), and hand the
+verified digest to whatever reads the bytes later. Found 2026-11-16 (J1-1).
+
+## A request in flight leaves no word on disk unless one is written before it leaves
+
+Cancel, closing the window and the parent's deadline kill the helper's process
+group; no `except` or `finally` runs, so a receipt written "when the call
+ends" is never written. A request that had already left was reported as
+"Nothing was applied", and the next Start paid again. Write a durable record
+before the request leaves (`semantic.cache.sent.json`), replace it with the
+answer or a receipt, and read one still there as "sent, never answered". Remove
+it only while it is still the record you wrote (compare the inode): another
+helper's record is another request in flight. Found 2026-11-16 (J1-3).
+
+## An answer cached before the later steps check it is refused forever
+
+The listening helper cached a paid answer that the bridge writer or reader then
+refused (too many sections, a summary too long, a section shorter than a
+millisecond), and the next Start reused that cache and failed the same way, for
+good. Check everything a later step requires before writing the cache, keep the
+writer's limits equal to the reader's (pinned across languages), and set aside
+a cache a later step refuses instead of leaving it to be reused. Found
+2026-11-16 (J1-4).

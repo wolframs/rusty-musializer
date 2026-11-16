@@ -517,6 +517,173 @@ tested against synthetic responses only), a track long enough to hit the size
 limit, a route without ZDR (AI Studio), and any thinking level other than the
 default.
 
+### Starting Feelings safely (J1, 2026-11-16)
+
+Before anyone had pressed Start against the real service, a trace of the
+route found seven defects; six are fixed here (the seventh, how a staged
+answer is reviewed before Apply, is another stream's). The rule they share:
+the user never pays for what the application could have known would be thrown
+away, and whenever money may have been spent they are told so, with the
+amount, where they are looking.
+
+**A track file replaced after loading.** The panel compared the bridge's hash
+with the digest taken at load, never checked again; the helper hashed the file
+as it was, paid, and the result was then refused. The digest now carries the
+file's stamp (length, modification and change time, inode;
+`project_files::FileStamp`). Start and the open confirmation `stat` the file
+(the card at most every two seconds); a moved stamp is re-hashed before it is
+believed, and only different bytes refuse Start, before any route is resolved:
+"This track's audio file changed on disk after it was loaded, so no result
+could match it. Open the file again (or reopen the project), then start.
+Nothing was sent." The verified digest rides to the helper
+(`--expect-audio-hash`), and on to the listening helper (`--expect-sha256`),
+so a change after the press is refused where the bytes are read ("the track's
+audio file changed on disk after Start, so nothing was measured or sent. Open
+the file again, then start"). A result for another file that turns out to be
+this one changed says so instead of "Bridge audio does not match". Other
+holders of the load-time digest, not changed here: saving re-hashes while it
+copies and refuses a mismatch (`publish::open_source`); reopening a `.musi`
+verifies; `--treatment`'s audio check, a generated clip's placement identity
+(`generation/window.rs`) and a poster's recipe key compare against the cached
+digest and would trust a stale one.
+
+**Every failure of the listening step leaves its reason.** A refused key, no
+credit, no endpoint, a rate limit after the retries and an unreachable network
+were plain errors, and the panel read "A step of the analysis failed / python3
+exited with code 1". Each now writes a receipt (`kind`, `may_be_billed`, a
+message whose first 160 bytes say what happened and what it cost, the next
+step after it, 224 at most); the panel reads the one written since the job
+started and titles the notice by what to do. The words:
+
+| Failure | Notice title | Sentence |
+| --- | --- | --- |
+| 401, key from AI settings | OpenRouter refused the key | OpenRouter refused the key saved in AI settings → OpenRouter (HTTP 401); nothing was billed. Replace it there, then start again. |
+| 401, key from the environment | OpenRouter refused the key | OpenRouter refused the OPENROUTER_API_KEY this app was started with (HTTP 401); nothing was billed. Add a working key in AI settings → OpenRouter. |
+| 402 | The OpenRouter account needs credit | OpenRouter refused the request: the account needs credit (HTTP 402); nothing was billed. Add credit at openrouter.ai, then start again. |
+| 404 with privacy constraints | No OpenRouter endpoint fits these settings | No OpenRouter endpoint for Gemini fits zero data retention, no fallbacks (HTTP 404); nothing was billed. Relax it in AI settings, or refresh the model list there. |
+| 404 without | No OpenRouter endpoint fits these settings | OpenRouter has no endpoint for google/gemini-3.8-flash (HTTP 404); nothing was billed. Refresh the model list in AI settings → OpenRouter. |
+| 400, 403, 405, 413, 415, 422 | OpenRouter refused the request | OpenRouter refused the request (HTTP 403: *OpenRouter's words, shortened*); nothing was billed. |
+| 429 after three tries | OpenRouter is rate-limiting requests | OpenRouter rate-limited the request 3 times (HTTP 429); nothing was billed. Wait a minute, then start again. |
+| no connection | OpenRouter could not be reached | Could not reach OpenRouter (*reason*); nothing was sent. Check the connection, then start again. |
+| no key reached the helper | The listening request was not sent | No OpenRouter key reached the listening step; nothing was sent. Add one in AI settings → OpenRouter, then start again. |
+| timeout after sending | The listening request may have been billed | OpenRouter's answer did not arrive within 600 s; it may have been billed (at most 0.073 USD). Nothing was saved or sent again. |
+| an answer that cannot be used | The listening answer could not be used | Gemini's answer does not fit the schema (…). Nothing was saved; OpenRouter billed 0.0131 USD for it. |
+| FFmpeg missing, no cached measurement | A tool the analysis needs could not run | could not start FFmpeg, which measuring the track needs: it is not installed or not on PATH. Install FFmpeg, then start again; nothing was sent. |
+
+The key's origin reaches the helper as `MUSIALIZER_OPENROUTER_FROM`, set by the
+runtime beside the key and never without it. The schema-failure and
+may-be-billed sentences shorten the reason, never the amount, so the bill
+survives the panel's 160-byte clip. The measured step (`analyze_audio.py`)
+writes `measured.failed.json` (`musializer.step-failed/v1`), which the
+orchestrator raises; a missing NumPy says so too. Other child steps whose
+words still die at `_run`, none on the Feelings path: whisper.cpp and its
+FFmpeg decode (they name the tool and the code), the Codex review, the
+anchor/block and forced aligners, the Antigravity aligner. ffprobe's failure
+is swallowed on purpose (no embedded lyrics).
+
+**A request that left is recorded.** Cancel, a closed window and the deadline
+kill the helper's process group, and nothing on disk said a request was in
+flight. The helper writes `semantic.cache.sent.json` before the request
+leaves, durably, and removes its own (only while it is still its own) once an
+answer or a receipt says how the call ended; a new attempt carries the
+possible charges it replaces in its record and receipt (`earlier`) until an
+answer is in hand. The panel reads a record written since the job started:
+
+- Cancel: "Analysis cancelled after the request was sent" — "The analysis was
+  stopped at your request, but the listening request had already been sent to
+  OpenRouter and may have been billed (at most 0.073 USD). Nothing was applied
+  to this project." (a warning, no longer an info).
+- The deadline: "The helper ran for 40 minutes without finishing and was
+  stopped; the listening request had already been sent to OpenRouter and may
+  have been billed (at most 0.073 USD)."
+- A helper that died with no receipt: "The listening request may have been
+  billed" — "The helper stopped before an answer came, after the listening
+  request had already been sent to OpenRouter and may have been billed (at
+  most 0.073 USD). Nothing was saved."
+- Closing the window: the quit dialog's line reads "Cancel the running
+  analysis job; the listening request had already been sent to OpenRouter and
+  may have been billed (at most 0.073 USD)." (pinned by no test of its own:
+  `confirm_close` opens a dialog, which no gate can press).
+- The next confirmation for the track, before Start: "An earlier listening
+  request for this track was sent on 2026-11-16 10:02 UTC and never answered;
+  it may have been billed (at most 0.073 USD)." (several: "3 earlier listening
+  requests for this track may have been billed (at most 0.219 USD together);
+  the last was on …"). Pressing Start after reading it is the agreement to
+  send again. No ceiling or ledger is built here.
+
+**An answer the result cannot hold is never cached.** The schema now states 64
+sections and 500-character summaries (the bridge holds 256 and 2 047 bytes).
+Before caching, `bridge_fit` repairs what is harmless (a section whose ends
+round to the same millisecond joins its neighbour, a long summary is shortened
+at a character, unprintables become spaces), names it in the manifest
+(`semantic_repairs`), and fails the run with its cost where no repair fits
+("Gemini's answer cannot be used: the answer has 300 sections, more than the
+256 the application can hold. Nothing was saved; …"). The Python bridge
+writer refuses what the Rust reader refuses (pinned), a cache the later steps
+refuse is set aside (`semantic.cache.refused-<ns>.json`) by the helper or by
+the panel when the bridge's semantic rows are what failed ("… The listening
+answer was the part that did not fit and was set aside, so the next Start asks
+again and may cost again."), and a cache that does not fit is never reused.
+The bounded schema moves `model_output_schema_sha256`; answers made under the
+unbounded one (2026-11-14 to 2026-11-16) are accepted when they fit, so none
+is paid for again. On the owner's machine, 2026-11-16, the main checkout's
+`build/analysis` held one listening cache, a MiMo answer under the v1 prompt
+and schema, which no build since v2 reuses anyway; the 2026-11-15 Gemini calls
+are a ledger in a worktree, not caches the application reads.
+
+**The confirmation says what the model list knows.** The evaluator's
+non-blocking "Catalog older than this model" now reaches the confirmation in
+one quiet line: "The saved model list is older than google/gemini-3.8-flash.
+Refresh it in AI settings → OpenRouter → Refresh now." A missing key no longer
+offers to "route this task locally" for a contract with no local route: "…
+no key is configured. Add one in AI settings → OpenRouter."
+
+**A saved answer is said before Start.** `external_analysis.py
+semantic-status` answers through the one reuse decision the run makes
+(`saved_semantic_answer`), reading the job folder only. The panel asks it off
+the frame thread when the card opens, with a snapshot of the listening route
+and never the key, and while the answer is unknown the paid wording stands.
+When it says saved, the cost line becomes "Cost: nothing. A saved answer for
+this track and these settings, from 2026-11-15 18:53 UTC, is reused, so this
+run sends nothing to OpenRouter." After the run the staged notice adds "The
+feelings are the saved answer from 2026-11-15 18:53 UTC; nothing was sent or
+billed this time." (manifest `semantic_reused`). The data-boundary sentence
+above it still says what the job is authorized to send.
+
+**Through the window.** `tools/headless_check.sh --skip-render` presses Start
+against a stand-in helper and pins every sentence above that the panel draws,
+in the dark appearance (`assist notes:`, `assist notice:`); its captures are
+`build/headless/j1-feelings/*.png`.
+
+**Negative controls (J1, 2026-11-16)**, each perturbed, seen to fail, and
+restored byte for byte (`cmp` against a saved copy):
+
+| Perturbation | What failed |
+| --- | --- |
+| The stamp check always "unchanged" | `a_file_replaced_after_loading_is_told_apart_from_one_that_was_touched`, `start_refuses_a_file_replaced_after_loading_before_anything_is_spent`, `a_result_for_a_file_changed_since_loading_says_so` |
+| Both helpers' expected-digest checks off | `AChangedFileIsNeverPaidFor` (2 tests) |
+| A refusal writes no receipt | `EveryFailureLeavesItsReason` (every test reading a receipt) |
+| `failure_message` unbounded again | `test_the_bill_survives_the_longest_schema_failure` and one more |
+| The measured step's receipt not read | `test_the_parent_raises_the_steps_words` |
+| No sent record written | `test_the_record_is_on_disk_before_the_request_leaves_and_a_kill_leaves_it`, `test_a_new_attempt_carries_the_earlier_possible_charge_until_an_answer` |
+| Earlier charges not carried | `test_a_new_attempt_carries_the_earlier_possible_charge_until_an_answer` |
+| A stop ignoring the sent record | `a_stop_after_the_request_left_says_it_may_have_been_billed` |
+| `bridge_fit` skipped before caching | `AnAnswerThatCannotBeUsedIsNeverCached` (3 tests) |
+| The unbounded schema's identity not accepted | `test_a_fitting_legacy_answer_is_reused` |
+| The panel never blaming the semantic rows | `a_refused_listening_answer_is_set_aside_and_another_lane_leaves_it` |
+| The older-list line not drawn | `a_model_list_older_than_the_model_is_said_quietly_on_the_confirmation` |
+| "Route this task locally" always offered | `a_missing_credential_blocks_a_remote_route_and_names_the_repair` |
+| `semantic-status` always "none" | `TheConfirmationKnowsASavedAnswer` (2 tests) |
+| The saved answer not drawn | `a_saved_answer_is_said_before_start_and_after_the_run` |
+| Gate: the poll path ignoring receipt and record, Start skipping the stamp check | j1-no-credit, j1-cancel, j1-deadline, j1-changed (twice: the helper ran for a changed file) |
+| Gate: the confirmation's three notes dropped | j1-saved (3), j1-catalog (2), j1-billed (3) |
+
+Not tried for real: any refusal or failure from OpenRouter (every path runs
+against a fake transport or a stand-in helper), a key rejected by the real
+service, the real `semantic-status` from the window (the gate's stand-in
+answers it; the real one is pinned by the Python tests), and a quit through
+the real dialog with a request in flight (the gate's dialogs are guarded).
+
 ### Local performed-phrase recovery (2026-09-08)
 
 The recommended Timed lyrics workflow stays local, including tracks without
@@ -825,6 +992,14 @@ Failure should remain visible at the narrowest boundary that can explain it:
   to the cap; never sent again by itself.
 - A semantic request too large for its model, or a track FFmpeg cannot encode:
   stopped before anything leaves, with a receipt that says nothing was sent.
+- A semantic request refused (key, credit, endpoint, rate limit) or never sent
+  (no connection, no key): a receipt that says nothing was billed and what to
+  do next, which the panel reads for its notice (J1).
+- A semantic request killed after it left (Cancel, a closed window, the
+  deadline): the sent record survives, every stop says it may have been
+  billed, and the next confirmation says so before Start (J1).
+- A track file changed since loading: Start refused before anything is spent;
+  a change after the press refused by the helpers before anything leaves (J1).
 - Authorized mode producing no changes: a truthful terminal no-change result,
   not an empty candidate.
 - Weak boundary evidence within one occurrence: retain timing as uncertain.
@@ -849,6 +1024,7 @@ Failure should remain visible at the narrowest boundary that can explain it:
 | Process start, timeout, cancellation, and reaping | runtime `process::assist` tests |
 | Bridge bounds, identity, coverage, and staging | core bridge/candidate tests and app panel tests |
 | Semantic request (MiMo and Gemini rows): cap, failed runs, cost estimate, numeric scales, Gemini's request shape and encoding, MiMo's unchanged identity | [`tests/test_semantic_openrouter.py`](../tests/test_semantic_openrouter.py) (fake OpenRouter; one real FFmpeg encode of a synthetic tone), the `SemanticCostEstimate` pins in [`tests/test_cross_language_pins.py`](../tests/test_cross_language_pins.py), `core::assist::cost` tests |
+| The Feelings Start path (J1): stale file, receipts for every failure, the sent record, bridge fit and legacy answers, the older model list, the saved-answer query | `tests/test_semantic_openrouter.py`, `tests/test_assist_orchestrator.py`, `tests/test_cross_language_pins.py` (`ListeningReceipt`, `BridgeLimits`), `tests/test_helper_argv.py`, `core::assist::diagnosis` and `ui::panels::assist` tests, `process::assist` tests, and the `J1` section of `tools/headless_check.sh` |
 | The default model's move and settings inheritance, the stale-catalog rule | `core::assist::execution` tests (`the_old_default_moves_to_gemini_and_a_stored_mimo_route_stays`, `a_catalog_older_than_the_model_cannot_say_it_is_gone`) |
 | Execution snapshot: route resolution at Start, provenance, mid-job settings immutability | [`tests/test_assist_execution.py`](../tests/test_assist_execution.py), `core::assist::execution` tests, [`crates/musializer-runtime/examples/assist_canary_probe.rs`](../crates/musializer-runtime/examples/assist_canary_probe.rs) |
 | Installed helper and local-lyrics assets | `python3 tools/musializer_doctor.py --require local_lyrics` |

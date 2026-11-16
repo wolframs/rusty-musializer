@@ -1723,6 +1723,33 @@ No environment variable was added. The helper now needs `ffmpeg` on `PATH` for
 a model that re-encodes (Gemini), resolved to an absolute path; the measured
 lane already needed it.
 
+### 6.7d The Feelings Start path's records (J1, 2026-11-16)
+
+Written so that nothing the user may pay for is unsaid. `ASSIST_PIPELINE.md`,
+"Starting Feelings safely", has the rules and the words.
+
+| Name | Where | Contents |
+| --- | --- | --- |
+| `musializer.semantic-failed-run/v1` (extended) | `semantic.cache.failed.json` | now written for **every** failure of the listening step, including refusals before a model ran. New fields: `kind` (`key_rejected`, `no_credit`, `no_endpoint`, `refused`, `rate_limited`, `no_key`, `unreachable`, `not_sent`, `timed_out`, `unanswered`, `unusable_answer`), `earlier` (possible charges carried forward, below). `message` is at most 224 bytes and its first 160 say what happened and what it cost |
+| `musializer.semantic-request-sent/v1` | `semantic.cache.sent.json`, beside the cache | written durably (fsync, rename, directory fsync) before the request leaves and removed, only while it is still the one written, when the call ends in an answer or a receipt. `sent_utc`, `sent_ns`, `audio_sha256`, `request` (the identity), `model_label`, `usd_max` (rounded up at the thousandth), `estimate`, `pid`, `earlier`. One still there is a request sent and never answered |
+| `earlier` | sent record and receipt | up to 16 entries `{kind: "unanswered"|"may_be_billed", at_utc, at_ns, usd_max}`: attempts on this cache that may have been billed, carried forward until an answer is in hand |
+| `musializer.semantic-status/v1` | stdout of `external_analysis.py semantic-status` | `audio_sha256`, `state` (`saved`, `none`, `unmeasured`), `saved_answer` (`made_utc`, `model`) or null |
+| `musializer.step-failed/v1` | `measured.failed.json` (any step's `<output stem>.failed.json`) | `step`, `failed_ns`, `audio_sha256`, `message`: a child step's own reason for its parent (`analysis_io.write_step_failure`) |
+| `semantic_repairs` | `assist-manifest.json`, only when something was repaired | the repairs that made the answer fit the bridge, in words ("joined 2 sections shorter than a millisecond to the one before") |
+| `semantic_reused` | `assist-manifest.json`, only when a saved answer was staged with nothing sent | `made_utc` |
+| `provenance.repairs` | semantic artifact | the same list, on the cached answer |
+| `semantic.cache.refused-<ns>.json` | job folder | a cached answer the later steps refused, set aside (by the helper or the panel) so it is never reused |
+| `assist-execution.status.json` | job folder | the snapshot (listening route only) the confirmation's status query reads |
+| `model_output_schema_sha256` | request identity | moved with the bounded schema (64 sections, 500-character summaries); answers under the unbounded schema's hash `1d1c6b45…25f1` are accepted when they fit (`legacy_request_identity`) |
+| `--expect-audio-hash HEX` | `external_analysis.py assist` | the digest the application verified at Start; a file that no longer hashes to it is refused before anything is measured or sent |
+| `--expect-sha256 HEX` | `semantic_openrouter.py` | the orchestrator's digest; the helper refuses another snapshot before sending |
+| `--failure-receipt PATH` | `analyze_audio.py` | where it leaves its reason |
+| `semantic-status AUDIO OUTPUT_DIR [--execution-snapshot P] [--semantic-cache P] [--zdr]` | `external_analysis.py` subcommand | read-only; no network, no model |
+| `MUSIALIZER_OPENROUTER_FROM` | the helper's environment, beside the key only | `settings` or `environment`: where the key came from, for a refused key's sentence |
+| `MUSIALIZER_ASSIST_PROBE_STOP` | probe seam | `cancel@SECONDS` or `deadline@SECONDS`: stop a real job as Cancel or the deadline would |
+| `assist notes:`, `assist notice:`, `assist reuse:`, `assist charges:` | report lines | the confirmation's route block as drawn; each notice handed to the tray; the status query's answer; the earlier-charges line and its job folder |
+| `catalog-predates=` | `assist routing:` report line | contracts whose model the saved model list predates |
+
 ### 6.7b The generation store's records (VG H4, H4b, H4c; 2026-11-14)
 
 Under `MUSIALIZER_GENERATED_DIR` (§ environment). Each JSON record is written

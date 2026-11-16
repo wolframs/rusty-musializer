@@ -5464,7 +5464,7 @@ fn confirm_close(
         // J1-3: quitting kills a request that may already have been billed.
         match &analysis_sent {
             Some(clause) => {
-                items.push_str(&format!("\n- Cancel the running analysis job ({clause})."))
+                items.push_str(&format!("\n- Cancel the running analysis job; {clause}."))
             }
             None => items.push_str("\n- Cancel the running analysis job."),
         }
