@@ -1235,6 +1235,15 @@ semantic_openrouter.analyze_to_cache(audio, cache, audio_duration=8.0, model=sys
 """
 
 
+def reap(process: subprocess.Popen) -> None:
+    """Kills a helper process the test left running, and waits for it."""
+    if process.poll() is None:
+        process.kill()
+    process.wait(timeout=30)
+    if process.stderr is not None:
+        process.stderr.close()
+
+
 class Attempt:
     """Another helper on the same job folder, in its own process."""
 
@@ -1245,6 +1254,9 @@ class Attempt:
              str(case.ws.cache), mode, str(self.gate), json.dumps(response(answer())), case.MODEL],
             env={**os.environ, "OPENROUTER_API_KEY": SENTINEL_KEY},
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        # A test that fails before `finish` must not leave a held helper
+        # waiting on a gate in a folder that is gone.
+        case.addCleanup(reap, self.process)
         if mode == "killed":
             self.process.wait(timeout=30)
             return
@@ -1508,6 +1520,7 @@ class Helper:
              case.MODEL, json.dumps(response(answer()))],
             env={**os.environ, "OPENROUTER_API_KEY": SENTINEL_KEY},
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        case.addCleanup(reap, self.process)
         if not hold:
             self.code = self.process.wait(timeout=30)
             return
