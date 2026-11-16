@@ -637,6 +637,67 @@ class FailedRunReachesTheUser(LaneTestCase):
         self.assertIsNone(external_analysis._semantic_failure(self.ws.cache, "a" * 64))
 
 
+class AChangedFileIsNeverPaidFor(LaneTestCase):
+    """Defect J1-1 (2026-11-16): a track file replaced after loading.
+
+    The application checks the file against the digest it holds before Start
+    (`ui/panels/assist.rs`, `audio_still_loaded`); these are the two checks
+    where the bytes are read, so a change between the press and the send is
+    refused too, before anything leaves.
+    """
+
+    def test_the_orchestrator_refuses_bytes_other_than_the_ones_verified_at_start(self) -> None:
+        def runner(argv, **_kwargs):  # noqa: ANN001
+            self.fail(f"nothing may run for a changed file: {argv}")
+        with self.assertRaises(external_analysis.AnalysisValidationError) as raised:
+            external_analysis.run_assist(
+                self.ws.audio, self.ws.root, audio_duration=DURATION, mode="mimo",
+                semantic_cache=self.ws.cache, allow_dotenv=False, runner=runner,
+                expected_audio_sha256="0" * 64)
+        self.assertEqual(str(raised.exception), external_analysis.AUDIO_CHANGED_SENTENCE)
+        self.assertLessEqual(len(str(raised.exception).encode()), 160)
+        self.assertFalse((self.ws.root / "measured.json").exists())
+
+    def test_the_orchestrator_hands_its_digest_to_the_listening_helper(self) -> None:
+        seen: list[list[str]] = []
+
+        def runner(argv, **_kwargs):  # noqa: ANN001
+            seen.append(list(argv))
+            return subprocess.CompletedProcess(argv, 1, "", "")
+
+        def cache(path, *_args, **kwargs):  # noqa: ANN001
+            if path.name == "measured.json":
+                return {"audio": {"duration_seconds": DURATION}}
+            return None
+
+        digest = external_analysis.sha256_file(self.ws.audio)
+        with patch.object(external_analysis, "_cache_matches", side_effect=cache), \
+                self.assertRaises(RuntimeError):
+            external_analysis.run_assist(
+                self.ws.audio, self.ws.root, audio_duration=DURATION, mode="mimo",
+                semantic_cache=self.ws.cache, allow_dotenv=False, runner=runner,
+                expected_audio_sha256=digest)
+        argv = seen[0]
+        self.assertEqual(argv[argv.index("--expect-sha256") + 1], digest)
+
+    def test_the_listening_helper_refuses_a_snapshot_other_than_the_jobs(self) -> None:
+        fake = FakeOpenRouter(response(answer()))
+        with self.assertRaises(RuntimeError) as raised:
+            semantic_openrouter.analyze_to_cache(
+                self.ws.audio, self.ws.cache, audio_duration=DURATION, model=MIMO,
+                transport=fake, sleeper=lambda _s: None, expected_sha256="0" * 64)
+        self.assertEqual(fake.sent, [], "nothing left")
+        self.assertNotIsInstance(raised.exception, semantic_openrouter.FailedRun)
+        receipt = json.loads(self.ws.receipt.read_text())
+        self.assertFalse(receipt["may_be_billed"])
+        self.assertEqual(receipt["audio_sha256"], "0" * 64, "under the job's digest")
+        self.assertIn("changed on disk", receipt["message"])
+        self.assertIn("nothing was sent", receipt["message"])
+        # The parent finds it by that digest and raises its words.
+        self.assertEqual(external_analysis._semantic_failure(self.ws.cache, "0" * 64),
+                         receipt["message"])
+
+
 class WrittenByTheOldName(LaneTestCase):
     """Files written while this helper was tools/mimo_openrouter.py still read."""
 

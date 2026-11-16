@@ -71,6 +71,10 @@ _PROBE_STDOUT_LIMIT = 512 * 1024
 REFERENCE_SIBLING_SUFFIX = ".lyrics.txt"
 SCENE_PLAN_VERSION = "musializer.scene-plan/v1"
 SEMANTIC_NOTES_VERSION = "musializer.semantic-notes/v1"
+# What the person reads when the track's file no longer hashes to the digest the
+# application verified at Start. Under the 160 bytes the panel keeps.
+AUDIO_CHANGED_SENTENCE = ("the track's audio file changed on disk after Start, so nothing was "
+                          "measured or sent. Open the file again, then start")
 BRIDGE_VERSION = "MUSIALIZER_BRIDGE\t1"
 # The scene vocabulary the model may recommend. `phosphor` postdates the frozen
 # C (2026-08-08); it is listed here because a scene the planner cannot name is a
@@ -1954,6 +1958,7 @@ def run_assist(
     performed_lyrics: bool = False,
     semantic_cache: Path | None = None,
     lyrics_file: Path | None = None,
+    expected_audio_sha256: str | None = None,
     zdr: bool = False, external_timeout: float = 2400.0,
     allow_dotenv: bool = True,
     execution_snapshot: Path | None = None,
@@ -1969,6 +1974,12 @@ def run_assist(
         raise AnalysisValidationError("assist external timeout must be at least 600 seconds")
     output_dir.mkdir(parents=True, exist_ok=True)
     audio_sha = sha256_file(audio)
+    # The application checked the file against the digest it holds at Start;
+    # this is the same check where the bytes are read. A file replaced since
+    # would be measured, sent and paid for under a hash the application then
+    # refuses at staging, so it is refused here, before anything is spent.
+    if expected_audio_sha256 and audio_sha != expected_audio_sha256.strip().lower():
+        raise AnalysisValidationError(AUDIO_CHANGED_SENTENCE)
     paths = {
         "measured": output_dir / "measured.json",
         "lyrics": output_dir / "lyrics.whisper.json",
@@ -2345,6 +2356,9 @@ def run_assist(
                 sys.executable, str(ROOT / "tools/semantic_openrouter.py"), str(audio),
                 str(paths["semantic"]), "--duration", f"{measured_duration:.9f}",
                 "--model", semantic_route["model"],
+                # The bytes this job hashed: the helper reads the file again,
+                # later, and must not send a different one.
+                "--expect-sha256", audio_sha,
             ]
             for slug in semantic_route["order"]: command.extend(["--provider", slug])
             for slug in semantic_route["only"]: command.extend(["--only", slug])
@@ -2646,6 +2660,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Antigravity: detect performed phrases; use the written sheet only for exact local spelling")
     assist.add_argument("--semantic-cache", type=Path)
     assist.add_argument("--lyrics-file", type=Path)
+    assist.add_argument("--expect-audio-hash",
+                        help="the digest the application verified the audio against at "
+                             "Start; a file that no longer hashes to it is refused before "
+                             "anything is measured or sent")
     assist.add_argument("--zdr", action="store_true"); assist.add_argument("--timeout", type=float, default=2400)
     assist.add_argument("--no-dotenv", action="store_true",
                         help="refuse the repository .env credential fallback (the desktop path)")
@@ -2704,6 +2722,7 @@ def main(argv: list[str] | None = None) -> int:
                 performed_lyrics=args.performed_lyrics,
                 semantic_cache=args.semantic_cache,
                 lyrics_file=args.lyrics_file,
+                expected_audio_sha256=args.expect_audio_hash,
                 zdr=args.zdr, external_timeout=args.timeout,
                 allow_dotenv=not args.no_dotenv,
                 execution_snapshot=args.execution_snapshot,

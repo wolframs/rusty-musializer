@@ -83,7 +83,7 @@ use musializer_runtime::process::assist::{
 };
 use musializer_runtime::process::font_import::find_assist_helper;
 use musializer_runtime::process::reveal::{self, RevealState};
-use musializer_runtime::project_files::sha256_file_hex;
+use musializer_runtime::project_files::{self, sha256_file_hex, FileStamp};
 use raylib::prelude::{RaylibDraw, RaylibDrawHandle};
 
 use super::super::shell::{Shell, ShellCommand, ShellInput};
@@ -416,7 +416,32 @@ impl AssistController {
                 "The Assist helper script is missing from this installation.",
             )];
         };
+        // Before anything is resolved, written or promised: the file must still
+        // be the one this track's digest describes. The helper hashes the file
+        // as it is now, so a replaced file would be measured, sent and paid for,
+        // and its answer then refused at staging as another track's.
+        match audio_still_loaded(&workspace.tracks()[index]) {
+            AudioCheck::Restamped(stamp) => {
+                if let Some(track) = workspace.get_mut(index) {
+                    track.audio_stamp = stamp;
+                }
+            }
+            check => {
+                if let Some(refusal) = check.refusal() {
+                    let session = &mut workspace.assist;
+                    session.job_state = AssistJobState::Failed;
+                    session.failure_detail = refusal.clone();
+                    return vec![AssistNotice::new(
+                        Severity::Warning,
+                        "Analysis could not start",
+                        refusal,
+                    )];
+                }
+            }
+        }
         let mode = workspace.assist.mode();
+        let expected_audio_sha256 = Some(workspace.tracks()[index].audio_sha256.clone())
+            .filter(|digest| !digest.is_empty());
         let (audio, duration, sheet) = {
             let track = &workspace.tracks()[index];
             (
@@ -521,6 +546,7 @@ impl AssistController {
             duration_seconds: duration,
             mode: job_mode(mode),
             lyrics_file: sheet.as_deref(),
+            expected_audio_sha256: expected_audio_sha256.as_deref(),
             execution_snapshot: Some(&snapshot_path),
             zdr_required: resolved.snapshot.requires_zdr(),
             credential,
@@ -727,6 +753,7 @@ impl AssistController {
                 if let Some(digest) = loaded.audio_sha256 {
                     if let Some(track) = index.and_then(|index| workspace.get_mut(index)) {
                         track.audio_sha256 = digest;
+                        track.audio_stamp = loaded.audio_stamp;
                     }
                 }
                 let name = index
@@ -1097,9 +1124,18 @@ fn job_mode(mode: AssistMode) -> JobMode {
 /// A missing helper is checked first because it is the one refusal that is
 /// about the installation rather than about the routes, and no route repair
 /// would clear it.
-fn start_refusal(helper_available: bool, plan: Option<&ExecutionPlan>) -> Option<String> {
+fn start_refusal(
+    helper_available: bool,
+    audio: Option<&AudioCheck>,
+    plan: Option<&ExecutionPlan>,
+) -> Option<String> {
     if !helper_available {
         return Some("The Assist helper script is missing from this installation.".to_string());
+    }
+    // Before the routes: a changed file is refused whatever the routes say,
+    // and no route repair would clear it.
+    if let Some(refusal) = audio.and_then(AudioCheck::refusal) {
+        return Some(refusal);
     }
     plan.and_then(ExecutionPlan::first_block)
         .map(ExecutionBlock::sentence)
@@ -1125,6 +1161,8 @@ fn workflow_kind(mode: AssistMode) -> execution::WorkflowKind {
 struct LoadedCandidate {
     candidate: AnalysisCandidate,
     audio_sha256: Option<String>,
+    /// The file's stamp when `audio_sha256` was computed, recorded with it.
+    audio_stamp: Option<FileStamp>,
 }
 
 /// `load_analysis_candidate_for_track` (`plug.c:3408-3500`).
@@ -1140,10 +1178,12 @@ fn load_candidate(path: &Path, track: &Track, lanes: Lanes) -> Result<LoadedCand
         std::fs::read(path).map_err(|_| "The validated bridge file is unavailable.".to_string())?;
 
     let mut computed = None;
+    let mut stamp = None;
     let expected = if track.audio_sha256.is_empty() {
-        let digest = sha256_file_hex(&track.file_path)
+        let (digest, observed) = project_files::sha256_file_hex_stamped(&track.file_path)
             .map_err(|_| "The source audio could not be hashed.".to_string())?;
         computed = Some(digest.clone());
+        stamp = observed;
         digest
     } else {
         track.audio_sha256.clone()
@@ -1153,8 +1193,17 @@ fn load_candidate(path: &Path, track: &Track, lanes: Lanes) -> Result<LoadedCand
     // analysis attaching to the wrong audio. The duration is deliberately *not*
     // passed, because the container and the decoder disagree by an encoder
     // padding tail; that difference is bounded separately below.
-    let bridge = analysis_bridge::parse(&input, Some(&expected), None)
-        .map_err(|error| capitalize_sentence(&error.to_string()))?;
+    let bridge = analysis_bridge::parse(&input, Some(&expected), None).map_err(|error| {
+        // A result for another file is usually this file, changed on disk
+        // since it was loaded; that has its own repair, so it is named.
+        if error == analysis_bridge::AnalysisBridgeError::AudioMismatch
+            && audio_still_loaded(track) == AudioCheck::Changed
+        {
+            AUDIO_CHANGED_AFTER_RUN.to_string()
+        } else {
+            capitalize_sentence(&error.to_string())
+        }
+    })?;
 
     let bridge_duration = bridge.duration_ms as f64 / 1000.0;
     if (bridge_duration - track.lyrics.duration_seconds()).abs() > 0.25 {
@@ -1166,6 +1215,131 @@ fn load_candidate(path: &Path, track: &Track, lanes: Lanes) -> Result<LoadedCand
     Ok(LoadedCandidate {
         candidate,
         audio_sha256: computed,
+        audio_stamp: stamp,
+    })
+}
+
+/// What a Start refuses with when the track's file no longer has the digest
+/// it was loaded with.
+pub(crate) const AUDIO_CHANGED_SENTENCE: &str = "This track's audio file changed on disk after \
+    it was loaded, so no result could match it. Open the file again (or reopen the project), \
+    then start. Nothing was sent.";
+
+/// What staging says when the result names another file and this track's file
+/// has changed since it was loaded.
+const AUDIO_CHANGED_AFTER_RUN: &str = "This track's audio file changed on disk after it was \
+    loaded, so the result describes another file and was not staged. Open the file again, \
+    then start.";
+
+/// Whether a track's file is still the one its digest describes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AudioCheck {
+    /// No digest yet: the helper and [`load_candidate`] each hash the file as
+    /// it is, so there is no earlier digest to be stale.
+    Unhashed,
+    /// The stamp recorded with the digest still describes the file.
+    Unchanged,
+    /// The stamp moved but the bytes hash to the same digest (a `touch`, a
+    /// copy back); the new stamp, to record, or `None` when the file was
+    /// changing while it was hashed.
+    Restamped(Option<FileStamp>),
+    /// The file's bytes are not the ones the digest describes.
+    Changed,
+    /// The file could not be looked at.
+    Unreadable(String),
+}
+
+impl AudioCheck {
+    fn refusal(&self) -> Option<String> {
+        match self {
+            Self::Changed => Some(AUDIO_CHANGED_SENTENCE.to_string()),
+            Self::Unreadable(reason) => Some(format!(
+                "This track's audio file can no longer be read ({reason}). Open it again, then \
+                 start. Nothing was sent."
+            )),
+            Self::Unhashed | Self::Unchanged | Self::Restamped(_) => None,
+        }
+    }
+}
+
+thread_local! {
+    /// `(path, stamp, digest)` of the last re-hash, so a stamp that moved
+    /// without the bytes changing is hashed once, not once per check.
+    static AUDIO_REHASH: std::cell::RefCell<Option<(PathBuf, FileStamp, String)>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// One `stat`, and a re-hash only when the stamp recorded with the digest no
+/// longer describes the file (defect J1-1, 2026-11-16: a file replaced after
+/// loading cost a call whose answer the panel then refused).
+fn audio_still_loaded(track: &Track) -> AudioCheck {
+    if track.audio_sha256.is_empty() {
+        return AudioCheck::Unhashed;
+    }
+    let stamp = match project_files::file_stamp(&track.file_path) {
+        Ok(stamp) => stamp,
+        Err(error) => return AudioCheck::Unreadable(error.to_string()),
+    };
+    if track.audio_stamp == Some(stamp) {
+        return AudioCheck::Unchanged;
+    }
+    let remembered = AUDIO_REHASH.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .filter(|(path, seen, _)| *path == track.file_path && *seen == stamp)
+            .map(|(_, _, digest)| digest.clone())
+    });
+    let (digest, observed) = match remembered {
+        Some(digest) => (digest, Some(stamp)),
+        None => match project_files::sha256_file_hex_stamped(&track.file_path) {
+            Ok((digest, observed)) => {
+                if let Some(observed) = observed {
+                    AUDIO_REHASH.with(|slot| {
+                        *slot.borrow_mut() =
+                            Some((track.file_path.clone(), observed, digest.clone()));
+                    });
+                }
+                (digest, observed)
+            }
+            Err(error) => return AudioCheck::Unreadable(error.to_string()),
+        },
+    };
+    if digest.eq_ignore_ascii_case(&track.audio_sha256) {
+        AudioCheck::Restamped(observed)
+    } else {
+        AudioCheck::Changed
+    }
+}
+
+thread_local! {
+    /// The confirmation's last answer, `(path, digest, when, answer)`: looked
+    /// at again at most every two seconds while the card is open, so the card
+    /// notices a file replaced under it without a `stat` per frame. The press
+    /// always looks again.
+    static CONFIRMATION_AUDIO: std::cell::RefCell<Option<(PathBuf, String, std::time::Instant, AudioCheck)>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// [`audio_still_loaded`] for the confirmation, at most every two seconds.
+fn confirmation_audio_check(track: &Track) -> AudioCheck {
+    const RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
+    CONFIRMATION_AUDIO.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some((path, digest, at, answer)) = slot.as_ref() {
+            if *path == track.file_path && *digest == track.audio_sha256 && at.elapsed() < RECHECK {
+                return answer.clone();
+            }
+        }
+        let answer = audio_still_loaded(track);
+        *slot = Some((
+            track.file_path.clone(),
+            track.audio_sha256.clone(),
+            std::time::Instant::now(),
+            answer.clone(),
+        ));
+        answer
     })
 }
 
@@ -3675,9 +3849,26 @@ impl Shell {
             reference.summary()
         };
         let reference_lines = wrap_to_width(reference_summary, inner, 3, &measure13);
+        // The confirmation's own notes, beside the routes: what the card knows
+        // about this track that the route graph cannot (defects J1-1, -3, -5,
+        // -6). Wrapped here, where the face is, so a long sentence is read
+        // whole rather than ellipsized to one line.
+        let audio_check = routes.as_ref().and(track).map(confirmation_audio_check);
+        let measure_route = |text: &str| widgets::measure(font, text, ROUTE_FONT_SIZE);
+        let wrap_note = |text: &str| wrap_to_width(text, inner, 6, &measure_route);
+        let confirmation_notes = ConfirmationNotes {
+            audio_refusal: audio_check.as_ref().and_then(AudioCheck::refusal),
+        };
         let route_lines: Vec<(String, raylib::prelude::Color)> = routes
             .as_ref()
-            .map(|plan| column_route_lines(plan, track.map(|track| track.duration_seconds)))
+            .map(|plan| {
+                column_route_lines(
+                    plan,
+                    track.map(|track| track.duration_seconds),
+                    &confirmation_notes,
+                    &wrap_note,
+                )
+            })
             .unwrap_or_default();
         let running_text = wrap_to_width(
             "No percentage is reported, so none is drawn. Playback stays available, and nothing changes until you apply a result.",
@@ -4051,7 +4242,11 @@ impl Shell {
                             .is_some_and(|track| track.lyrics_reference_path.is_some()),
                         reference_missing: reference == AssistLyricReference::None,
                         routes: &route_lines,
-                        refusal: start_refusal(session.helper_available, routes.as_ref()),
+                        refusal: start_refusal(
+                            session.helper_available,
+                            audio_check.as_ref(),
+                            routes.as_ref(),
+                        ),
                         running: &running_text,
                         cancelling: &cancelling_text,
                         empty: &empty_text,
@@ -4779,9 +4974,18 @@ struct AssistOpenTexts<'a> {
 /// The P4 route block's lines for the column: the heading sentence, one row
 /// per composed contract, the boundary invariant, and the notes, each with its
 /// tint — the band's `draw_route_graph`, as a list the card can lay out.
+/// What the confirmation says about this track beyond its route graph.
+#[derive(Clone, Debug, Default)]
+struct ConfirmationNotes {
+    /// The file changed on disk since its digest was taken (defect J1-1).
+    audio_refusal: Option<String>,
+}
+
 fn column_route_lines(
     plan: &ExecutionPlan,
     duration_seconds: Option<f64>,
+    notes: &ConfirmationNotes,
+    wrap: &dyn Fn(&str) -> Vec<String>,
 ) -> Vec<(String, raylib::prelude::Color)> {
     let snapshot = &plan.snapshot;
     let leaves = snapshot.sends_audio_off_machine();
@@ -4820,6 +5024,13 @@ fn column_route_lines(
         if let Some(line) = semantic_cost_line(entry, duration_seconds) {
             lines.push((line, color::ui_muted()));
         }
+    }
+    if let Some(refusal) = &notes.audio_refusal {
+        lines.extend(
+            wrap(refusal)
+                .into_iter()
+                .map(|line| (line, color::ui_danger())),
+        );
     }
     let raises = execution::any_fallback_can_raise_boundary(&snapshot.contracts);
     lines.push((
@@ -5067,13 +5278,13 @@ mod tests {
             doctor: execution::DoctorReading::NotTaken,
         };
         let clear = plan(Vec::new());
-        assert_eq!(start_refusal(true, Some(&clear)), None);
+        assert_eq!(start_refusal(true, None, Some(&clear)), None);
 
         let blocked = plan(vec![ExecutionBlock::NoCredential(
             musializer_core::assist::contracts::ContractId::Semantic,
         )]);
         assert_eq!(
-            start_refusal(true, Some(&blocked)).as_deref(),
+            start_refusal(true, None, Some(&blocked)).as_deref(),
             Some(blocked.first_block().unwrap().sentence().as_str()),
         );
         // The route notes under the button draw the *same* string, so the
@@ -5085,12 +5296,12 @@ mod tests {
 
         // A missing helper wins over a route repair, and is still a refusal
         // when there is no plan at all.
-        assert!(start_refusal(false, Some(&clear))
+        assert!(start_refusal(false, None, Some(&clear))
             .is_some_and(|reason| reason.contains("helper script is missing")));
-        assert!(start_refusal(false, None).is_some());
+        assert!(start_refusal(false, None, None).is_some());
         // No plan yet and a helper present is the one frame a confirmation
         // arms before its graph resolves; it is not a refusal.
-        assert_eq!(start_refusal(true, None), None);
+        assert_eq!(start_refusal(true, None, None), None);
     }
 
     /// Audit B11. All three supervisor stops now say something, and a cancel is
@@ -5277,6 +5488,7 @@ mod tests {
             duration_seconds: 8.0,
             mode: job_mode(AssistMode::Lyrics),
             lyrics_file: None,
+            expected_audio_sha256: None,
             execution_snapshot: None,
             credential: None,
             zdr_required: false,
@@ -5380,6 +5592,118 @@ mod tests {
             workspace_hash(Path::new("/tmp/a.wav"), 60.0),
             workspace_hash(Path::new("/tmp/a.wav"), 60.5)
         );
+    }
+
+    /// Defect J1-1: the stamp recorded with the digest is what makes the check
+    /// one `stat`; a stamp that moved is hashed again before it is believed,
+    /// and only different bytes are a refusal.
+    #[test]
+    fn a_file_replaced_after_loading_is_told_apart_from_one_that_was_touched() {
+        let scratch = Scratch::new("stale-audio");
+        let (mut workspace, audio) = workspace_with_track(&scratch);
+        assert_eq!(
+            audio_still_loaded(&workspace.tracks()[0]),
+            AudioCheck::Unhashed,
+            "no digest yet: the helper and the staging hash the same file"
+        );
+        let (digest, stamp) = project_files::sha256_file_hex_stamped(&audio).expect("hash");
+        {
+            let track = workspace.get_mut(0).unwrap();
+            track.audio_sha256 = digest;
+            track.audio_stamp = stamp;
+        }
+        assert_eq!(
+            audio_still_loaded(&workspace.tracks()[0]),
+            AudioCheck::Unchanged
+        );
+
+        // The same bytes written again: a new stamp, the same digest.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&audio, b"synthetic audio").expect("rewrite");
+        let restamped = audio_still_loaded(&workspace.tracks()[0]);
+        assert!(
+            matches!(restamped, AudioCheck::Restamped(Some(_))),
+            "{restamped:?}"
+        );
+        assert_eq!(restamped.refusal(), None);
+
+        // Other bytes under the same name: refused, in the words a user reads.
+        std::fs::write(&audio, b"a different take of the song").expect("replace");
+        let changed = audio_still_loaded(&workspace.tracks()[0]);
+        assert_eq!(changed, AudioCheck::Changed);
+        assert_eq!(changed.refusal().as_deref(), Some(AUDIO_CHANGED_SENTENCE));
+        assert!(AUDIO_CHANGED_SENTENCE.contains("Open the file again"));
+        assert!(AUDIO_CHANGED_SENTENCE.ends_with("Nothing was sent."));
+
+        std::fs::remove_file(&audio).expect("remove");
+        let gone = audio_still_loaded(&workspace.tracks()[0]);
+        assert!(matches!(gone, AudioCheck::Unreadable(_)), "{gone:?}");
+        assert!(gone.refusal().unwrap().contains("can no longer be read"));
+    }
+
+    /// Defect J1-1, at the press: a changed file is refused before a route is
+    /// resolved, a snapshot written or a process spawned, and the refusal is
+    /// the one the confirmation's disabled Start names.
+    #[test]
+    fn start_refuses_a_file_replaced_after_loading_before_anything_is_spent() {
+        let scratch = Scratch::new("stale-start");
+        let (mut workspace, audio) = workspace_with_track(&scratch);
+        let (digest, stamp) = project_files::sha256_file_hex_stamped(&audio).expect("hash");
+        {
+            let track = workspace.get_mut(0).unwrap();
+            track.audio_sha256 = digest;
+            track.audio_stamp = stamp;
+        }
+        std::fs::write(&audio, b"a different take of the song").expect("replace");
+        let marker = scratch.join("spawned");
+        let helper = scratch.join("helper.py");
+        std::fs::write(
+            &helper,
+            format!(
+                "import pathlib\npathlib.Path({:?}).write_text('x')\n",
+                marker.display().to_string()
+            ),
+        )
+        .expect("helper");
+        let mut controller = controller();
+        controller.helper = Some(helper);
+        workspace.assist.helper_available = true;
+        workspace.assist.select_mode(AssistMode::Mimo);
+        let notices = controller.start(&mut workspace, 0.0);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].title, "Analysis could not start");
+        assert_eq!(notices[0].detail, AUDIO_CHANGED_SENTENCE);
+        assert_eq!(workspace.assist.failure_detail, AUDIO_CHANGED_SENTENCE);
+        assert!(!controller.is_running());
+        assert!(!marker.exists(), "nothing may be spawned");
+        assert_eq!(
+            start_refusal(
+                true,
+                Some(&audio_still_loaded(&workspace.tracks()[0])),
+                None
+            )
+            .as_deref(),
+            Some(AUDIO_CHANGED_SENTENCE)
+        );
+    }
+
+    /// The staging refusal names the cause a user can act on when the result
+    /// describes another file because this one changed.
+    #[test]
+    fn a_result_for_a_file_changed_since_loading_says_so() {
+        let scratch = Scratch::new("stale-stage");
+        let (mut workspace, audio) = workspace_with_track(&scratch);
+        let (digest, stamp) = project_files::sha256_file_hex_stamped(&audio).expect("hash");
+        {
+            let track = workspace.get_mut(0).unwrap();
+            track.audio_sha256 = digest;
+            track.audio_stamp = stamp;
+        }
+        std::fs::write(&audio, b"a different take of the song").expect("replace");
+        let bridge = bridge_for(&scratch, &audio);
+        let error = load_candidate(&bridge, &workspace.tracks()[0], Lanes::ALL)
+            .expect_err("the result is for the new bytes");
+        assert_eq!(error, AUDIO_CHANGED_AFTER_RUN);
     }
 
     #[test]

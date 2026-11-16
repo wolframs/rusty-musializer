@@ -222,6 +222,11 @@ pub struct AssistSpec<'a> {
     pub mode: AssistMode,
     /// An explicitly chosen lyric sheet, or `None`.
     pub lyrics_file: Option<&'a Path>,
+    /// The digest the application verified the audio against at Start, when it
+    /// has one. The helper refuses before anything is measured or sent if the
+    /// file it hashes is no longer this one: a file replaced after loading
+    /// would otherwise be paid for and then refused at staging.
+    pub expected_audio_sha256: Option<&'a str>,
     /// The `musializer.assist-execution/v1` record for this job, already written
     /// (`runtime::assist::plan::write_snapshot`).
     ///
@@ -377,6 +382,9 @@ impl AssistJob {
             if lyrics.is_file() {
                 command.arg("--lyrics-file").arg(lyrics);
             }
+        }
+        if let Some(digest) = spec.expected_audio_sha256 {
+            command.arg("--expect-audio-hash").arg(digest);
         }
         // The frozen route graph. A path, never the record: an argv is the wrong
         // place for provenance, and `/proc/*/cmdline` is a place this project
@@ -687,6 +695,7 @@ mod tests {
             duration_seconds: 40.5,
             mode,
             lyrics_file: None,
+            expected_audio_sha256: None,
             execution_snapshot: None,
             // The default is what the recommended graph resolves to for the
             // mode under test; the argv test sets it explicitly, and the ZDR
@@ -824,6 +833,38 @@ mod tests {
             !argv.contains(&"--execution-snapshot".to_string()),
             "no snapshot was resolved, so none may be passed"
         );
+    }
+
+    /// The digest verified at Start reaches the helper, which refuses a file
+    /// that no longer hashes to it before anything is measured or sent; with
+    /// no digest, no flag.
+    #[test]
+    fn the_verified_digest_rides_along_only_when_there_is_one() {
+        let scratch = Scratch::new("expect-digest");
+        let helper = scratch.fake_helper(
+            "helper.py",
+            "pathlib.Path(sys.argv[sys.argv.index('--bridge') + 1])\
+             .write_text('\\n'.join(sys.argv[1:]))",
+        );
+        let digest = "ab".repeat(32);
+        let argv_of = |expected: Option<&str>| {
+            let mut configured = spec(&helper, &scratch.0, AssistMode::Mimo);
+            configured.expected_audio_sha256 = expected;
+            let mut job = AssistJob::start(&configured, 0).expect("start");
+            assert_eq!(poll_until_finished(&mut job), AssistPoll::Succeeded);
+            std::fs::read_to_string(job.bridge_path())
+                .expect("bridge")
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let with = argv_of(Some(&digest));
+        let at = with
+            .iter()
+            .position(|arg| arg == "--expect-audio-hash")
+            .expect("the flag");
+        assert_eq!(with[at + 1], digest);
+        assert!(!argv_of(None).contains(&"--expect-audio-hash".to_string()));
     }
 
     /// Audit A4. The Privacy pane's ZDR toggle used to change `assist.json` and

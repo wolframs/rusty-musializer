@@ -212,6 +212,54 @@ pub fn sha256_file_hex(path: &Path) -> io::Result<String> {
     sha256_file_hex_within(path, u64::MAX)
 }
 
+/// What a file looked like on disk when its digest was taken: enough to tell,
+/// with one `stat`, whether a digest recorded earlier may still describe it.
+///
+/// Length, modification and change times, and the inode. A replace by rename
+/// moves the inode, an in-place rewrite moves the change time (which no tool
+/// can set back), so a file whose stamp is unchanged was not written since.
+/// A stamp that differs says only "look again": a `touch` or a `chmod` moves
+/// it without changing a byte, and the caller re-hashes before believing it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileStamp {
+    pub len: u64,
+    pub modified_ns: i128,
+    pub changed_ns: i128,
+    pub inode: u64,
+    pub device: u64,
+}
+
+impl FileStamp {
+    fn of(metadata: &std::fs::Metadata) -> Self {
+        let ns = |seconds: i64, nanos: i64| i128::from(seconds) * 1_000_000_000 + i128::from(nanos);
+        Self {
+            len: metadata.len(),
+            modified_ns: ns(metadata.mtime(), metadata.mtime_nsec()),
+            changed_ns: ns(metadata.ctime(), metadata.ctime_nsec()),
+            inode: metadata.ino(),
+            device: metadata.dev(),
+        }
+    }
+}
+
+/// The stamp of the file at `path` now (one `stat`, following links as an
+/// open does).
+pub fn file_stamp(path: &Path) -> io::Result<FileStamp> {
+    std::fs::metadata(path).map(|metadata| FileStamp::of(&metadata))
+}
+
+/// [`sha256_file_hex`] and the stamp of the file it read.
+///
+/// The stamp is taken from the open handle before and after the read; when the
+/// two differ the file changed while it was hashed, the digest describes no
+/// single state of it, and the stamp is `None` so the next check hashes again.
+pub fn sha256_file_hex_stamped(path: &Path) -> io::Result<(String, Option<FileStamp>)> {
+    let before = file_stamp(path)?;
+    let digest = sha256_file_hex(path)?;
+    let after = file_stamp(path)?;
+    Ok((digest, (before == after).then_some(after)))
+}
+
 /// [`sha256_file_hex`] for a file of at most `limit` bytes, read through that
 /// cap; a larger one, or one that grows past it while it is read, is an error.
 pub fn sha256_file_hex_within(path: &Path, limit: u64) -> io::Result<String> {

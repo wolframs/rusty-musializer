@@ -382,8 +382,10 @@ pub fn save_to_path(
         return Err(ProjectError::AliasesSourceAudio);
     }
     if track.audio_sha256.is_empty() {
-        track.audio_sha256 = project_files::sha256_file_hex(&track.file_path)
+        let (digest, stamp) = project_files::sha256_file_hex_stamped(&track.file_path)
             .map_err(ProjectError::AudioIdentity)?;
+        track.audio_sha256 = digest;
+        track.audio_stamp = stamp;
     }
 
     let audio = project_files::bundle_asset(

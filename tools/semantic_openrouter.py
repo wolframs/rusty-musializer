@@ -1003,6 +1003,10 @@ def _cost_clause(response: dict[str, Any], estimate: dict[str, Any] | None = Non
     return "OpenRouter reported no cost for it"
 
 
+AUDIO_CHANGED_REASON = ("the track's audio file changed on disk during the job, so nothing "
+                        "was sent. Open the file again, then start")
+
+
 def failure_receipt_path(cache_path: Path) -> Path:
     return cache_path.with_name(f"{cache_path.stem}.failed.json")
 
@@ -1166,11 +1170,13 @@ def analyze_to_cache(
     sleeper: Callable[[float], None] = time.sleep,
     encoder: Callable[..., bytes] = encode_audio,
     request_dump: Path | None = None,
+    expected_sha256: str | None = None,
     _audio_bytes: bytes | None = None,
     _prepared_request: tuple[dict[str, Any], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     audio_bytes = _audio_bytes if _audio_bytes is not None else audio_path.read_bytes()
     audio_hash = hashlib.sha256(audio_bytes).hexdigest()
+    expected = (expected_sha256 or "").strip().lower() or None
     selected_format = (audio_format or audio_path.suffix.lstrip(".")).lower()
     if not selected_format:
         raise AnalysisValidationError("audio format is required")
@@ -1187,6 +1193,21 @@ def analyze_to_cache(
             audio_sha256=audio_hash, message=f"{reason[:1].upper()}{reason[1:]}.",
             may_be_billed=False)
         return RuntimeError(reason)
+
+    # The parent hashed the file when the job started; this snapshot is read
+    # minutes later, after the measured step. A file replaced in between would
+    # be sent and paid for under a hash the parent then refuses, so it is
+    # refused here, before anything leaves. The receipt names the job's hash,
+    # which is the one the parent looks it up by.
+    if expected is not None and audio_hash != expected:
+        reason = AUDIO_CHANGED_REASON
+        audio_hash = expected
+        raise not_sent(reason, request_settings(
+            model=model, audio_duration=audio_duration,
+            audio_format=selected_format, provider_order=provider_order,
+            provider_only=provider_only, provider_ignore=provider_ignore,
+            allow_fallbacks=allow_fallbacks,
+            zero_data_retention=zero_data_retention, max_price=max_price))
 
     if _prepared_request is None:
         try:
@@ -1299,6 +1320,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--zdr", action="store_true", help="require Zero Data Retention providers")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--request-dump", type=Path)
+    parser.add_argument("--expect-sha256",
+                        help="refuse, before sending, audio that does not hash to this")
     args = parser.parse_args(argv)
     try:
         audio_snapshot = _snapshot_audio(args.audio)
@@ -1347,6 +1370,7 @@ def main(argv: list[str] | None = None) -> int:
             zero_data_retention=args.zdr,
             max_price=max_price,
             request_dump=args.request_dump,
+            expected_sha256=args.expect_sha256,
             _audio_bytes=audio_bytes,
         )
     except (OSError, ValueError, RuntimeError) as error:

@@ -133,6 +133,13 @@ pub struct Track {
     /// deferred. C treats a failure here as non-fatal and lets saving retry it
     /// (`plug.c:806-812`), and so does this.
     pub audio_sha256: String,
+    /// What the file looked like when `audio_sha256` was taken, or `None` when
+    /// that is not known (a digest read from a `.musi`, or one taken while the
+    /// file was changing). An Assist job checks it before anything is spent:
+    /// a file replaced after loading no longer has this digest, and the
+    /// helper, which hashes the file as it is, would pay for an answer the
+    /// panel then refuses (`ui/panels/assist.rs`, `audio_still_loaded`).
+    pub audio_stamp: Option<musializer_runtime::project_files::FileStamp>,
 
     // ---- authored content ----------------------------------------------
     pub lyrics: LyricsDocument,
@@ -451,6 +458,7 @@ impl Track {
             audio_sample_rate: 0,
             audio_channels: 0,
             audio_sha256: String::new(),
+            audio_stamp: None,
             lyrics: LyricsDocument::new(duration_seconds)?,
             scene_switches: SceneSwitchTimeline::new(),
             semantic_events: EventTimeline::new(),

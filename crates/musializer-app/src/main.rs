@@ -4022,8 +4022,11 @@ fn open_track<'audio>(
         // CX-3 recovery writes only this cached identity. Hash once while the
         // input is already in its explicit open transaction; never re-read a
         // large audio file from the 1.5-second frame-thread snapshot poll.
-        match project_files::sha256_file_hex(&canonical) {
-            Ok(digest) => track.audio_sha256 = digest,
+        match project_files::sha256_file_hex_stamped(&canonical) {
+            Ok((digest, stamp)) => {
+                track.audio_sha256 = digest;
+                track.audio_stamp = stamp;
+            }
             Err(error) => {
                 eprintln!("warning: audio identity could not be cached for recovery: {error}")
             }

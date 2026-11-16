@@ -60,6 +60,7 @@ UNCONDITIONAL = [
 CONDITIONAL = [
     ("--zdr", None),                                        # mode.uses_model()
     ("--lyrics-file", "/tmp/musializer/sheet.txt"),         # an explicit sheet
+    ("--expect-audio-hash", "ab" * 32),                   # the digest verified at Start
     ("--execution-snapshot", "/tmp/musializer/route.json"),  # a resolved graph
     ("--whisper-bin", "/opt/whisper/whisper-cli"),          # local runtimes
     ("--whisper-model", "/opt/whisper/ggml-large.bin"),
