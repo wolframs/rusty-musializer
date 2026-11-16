@@ -359,24 +359,44 @@ fn status_command(spec: &StatusSpec<'_>) -> Command {
 }
 
 /// Runs the status query, blocking for at most [`STATUS_TIMEOUT`], and
-/// returns its JSON answer, or `None` when there is none in time. For a
-/// background thread: it opens no socket, but it hashes the track.
+/// returns its JSON answer, or `None` when there is none in time or it is
+/// longer than [`STATUS_OUTPUT_LIMIT`]. For a background thread: it opens no
+/// socket, but it hashes the track.
+///
+/// The answer is read while the child runs (J4): it names every pending
+/// charge, and an answer longer than the pipe holds (64 KiB) would block the
+/// child on its write until the timeout killed it, if the pipe were read only
+/// after the exit.
 #[must_use]
 pub fn query_semantic_status(spec: &StatusSpec<'_>) -> Option<String> {
     use std::io::Read;
     let mut child = status_command(spec).spawn().ok()?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let read = stdout
+            .take(STATUS_OUTPUT_LIMIT + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes);
+        let _ = sender.send(read.ok());
+    });
     let started = Instant::now();
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let mut output = String::new();
-                child
-                    .stdout
-                    .take()?
-                    .take(STATUS_OUTPUT_LIMIT)
-                    .read_to_string(&mut output)
-                    .ok()?;
-                return status.success().then_some(output);
+                // Bounded: a process the child started could hold the pipe
+                // open past its exit (docs/TRAPS.md, "Reaping the encoder
+                // does not close its pipe").
+                let bytes = receiver.recv_timeout(Duration::from_secs(2)).ok()??;
+                if !status.success() || bytes.len() as u64 > STATUS_OUTPUT_LIMIT {
+                    return None;
+                }
+                return String::from_utf8(bytes).ok();
             }
             Ok(None) if started.elapsed() < STATUS_TIMEOUT => {
                 std::thread::sleep(Duration::from_millis(20));
@@ -1069,6 +1089,30 @@ mod tests {
         assert!(!bare
             .iter()
             .any(|arg| arg == "--reuse-answer" || arg == "--acknowledge-charge"));
+    }
+
+    /// J4: an answer longer than a pipe holds comes back whole (it is read
+    /// while the child runs), and one longer than the limit is no answer.
+    #[test]
+    fn a_long_status_answer_is_read_whole_and_a_too_long_one_is_none() {
+        let scratch = Scratch::new("status-long");
+        let snapshot = scratch.join("s.json");
+        let ask = |helper: &Path| {
+            query_semantic_status(&StatusSpec {
+                helper,
+                audio: Path::new("/tmp/track.wav"),
+                output_dir: &scratch.0,
+                execution_snapshot: &snapshot,
+                zdr_required: false,
+            })
+        };
+        let long = scratch.fake_helper("long.py", "sys.stdout.write('x' * 300000)");
+        assert_eq!(ask(&long).map(|answer| answer.len()), Some(300_000));
+        let too_long = scratch.fake_helper(
+            "too-long.py",
+            &format!("sys.stdout.write('x' * {})", STATUS_OUTPUT_LIMIT + 1),
+        );
+        assert_eq!(ask(&too_long), None);
     }
 
     /// J1-6: the status query hands the helper its subcommand, the track, the

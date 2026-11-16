@@ -2989,7 +2989,11 @@ fi
 #   catalog     the saved model list predates the model: one quiet line
 #   billed-*    an earlier request was started and never answered, said
 #               against this Start's request: same, other settings, other
-#               audio (J3-2); billed-behind: put behind by the log (J3-7)
+#               audio (J3-2); billed-press: Start acknowledges exactly the
+#               charges the card drew, while one appears after it was drawn;
+#               billed-behind: the next card says only that one (J4-3)
+#   answer-gone the card said "Cost: nothing", Start carries the answer's key,
+#               and the answer is gone: refused, nothing sent (J4-2)
 #   settings-*  the AI settings change while the card is open (J3-4)
 #   no-credit   Start, and the listening step refused for credit
 #   cancel      Start, the request leaves, Cancel
@@ -3005,6 +3009,13 @@ J1_HELPER="$J1_DIR_ABS/fake-external-analysis.py"
 cat >"$J1_HELPER" <<'PY'
 import json, os, pathlib, sys, time
 args = sys.argv[1:]
+# J4: the ledger's own reader and writer, so what the card is told and what
+# a Start acknowledges are the real helper's, not this double's.
+sys.path.insert(0, os.environ["J1_TOOLS"])
+import semantic_openrouter
+if os.environ.get("J1_ARGV_LOG"):
+    with open(os.environ["J1_ARGV_LOG"], "a") as log:
+        log.write(" ".join(args) + "\n")
 if args and args[0] == "semantic-status":
     touch = os.environ.get("J1_REPLACE_AUDIO")
     if touch:
@@ -3028,10 +3039,20 @@ if args and args[0] == "semantic-status":
         target = pathlib.Path(os.environ["XDG_CONFIG_HOME"]) / "musializer" / "assist.json"
         if not target.exists():
             target.write_text(pathlib.Path(rewrite).read_text())
+    folder = pathlib.Path(args[2])
+    charges, readable = semantic_openrouter.pending_charges(folder / "semantic.cache.json")
     answer = {"schema_version": "musializer.semantic-status/v1", "state": state,
-              "saved_answer": None}
+              "saved_answer": None, "pending_charges": charges,
+              "ledger": "ok" if readable else "unreadable"}
     if state == "saved":
-        answer["saved_answer"] = {"made_utc": "2026-11-15 18:53 UTC", "model": "google/gemini-3.8-flash"}
+        answer["saved_answer"] = {"made_utc": "2026-11-15 18:53 UTC", "model": "google/gemini-3.8-flash",
+                                  "cache_key": os.environ.get("J1_SAVED_KEY", "5a" * 32)}
+    # J4-3: a charge that appears after the card was asked (another
+    # helper killed meanwhile), once: the card never draws it.
+    late = os.environ.get("J1_LATE_CHARGE")
+    if late and not (folder / "late.done").exists():
+        (folder / "late.done").write_text("")
+        (folder / f"semantic.cache.sent-{time.time_ns()}-1a7e1a7e.json").write_text(late)
     # J3-2: the next Start's request, as the real query names it.
     if os.environ.get("J1_REQUEST_KEY"):
         answer["request_key"] = os.environ["J1_REQUEST_KEY"]
@@ -3040,6 +3061,21 @@ if args and args[0] == "semantic-status":
 out = pathlib.Path(args[2])
 behaviour = os.environ.get("J1_ASSIST", "")
 now = time.time_ns()
+cache = out / "semantic.cache.json"
+if behaviour == "acknowledge":
+    # The orchestrator's acknowledgement, of the ids Start carried.
+    ids = [args[i + 1] for i, arg in enumerate(args) if arg == "--acknowledge-charge"]
+    semantic_openrouter.acknowledge_charges(cache, ids, by="start")
+    sys.exit(3)
+if behaviour == "answer-gone":
+    # The orchestrator's refusal (J4-2): the card's key, and no answer of it.
+    key = args[args.index("--reuse-answer") + 1] if "--reuse-answer" in args else None
+    message = (semantic_openrouter.ANSWER_GONE_MESSAGE if key == os.environ.get("J1_SAVED_KEY")
+               else f"the run was not given the card's key (got {key})")
+    semantic_openrouter.write_start_refusal(cache, kind="answer_gone", message=message,
+                                            audio_sha256="00" * 32, settings={"model": "m"})
+    print(f"External analysis failed: {message}", file=sys.stderr)
+    sys.exit(1)
 if behaviour == "no-credit":
     message = ("OpenRouter refused the request: the account needs credit (HTTP 402); nothing "
                "was billed. Add credit at openrouter.ai, then start again.")
@@ -3065,8 +3101,15 @@ J1_STALE_CACHE="$J1_DIR_ABS/cache-stale"
 
 j1_run() {
     # j1_run NAME TRACK FRAMES PROBE_EXTRA [VAR=VALUE ...]
-    local name="$1" track="$2" frames="$3" extra="$4"
+    local name="$1" track="$2" frames="$3" extra="$4" size=1280x720 setting
     shift 4
+    # J1_SIZE=WxH among the settings is the window's size, not the child's;
+    # the scale is pinned, so a taller window does not change it and the
+    # reported rects are the ones a click lands on (docs/TRAPS.md, "Auto
+    # scale changes logical card width").
+    for setting in "$@"; do
+        case "$setting" in J1_SIZE=*) size="${setting#J1_SIZE=}" ;; esac
+    done
     local log="$J1_DIR/$name.txt"
     set +e
     env -u MUSIALIZER_ASSIST_HELPER -u OPENROUTER_API_KEY \
@@ -3077,9 +3120,10 @@ j1_run() {
         XDG_CACHE_HOME="$ROUTE_CACHE" \
         MUSIALIZER_ASSIST_PROBE_LANES=mimo \
         MUSIALIZER_ASSIST_HELPER="$J1_HELPER" \
+        J1_TOOLS="$PWD/tools" \
         "$@" \
         $MZ_GL ./target/debug/musializer --mute "$track" \
-            --size 1280x720 \
+            --size "$size" --ui-scale 100 \
             --probe-frames "$frames" \
             --probe-shot "$J1_DIR/$name.png" \
             --ui-probe "panel=assist,play=0,assist=confirm$extra" \
@@ -3122,9 +3166,13 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
     j1_expect plain "assist notes:" "saved-answer=false" || J1_FAILED=1
     j1_expect plain "assist notes:" "Cost: about" || J1_FAILED=1
     j1_expect plain "assist reuse:" "state=Sends" || J1_FAILED=1
-    # Where Start is, from this run's own report, for the runs that press it.
-    J1_START="$(sed -n 's/^assist column:.* body=Confirmation start@\([0-9.]*\),\([0-9.]*\),\([0-9.]*\),\([0-9.]*\).*/\1 \2 \3 \4/p' \
-        "$J1_DIR/plain.txt" | tail -1 | awk '{printf "%dx%d", $1 + $3 / 2, $2 + $4 / 2}')"
+    # Where Start is, from a run's own report, for the runs that press it:
+    # a card with more notes draws Start lower.
+    j1_start_of() {
+        sed -n 's/^assist column:.* body=Confirmation start@\([0-9.]*\),\([0-9.]*\),\([0-9.]*\),\([0-9.]*\).*/\1 \2 \3 \4/p' \
+            "$J1_DIR/$1.txt" | tail -1 | awk '{printf "%dx%d", $1 + $3 / 2, $2 + $4 / 2}'
+    }
+    J1_START="$(j1_start_of plain)"
     J1_FOLDER="$(sed -n 's/^assist charges: *dir=\([^ ]*\) .*/\1/p' "$J1_DIR/plain.txt" | tail -1)"
     echo "  start at $J1_START; the plain track's job folder is ${J1_FOLDER:-<unreported>}"
 
@@ -3147,6 +3195,9 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
     j1_run billed-first "$T" 30 "" J1_STATUS=none || J1_FAILED=1
     J1_BILLED="$(sed -n 's/^assist charges: *dir=\([^ ]*\) .*/\1/p' "$J1_DIR/billed-first.txt" | tail -1)"
     if [ -n "$J1_BILLED" ]; then
+        # A run stopped before its cleanup leaves this folder (its ledger
+        # and receipt); start from none.
+        case "$J1_BILLED" in ./build/analysis/*) rm -rf "$J1_BILLED" ;; esac
         mkdir -p "$J1_BILLED"
         # J3-2: a record carries what it was for, and the line says it
         # against what this Start would send: the same request, other
@@ -3172,26 +3223,46 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
         # The line as drawn, wrapped, still carries the amount and the
         # same-request clause.
         j1_expect billed-same "assist notes:" "billed (at most 0.073 USD). Start sends the same request again;" || J1_FAILED=1
-        # J3-7: the Start pressed after reading the warning puts it in the
-        # job folder's log (the helper's own `acknowledge_possible_charges`,
-        # which the listening step calls), and the next card says nothing.
-        # A may-be-billed receipt too: it stays beside the cache, so only the
-        # log keeps it from being said again.
+        # J4-3: Start acknowledges exactly the charges the card drew. The
+        # card draws a killed helper's record and a may-be-billed receipt;
+        # the status query, once it has answered, finds a third request
+        # killed meanwhile, which the card never draws. The press carries
+        # the two ids it drew, the real ledger takes them, and the next card
+        # says only the third. The receipt stays beside the cache: it is a
+        # message, and the ledger answers for its charge.
+        rm -f "$J1_BILLED"/semantic.cache.sent*.json
+        printf '{"schema_version":"musializer.semantic-request-sent/v2","sent_ns":%s,"sent_utc":"2026-11-16T10:02:33Z","usd_max":0.073,"audio_sha256":"%s","request_key":"%s","earlier":[]}\n' \
+            "$(date +%s%N)" "$J1_AUDIO_SHA" "$J1_KEY" >"$J1_BILLED/semantic.cache.sent-$(date +%s%N)-0a1b2c3d.json"
         printf '{"schema_version":"musializer.semantic-failed-run/v1","failed_ns":%s,"failed_utc":"2026-11-16T11:00:00Z","kind":"timed_out","message":"x","may_be_billed":true,"estimate":{"usd_max":0.073},"audio_sha256":"%s","request_key":"%s","earlier":[]}\n' \
             "$(date +%s%N)" "$J1_AUDIO_SHA" "$J1_KEY" >"$J1_BILLED/semantic.cache.failed.json"
-        python3 - "$J1_BILLED/semantic.cache.json" <<'ACK'
-import sys
-from pathlib import Path
-sys.path.insert(0, "tools")
-import semantic_openrouter
-logged = semantic_openrouter.acknowledge_possible_charges(Path(sys.argv[1]), by="start")
-print(f"  acknowledged {len(logged)} possible charge(s)")
-ACK
-        j1_run billed-behind "$T" 90 "" J1_STATUS=none J1_REQUEST_KEY="$J1_KEY" || J1_FAILED=1
-        j1_expect billed-behind "assist notes:" "earlier-charges=false" || J1_FAILED=1
-        j1_expect billed-behind "assist charges:" "line=none" || J1_FAILED=1
-        if [ ! -f "$J1_BILLED/semantic.cache.failed.json" ]; then
-            echo "FAIL: j1-billed-behind: the receipt the log has to answer for is gone" >&2; J1_FAILED=1
+        J1_LATE="$(printf '{"schema_version":"musializer.semantic-request-sent/v3","attempt":"%s-1a7e1a7e","sent_ns":%s,"sent_utc":"2026-11-16T12:00:00Z","usd_max":0.073,"audio_sha256":"%s","request_key":"%s"}' \
+            "$(date +%s%N)" "$(date +%s%N)" "$J1_AUDIO_SHA" "$J1_KEY")"
+        # The same card, unpressed, says where its Start is; a window tall
+        # enough that the longer card's Start is not below the column's fold.
+        j1_run billed-look "$T" 90 "" J1_STATUS=none J1_REQUEST_KEY="$J1_KEY" J1_SIZE=1280x900 || J1_FAILED=1
+        J1_START_BILLED="$(j1_start_of billed-look)"
+        if [ -n "$J1_START_BILLED" ]; then
+            : >"$J1_DIR_ABS/press-argv.log"
+            j1_run billed-press "$T" 240 ",click=$J1_START_BILLED,click-after=60" J1_STATUS=none \
+                J1_REQUEST_KEY="$J1_KEY" J1_LATE_CHARGE="$J1_LATE" J1_ASSIST=acknowledge J1_SIZE=1280x900 \
+                J1_ARGV_LOG="$J1_DIR_ABS/press-argv.log" || J1_FAILED=1
+            drawn="$(sed -n 's/^assist charges: *dir=[^ ]* ids=\([^ ]*\) .*/\1/p' "$J1_DIR/billed-press.txt" | tail -1)"
+            j1_expect billed-press "assist charges:" "line=2 listening requests for this track and these settings may have been sent and billed (at most 0.146 USD together); the last was on 2026-11-16 11:00 UTC. Start sends the same request again; this note then moves to the job folder's log." || J1_FAILED=1
+            j1_expect billed-press "assist commitment:" "charges=$drawn" || J1_FAILED=1
+            carried="$(grep '^assist ' "$J1_DIR_ABS/press-argv.log" | tr ' ' '\n' | grep -A1 -- '--acknowledge-charge' | grep -v -- '--' | paste -sd, - || true)"
+            if [ -z "$drawn" ] || [ "$carried" != "$drawn" ]; then
+                echo "FAIL: j1-billed-press: the card drew ${drawn:-<none>}, Start carried ${carried:-<none>}" >&2; J1_FAILED=1
+            else
+                printf '  ok   %-10s %s\n' billed-press "Start carried exactly the ids drawn: $carried"
+            fi
+            j1_run billed-behind "$T" 90 "" J1_STATUS=none J1_REQUEST_KEY="$J1_KEY" || J1_FAILED=1
+            j1_expect billed-behind "assist notes:" "earlier-charges=true" || J1_FAILED=1
+            j1_expect billed-behind "assist charges:" "line=A listening request for this track and these settings was started on 2026-11-16 12:00 UTC and never answered; it may have been sent and billed (at most 0.073 USD). Start sends the same request again; this note then moves to the job folder's log." || J1_FAILED=1
+            if [ ! -f "$J1_BILLED/semantic.cache.failed.json" ]; then
+                echo "FAIL: j1-billed-behind: the receipt beside the cache is gone" >&2; J1_FAILED=1
+            fi
+        else
+            echo "FAIL: j1-billed-look: Start's place was not reported" >&2; J1_FAILED=1
         fi
     else
         echo "FAIL: j1-billed: no job folder reported" >&2; J1_FAILED=1
@@ -3252,6 +3323,17 @@ ACK
             fi
             echo "  status queries ($direction): $(tr '\n' ' ' <"$J1_DIR_ABS/status-$direction.log")"
         done
+
+        # J4-2: "Cost: nothing" binds the run. The card draws the saved
+        # answer, Start carries its key, and the run finds it gone: it
+        # refuses, sends nothing, and the panel says so in the words the
+        # real orchestrator writes.
+        T="$(j1_track answer-gone)"
+        J1_GONE_KEY="$(printf 'j4-saved-answer' | sha256sum | cut -d' ' -f1)"
+        j1_run answer-gone "$T" 240 ",click=$(j1_start_of saved),click-after=60" J1_STATUS=saved \
+            J1_SAVED_KEY="$J1_GONE_KEY" J1_ASSIST=answer-gone || J1_FAILED=1
+        j1_expect answer-gone "assist commitment:" "reuse=$J1_GONE_KEY" || J1_FAILED=1
+        j1_expect answer-gone "assist notice:" "title=The saved answer is no longer there | The saved answer the card offered to reuse is no longer there, so nothing was sent or billed. Open the card again: it now says what a new request would cost." || J1_FAILED=1
     else
         echo "FAIL: j1: Start's place was not reported" >&2; J1_FAILED=1
     fi
