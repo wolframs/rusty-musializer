@@ -260,6 +260,10 @@ number disagrees, grep it there before debugging from scratch.
 - **An answer cached before the later steps check it is refused forever**: check what the reader requires before caching, and set aside what it refuses. See `docs/TRAPS.md`.
 - **A schema keyword one provider refuses fails the whole request** (Google refuses `maxItems`): after any change to what a hosted model is sent, make one real request before it reaches a release; no fake can know. See `docs/TRAPS.md`.
 - **`LoadRenderTexture` only logs `rlFramebufferComplete`**: check completeness yourself on any target built from parts. RGBA16F is not a deeper RGBA8, because it does not clamp.
+- **An inode compared after publishing says nothing about whose record it is**: give each attempt its own name and lock it before it is visible. See `docs/TRAPS.md`.
+- **A cache key made from a summary answers for requests it does not describe**: key by the exact bytes given, and re-check at the moment of commitment. See `docs/TRAPS.md`.
+- **A warning carried forward until success never stops for a failure that repeats**: show it where the decision is made, then log it. See `docs/TRAPS.md`.
+- **A control that acts on "current" acts on whatever is current when it is pressed**: carry the object's identity into the command. See `docs/TRAPS.md`.
 
 ## Judge by what a user or a file can observe
 
