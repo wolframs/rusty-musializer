@@ -26,6 +26,7 @@ import os
 import re
 import select
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1282,28 +1283,45 @@ def _cost_clause(response: dict[str, Any], estimate: dict[str, Any] | None = Non
 # group; nothing else on disk would say that a request was in flight, the user
 # read "Nothing was applied", and the next Start could pay again without a word.
 # So: a durable record before the POST, removed when the call ends in an answer
-# (the cache) or in a receipt (which says what it cost); one still there is a
-# request that was sent and never answered. Possible charges a new attempt
-# replaces are carried forward in its record and receipt (`earlier`), and
-# cleared only when an answer is in hand (docs/TRAPS.md, "Replacing a record of
-# possible spending erases a possible charge").
+# (the cache) or in a receipt (which says how it ended); one still there is a
+# request that was sent and never answered.
 #
-# One record per attempt (J3-1, 2026-11-16). The J1 record had one name per
-# cache, and an attempt learned which record was "its own" by `stat` after
-# publishing it: two helpers on one job folder, and A could adopt B's record
-# and remove it when A ended, leaving B's request in flight with no word on
-# disk. Now each attempt writes its own name (`<cache>.sent-<attempt>.json`,
-# the attempt's identity in the name and in the record), holds an exclusive
-# `flock` on it from before it is published until it is removed, and removes
-# only that name. Another attempt tells a record in flight (locked) from one
-# a killed helper left (the kernel released its lock) by trying the lock.
-SENT_RECORD_SCHEMA = "musializer.semantic-request-sent/v2"
-# v1 (J1, one name per cache) is still read: a helper killed under that build
-# left one.
-READABLE_SENT_RECORD_SCHEMAS = frozenset(("musializer.semantic-request-sent/v1",
-                                          SENT_RECORD_SCHEMA))
-EARLIER_KEEP = 16
+# One record per attempt (J3-1, 2026-11-16). Each attempt writes its own name
+# (`<cache>.sent-<attempt>.json`, the attempt's identity in the name and in the
+# record), holds an exclusive `flock` on it from before it is published until
+# it is removed, and removes only that name. Another attempt tells a record in
+# flight (locked) from one a killed helper left (the kernel released its lock)
+# by trying the lock.
+#
+# v3 (J4, 2026-11-16): the attempt is also the id of its possible charge in the
+# job folder's ledger (below), and the receipt and the cached answer carry it
+# too, so a record and a receipt of one attempt are one charge. Nothing is
+# carried forward in `earlier` any more.
+SENT_RECORD_SCHEMA = "musializer.semantic-request-sent/v3"
+# v1 (J1, one name per cache) and v2 (J3, one per attempt, `earlier`) are
+# still read: a helper killed under those builds left one. Their charge has a
+# legacy id (`legacy_charge_id`), because the J3 log named charges that way.
+LEGACY_SENT_RECORD_SCHEMAS = frozenset(("musializer.semantic-request-sent/v1",
+                                        "musializer.semantic-request-sent/v2"))
+READABLE_SENT_RECORD_SCHEMAS = LEGACY_SENT_RECORD_SCHEMAS | {SENT_RECORD_SCHEMA}
 ATTEMPT_PATTERN = re.compile(r"[0-9]{1,20}-[0-9a-f]{8}")
+# How the J1 and J3 builds named a possible charge: its kind and the
+# nanosecond it was sent (a record) or failed (a receipt).
+LEGACY_CHARGE_PATTERN = re.compile(r"(unanswered|may_be_billed)@[0-9]{1,20}")
+CHARGE_KINDS = ("unanswered", "may_be_billed")
+
+
+def is_charge_id(value: Any) -> bool:
+    """An attempt (`<ns>-<8 hex>`) or a legacy id (`unanswered@<ns>`)."""
+    return isinstance(value, str) and bool(
+        ATTEMPT_PATTERN.fullmatch(value) or LEGACY_CHARGE_PATTERN.fullmatch(value))
+
+
+def legacy_charge_id(kind: Any, at_ns: Any) -> str | None:
+    if kind in CHARGE_KINDS and isinstance(at_ns, int) and not isinstance(at_ns, bool) \
+            and 0 < at_ns < 10 ** 20:
+        return f"{kind}@{at_ns}"
+    return None
 
 
 def sent_record_path(cache_path: Path, attempt: str | None = None) -> Path:
@@ -1334,12 +1352,12 @@ def sent_record_paths(cache_path: Path) -> list[Path]:
     return [path for _, path in sorted(found)]
 
 
-def _read_small_json(path: Path) -> Any:
+def _read_small_json(path: Path, limit: int = 1 << 20) -> Any:
     try:
         with path.open("rb") as handle:
-            if os.fstat(handle.fileno()).st_size > 1 << 20:
+            if os.fstat(handle.fileno()).st_size > limit:
                 return None
-            return json.loads(handle.read().decode("utf-8"))
+            return json.loads(handle.read(limit + 1).decode("utf-8"))
     except (OSError, ValueError):
         return None
 
@@ -1368,9 +1386,9 @@ class DeadRecord:
 def _dead_records(cache_path: Path) -> list[DeadRecord]:
     """The records beside this cache whose attempt is over: no live helper
     holds their lock. A record still locked is a request in flight now and is
-    neither read as an earlier charge nor removed. A record that cannot be
-    read is left where it is (docs/TRAPS.md, "A record that cannot be read is
-    not an empty record")."""
+    neither read as a charge nor removed. A record that cannot be read is
+    left where it is (docs/TRAPS.md, "A record that cannot be read is not an
+    empty record")."""
     dead: list[DeadRecord] = []
     for path in sent_record_paths(cache_path):
         try:
@@ -1418,122 +1436,405 @@ def _charge_what(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _charge_of_record(record: dict[str, Any]) -> dict[str, Any]:
-    return {"kind": "unanswered", "at_utc": record.get("sent_utc"),
+def _usd_max(estimate: Any) -> float | None:
+    ceiling = estimate.get("usd_max") if isinstance(estimate, dict) else None
+    return ceil_usd(ceiling, 3) if isinstance(ceiling, (int, float)) \
+        and not isinstance(ceiling, bool) else None
+
+
+def record_charge_id(record: dict[str, Any]) -> str | None:
+    """The charge id of a sent record: its attempt (v3), or the legacy id the
+    J1 and J3 builds' log used for it (`unanswered@<sent_ns>`)."""
+    if record.get("schema_version") == SENT_RECORD_SCHEMA:
+        attempt = record.get("attempt")
+        return attempt if isinstance(attempt, str) and ATTEMPT_PATTERN.fullmatch(attempt) else None
+    return legacy_charge_id("unanswered", record.get("sent_ns"))
+
+
+def receipt_charge_id(receipt: dict[str, Any]) -> str | None:
+    """The charge id of a receipt: its attempt (J4), or `may_be_billed@<ns>`
+    for one written before receipts named their attempt."""
+    attempt = receipt.get("attempt")
+    if isinstance(attempt, str) and ATTEMPT_PATTERN.fullmatch(attempt):
+        return attempt
+    return legacy_charge_id("may_be_billed", receipt_time_ns(receipt))
+
+
+def _charge_of_record(record: dict[str, Any]) -> dict[str, Any] | None:
+    charge_id = record_charge_id(record)
+    if charge_id is None:
+        return None
+    return {"id": charge_id, "kind": "unanswered", "at_utc": record.get("sent_utc"),
             "at_ns": record.get("sent_ns"), "usd_max": record.get("usd_max"),
             **_charge_what(record)}
 
 
-def earlier_possible_charges(cache_path: Path, dead: list[DeadRecord] | None = None,
-                             ) -> list[dict[str, Any]]:
-    """Every attempt beside this cache that may have been billed and is not
-    yet answered: a record a killed helper left, a receipt that says "may have
-    been billed", and what each of them carried forward."""
-    found: list[dict[str, Any]] = []
-    for entry in _dead_records(cache_path) if dead is None else dead:
-        found.extend(item for item in entry.record.get("earlier") or [] if isinstance(item, dict))
-        found.append(_charge_of_record(entry.record))
-    receipt = _read_small_json(failure_receipt_path(cache_path))
-    if isinstance(receipt, dict) and receipt.get("schema_version") in READABLE_FAILED_RUN_SCHEMAS:
-        found.extend(entry for entry in receipt.get("earlier") or [] if isinstance(entry, dict))
-        if receipt.get("may_be_billed"):
-            ceiling = (receipt.get("estimate") or {}).get("usd_max")
-            found.append({"kind": "may_be_billed", "at_utc": receipt.get("failed_utc"),
-                          "at_ns": receipt.get("failed_ns"),
-                          "usd_max": (ceil_usd(ceiling, 3)
-                                      if isinstance(ceiling, (int, float)) else None),
-                          **_charge_what(receipt)})
-    unique: dict[tuple[Any, Any], dict[str, Any]] = {}
-    for entry in found:
-        unique[(entry.get("kind"), entry.get("at_ns"))] = entry
-    ordered = sorted(unique.values(), key=lambda entry: entry.get("at_ns") or 0)
-    return ordered[-EARLIER_KEEP:]
+def _charge_of_receipt(receipt: dict[str, Any]) -> dict[str, Any] | None:
+    """A receipt's possible charge, when it says "may have been billed"."""
+    charge_id = receipt_charge_id(receipt)
+    if not receipt.get("may_be_billed") or charge_id is None:
+        return None
+    return {"id": charge_id, "kind": "may_be_billed", "at_utc": receipt.get("failed_utc"),
+            "at_ns": receipt_time_ns(receipt), "usd_max": _usd_max(receipt.get("estimate")),
+            **_charge_what(receipt)}
 
 
-# The way a possible charge is put behind the user (J3-7, 2026-11-16). A
-# record a killed helper left was carried into every later attempt until an
-# answer came, so a track whose next attempts kept failing said "may have been
-# billed" at every Start for ever. Now the next confirmation shows it once,
-# and the Start pressed after reading it appends it here and stops saying it:
-# one line per possible charge, appended and synced, never rewritten
-# (docs/TRAPS.md, "Replacing a record of possible spending erases a possible
-# charge"). The panel and the helper both leave out what is logged.
-CHARGE_LOG_SCHEMA = "musializer.semantic-charge-acknowledged/v1"
-CHARGE_LOG_MAX_BYTES = 1 << 20
+def _charges_carried(entries: Any) -> list[dict[str, Any]]:
+    """The J1 build's `earlier` entries (`{kind, at_utc, at_ns, usd_max}`)."""
+    found = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        charge_id = legacy_charge_id(entry.get("kind"), entry.get("at_ns"))
+        if charge_id is not None:
+            found.append({"id": charge_id, "kind": entry["kind"], "at_utc": entry.get("at_utc"),
+                          "at_ns": entry["at_ns"], "usd_max": entry.get("usd_max"),
+                          "audio_sha256": entry.get("audio_sha256"),
+                          "request_key": entry.get("request_key"), "model": entry.get("model")})
+    return found
+
+
+# The job folder's ledger of possible charges (J4, 2026-11-16).
+#
+# Three reviews running found possible charges lost or doubled because they
+# were derived from files that get replaced: one shared receipt (a second
+# helper's receipt or answer replaced the first one's), a record and a receipt
+# of one attempt counted as two, a list kept to its newest sixteen, a count of
+# written bytes ignored. Now every possible charge is a line in one
+# append-only file, keyed by its attempt, appended before the file that told
+# us can be replaced or removed:
+#
+# - `possible`: when a may-be-billed receipt is about to be written, and when
+#   a dead sent record (or a file an earlier build left) is swept;
+# - `answered`: when a swept record's attempt is known to have ended without
+#   a possible charge (its answer is the cache, or its receipt says so);
+# - `acknowledged`: by the Start pressed after the confirmation showed it,
+#   for exactly the ids it showed.
+#
+# Pending = possible - acknowledged - answered. A receipt is then only a
+# message: replacing or removing one loses nothing. A ledger that cannot be
+# written keeps the file that told us; one that cannot be read is said, never
+# read as empty (docs/TRAPS.md, "A record that cannot be read is not an empty
+# record").
+LEDGER_SCHEMA = "musializer.semantic-charge/v2"
+# The J3 build's lines, one per charge put behind the user: read as that
+# charge possible and acknowledged, under its legacy id.
+LEGACY_LEDGER_SCHEMA = "musializer.semantic-charge-acknowledged/v1"
+CHARGE_LOG_SCHEMA = LEGACY_LEDGER_SCHEMA
+LEDGER_STATES = ("possible", "acknowledged", "answered")
+# Read whole, never a tail: a line dropped from the front would be a charge
+# lost. A ledger larger than this is reported unreadable. About 40 000 lines.
+LEDGER_MAX_BYTES = 16 << 20
+
+
+class LedgerError(RuntimeError):
+    """The ledger could not be written (or its lock taken): the file that told
+    us of the charge stays."""
 
 
 def charge_log_path(cache_path: Path) -> Path:
     return cache_path.with_name(f"{cache_path.stem}.charges.jsonl")
 
 
-def acknowledged_charges(cache_path: Path) -> set[tuple[str, int]]:
-    """`(kind, at_ns)` of every possible charge already put behind the user."""
-    path = charge_log_path(cache_path)
+def charge_lock_path(cache_path: Path) -> Path:
+    return cache_path.with_name(f"{cache_path.stem}.charges.lock")
+
+
+@dataclass
+class Ledger:
+    possible: dict[str, dict[str, Any]]
+    acknowledged: set[str]
+    answered: set[str]
+
+    def knows(self, charge_id: str) -> bool:
+        """Whether the ledger already says how this attempt stands."""
+        return charge_id in self.possible or charge_id in self.answered
+
+
+def _utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def read_ledger(cache_path: Path) -> Ledger | None:
+    """The ledger, or None when it is there and cannot be read (not a regular
+    file, an error, larger than `LEDGER_MAX_BYTES`). Absent is empty. A line
+    that does not parse (the torn end of an append a crash cut short) is
+    skipped: the append that tore it never removed its source."""
+    ledger = Ledger({}, set(), set())
     try:
-        with path.open("rb") as handle:
-            size = os.fstat(handle.fileno()).st_size
-            handle.seek(max(0, size - CHARGE_LOG_MAX_BYTES))
-            text = handle.read(CHARGE_LOG_MAX_BYTES).decode("utf-8", "replace")
+        fd = os.open(charge_log_path(cache_path), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return ledger
     except OSError:
-        return set()
-    keys: set[tuple[str, int]] = set()
-    for line in text.splitlines():
+        return None
+    try:
+        seen = os.fstat(fd)
+        if not stat.S_ISREG(seen.st_mode) or seen.st_size > LEDGER_MAX_BYTES:
+            os.close(fd)
+            return None
+    except OSError:
+        os.close(fd)
+        return None
+    with os.fdopen(fd, "rb") as handle:
         try:
-            entry = json.loads(line)
+            data = handle.read(LEDGER_MAX_BYTES + 1)
+        except OSError:
+            return None
+    if len(data) > LEDGER_MAX_BYTES:
+        return None
+    for line in data.split(b"\n"):
+        try:
+            entry = json.loads(line.decode("utf-8"))
         except ValueError:
             continue
-        if (isinstance(entry, dict) and entry.get("schema_version") == CHARGE_LOG_SCHEMA
-                and isinstance(entry.get("kind"), str) and isinstance(entry.get("at_ns"), int)):
-            keys.add((entry["kind"], entry["at_ns"]))
-    return keys
+        if not isinstance(entry, dict):
+            continue
+        schema = entry.get("schema_version")
+        if schema == LEDGER_SCHEMA:
+            charge_id, state = entry.get("id"), entry.get("state")
+            if not is_charge_id(charge_id) or state not in LEDGER_STATES:
+                continue
+            if state == "possible":
+                ledger.possible.setdefault(charge_id, entry)
+            elif state == "acknowledged":
+                ledger.acknowledged.add(charge_id)
+            else:
+                ledger.answered.add(charge_id)
+        elif schema == LEGACY_LEDGER_SCHEMA:
+            charge_id = legacy_charge_id(entry.get("kind"), entry.get("at_ns"))
+            if charge_id is not None:
+                ledger.possible.setdefault(charge_id, {**entry, "id": charge_id})
+                ledger.acknowledged.add(charge_id)
+    return ledger
 
 
-def acknowledge_possible_charges(cache_path: Path, *, by: str) -> list[dict[str, Any]]:
-    """Puts every possible charge beside this cache behind the user: called
-    when a Start that the confirmation warned about has been pressed (the
-    orchestrator's listening step) and when the helper starts. Each charge
-    not yet logged is appended to the log and synced; only then are the
-    records of killed helpers removed. A record still locked is a request in
-    flight and is left alone. Returns what was logged now."""
-    lock_path = cache_path.with_name(f"{cache_path.stem}.charges.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        dead = _dead_records(cache_path)
-        logged = acknowledged_charges(cache_path)
-        now_ns = time.time_ns()
-        fresh = [entry for entry in earlier_possible_charges(cache_path, dead)
-                 if isinstance(entry.get("at_ns"), int)
-                 and (str(entry.get("kind")), entry["at_ns"]) not in logged]
-        if fresh:
-            lines = "".join(json.dumps({
-                "schema_version": CHARGE_LOG_SCHEMA, **entry,
-                "acknowledged_ns": now_ns,
-                "acknowledged_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "by": by,
-            }, ensure_ascii=False, sort_keys=True) + "\n" for entry in fresh)
-            log = os.open(charge_log_path(cache_path),
-                          os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC, 0o600)
-            try:
-                os.write(log, lines.encode("utf-8"))
-                os.fsync(log)
-            finally:
-                os.close(log)
-            _sync_directory(cache_path.parent)
-        # Logged (now or before): the records of killed helpers are done with.
-        _remove_dead(dead)
-        return fresh
-    finally:
+class _LedgerLock:
+    """The ledger's `flock`, which serializes its appends; given back before
+    the file is closed (docs/TRAPS.md, "Give a flock back with File::unlock
+    before dropping the file")."""
+
+    def __init__(self, cache_path: Path) -> None:
+        self.path = charge_lock_path(cache_path)
+        self.fd = -1
+
+    def __enter__(self) -> "_LedgerLock":
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_CLOEXEC, 0o600)
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+        except OSError as error:
+            if self.fd >= 0:
+                os.close(self.fd)
+            raise LedgerError(error.strerror or str(error)) from error
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
         finally:
-            os.close(fd)
+            os.close(self.fd)
+
+
+def _append_ledger(cache_path: Path, entries: list[dict[str, Any]]) -> None:
+    """Appends lines, whole, and syncs them; called under the ledger's lock.
+    `os.write` may write less than it was given (a full disk, a signal), so
+    it is called until every byte is written; any error is a LedgerError and
+    the caller keeps the file that told it of the charge (J4-6)."""
+    if not entries:
+        return
+    now_ns, now_utc = time.time_ns(), _utc_now()
+    data = "".join(json.dumps({"schema_version": LEDGER_SCHEMA, "logged_ns": now_ns,
+                               "logged_utc": now_utc, **entry},
+                              ensure_ascii=False, sort_keys=True) + "\n"
+                   for entry in entries).encode("utf-8")
+    path = charge_log_path(cache_path)
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600)
+    except OSError as error:
+        raise LedgerError(error.strerror or str(error)) from error
+    try:
+        size = os.fstat(fd).st_size
+        # A crash mid-append leaves a line without its end; this one starts
+        # on a line of its own rather than inside it.
+        if size and os.pread(fd, 1, size - 1) != b"\n":
+            data = b"\n" + data
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError(28, "the charge log took no more bytes")
+            view = view[written:]
+        os.fsync(fd)
+    except OSError as error:
+        raise LedgerError(error.strerror or str(error)) from error
+    finally:
+        os.close(fd)
+    _sync_directory(path.parent)
+
+
+def _answered_ids(cache_path: Path, receipt: dict[str, Any] | None) -> set[str]:
+    """Attempts whose end is known and is no possible charge: the one whose
+    answer is the cache now, and the one whose receipt says it was refused or
+    answered with a stated bill."""
+    answered: set[str] = set()
+    envelope = _read_small_json(cache_path, 64 << 20)
+    attempt = envelope.get("attempt") if isinstance(envelope, dict) else None
+    if isinstance(attempt, str) and ATTEMPT_PATTERN.fullmatch(attempt):
+        answered.add(attempt)
+    if isinstance(receipt, dict) and not receipt.get("may_be_billed"):
+        attempt = receipt.get("attempt")
+        if isinstance(attempt, str) and ATTEMPT_PATTERN.fullmatch(attempt):
+            answered.add(attempt)
+    return answered
+
+
+def _read_receipt(cache_path: Path) -> dict[str, Any] | None:
+    receipt = _read_small_json(failure_receipt_path(cache_path))
+    if isinstance(receipt, dict) and receipt.get("schema_version") in READABLE_FAILED_RUN_SCHEMAS:
+        return receipt
+    return None
+
+
+@dataclass
+class _Files:
+    """What the job folder's files say about possible charges, by id."""
+    dead: list[DeadRecord]
+    answered: set[str]
+    charges: dict[str, dict[str, Any]]
+
+
+def _from_files(cache_path: Path) -> _Files:
+    dead = _dead_records(cache_path)
+    receipt = _read_receipt(cache_path)
+    answered = _answered_ids(cache_path, receipt)
+    charges: dict[str, dict[str, Any]] = {}
+
+    def add(charge: dict[str, Any] | None) -> None:
+        if charge is not None and charge["id"] not in answered:
+            charges.setdefault(charge["id"], charge)
+
+    # The receipt first: it knows how its attempt ended, where the record of
+    # the same attempt only knows that it left.
+    if receipt is not None:
+        for charge in _charges_carried(receipt.get("earlier")):
+            add(charge)
+        add(_charge_of_receipt(receipt))
+    for entry in dead:
+        for charge in _charges_carried(entry.record.get("earlier")):
+            add(charge)
+        add(_charge_of_record(entry.record))
+    return _Files(dead, answered, charges)
+
+
+PENDING_FIELDS = ("id", "kind", "at_ns", "at_utc", "usd_max", "audio_sha256", "request_key",
+                  "model")
+
+
+def pending_charges(cache_path: Path) -> tuple[list[dict[str, Any]], bool]:
+    """The possible charges beside this cache not yet acknowledged or
+    answered, oldest first, and whether the ledger could be read. Reads only:
+    the files first, the ledger last, so a sweep between the two reads moves
+    a charge into what is read second rather than out of both. A record in
+    flight (locked) is no charge yet."""
+    files = _from_files(cache_path)
+    ledger = read_ledger(cache_path)
+    readable = ledger is not None
+    ledger = ledger or Ledger({}, set(), set())
+    merged = {**files.charges, **ledger.possible}
+    pending = []
+    for charge_id, charge in merged.items():
+        if (charge_id in ledger.acknowledged or charge_id in ledger.answered
+                or charge_id in files.answered):
+            continue
+        entry = {field: charge.get(field) for field in PENDING_FIELDS}
+        entry["id"] = charge_id
+        pending.append(entry)
+    pending.sort(key=lambda entry: (entry["at_ns"] if isinstance(entry["at_ns"], int) else 0,
+                                    entry["id"]))
+    return pending, readable
+
+
+def sweep(cache_path: Path) -> bool:
+    """Moves what the job folder's files say into the ledger: every charge a
+    dead record or a file an earlier build left names that the ledger does
+    not know yet becomes `possible`, a dead record of an attempt that ended
+    without one becomes `answered`, and only once those lines are synced are
+    the dead records removed. Returns False, removing nothing, when the
+    ledger cannot be read or written."""
+    try:
+        with _LedgerLock(cache_path):
+            files = _from_files(cache_path)
+            ledger = read_ledger(cache_path)
+            if ledger is None:
+                return False
+            entries = [{**{field: charge.get(field) for field in PENDING_FIELDS},
+                        "state": "possible", "by": "sweep"}
+                       for charge_id, charge in files.charges.items()
+                       if not ledger.knows(charge_id)]
+            for charge_id in dict.fromkeys(record_charge_id(entry.record)
+                                           for entry in files.dead):
+                if charge_id in files.answered and not ledger.knows(charge_id):
+                    entries.append({"id": charge_id, "state": "answered", "by": "sweep"})
+            _append_ledger(cache_path, entries)
+            _remove_dead(files.dead)
+            return True
+    except LedgerError:
+        return False
+
+
+def acknowledge_charges(cache_path: Path, charge_ids: list[str], *, by: str) -> list[str]:
+    """Appends `acknowledged` for exactly these ids (the ones the
+    confirmation showed), whatever else is pending: a charge that appeared
+    after the card was drawn stays pending and is shown by the next one
+    (J4-3). Raises LedgerError when the lines cannot be written whole."""
+    chosen = [charge_id for charge_id in dict.fromkeys(charge_ids) if is_charge_id(charge_id)]
+    if chosen:
+        with _LedgerLock(cache_path):
+            _append_ledger(cache_path, [{"id": charge_id, "state": "acknowledged", "by": by}
+                                        for charge_id in chosen])
+    return chosen
+
+
+# Start's two refusals before anything is sent (J4), written by the
+# orchestrator as receipts so the panel reads them like any other failure.
+# The card said a saved answer would be reused, and it is gone or replaced by
+# one for other settings (J4-2): the run refuses to pay for what the card said
+# was free, and the card, asked again, says what a new request costs.
+ANSWER_GONE_MESSAGE = ("The saved answer the card offered to reuse is no longer there, so "
+                       "nothing was sent or billed. Open the card again: it now says what a "
+                       "new request would cost.")
+
+
+def ledger_refused_message(reason: str) -> str:
+    """The charges the card showed cannot be acknowledged: said, not dropped."""
+    return bounded("Could not write the job folder's charge log (", reason,
+                   "), so the earlier requests the card showed were not put behind you; "
+                   "nothing was sent.")
+
+
+def write_start_refusal(cache_path: Path, *, kind: str, message: str, audio_sha256: str,
+                        settings: dict[str, Any]) -> dict[str, Any]:
+    """A receipt for a Start the orchestrator refused before any request."""
+    return _write_failure_receipt(cache_path, reason=message, response=None, settings=settings,
+                                  audio_sha256=audio_sha256, message=message,
+                                  may_be_billed=False, kind=kind)
+
+
+def _record_possible(cache_path: Path, charge: dict[str, Any]) -> bool:
+    """Appends one attempt's possible charge before the receipt that says so
+    is written (J4-1, -4); False when the ledger refused it."""
+    try:
+        with _LedgerLock(cache_path):
+            _append_ledger(cache_path, [{**charge, "state": "possible", "by": "receipt"}])
+        return True
+    except LedgerError:
+        return False
 
 
 def _remove_dead(dead: list[DeadRecord]) -> None:
-    """Removes records whose charges this attempt now carries, each only
-    while its name still holds the file read and no helper holds it."""
+    """Removes records whose charges the ledger now holds, each only while
+    its name still holds the file read and no helper holds it."""
     for entry in dead:
         try:
             fd = os.open(entry.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -1549,8 +1850,8 @@ def _remove_dead(dead: list[DeadRecord]) -> None:
             if (seen.st_ino, seen.st_dev) == entry.identity:
                 entry.path.unlink(missing_ok=True)
         except OSError:
-            # Left in place, it is read again next time: counted twice at
-            # worst, never lost.
+            # Left in place, it is swept again next time; the ledger knows
+            # its id, so it is counted once.
             pass
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
@@ -1567,17 +1868,16 @@ class SentRecord:
 
 
 def _write_sent_record(cache_path: Path, *, settings: dict[str, Any], audio_sha256: str,
-                       estimate: dict[str, Any], earlier: list[dict[str, Any]]) -> SentRecord:
+                       estimate: dict[str, Any]) -> SentRecord:
     """Durably, before the request leaves, under this attempt's own name and
     locked before it is published, so no other attempt ever sees it unlocked
     while this one lives."""
     attempt = f"{time.time_ns()}-{os.urandom(4).hex()}"
     path = sent_record_path(cache_path, attempt)
-    ceiling = estimate.get("usd_max")
     payload = json.dumps({
         "schema_version": SENT_RECORD_SCHEMA,
         "attempt": attempt,
-        "sent_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "sent_utc": _utc_now(),
         "sent_ns": time.time_ns(),
         "audio_sha256": audio_sha256,
         "request": settings,
@@ -1587,10 +1887,9 @@ def _write_sent_record(cache_path: Path, *, settings: dict[str, Any], audio_sha2
         "model_label": model_label(str(settings.get("model") or MODEL)),
         # The most it can cost, rounded up at the precision every sentence
         # shows it (`ceil_usd`).
-        "usd_max": ceil_usd(ceiling, 3) if isinstance(ceiling, (int, float)) else None,
+        "usd_max": _usd_max(estimate),
         "estimate": estimate,
         "pid": os.getpid(),
-        "earlier": earlier,
     }, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
@@ -1612,6 +1911,17 @@ def _write_sent_record(cache_path: Path, *, settings: dict[str, Any], audio_sha2
     return SentRecord(path, handle, attempt)
 
 
+def _release_sent_record(record: SentRecord | None) -> None:
+    """Gives the lock back and leaves the record: what it says is not yet in
+    the ledger, so the next sweep reads it as this attempt's charge."""
+    if record is None or record.handle.closed:
+        return
+    try:
+        fcntl.flock(record.handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        record.handle.close()
+
+
 def _drop_sent_record(record: SentRecord | None) -> None:
     """Removes this attempt's record (its own name, nobody else's), then gives
     the lock back before the handle is closed."""
@@ -1631,6 +1941,17 @@ def _drop_sent_record(record: SentRecord | None) -> None:
             fcntl.flock(record.handle.fileno(), fcntl.LOCK_UN)
         finally:
             record.handle.close()
+
+
+def _attempt_charge(sent: SentRecord, *, settings: dict[str, Any], audio_sha256: str,
+                    estimate: dict[str, Any] | None, failed_ns: int, failed_utc: str,
+                    ) -> dict[str, Any]:
+    """The possible charge a may-be-billed receipt describes, as the ledger
+    keeps it, under the attempt's id."""
+    return {"id": sent.attempt, "kind": "may_be_billed", "at_ns": failed_ns,
+            "at_utc": failed_utc, "usd_max": _usd_max(estimate),
+            "audio_sha256": audio_sha256, "request_key": request_key(audio_sha256, settings),
+            "model": settings.get("model") or MODEL}
 
 
 AUDIO_CHANGED_REASON = ("the track's audio file changed on disk during the job, so nothing "
@@ -1755,24 +2076,42 @@ def _write_failure_receipt(
     settings: dict[str, Any], audio_sha256: str, detail: str | None = None,
     estimate: dict[str, Any] | None = None, message: str | None = None,
     may_be_billed: bool = False, kind: str | None = None,
-    earlier: list[dict[str, Any]] | None = None,
+    sent: SentRecord | None = None,
 ) -> dict[str, Any]:
     """The record of a failed run, beside (never in) the cache.
 
     It keeps what explains the failure and what it cost: the finish reason,
     the provider's ``usage`` and cost, the generation id, and the start of the
     answer text. The text is clipped, since a runaway answer is 65 k tokens.
+
+    With the attempt's sent record (J4): the receipt names the attempt, a
+    possible charge is appended to the ledger **before** the receipt is
+    written, and the record is removed only once the ledger holds it (or the
+    receipt says the attempt cost nothing or what it cost). A ledger that
+    refuses the line leaves the record, which the next sweep reads. The
+    receipt is then only a message: another helper's receipt or answer may
+    replace it and nothing is lost (J4-1); a kill between the ledger line and
+    the record's removal leaves two files of one attempt, one charge (J4-4).
     """
     response = response if isinstance(response, dict) else {}
     content = _raw_content(response)
+    failed_ns, failed_utc = time.time_ns(), _utc_now()
+    recorded = True
+    if sent is not None and may_be_billed:
+        recorded = _record_possible(cache_path, _attempt_charge(
+            sent, settings=settings, audio_sha256=audio_sha256, estimate=estimate,
+            failed_ns=failed_ns, failed_utc=failed_utc))
     receipt = {
         "schema_version": FAILED_RUN_SCHEMA_VERSION,
         # When it failed: an earlier answer still in the cache is staged with
         # this receipt named beside it (H4c), and "when" is half of that.
-        "failed_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "failed_utc": failed_utc,
         # The same, to the nanosecond: a receipt applies only to a cached
         # answer older than it (H4d), and two helpers can end in one second.
-        "failed_ns": time.time_ns(),
+        "failed_ns": failed_ns,
+        # The attempt it ends, the id of its charge in the ledger (J4); none
+        # when it ended before its request was written down.
+        "attempt": None if sent is None else sent.attempt,
         "reason": reason,
         # Which failure it was, for the panel's headline: `key_rejected`,
         # `no_credit`, `no_endpoint`, `refused`, `rate_limited`, `no_key`,
@@ -1797,11 +2136,13 @@ def _write_failure_receipt(
         "reported_cost_usd": reported_cost_usd(response),
         "content_characters": None if content is None else len(content),
         "content_start": None if content is None else content[:FAILED_CONTENT_KEEP],
-        # Earlier attempts that may have been billed, carried forward from the
-        # record and receipt this attempt replaced (J1-3).
-        "earlier": earlier or [],
     }
     atomic_write_json(failure_receipt_path(cache_path), receipt)
+    # The receipt now says how this attempt ended.
+    if recorded:
+        _drop_sent_record(sent)
+    else:
+        _release_sent_record(sent)
     return receipt
 
 
@@ -1823,7 +2164,6 @@ class _Attempt:
     audio_hash: str | None
     settings: dict[str, Any] | None = None
     estimate: dict[str, Any] | None = None
-    earlier: list[dict[str, Any]] | None = None
     sent: SentRecord | None = None
     response: dict[str, Any] | None = None
     explained: bool = False
@@ -1901,13 +2241,13 @@ def _receipt_for_unexpected(cache_path: Path, state: _Attempt, error: Exception,
             _write_failure_receipt(
                 cache_path, reason=f"The answer could not be saved ({reason})",
                 response=state.response, settings=settings, audio_sha256=state.audio_hash,
-                estimate=state.estimate, earlier=state.earlier)
+                estimate=state.estimate, sent=state.sent)
         elif state.sent is not None:
             _write_failure_receipt(
                 cache_path, reason=reason, response=None, settings=settings,
                 audio_sha256=state.audio_hash, estimate=state.estimate,
                 message=unanswered_message(f"The listening step failed ({reason})", state.estimate),
-                may_be_billed=True, kind="unanswered", earlier=state.earlier)
+                may_be_billed=True, kind="unanswered", sent=state.sent)
         else:
             unread = state.settings is None and isinstance(error, OSError)
             message = (bounded("Could not read the track's audio file (", reason,
@@ -1919,13 +2259,11 @@ def _receipt_for_unexpected(cache_path: Path, state: _Attempt, error: Exception,
             _write_failure_receipt(
                 cache_path, reason=reason, response=None, settings=settings,
                 audio_sha256=state.audio_hash, message=message, may_be_billed=False,
-                kind="not_sent", earlier=state.earlier)
+                kind="not_sent")
     except OSError:
         # The folder refuses even the receipt: the record, if any, still says
         # the request may have left.
         return
-    # The receipt now says how this attempt ended.
-    _drop_sent_record(state.sent)
 
 
 def _analyze_to_cache(
@@ -1957,17 +2295,14 @@ def _analyze_to_cache(
     selected_format = (audio_format or audio_path.suffix.lstrip(".")).lower()
     if not selected_format:
         raise AnalysisValidationError("audio format is required")
-    # What earlier attempts may have cost: it rides forward in whatever this
-    # attempt writes (J1-3). The records and the receipt it was read from are
-    # removed only once this attempt's own record or receipt carries it (a
-    # kill in between must not lose it), and a record another helper still
-    # holds is a request in flight, not an earlier charge (J3-1).
+    # What earlier attempts may have cost moves into the job folder's ledger
+    # (J4): killed helpers' records and files earlier builds left become
+    # `possible` lines there, and only then are the records removed. Nothing
+    # is acknowledged here: only the Start pressed after the confirmation
+    # showed a charge puts it behind the user, by its id (J4-3). A record
+    # another helper still holds is a request in flight, not a charge (J3-1).
     earlier_receipt = _receipt_identity(cache_path)
-    # Earlier possible charges are put behind the user at the Start that
-    # follows the confirmation showing them (J3-7), not carried forward.
-    acknowledge_possible_charges(cache_path, by="helper")
-    earlier: list[dict[str, Any]] = []
-    state.earlier = earlier
+    swept = sweep(cache_path)
     sent: SentRecord | None = None
 
     def not_sent(reason: str, settings: dict[str, Any]) -> RuntimeError:
@@ -1979,7 +2314,7 @@ def _analyze_to_cache(
         _write_failure_receipt(
             cache_path, reason=reason, response=None, settings=settings,
             audio_sha256=audio_hash, message=message, may_be_billed=False,
-            kind="not_sent", earlier=earlier)
+            kind="not_sent")
         return RuntimeError(message)
 
     # The parent hashed the file when the job started; this snapshot is read
@@ -2035,11 +2370,14 @@ def _analyze_to_cache(
     # The last thing before the request leaves: from here a kill leaves this
     # record, which is the only word on disk that the request was sent.
     sent = _write_sent_record(cache_path, settings=settings, audio_sha256=audio_hash,
-                              estimate=estimate, earlier=earlier)
+                              estimate=estimate)
     state.sent = sent
-    # A receipt from an earlier attempt describes that attempt, not this one;
-    # what it may have cost is in the log already.
-    _drop_receipt_if(cache_path, earlier_receipt)
+    # A receipt from an earlier attempt describes that attempt, not this one.
+    # What it may have cost is in the ledger: written there by its own
+    # helper, or by the sweep above, which is why a sweep the ledger refused
+    # leaves it (an earlier build's receipt may be the only word of a charge).
+    if swept:
+        _drop_receipt_if(cache_path, earlier_receipt)
     try:
         response = submit_request(payload, transport=transport, sleeper=sleeper,
                                   settings=settings, model=requested)
@@ -2052,8 +2390,7 @@ def _analyze_to_cache(
             cache_path, reason=str(error), response=None, settings=settings,
             audio_sha256=audio_hash, estimate=estimate, message=str(error),
             may_be_billed=False, kind=error.kind,
-            detail=error.detail, earlier=earlier)
-        _drop_sent_record(sent)
+            detail=error.detail, sent=sent)
         raise
     except SentUnanswered as error:
         state.explained = True
@@ -2063,8 +2400,7 @@ def _analyze_to_cache(
             audio_sha256=audio_hash, estimate=estimate, message=message,
             may_be_billed=True,
             kind="timed_out" if isinstance(error.__cause__, TimeoutError) else "unanswered",
-            earlier=earlier)
-        _drop_sent_record(sent)
+            sent=sent)
         raise FailedRun(message) from error
 
     state.response = response
@@ -2073,9 +2409,8 @@ def _analyze_to_cache(
         state.explained = True
         _write_failure_receipt(
             cache_path, reason=reason, response=response, settings=settings,
-            audio_sha256=audio_hash, detail=detail, estimate=estimate, earlier=earlier)
+            audio_sha256=audio_hash, detail=detail, estimate=estimate, sent=sent)
         # The receipt now says what this call cost; the record is answered.
-        _drop_sent_record(sent)
         return FailedRun(failure_message(reason, response, estimate))
 
     name = model_label(requested)
@@ -2123,12 +2458,17 @@ def _analyze_to_cache(
         # When this answer was made: a failure receipt older than it (another
         # helper's, on the same cache) does not describe it (H4d).
         "answered_ns": answered_ns,
+        # The attempt that made it: a kill between this write and the
+        # record's removal leaves a record the sweep reads as answered (J4).
+        "attempt": sent.attempt,
     }
     atomic_write_json(cache_path, envelope)
-    # The answer is in hand: the record of this request, and the earlier
-    # possible charges it carried for the same cache, are done with.
+    # The answer is in hand: the record of this request is done with, and a
+    # receipt older than the answer no longer describes it. The receipt is a
+    # message, its charge in the ledger, unless the sweep was refused.
     _drop_sent_record(sent)
-    _drop_older_receipt(cache_path, answered_ns)
+    if swept:
+        _drop_older_receipt(cache_path, answered_ns)
     return envelope
 
 

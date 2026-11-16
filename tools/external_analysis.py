@@ -1749,6 +1749,14 @@ def semantic_status(audio: Path, output_dir: Path, *, execution_snapshot: Path |
     cache_path = semantic_cache or output_dir / "semantic.cache.json"
     status: dict[str, Any] = {"schema_version": SEMANTIC_STATUS_VERSION,
                               "audio_sha256": audio_sha, "saved_answer": None}
+    # J4: every possible charge the job folder's ledger and files hold that
+    # is not acknowledged or answered, by id, whatever the track's state. The
+    # confirmation shows them all (a count and a summed ceiling when there are
+    # several) and the Start pressed after it acknowledges exactly these ids.
+    # A ledger that cannot be read is said, not read as empty.
+    charges, ledger_readable = semantic_adapter.pending_charges(cache_path)
+    status["pending_charges"] = charges
+    status["ledger"] = "ok" if ledger_readable else "unreadable"
     measured = _cache_matches(output_dir / "measured.json", "musializer.measured-analysis/v1",
                               audio_sha, accept=_measured_cache_accepts)
     if measured is None:
@@ -1769,6 +1777,9 @@ def semantic_status(audio: Path, output_dir: Path, *, execution_snapshot: Path |
     status["saved_answer"] = {
         "made_utc": saved_answer_words(envelope),
         "model": (envelope.get("request") or {}).get("model"),
+        # What Start carries back (`--reuse-answer`), so "Cost: nothing"
+        # binds the run to this answer (J4-2).
+        "cache_key": envelope.get("cache_key"),
     }
     return status
 
@@ -2154,9 +2165,15 @@ def run_assist(
     allow_dotenv: bool = True,
     execution_snapshot: Path | None = None,
     codex_reasoning_effort: str | None = None,
+    reuse_answer: str | None = None,
+    acknowledged_charges: Sequence[str] = (),
     dry_run: bool = False, runner: Runner = subprocess.run,
 ) -> dict[str, Any]:
-    """Run one complete, cache-aware UI action and emit JSON plus TSV bridge."""
+    """Run one complete, cache-aware UI action and emit JSON plus TSV bridge.
+
+    `reuse_answer` is the cache key of the saved answer the confirmation said
+    would be reused (J4-2); `acknowledged_charges` the ids of the possible
+    charges it showed (J4-3)."""
     if mode not in {"lyrics", "sections", "mimo", "all"}:
         raise AnalysisValidationError("assist mode must be lyrics, sections, mimo, or all")
     audio_duration = duration(audio_duration)
@@ -2544,16 +2561,42 @@ def run_assist(
     semantic_repair_counts: dict[str, int] = {}
     semantic_reused: dict[str, Any] | None = None
     if mode in {"mimo", "all"}:
-        # This Start was pressed after the confirmation showed the earlier
-        # possible charges: they are logged and not said again (J3-7),
-        # whether this run sends or reuses.
-        semantic_adapter.acknowledge_possible_charges(paths["semantic"], by="start")
         # The one reuse decision, shared with `semantic-status`, which is how
         # the confirmation knows before Start that this run sends nothing (J1-6).
         request_identity, envelope = saved_semantic_answer(
             audio, paths["semantic"], audio_sha=audio_sha,
             measured_duration=measured_duration, zdr=zdr,
             semantic_route=semantic_route, route_identity=routes["TC-SEMANTIC"])
+        request_settings = {key: value for key, value in request_identity.items()
+                            if key != "audio_sha256"}
+        # J4-2: the card said "Cost: nothing" for the answer with this key.
+        # Gone, or replaced by one for other settings, since the card was
+        # drawn: this run refuses to pay for what the card said was free. The
+        # reverse (the card showed a cost, an answer has appeared) reuses it
+        # and says so.
+        if reuse_answer and (envelope is None or envelope.get("cache_key") != reuse_answer):
+            semantic_adapter.write_start_refusal(
+                paths["semantic"], kind="answer_gone",
+                message=semantic_adapter.ANSWER_GONE_MESSAGE, audio_sha256=audio_sha,
+                settings=request_settings)
+            raise RuntimeError(semantic_adapter.ANSWER_GONE_MESSAGE)
+        # J4-3: this Start was pressed after the confirmation showed these
+        # possible charges, and only these: they are acknowledged by id, and
+        # any other (one that appeared after the card was drawn) stays
+        # pending for the next card. A ledger that refuses the lines is said
+        # before anything is sent.
+        try:
+            semantic_adapter.acknowledge_charges(
+                paths["semantic"], list(acknowledged_charges), by="start")
+        except semantic_adapter.LedgerError as error:
+            message = semantic_adapter.ledger_refused_message(str(error))
+            semantic_adapter.write_start_refusal(
+                paths["semantic"], kind="not_sent", message=message, audio_sha256=audio_sha,
+                settings=request_settings)
+            raise RuntimeError(message) from error
+        # Killed helpers' records into the ledger, whether this run sends or
+        # reuses (the helper sweeps too); a refused sweep leaves them.
+        semantic_adapter.sweep(paths["semantic"])
         if envelope is None:
             # An answer to this very request that the bridge cannot take is
             # set aside, not left to be refused on every run (J1-4).
@@ -2853,6 +2896,20 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
     return manifest
 
 
+def _digest_argument(value: str) -> str:
+    """A 64-hex digest, lowercased."""
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+        raise argparse.ArgumentTypeError("expected a 64-hex digest")
+    return value.lower()
+
+
+def _charge_id_argument(value: str) -> str:
+    """A possible charge's ledger id (`semantic_openrouter.is_charge_id`)."""
+    if not semantic_adapter.is_charge_id(value):
+        raise argparse.ArgumentTypeError("expected a charge id")
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The command grammar, separated from `main` so it can be checked.
 
@@ -2922,6 +2979,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the digest the application verified the audio against at "
                              "Start; a file that no longer hashes to it is refused before "
                              "anything is measured or sent")
+    assist.add_argument("--reuse-answer", type=_digest_argument,
+                        help="the cache key of the saved listening answer the confirmation "
+                             "said would be reused; without it, nothing is sent")
+    assist.add_argument("--acknowledge-charge", action="append", type=_charge_id_argument,
+                        help="a possible charge the confirmation showed, by its ledger id; "
+                             "repeatable")
     assist.add_argument("--zdr", action="store_true"); assist.add_argument("--timeout", type=float, default=2400)
     assist.add_argument("--no-dotenv", action="store_true",
                         help="refuse the repository .env credential fallback (the desktop path)")
@@ -2997,6 +3060,8 @@ def main(argv: list[str] | None = None) -> int:
                 allow_dotenv=not args.no_dotenv,
                 execution_snapshot=args.execution_snapshot,
                 codex_reasoning_effort=args.codex_reasoning_effort,
+                reuse_answer=args.reuse_answer,
+                acknowledged_charges=args.acknowledge_charge or (),
                 dry_run=args.dry_run,
             )
             if args.dry_run:

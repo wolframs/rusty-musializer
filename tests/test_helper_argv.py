@@ -69,6 +69,9 @@ CONDITIONAL = [
     ("--antigravity-harness", "/opt/agy/localharness_external"),
     ("--antigravity-profile", "/home/example/.t3/profile"),
     ("--codex-bin", "/home/example/.local/npm-global/bin/codex"),
+    # J4: the saved answer the card said is reused, the charges it showed.
+    ("--reuse-answer", "cd" * 32),
+    ("--acknowledge-charge", "1763290953000000000-0a1b2c3d"),
 ]
 
 POSITIONALS = ["assist", "/tmp/track.wav", "/tmp/musializer"]
@@ -138,6 +141,24 @@ class HelperArgv(unittest.TestCase):
             with contextlib.redirect_stderr(io.StringIO()):
                 external_analysis.build_parser().parse_args(line)
         return refused.exception.code
+
+    def test_a_charge_is_named_by_its_ledger_id_and_nothing_else(self) -> None:
+        """J4: an attempt's id, or the id the J1 and J3 builds' files give a
+        charge; anything else is refused rather than acknowledged."""
+        args = self.parse(argv(UNCONDITIONAL + [
+            ("--acknowledge-charge", "1763290953000000000-0a1b2c3d"),
+            ("--acknowledge-charge", "unanswered@1763290953000000000"),
+            ("--acknowledge-charge", "may_be_billed@17"),
+            ("--reuse-answer", "CD" * 32)]))
+        self.assertEqual(args.acknowledge_charge, ["1763290953000000000-0a1b2c3d",
+                                                   "unanswered@1763290953000000000",
+                                                   "may_be_billed@17"])
+        self.assertEqual(args.reuse_answer, "cd" * 32)
+        for bad in ("../x", "1-0a1b2c3d;rm", "charged@1", ""):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.refuse(argv(UNCONDITIONAL + [
+                    ("--acknowledge-charge", bad)])), 2)
+        self.assertEqual(self.refuse(argv(UNCONDITIONAL + [("--reuse-answer", "short")])), 2)
 
     def test_an_unknown_flag_is_refused(self) -> None:
         self.assertEqual(

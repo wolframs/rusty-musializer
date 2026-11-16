@@ -79,7 +79,7 @@ use musializer_runtime::assist::plan::{self, ExecutionPlan, PlanInputs};
 use musializer_runtime::font::UiFonts;
 use musializer_runtime::process::assist::{
     read_log_tail, AssistJob, AssistMode as JobMode, AssistPoll, AssistSpec, AuthorizedCredential,
-    CredentialOrigin, LocalRuntimeOverrides, StopReason, JOB_TIMEOUT,
+    CredentialOrigin, LocalRuntimeOverrides, StartCommitment, StopReason, JOB_TIMEOUT,
 };
 use musializer_runtime::process::font_import::find_assist_helper;
 use musializer_runtime::process::reveal::{self, RevealState};
@@ -241,37 +241,6 @@ fn sent_unanswered_notice(
         diagnosis::notice_detail(&sentence, log_path),
     );
     (sentence, notice)
-}
-
-/// The confirmation's line about earlier attempts for this track that may
-/// have been billed and have no answer after them (J1-3): read from the job
-/// folder the next Start would use.
-fn earlier_charges_sentence(output_dir: &Path, next: &diagnosis::NextStart<'_>) -> Option<String> {
-    let records = sent_records(output_dir);
-    let receipt = read_bounded(&output_dir.join(diagnosis::LISTENING_RECEIPT_NAME));
-    if records.is_empty() && receipt.is_none() {
-        return None;
-    }
-    // J3-7: what the Start after an earlier confirmation put behind the
-    // user is in the log and not said again.
-    let log = read_tail(
-        &output_dir.join(diagnosis::CHARGE_LOG_NAME),
-        diagnosis::CHARGE_LOG_TAIL_BYTES,
-    );
-    let charges = diagnosis::possible_charges(&records, receipt.as_deref(), log.as_deref());
-    diagnosis::possible_charge_sentence(&charges, next)
-}
-
-/// The last `limit` bytes of a file that only grows, or `None`.
-fn read_tail(path: &Path, limit: usize) -> Option<Vec<u8>> {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut file = std::fs::File::open(path).ok()?;
-    let length = file.metadata().ok()?.len();
-    file.seek(SeekFrom::Start(length.saturating_sub(limit as u64)))
-        .ok()?;
-    let mut bytes = Vec::new();
-    file.take(limit as u64).read_to_end(&mut bytes).ok()?;
-    Some(bytes)
 }
 
 /// The per-track job folder a Start would use (`plug.c:3262-3280`).
@@ -561,6 +530,8 @@ impl AssistController {
             AssistRequest::Start => AssistOutcome::of(self.start(workspace, now)),
             AssistRequest::DismissConfirmation => {
                 workspace.assist.set_confirmation_pending(false);
+                // The next card asks again (J4).
+                forget_semantic_status();
                 AssistOutcome::default()
             }
             AssistRequest::CancelJob => AssistOutcome::of(self.request_cancel(workspace)),
@@ -659,6 +630,23 @@ impl AssistController {
             )
         };
         let output_dir = track_output_dir(&workspace.tracks()[index]);
+        // J4: what the card the person read said, which this run is held to:
+        // the saved answer it said is reused (none sent without it) and the
+        // possible charges it showed (acknowledged by id, no others). Taken
+        // before anything can refuse, and forgotten either way: the next card
+        // is asked again.
+        let commitment = drawn_commitment(&output_dir, &workspace.tracks()[index].audio_sha256);
+        forget_semantic_status();
+        // The `assist commitment:` report line: what Start carries.
+        println!(
+            "assist commitment: reuse={} charges={}",
+            commitment.reuse_answer.as_deref().unwrap_or("-"),
+            if commitment.charges.is_empty() {
+                "-".to_string()
+            } else {
+                commitment.charges.join(",")
+            }
+        );
 
         // §5 invariant 3: the route graph is resolved **here**, once, and the
         // result is what provenance records. Pressing Start is the confirmation
@@ -766,6 +754,10 @@ impl AssistController {
             mode: job_mode(mode),
             lyrics_file: sheet.as_deref(),
             expected_audio_sha256: expected_audio_sha256.as_deref(),
+            commitment: StartCommitment {
+                reuse_answer: commitment.reuse_answer.as_deref(),
+                acknowledged_charges: &commitment.charges,
+            },
             execution_snapshot: Some(&snapshot_path),
             zdr_required: resolved.snapshot.requires_zdr(),
             credential,
@@ -1553,10 +1545,113 @@ enum SavedAnswer {
     Saved(String),
 }
 
+/// Everything the confirmation draws from one `semantic-status` answer.
+#[derive(Clone, Debug, PartialEq)]
+struct StatusAnswer {
+    saved: SavedAnswer,
+    /// The next request's `request_key`, when it said (J3-2).
+    request_key: Option<String>,
+    /// The saved answer's cache key (J4-2): what Start carries back, so the
+    /// run refuses to send when that answer is gone.
+    saved_key: Option<String>,
+    /// The pending possible charges, each with its ledger id (J4-3); `None`
+    /// when the answer named none at all.
+    charges: Option<Vec<diagnosis::PossibleCharge>>,
+    /// The ledger could not be read: the charges may not be all (J4).
+    ledger_unreadable: bool,
+}
+
+impl StatusAnswer {
+    const fn of(saved: SavedAnswer) -> Self {
+        Self {
+            saved,
+            request_key: None,
+            saved_key: None,
+            charges: None,
+            ledger_unreadable: false,
+        }
+    }
+
+    fn parse(answer: Option<&str>) -> Self {
+        let value =
+            answer.and_then(|text| serde_json::from_str::<serde_json::Value>(text.trim()).ok());
+        let saved = parse_semantic_status(answer);
+        let saved_key = matches!(saved, SavedAnswer::Saved(_))
+            .then(|| {
+                value
+                    .as_ref()?
+                    .get("saved_answer")?
+                    .get("cache_key")?
+                    .as_str()
+                    .filter(|key| key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit()))
+                    .map(str::to_ascii_lowercase)
+            })
+            .flatten();
+        let known = saved != SavedAnswer::Unknown
+            || value.as_ref().is_some_and(|value| {
+                value
+                    .get("schema_version")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("musializer.semantic-status/v1")
+            });
+        Self {
+            request_key: parse_status_request_key(answer),
+            saved_key,
+            charges: value
+                .as_ref()
+                .filter(|_| known)
+                .and_then(diagnosis::status_charges),
+            ledger_unreadable: value
+                .as_ref()
+                .filter(|_| known)
+                .is_some_and(diagnosis::status_ledger_unreadable),
+            saved,
+        }
+    }
+}
+
 enum StatusSlot {
     Pending(std::sync::mpsc::Receiver<Option<String>>),
-    /// The answer, and the next request's `request_key` when it said (J3-2).
-    Done(SavedAnswer, Option<String>),
+    Done(StatusAnswer),
+}
+
+/// What the confirmation said, as drawn this frame (J4): the run Start makes
+/// is held to it. Set where the card is drawn; read by Start, which the frame
+/// loop handles after the drawing pair, so it is the card the person saw.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DrawnCommitment {
+    folder: PathBuf,
+    audio_sha256: String,
+    /// "Cost: nothing" was drawn for the saved answer with this key.
+    reuse_answer: Option<String>,
+    /// The possible charges the card's line covered, by id: every one the
+    /// status named (the line says their count and summed ceiling).
+    charges: Vec<String>,
+}
+
+thread_local! {
+    static DRAWN_COMMITMENT: std::cell::RefCell<Option<DrawnCommitment>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+fn set_drawn_commitment(commitment: Option<DrawnCommitment>) {
+    DRAWN_COMMITMENT.with(|slot| *slot.borrow_mut() = commitment);
+}
+
+/// The commitment drawn for this track's folder and digest, or the empty one:
+/// a card not drawn, or drawn for another track, promised nothing and showed
+/// no charge, so Start acknowledges nothing and binds nothing.
+fn drawn_commitment(folder: &Path, audio_sha256: &str) -> DrawnCommitment {
+    DRAWN_COMMITMENT
+        .with(|slot| slot.borrow().clone())
+        .filter(|drawn| drawn.folder == folder && drawn.audio_sha256 == audio_sha256)
+        .unwrap_or_else(|| DrawnCommitment {
+            folder: folder.to_path_buf(),
+            audio_sha256: audio_sha256.to_string(),
+            reuse_answer: None,
+            charges: Vec::new(),
+        })
 }
 
 thread_local! {
@@ -1570,9 +1665,12 @@ thread_local! {
     };
 }
 
-/// Forgets the status answer: a job that ended may have written the cache.
+/// Forgets the status answer: a job that ended may have written the cache,
+/// and a card closed or pressed is asked again when it opens (J4: a charge
+/// that appeared meanwhile is shown by the next card).
 fn forget_semantic_status() {
     SEMANTIC_STATUS.with(|slot| *slot.borrow_mut() = None);
+    set_drawn_commitment(None);
 }
 
 /// The `assist reuse:` report line, printed when it changes.
@@ -1654,14 +1752,14 @@ fn parse_status_request_key(answer: Option<&str>) -> Option<String> {
 }
 
 /// Asks the helper, once per key and off the frame thread, whether the next
-/// Start would reuse a saved answer; returns what is known this frame, and the
-/// next request's identity when the helper named it.
-fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> (SavedAnswer, Option<String>) {
+/// Start would reuse a saved answer and which possible charges are pending;
+/// returns what is known this frame.
+fn confirmation_status(track: &Track, plan: &ExecutionPlan) -> StatusAnswer {
     let Some(helper) = ASSIST_HELPER.get().cloned().flatten() else {
-        return (SavedAnswer::Unknown, None);
+        return StatusAnswer::of(SavedAnswer::Unknown);
     };
     let Some((key, preview_bytes)) = status_key(track, &plan.snapshot) else {
-        return (SavedAnswer::Unknown, None);
+        return StatusAnswer::of(SavedAnswer::Unknown);
     };
     let folder = track_output_dir(track);
     let zdr = plan.snapshot.requires_zdr();
@@ -1672,24 +1770,38 @@ fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> (SavedAnswe
                 if let StatusSlot::Pending(receiver) = state {
                     match receiver.try_recv() {
                         Ok(answer) => {
-                            *state = StatusSlot::Done(
-                                parse_semantic_status(answer.as_deref()),
-                                parse_status_request_key(answer.as_deref()),
-                            );
+                            *state = StatusSlot::Done(StatusAnswer::parse(answer.as_deref()));
                         }
                         Err(std::sync::mpsc::TryRecvError::Empty) => {
-                            return (SavedAnswer::Pending, None)
+                            return StatusAnswer::of(SavedAnswer::Pending)
                         }
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            *state = StatusSlot::Done(SavedAnswer::Unknown, None);
+                            *state = StatusSlot::Done(StatusAnswer::of(SavedAnswer::Unknown));
                         }
                     }
                 }
-                let StatusSlot::Done(answer, request_key) = state else {
-                    return (SavedAnswer::Pending, None);
+                let StatusSlot::Done(answer) = state else {
+                    return StatusAnswer::of(SavedAnswer::Pending);
                 };
-                report_reuse(&format!("dir={} state={answer:?}", folder.display()));
-                return (answer.clone(), request_key.clone());
+                report_reuse(&format!(
+                    "dir={} state={:?} charges={} ledger={}",
+                    folder.display(),
+                    answer.saved,
+                    answer.charges.as_ref().map_or_else(
+                        || "-".to_string(),
+                        |charges| charges
+                            .iter()
+                            .map(|charge| charge.id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ),
+                    if answer.ledger_unreadable {
+                        "unreadable"
+                    } else {
+                        "ok"
+                    },
+                ));
+                return answer.clone();
             }
         }
         // Outside the job folder, and removed after the query: opening the
@@ -1701,8 +1813,11 @@ fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> (SavedAnswe
         ));
         let written = std::fs::write(&snapshot_path, &preview_bytes).is_ok();
         if !written {
-            *slot = Some((key, StatusSlot::Done(SavedAnswer::Unknown, None)));
-            return (SavedAnswer::Unknown, None);
+            *slot = Some((
+                key,
+                StatusSlot::Done(StatusAnswer::of(SavedAnswer::Unknown)),
+            ));
+            return StatusAnswer::of(SavedAnswer::Unknown);
         }
         let (sender, receiver) = std::sync::mpsc::channel();
         let audio = track.file_path.clone();
@@ -1720,7 +1835,7 @@ fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> (SavedAnswe
             let _ = sender.send(answer);
         });
         *slot = Some((key, StatusSlot::Pending(receiver)));
-        (SavedAnswer::Pending, None)
+        StatusAnswer::of(SavedAnswer::Pending)
     })
 }
 
@@ -1738,9 +1853,10 @@ fn report_confirmation_notes(
     lines: &[(String, raylib::prelude::Color)],
 ) {
     let line = format!(
-        "audio-refused={} earlier-charges={} saved-answer={} lines={}",
+        "audio-refused={} earlier-charges={} ledger-unreadable={} saved-answer={} lines={}",
         notes.audio_refusal.is_some(),
         notes.earlier_charges.is_some(),
+        notes.ledger_unreadable,
         notes.saved_answer.is_some(),
         lines
             .iter()
@@ -4538,25 +4654,50 @@ impl Shell {
             .as_ref()
             .filter(|_| assist_ui_state::mode_lanes(session.mode()).semantics)
             .zip(track)
-            .map(|(plan, track)| (track, confirmation_saved_answer(track, plan)));
+            .map(|(plan, track)| (track, confirmation_status(track, plan)));
         let confirmation_notes = ConfirmationNotes {
             audio_refusal: audio_check.as_ref().and_then(AudioCheck::refusal),
-            // J3-2: said against what this Start would send.
-            earlier_charges: status.as_ref().and_then(|(track, (saved, request_key))| {
+            // J3-2: said against what this Start would send; J4: the charges
+            // the status named, each by id, all of them.
+            earlier_charges: status.as_ref().and_then(|(track, answer)| {
                 confirmation_earlier_charges(
                     track,
+                    answer,
                     &diagnosis::NextStart {
                         audio_sha256: &track.audio_sha256,
-                        request_key: request_key.as_deref(),
-                        reuses: matches!(saved, SavedAnswer::Saved(_)),
+                        request_key: answer.request_key.as_deref(),
+                        reuses: matches!(answer.saved, SavedAnswer::Saved(_)),
                     },
                 )
             }),
-            saved_answer: status.as_ref().and_then(|(_, (saved, _))| match saved {
+            ledger_unreadable: status
+                .as_ref()
+                .is_some_and(|(_, answer)| answer.ledger_unreadable),
+            saved_answer: status.as_ref().and_then(|(_, answer)| match &answer.saved {
                 SavedAnswer::Saved(made) => Some(made.clone()),
                 _ => None,
             }),
         };
+        // J4: what this card says is what Start is held to.
+        set_drawn_commitment(status.as_ref().map(|(track, answer)| {
+            DrawnCommitment {
+                folder: track_output_dir(track),
+                audio_sha256: track.audio_sha256.clone(),
+                reuse_answer: matches!(answer.saved, SavedAnswer::Saved(_))
+                    .then(|| answer.saved_key.clone())
+                    .flatten(),
+                charges: if confirmation_notes.earlier_charges.is_some() {
+                    answer
+                        .charges
+                        .iter()
+                        .flatten()
+                        .map(|charge| charge.id.clone())
+                        .collect()
+                } else {
+                    Vec::new()
+                },
+            }
+        }));
         let route_lines: Vec<(String, raylib::prelude::Color)> = routes
             .as_ref()
             .map(|plan| {
@@ -5688,46 +5829,36 @@ struct ConfirmationNotes {
     audio_refusal: Option<String>,
     /// Earlier attempts for this track that may have been billed (J1-3).
     earlier_charges: Option<String>,
+    /// The job folder's ledger could not be read (J4).
+    ledger_unreadable: bool,
     /// When the saved answer the next Start would reuse was made (J1-6).
     saved_answer: Option<String>,
 }
 
-thread_local! {
-    /// `(job folder and next request, when, sentence)`: the confirmation's earlier-charges
-    /// line, read again at most every two seconds while the card is open.
-    static CONFIRMATION_CHARGES: std::cell::RefCell<Option<(String, std::time::Instant, Option<String>)>> = const {
-        std::cell::RefCell::new(None)
-    };
-}
-
-fn confirmation_earlier_charges(track: &Track, next: &diagnosis::NextStart<'_>) -> Option<String> {
-    const RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
-    let folder = track_output_dir(track);
-    // Read again when the folder or what the next Start would send changes,
-    // and at most every two seconds otherwise.
-    let context = format!(
-        "{}|{}|{}|{}",
-        folder.display(),
-        next.audio_sha256,
-        next.request_key.unwrap_or("-"),
-        next.reuses
-    );
-    CONFIRMATION_CHARGES.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if let Some((cached, at, sentence)) = slot.as_ref() {
-            if *cached == context && at.elapsed() < RECHECK {
-                return sentence.clone();
-            }
-        }
-        let sentence = earlier_charges_sentence(&folder, next);
-        report_charges(&format!(
-            "dir={} line={}",
-            folder.display(),
-            sentence.as_deref().unwrap_or("none")
-        ));
-        *slot = Some((context, std::time::Instant::now(), sentence.clone()));
-        sentence
-    })
+/// The confirmation's earlier-charges line, from the possible charges the
+/// status named (J4), with the `assist charges:` report line beside it.
+fn confirmation_earlier_charges(
+    track: &Track,
+    answer: &StatusAnswer,
+    next: &diagnosis::NextStart<'_>,
+) -> Option<String> {
+    let charges = answer.charges.as_deref().unwrap_or_default();
+    let sentence = diagnosis::possible_charge_sentence(charges, next);
+    report_charges(&format!(
+        "dir={} ids={} line={}",
+        track_output_dir(track).display(),
+        if charges.is_empty() {
+            "-".to_string()
+        } else {
+            charges
+                .iter()
+                .map(|charge| charge.id.as_str())
+                .collect::<Vec<_>>()
+                .join(",")
+        },
+        sentence.as_deref().unwrap_or("none")
+    ));
+    sentence
 }
 
 thread_local! {
@@ -5823,6 +5954,13 @@ fn column_route_lines(
     if let Some(charges) = &notes.earlier_charges {
         lines.extend(
             wrap(charges)
+                .into_iter()
+                .map(|line| (line, color::ui_warning())),
+        );
+    }
+    if notes.ledger_unreadable {
+        lines.extend(
+            wrap(diagnosis::LEDGER_UNREADABLE_SENTENCE)
                 .into_iter()
                 .map(|line| (line, color::ui_warning())),
         );
@@ -6441,15 +6579,83 @@ mod tests {
             "The helper stopped before an answer came; the listening request may already have \
              been sent to OpenRouter and billed (at most 0.073 USD). Nothing was saved."
         );
+    }
 
-        // And the next confirmation for this track says it before Start.
-        let line =
-            earlier_charges_sentence(&scratch.0, &diagnosis::NextStart::default()).expect("a line");
+    /// J4: the status names the pending charges by id and the saved answer
+    /// by its key; the card draws all of them, and Start carries exactly what
+    /// the card drew, for its own track, or nothing.
+    #[test]
+    fn start_carries_what_the_card_drew_and_nothing_else() {
+        let key = "cd".repeat(32);
+        let answer = StatusAnswer::parse(Some(&format!(
+            r#"{{"schema_version":"musializer.semantic-status/v1","state":"saved",
+                "saved_answer":{{"made_utc":"2026-11-15 18:53 UTC","cache_key":"{key}"}},
+                "pending_charges":[
+                  {{"id":"1763287353000000000-0a1b2c3d","kind":"unanswered","at_ns":1,
+                    "at_utc":"2026-11-16T10:02:33Z","usd_max":0.073}},
+                  {{"id":"may_be_billed@2","kind":"may_be_billed","at_ns":2,
+                    "at_utc":"2026-11-16T10:30:00Z","usd_max":0.073}}],
+                "ledger":"ok"}}"#
+        )));
+        assert_eq!(answer.saved_key.as_deref(), Some(key.as_str()));
+        let ids: Vec<&str> = answer
+            .charges
+            .iter()
+            .flatten()
+            .map(|charge| charge.id.as_str())
+            .collect();
+        assert_eq!(ids, ["1763287353000000000-0a1b2c3d", "may_be_billed@2"]);
+        assert!(!answer.ledger_unreadable);
         assert_eq!(
-            line,
-            "A listening request that used this track's job folder was started on 2026-11-16 \
-             10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). \
-             After Start this note moves to the job folder's log."
+            diagnosis::possible_charge_sentence(
+                answer.charges.as_deref().unwrap(),
+                &diagnosis::NextStart::default()
+            )
+            .as_deref(),
+            Some(
+                "2 listening requests that used this track's job folder may have been sent and \
+                 billed (at most 0.146 USD together); the last was on 2026-11-16 10:30 UTC. After \
+                 Start this note moves to the job folder's log."
+            )
+        );
+        // A key is carried only for "saved"; an older helper names no charge.
+        let sends = StatusAnswer::parse(Some(&format!(
+            r#"{{"schema_version":"musializer.semantic-status/v1","state":"none",
+                "saved_answer":{{"cache_key":"{key}"}},"ledger":"unreadable",
+                "pending_charges":[]}}"#
+        )));
+        assert_eq!(sends.saved_key, None);
+        assert!(sends.ledger_unreadable);
+        assert_eq!(sends.charges, Some(Vec::new()));
+        let older = StatusAnswer::parse(Some(
+            r#"{"schema_version":"musializer.semantic-status/v1","state":"none"}"#,
+        ));
+        assert_eq!(older.charges, None);
+        assert_eq!(
+            StatusAnswer::parse(None),
+            StatusAnswer::of(SavedAnswer::Unknown)
+        );
+
+        let folder = PathBuf::from("/tmp/job");
+        let drawn = DrawnCommitment {
+            folder: folder.clone(),
+            audio_sha256: "ab".repeat(32),
+            reuse_answer: Some(key.clone()),
+            charges: vec!["may_be_billed@2".to_string()],
+        };
+        set_drawn_commitment(Some(drawn.clone()));
+        assert_eq!(drawn_commitment(&folder, &"ab".repeat(32)), drawn);
+        for (other_folder, other_audio) in [
+            (PathBuf::from("/tmp/other"), "ab".repeat(32)),
+            (folder.clone(), "ef".repeat(32)),
+        ] {
+            let empty = drawn_commitment(&other_folder, &other_audio);
+            assert_eq!((empty.reuse_answer, empty.charges), (None, Vec::new()));
+        }
+        forget_semantic_status();
+        assert_eq!(
+            drawn_commitment(&folder, &"ab".repeat(32)).charges,
+            Vec::<String>::new()
         );
     }
 
@@ -6478,8 +6684,6 @@ mod tests {
         assert_eq!(sent_records(&scratch.0).len(), 2);
         assert_eq!(sent_since(&folder, 500).map(|sent| sent.at_ns), Some(3_000));
         assert_eq!(sent_since(&folder, 3_500), None);
-        let charges = diagnosis::possible_charges(&sent_records(&scratch.0), None, None);
-        assert_eq!(charges.len(), 2);
     }
 
     /// Audit B2, at the seam the panel actually uses: the log the helper wrote
@@ -6654,6 +6858,7 @@ mod tests {
             mode: job_mode(AssistMode::Lyrics),
             lyrics_file: None,
             expected_audio_sha256: None,
+            commitment: StartCommitment::default(),
             execution_snapshot: None,
             credential: None,
             credential_origin: CredentialOrigin::Settings,

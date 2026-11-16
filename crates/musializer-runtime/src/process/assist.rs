@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+use musializer_core::assist::diagnosis;
 use musializer_core::assist::execution::ExecutionSnapshot;
 use musializer_core::assist::secret::Secret;
 
@@ -251,6 +252,12 @@ pub struct AssistSpec<'a> {
     /// file it hashes is no longer this one: a file replaced after loading
     /// would otherwise be paid for and then refused at staging.
     pub expected_audio_sha256: Option<&'a str>,
+    /// What the confirmation the user read before Start said, which the run
+    /// is held to (J4, 2026-11-16): the cache key of the saved listening
+    /// answer it said would be reused (the run refuses to send without it),
+    /// and the ids of the possible charges it showed (acknowledged, those
+    /// and no others). Neither is secret.
+    pub commitment: StartCommitment<'a>,
     /// The `musializer.assist-execution/v1` record for this job, already written
     /// (`runtime::assist::plan::write_snapshot`).
     ///
@@ -279,6 +286,17 @@ pub struct AssistSpec<'a> {
     /// passing them here makes the dialog's setting win over an inherited
     /// environment rather than race with it.
     pub local_runtimes: LocalRuntimeOverrides<'a>,
+}
+
+/// What the confirmation said before Start (J4; [`AssistSpec::commitment`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StartCommitment<'a> {
+    /// `--reuse-answer`: a 64-hex cache key, or `None` when the card did not
+    /// say a saved answer would be reused.
+    pub reuse_answer: Option<&'a str>,
+    /// `--acknowledge-charge`, once per id the card showed. Only ledger ids
+    /// ([`diagnosis::is_charge_id`]) reach the argv.
+    pub acknowledged_charges: &'a [String],
 }
 
 /// The local-runtime paths the AI settings dialog can override.
@@ -312,7 +330,9 @@ pub struct StatusSpec<'a> {
 pub const STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Bytes of the status query's answer read.
-pub const STATUS_OUTPUT_LIMIT: u64 = 64 * 1024;
+/// J4: it names every pending charge (about 300 bytes each), and a charge
+/// it cannot name whole is a charge the card cannot show.
+pub const STATUS_OUTPUT_LIMIT: u64 = 1024 * 1024;
 
 /// The query's argv, pinned against the helper's parser by
 /// `tests/test_helper_argv.py`.
@@ -487,6 +507,24 @@ impl AssistJob {
         }
         if let Some(digest) = spec.expected_audio_sha256 {
             command.arg("--expect-audio-hash").arg(digest);
+        }
+        // J4: the card's word, which the run is held to. A key or an id of
+        // the wrong shape is not passed (the helper's parser would refuse the
+        // whole argv); an id dropped is a charge left pending, said again.
+        if let Some(key) = spec
+            .commitment
+            .reuse_answer
+            .filter(|key| key.len() == 64 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        {
+            command.arg("--reuse-answer").arg(key);
+        }
+        for id in spec
+            .commitment
+            .acknowledged_charges
+            .iter()
+            .filter(|id| diagnosis::is_charge_id(id))
+        {
+            command.arg("--acknowledge-charge").arg(id);
         }
         // The frozen route graph. A path, never the record: an argv is the wrong
         // place for provenance, and `/proc/*/cmdline` is a place this project
@@ -800,6 +838,7 @@ mod tests {
             mode,
             lyrics_file: None,
             expected_audio_sha256: None,
+            commitment: StartCommitment::default(),
             execution_snapshot: None,
             // The default is what the recommended graph resolves to for the
             // mode under test; the argv test sets it explicitly, and the ZDR
@@ -970,6 +1009,66 @@ mod tests {
             .expect("the flag");
         assert_eq!(with[at + 1], digest);
         assert!(!argv_of(None).contains(&"--expect-audio-hash".to_string()));
+    }
+
+    /// J4: the card's commitment reaches the helper, the saved answer's key
+    /// once and each charge id it showed once, in its order; nothing of the
+    /// wrong shape does, and an empty commitment adds no flag.
+    #[test]
+    fn the_cards_commitment_rides_along_and_nothing_else() {
+        let scratch = Scratch::new("commitment");
+        let helper = scratch.fake_helper(
+            "helper.py",
+            "pathlib.Path(sys.argv[sys.argv.index('--bridge') + 1])\
+             .write_text('\\n'.join(sys.argv[1:]))",
+        );
+        let key = "cd".repeat(32);
+        let ids = vec![
+            "1763287353000000000-0a1b2c3d".to_string(),
+            "unanswered@17".to_string(),
+            "--zdr".to_string(),
+            "may_be_billed@18".to_string(),
+        ];
+        let argv_of = |commitment: StartCommitment<'_>| {
+            let mut configured = spec(&helper, &scratch.0, AssistMode::Mimo);
+            configured.commitment = commitment;
+            let mut job = AssistJob::start(&configured, 0).expect("start");
+            assert_eq!(poll_until_finished(&mut job), AssistPoll::Succeeded);
+            std::fs::read_to_string(job.bridge_path())
+                .expect("bridge")
+                .lines()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let with = argv_of(StartCommitment {
+            reuse_answer: Some(&key),
+            acknowledged_charges: &ids,
+        });
+        let at = with
+            .iter()
+            .position(|arg| arg == "--reuse-answer")
+            .expect("the key");
+        assert_eq!(with[at + 1], key);
+        let acknowledged: Vec<&str> = with
+            .windows(2)
+            .filter(|pair| pair[0] == "--acknowledge-charge")
+            .map(|pair| pair[1].as_str())
+            .collect();
+        assert_eq!(
+            acknowledged,
+            [
+                "1763287353000000000-0a1b2c3d",
+                "unanswered@17",
+                "may_be_billed@18"
+            ]
+        );
+        let bare = argv_of(StartCommitment {
+            reuse_answer: Some("short"),
+            acknowledged_charges: &[],
+        });
+        assert!(!bare
+            .iter()
+            .any(|arg| arg == "--reuse-answer" || arg == "--acknowledge-charge"));
     }
 
     /// J1-6: the status query hands the helper its subcommand, the track, the

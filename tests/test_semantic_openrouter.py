@@ -1083,9 +1083,12 @@ class AChargeSaysWhatItWasFor(LaneTestCase):
         other = external_analysis.semantic_status(self.ws.audio, self.ws.root,
                                                   execution_snapshot=None, zdr=True)
         self.assertNotEqual(other["request_key"], record["request_key"], "other settings")
-        charges = semantic_openrouter.earlier_possible_charges(self.ws.cache)
-        self.assertEqual([(c["audio_sha256"], c["request_key"], c["model"]) for c in charges],
-                         [(record["audio_sha256"], record["request_key"], self.MODEL)])
+        charges, _ = semantic_openrouter.pending_charges(self.ws.cache)
+        self.assertEqual([(c["id"], c["audio_sha256"], c["request_key"], c["model"])
+                          for c in charges],
+                         [(record["attempt"], record["audio_sha256"], record["request_key"],
+                           self.MODEL)])
+        self.assertEqual(status["pending_charges"], charges, "the status names them, by id")
 
     def test_a_receipt_names_its_request_too(self) -> None:
         gateway = urllib.error.HTTPError(semantic_openrouter.OPENROUTER_URL, 502, "gateway",
@@ -1095,9 +1098,9 @@ class AChargeSaysWhatItWasFor(LaneTestCase):
         receipt = json.loads(self.ws.receipt.read_text())
         self.assertEqual(receipt["request_key"], semantic_openrouter.canonical_sha256(
             {"audio_sha256": receipt["audio_sha256"], **receipt["request"]}))
-        charge = semantic_openrouter.earlier_possible_charges(self.ws.cache)[-1]
-        self.assertEqual((charge["kind"], charge["request_key"]),
-                         ("may_be_billed", receipt["request_key"]))
+        charge = semantic_openrouter.pending_charges(self.ws.cache)[0][-1]
+        self.assertEqual((charge["id"], charge["kind"], charge["request_key"]),
+                         (receipt["attempt"], "may_be_billed", receipt["request_key"]))
 
 
 class NoFailureEndsWithoutAReceipt(LaneTestCase):
@@ -1289,7 +1292,8 @@ class ARequestThatLeftIsRecorded(LaneTestCase):
         self.assertEqual(len(seen), 1, "written before the send")
         record = json.loads(self.record.read_text())
         self.assertEqual(record, seen[0])
-        self.assertEqual(record["schema_version"], "musializer.semantic-request-sent/v2")
+        self.assertEqual(record["schema_version"], "musializer.semantic-request-sent/v3")
+        self.assertNotIn("earlier", record, "nothing is carried forward (J4)")
         self.assertEqual(self.record.name, f"semantic.cache.sent-{record['attempt']}.json")
         self.assertEqual(record["usd_max"], 0.033, "the most it can cost, rounded up")
         self.assertEqual(record["model_label"], "MiMo")
@@ -1315,53 +1319,60 @@ class ARequestThatLeftIsRecorded(LaneTestCase):
         self.assertEqual(self.records(), [])
         self.assertTrue(json.loads(self.ws.receipt.read_text())["may_be_billed"])
 
-    def logged(self) -> list[dict]:
+    def ledger(self) -> list[dict]:
         path = semantic_openrouter.charge_log_path(self.ws.cache)
         if not path.exists():
             return []
         return [json.loads(line) for line in path.read_text().splitlines()]
 
-    def test_an_earlier_possible_charge_is_logged_once_at_the_next_start(self) -> None:
-        """J3-7: a killed helper's record is said at the next confirmation,
-        and the Start pressed after it puts it in the log, where it stays;
-        it is not carried into later attempts, so it does not nag at every
-        later Start."""
+    def pending(self) -> list[str]:
+        charges, readable = semantic_openrouter.pending_charges(self.ws.cache)
+        self.assertTrue(readable)
+        return [charge["id"] for charge in charges]
+
+    def test_a_killed_helpers_charge_moves_into_the_ledger_and_stays_pending(self) -> None:
+        """J3-7, J4-3: a killed helper's record is swept into the ledger by
+        the next attempt and removed; it stays pending (nobody has been shown
+        it yet) and is not carried into later attempts' files."""
         Attempt(self, "killed")
         first = json.loads(self.record.read_text())
         with self.assertRaises(semantic_openrouter.Refused):
             self.run_lane(refusal(402))
-        self.assertEqual(self.records(), [], "logged, then removed")
+        self.assertEqual(self.records(), [], "in the ledger, then removed")
         receipt = json.loads(self.ws.receipt.read_text())
-        self.assertEqual(receipt["earlier"], [], "not carried forward")
-        logged = self.logged()
-        self.assertEqual([(e["kind"], e["at_ns"]) for e in logged],
-                         [("unanswered", first["sent_ns"])])
-        self.assertEqual(logged[0]["schema_version"],
-                         "musializer.semantic-charge-acknowledged/v1")
-        self.assertEqual(logged[0]["request_key"], first["request_key"])
-        self.assertEqual(logged[0]["by"], "helper")
-        # Asked again (the orchestrator's Start, another attempt): nothing new.
-        self.assertEqual(semantic_openrouter.acknowledge_possible_charges(self.ws.cache, by="start"), [])
+        self.assertNotIn("earlier", receipt, "not carried forward")
+        ledger = self.ledger()
+        self.assertEqual([(e["id"], e["state"], e["kind"], e["at_ns"], e["by"]) for e in ledger],
+                         [(first["attempt"], "possible", "unanswered", first["sent_ns"], "sweep")])
+        self.assertEqual(ledger[0]["schema_version"], "musializer.semantic-charge/v2")
+        self.assertEqual(ledger[0]["request_key"], first["request_key"])
+        self.assertEqual(self.pending(), [first["attempt"]], "nobody was shown it yet")
+        # Another attempt sweeps again: nothing new.
         with self.assertRaises(semantic_openrouter.Refused):
             self.run_lane(refusal(402))
-        self.assertEqual(len(self.logged()), 1)
-        # A may-be-billed receipt is logged once too, and stays beside the
-        # cache for the reuse path's words.
+        self.assertEqual(len(self.ledger()), 1)
+        # A may-be-billed receipt's charge is in the ledger before the receipt.
         gateway = urllib.error.HTTPError(semantic_openrouter.OPENROUTER_URL, 502, "gateway",
                                          {}, io.BytesIO(b""))
         with self.assertRaises(semantic_openrouter.FailedRun):
             self.run_lane(gateway)
         timed = json.loads(self.ws.receipt.read_text())
-        logged = semantic_openrouter.acknowledge_possible_charges(self.ws.cache, by="start")
-        self.assertEqual([(e["kind"], e["at_ns"]) for e in logged],
-                         [("may_be_billed", timed["failed_ns"])])
-        self.assertTrue(self.ws.receipt.exists())
+        self.assertEqual([(e["id"], e["kind"], e["at_ns"], e["by"]) for e in self.ledger()[1:]],
+                         [(timed["attempt"], "may_be_billed", timed["failed_ns"], "receipt")])
+        self.assertEqual(self.pending(), [first["attempt"], timed["attempt"]])
+        # Acknowledged by id, exactly those: gone from pending, still logged.
+        semantic_openrouter.acknowledge_charges(self.ws.cache, [first["attempt"]], by="start")
+        self.assertEqual(self.pending(), [timed["attempt"]])
+        self.assertTrue(self.ws.receipt.exists(), "a receipt is a message; it stays for its words")
 
-    def test_a_start_that_reuses_a_saved_answer_also_puts_the_charge_behind(self) -> None:
+    def test_a_start_that_reuses_a_saved_answer_also_acknowledges_what_the_card_showed(self) -> None:
         (self.ws.root / "measured.json").write_text(json.dumps(measured_document(self.ws.audio)))
         self.run_lane(response(answer()))
         Attempt(self, "killed")
         first = json.loads(self.record.read_text())
+        shown = external_analysis.semantic_status(self.ws.audio, self.ws.root,
+                                                  execution_snapshot=None)
+        self.assertEqual([charge["id"] for charge in shown["pending_charges"]], [first["attempt"]])
 
         def never(argv, **_kwargs):  # noqa: ANN001
             self.fail(f"a saved answer was there, and the run sent: {argv}")
@@ -1369,28 +1380,35 @@ class ARequestThatLeftIsRecorded(LaneTestCase):
                 patch.object(external_analysis, "build_bridge", return_value=""):
             manifest = external_analysis.run_assist(
                 self.ws.audio, self.ws.root, audio_duration=DURATION, mode="mimo",
-                allow_dotenv=False, runner=never)
+                allow_dotenv=False, runner=never,
+                reuse_answer=shown["saved_answer"]["cache_key"],
+                acknowledged_charges=[charge["id"] for charge in shown["pending_charges"]])
         self.assertEqual(manifest["cache_status"]["semantic"], "reused")
-        self.assertEqual([(e["at_ns"], e["by"]) for e in self.logged()],
-                         [(first["sent_ns"], "start")])
+        self.assertEqual([(e["id"], e["state"], e["by"]) for e in self.ledger()],
+                         [(first["attempt"], "acknowledged", "start"),
+                          (first["attempt"], "possible", "sweep")])
         self.assertEqual(self.records(), [])
+        self.assertEqual(self.pending(), [])
 
-    def test_the_log_is_appended_before_a_record_is_removed(self) -> None:
+    def test_the_ledger_is_appended_before_a_record_is_removed(self) -> None:
         Attempt(self, "killed")
         with patch.object(semantic_openrouter, "_remove_dead",
                           side_effect=AssertionError("removed")) as removed:
             with self.assertRaises(AssertionError):
-                semantic_openrouter.acknowledge_possible_charges(self.ws.cache, by="start")
+                semantic_openrouter.sweep(self.ws.cache)
             removed.assert_called_once()
-        self.assertEqual(len(self.logged()), 1, "on disk before any removal")
+        self.assertEqual(len(self.ledger()), 1, "on disk before any removal")
         self.assertEqual(len(self.records()), 1)
+        # Swept again: the ledger knows it, so no second line, and it goes.
+        self.assertTrue(semantic_openrouter.sweep(self.ws.cache))
+        self.assertEqual(len(self.ledger()), 1)
+        self.assertEqual(self.records(), [])
 
     def test_two_helpers_on_one_folder_never_remove_each_others_record(self) -> None:
         """The review's case: B's request is in flight while A sends and
-        answers. A removes its own record only; B's is neither carried by A as
-        an earlier charge nor removed. Then B is killed mid-request: its
-        record is still there, and the next attempt carries B's possible
-        charge."""
+        answers. A removes its own record only; B's is neither swept by A
+        nor removed. Then B is killed mid-request: its record is still there,
+        and the next attempt sweeps B's possible charge into the ledger."""
         theirs = Attempt(self, "hold")
         b_record = json.loads(self.record.read_text())
         fake, _ = self.run_lane(response(answer()))
@@ -1403,23 +1421,438 @@ class ARequestThatLeftIsRecorded(LaneTestCase):
         self.ws.cache.unlink()
         with self.assertRaises(semantic_openrouter.Refused):
             self.run_lane(refusal(402))
-        self.assertEqual([entry["at_ns"] for entry in self.logged()], [b_record["sent_ns"]])
+        self.assertEqual([(e["id"], e["at_ns"]) for e in self.ledger()],
+                         [(b_record["attempt"], b_record["sent_ns"])])
 
-    def test_a_record_in_flight_is_not_an_earlier_charge(self) -> None:
+    def test_a_record_in_flight_is_not_a_charge(self) -> None:
         theirs = Attempt(self, "hold")
-        self.assertEqual(semantic_openrouter.earlier_possible_charges(self.ws.cache), [])
+        self.assertEqual(self.pending(), [])
+        self.assertTrue(semantic_openrouter.sweep(self.ws.cache))
+        self.assertEqual(len(self.records()), 1, "a sweep leaves a record in flight")
         self.assertEqual(theirs.finish("answer"), 0)
         self.assertEqual(self.records(), [], "B answered and removed its own")
+        self.assertEqual(self.pending(), [])
 
-    def test_a_record_left_by_the_j1_build_is_still_logged(self) -> None:
+    def test_a_record_left_by_the_j1_build_is_still_counted(self) -> None:
         legacy = semantic_openrouter.sent_record_path(self.ws.cache)
         legacy.write_text(json.dumps({
             "schema_version": "musializer.semantic-request-sent/v1", "sent_ns": 1_700_000_000_000_000_000,
             "sent_utc": "2023-11-14T22:13:20Z", "usd_max": 0.073, "earlier": []}))
         with self.assertRaises(semantic_openrouter.Refused):
             self.run_lane(refusal(402))
-        self.assertEqual([entry["at_ns"] for entry in self.logged()], [1_700_000_000_000_000_000])
+        self.assertEqual([(e["id"], e["at_ns"]) for e in self.ledger()],
+                         [("unanswered@1700000000000000000", 1_700_000_000_000_000_000)])
         self.assertFalse(legacy.exists())
+        self.assertEqual(self.pending(), ["unanswered@1700000000000000000"])
+
+# A helper process killed at a named point of its attempt, or held with its
+# request in flight until told how it ends (J4): a SIGKILL runs no `finally`,
+# which is the only honest way to leave the files a kill leaves.
+KILL_SCRIPT = r"""
+import io, json, os, signal, sys, time, urllib.error
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import semantic_openrouter
+audio, cache, outcome, hook, gate, model, answer = (
+    Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7],
+    sys.argv[8])
+
+class Body(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *exc): self.close()
+
+def die(*_args, **_kwargs):
+    os.kill(os.getpid(), signal.SIGKILL)
+
+if hook == "receipt":
+    real = semantic_openrouter.atomic_write_json
+    def write(path, value):
+        if Path(path) == semantic_openrouter.failure_receipt_path(cache):
+            die()
+        return real(path, value)
+    semantic_openrouter.atomic_write_json = write
+elif hook != "-":
+    setattr(semantic_openrouter, hook, die)
+
+def transport(request, timeout):
+    how = outcome
+    if gate != "-":
+        Path(gate + ".sending").write_text("sending")
+        while not Path(gate).exists():
+            time.sleep(0.01)
+        how = Path(gate).read_text()
+    if how in ("502", "402"):
+        raise urllib.error.HTTPError(semantic_openrouter.OPENROUTER_URL, int(how), "x", {},
+                                     io.BytesIO(b""))
+    return Body(answer.encode())
+
+try:
+    semantic_openrouter.analyze_to_cache(audio, cache, audio_duration=8.0, model=model,
+                                         transport=transport, sleeper=lambda s: None,
+                                         encoder=lambda b, f, e, **k: b)
+except Exception:
+    sys.exit(1)
+"""
+
+
+class Helper:
+    """A listening helper in its own process on the test's job folder."""
+
+    def __init__(self, case: "LaneTestCase", outcome: str = "answer", hook: str = "-",
+                 hold: bool = False) -> None:
+        self.case = case
+        self.gate = case.ws.root / f"helper-{id(self)}" if hold else None
+        self.process = subprocess.Popen(
+            [sys.executable, "-c", KILL_SCRIPT, str(ROOT / "tools"), str(case.ws.audio),
+             str(case.ws.cache), outcome, hook, str(self.gate) if self.gate else "-",
+             case.MODEL, json.dumps(response(answer()))],
+            env={**os.environ, "OPENROUTER_API_KEY": SENTINEL_KEY},
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if not hold:
+            self.code = self.process.wait(timeout=30)
+            return
+        sending = Path(f"{self.gate}.sending")
+        deadline = time.monotonic() + 30
+        while not sending.exists():
+            if self.process.poll() is not None or time.monotonic() > deadline:
+                raise AssertionError(f"the helper never sent: {self.process.stderr.read()!r}")
+            time.sleep(0.01)
+
+    @property
+    def attempt(self) -> str:
+        """Its attempt, from its own record (the record names its pid)."""
+        for path in semantic_openrouter.sent_record_paths(self.case.ws.cache):
+            record = json.loads(path.read_text())
+            if record.get("pid") == self.process.pid:
+                return record["attempt"]
+        raise AssertionError("no record of this helper")
+
+    def finish(self, how: str) -> int:
+        assert self.gate is not None
+        self.gate.write_text(how)
+        self.code = self.process.wait(timeout=30)
+        return self.code
+
+
+def dead_record(cache: Path, attempt: str, *, usd_max: float = 0.073) -> Path:
+    """A v3 record as a killed helper leaves it, written by hand."""
+    path = semantic_openrouter.sent_record_path(cache, attempt)
+    path.write_text(json.dumps({
+        "schema_version": "musializer.semantic-request-sent/v3", "attempt": attempt,
+        "sent_ns": int(attempt.split("-")[0]), "sent_utc": "2026-11-16T10:02:33Z",
+        "usd_max": usd_max, "audio_sha256": "ab" * 32, "request_key": "cd" * 32,
+        "model": GEMINI}))
+    return path
+
+
+class TheLedgerKeepsEveryCharge(LaneTestCase):
+    """J4 (2026-11-16): a third review found possible charges lost or counted
+    twice, all because they were derived from files that get replaced. One
+    append-only ledger per job folder, keyed by attempt, now holds each charge
+    from the moment it is known; a receipt is only a message."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.ws.root / "measured.json").write_text(json.dumps(measured_document(self.ws.audio)))
+
+    def fresh(self) -> None:
+        """A new job folder, for a subtest."""
+        self.ws = Workspace()
+        self.addCleanup(self.ws.close)
+        (self.ws.root / "measured.json").write_text(json.dumps(measured_document(self.ws.audio)))
+
+    def pending(self) -> list[dict]:
+        charges, readable = semantic_openrouter.pending_charges(self.ws.cache)
+        self.assertTrue(readable)
+        return charges
+
+    def ids(self) -> list[str]:
+        return [charge["id"] for charge in self.pending()]
+
+    def ledger(self) -> list[dict]:
+        path = semantic_openrouter.charge_log_path(self.ws.cache)
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text().splitlines() if line]
+
+    def records(self) -> list[Path]:
+        return semantic_openrouter.sent_record_paths(self.ws.cache)
+
+    def status(self, **kwargs: object) -> dict:
+        return external_analysis.semantic_status(self.ws.audio, self.ws.root,
+                                                 execution_snapshot=None, **kwargs)
+
+    def start(self, **kwargs: object) -> dict:
+        """A Feelings Start the run must not send for."""
+        def never(argv, **_kwargs):  # noqa: ANN001
+            self.fail(f"the run sent: {argv}")
+        with patch.object(external_analysis, "build_scene_plan", return_value={"sections": []}), \
+                patch.object(external_analysis, "build_bridge", return_value=""):
+            return external_analysis.run_assist(
+                self.ws.audio, self.ws.root, audio_duration=DURATION, mode="mimo",
+                allow_dotenv=False, runner=never, **kwargs)
+
+    # J4-1: one shared receipt.
+
+    def test_a_second_helpers_receipt_does_not_erase_the_first_ones_charge(self) -> None:
+        first, second = Helper(self, hold=True), Helper(self, hold=True)
+        first_id, second_id = first.attempt, second.attempt
+        self.assertEqual(first.finish("502"), 1)
+        self.assertEqual(json.loads(self.ws.receipt.read_text())["attempt"], first_id)
+        self.assertEqual(second.finish("502"), 1)
+        self.assertEqual(json.loads(self.ws.receipt.read_text())["attempt"], second_id,
+                         "the second receipt replaced the first")
+        self.assertEqual([(c["id"], c["kind"]) for c in self.pending()],
+                         [(first_id, "may_be_billed"), (second_id, "may_be_billed")])
+        self.assertEqual(self.records(), [])
+
+    def test_a_second_helpers_answer_does_not_erase_the_first_ones_charge(self) -> None:
+        first, second = Helper(self, hold=True), Helper(self, hold=True)
+        first_id = first.attempt
+        self.assertEqual(first.finish("502"), 1)
+        self.assertTrue(self.ws.receipt.exists())
+        self.assertEqual(second.finish("answer"), 0)
+        self.assertFalse(self.ws.receipt.exists(), "the answer removed the older receipt")
+        self.assertEqual(self.ids(), [first_id], "its charge is in the ledger")
+        self.assertEqual(self.status()["state"], "saved")
+        self.assertEqual([c["id"] for c in self.status()["pending_charges"]], [first_id])
+
+    # J4-4: a kill between the receipt and the record's removal.
+
+    def test_a_kill_anywhere_in_a_may_be_billed_ending_is_one_charge(self) -> None:
+        for hook, kind in (("_record_possible", "unanswered"), ("receipt", "may_be_billed"),
+                           ("_drop_sent_record", "may_be_billed")):
+            with self.subTest(killed_at=hook):
+                self.fresh()
+                helper = Helper(self, "502", hook)
+                self.assertEqual(helper.code, -9)
+                pending = self.pending()
+                self.assertEqual(len(pending), 1, pending)
+                self.assertEqual(pending[0]["kind"], kind)
+                self.assertTrue(semantic_openrouter.sweep(self.ws.cache))
+                self.assertEqual(self.records(), [])
+                self.assertEqual([c["id"] for c in self.pending()], [pending[0]["id"]])
+                self.assertEqual(len([e for e in self.ledger() if e["state"] == "possible"]), 1)
+
+    def test_a_kill_after_an_answer_or_a_refusal_is_no_charge(self) -> None:
+        for outcome in ("answer", "402"):
+            with self.subTest(outcome=outcome):
+                self.fresh()
+                self.assertEqual(Helper(self, outcome, "_drop_sent_record").code, -9)
+                self.assertEqual(len(self.records()), 1, "the kill left the record")
+                self.assertEqual(self.pending(), [], "its end is known")
+                self.assertTrue(semantic_openrouter.sweep(self.ws.cache))
+                self.assertEqual([e["state"] for e in self.ledger()], ["answered"])
+                self.assertEqual(self.records(), [])
+
+    # J4-3: Start acknowledges what the card showed, nothing else.
+
+    def test_start_acknowledges_exactly_the_charges_the_card_showed(self) -> None:
+        self.run_lane(response(answer()))
+        Attempt(self, "killed")
+        card = self.status()
+        shown = [c["id"] for c in card["pending_charges"]]
+        self.assertEqual(len(shown), 1)
+        Attempt(self, "killed")   # after the card was drawn
+        self.start(reuse_answer=card["saved_answer"]["cache_key"], acknowledged_charges=shown)
+        later = self.status()
+        self.assertEqual(len(later["pending_charges"]), 1)
+        self.assertNotEqual([c["id"] for c in later["pending_charges"]], shown,
+                            "the later charge was never shown, so it is still pending")
+        self.start(reuse_answer=later["saved_answer"]["cache_key"],
+                   acknowledged_charges=[c["id"] for c in later["pending_charges"]])
+        self.assertEqual(self.status()["pending_charges"], [])
+        self.assertEqual(self.records(), [])
+
+    def test_a_start_with_nothing_shown_acknowledges_nothing(self) -> None:
+        self.run_lane(response(answer()))
+        Attempt(self, "killed")
+        self.start()
+        self.assertEqual(len(self.status()["pending_charges"]), 1)
+
+    # J4-5: nothing is truncated.
+
+    def test_every_charge_is_kept_however_many(self) -> None:
+        attempts = [f"{1_763_290_000_000_000_000 + n}-{n:08x}" for n in range(40)]
+        for attempt in attempts:
+            dead_record(self.ws.cache, attempt)
+        self.assertEqual(self.ids(), attempts)
+        self.assertTrue(semantic_openrouter.sweep(self.ws.cache))
+        self.assertEqual(self.records(), [])
+        self.assertEqual(self.ids(), attempts, "all forty, in the ledger now")
+        semantic_openrouter.acknowledge_charges(self.ws.cache, attempts[:17], by="start")
+        self.assertEqual(self.ids(), attempts[17:])
+        semantic_openrouter.acknowledge_charges(self.ws.cache, attempts[17:], by="start")
+        self.assertEqual(self.ids(), [])
+        self.assertEqual(len(self.ledger()), 80)
+
+    # J4-6: every byte written, then synced, then the source removed.
+
+    def test_a_short_write_is_finished_not_lost(self) -> None:
+        attempts = [f"{1_763_290_000_000_000_000 + n}-{n:08x}" for n in range(5)]
+        for attempt in attempts:
+            dead_record(self.ws.cache, attempt)
+        real = os.write
+        calls = []
+
+        def short(fd: int, data: object) -> int:
+            calls.append(fd)
+            return real(fd, bytes(data)[:7])
+        with patch.object(semantic_openrouter.os, "write", short):
+            self.assertTrue(semantic_openrouter.sweep(self.ws.cache))
+        self.assertGreater(len(calls), 5, "written seven bytes at a time")
+        self.assertEqual([e["id"] for e in self.ledger()], attempts)
+        self.assertEqual(self.records(), [])
+
+    def test_a_ledger_that_cannot_be_written_keeps_every_source(self) -> None:
+        self.run_lane(response(answer()))
+        key = self.status()["saved_answer"]["cache_key"]
+        record = dead_record(self.ws.cache, "1763290000000000000-0a1b2c3d")
+
+        def full(_fd: int, _data: object) -> int:
+            raise OSError(28, "No space left on device")
+        with patch.object(semantic_openrouter.os, "write", full):
+            self.assertFalse(semantic_openrouter.sweep(self.ws.cache))
+            self.assertTrue(record.exists())
+            with self.assertRaises(semantic_openrouter.LedgerError):
+                semantic_openrouter.acknowledge_charges(self.ws.cache, ["1763290000000000000-0a1b2c3d"],
+                                                        by="start")
+            with self.assertRaises(RuntimeError) as refused:
+                self.start(reuse_answer=key, acknowledged_charges=["1763290000000000000-0a1b2c3d"])
+        message = ("Could not write the job folder's charge log (No space left on device), so the "
+                   "earlier requests the card showed were not put behind you; nothing was sent.")
+        self.assertEqual(str(refused.exception), message)
+        receipt = json.loads(self.ws.receipt.read_text())
+        self.assertEqual((receipt["kind"], receipt["may_be_billed"], receipt["message"]),
+                         ("not_sent", False, message))
+        self.assertTrue(record.exists())
+        self.assertEqual(self.ids(), ["1763290000000000000-0a1b2c3d"], "still said")
+
+    def test_a_may_be_billed_ending_the_ledger_refuses_keeps_its_record(self) -> None:
+        gateway = urllib.error.HTTPError(semantic_openrouter.OPENROUTER_URL, 502, "gateway",
+                                         {}, io.BytesIO(b""))
+        with patch.object(semantic_openrouter, "_append_ledger",
+                          side_effect=semantic_openrouter.LedgerError("No space left on device")), \
+                self.assertRaises(semantic_openrouter.FailedRun):
+            self.run_lane(gateway)
+        receipt = json.loads(self.ws.receipt.read_text())
+        self.assertEqual(len(self.records()), 1, "the record stays: the ledger does not hold it")
+        self.assertEqual([(c["id"], c["kind"]) for c in self.pending()],
+                         [(receipt["attempt"], "may_be_billed")], "one charge")
+        self.assertTrue(semantic_openrouter.sweep(self.ws.cache))
+        self.assertEqual(self.records(), [])
+        self.assertEqual([(e["id"], e["kind"]) for e in self.ledger()],
+                         [(receipt["attempt"], "may_be_billed")])
+
+    def test_a_ledger_that_cannot_be_read_is_said_not_read_as_empty(self) -> None:
+        record = dead_record(self.ws.cache, "1763290000000000000-0a1b2c3d")
+        semantic_openrouter.charge_log_path(self.ws.cache).mkdir()
+        charges, readable = semantic_openrouter.pending_charges(self.ws.cache)
+        self.assertFalse(readable)
+        self.assertEqual([c["id"] for c in charges], ["1763290000000000000-0a1b2c3d"])
+        self.assertEqual(self.status()["ledger"], "unreadable")
+        self.assertFalse(semantic_openrouter.sweep(self.ws.cache))
+        self.assertTrue(record.exists())
+
+    def test_a_torn_line_is_skipped_and_the_next_starts_on_its_own(self) -> None:
+        path = semantic_openrouter.charge_log_path(self.ws.cache)
+        path.write_text('{"schema_version":"musializer.semantic-charge/v2","id":'
+                        '"1763290000000000000-00000001","state":"acknowledged"}\n{"schema_ver')
+        dead_record(self.ws.cache, "1763290000000000002-00000002")
+        self.assertTrue(semantic_openrouter.sweep(self.ws.cache))
+        ledger = semantic_openrouter.read_ledger(self.ws.cache)
+        self.assertEqual(ledger.acknowledged, {"1763290000000000000-00000001"})
+        self.assertEqual(set(ledger.possible), {"1763290000000000002-00000002"})
+
+    # What earlier builds left: read, and counted once.
+
+    def test_files_left_by_the_j1_and_j3_builds_are_counted_once(self) -> None:
+        semantic_openrouter.sent_record_path(self.ws.cache).write_text(json.dumps({
+            "schema_version": "musializer.semantic-request-sent/v1", "sent_ns": 10,
+            "sent_utc": "2026-11-16T10:00:00Z", "usd_max": 0.073, "earlier": [
+                {"kind": "unanswered", "at_ns": 1, "at_utc": "2026-11-16T09:00:00Z",
+                 "usd_max": 0.073},
+                {"kind": "may_be_billed", "at_ns": 2, "at_utc": "2026-11-16T09:30:00Z",
+                 "usd_max": 0.073}]}))
+        self.ws.receipt.write_text(json.dumps({
+            "schema_version": "musializer.semantic-failed-run/v1", "failed_ns": 2,
+            "failed_utc": "2026-11-16T09:30:00Z", "kind": "timed_out", "message": "x",
+            "may_be_billed": True, "estimate": {"usd_max": 0.073}, "earlier": [
+                {"kind": "unanswered", "at_ns": 1, "at_utc": "2026-11-16T09:00:00Z",
+                 "usd_max": 0.073}]}))
+        for sent_ns in (30, 40):
+            path = semantic_openrouter.sent_record_path(self.ws.cache, f"{sent_ns - 1}-0a1b2c3d")
+            path.write_text(json.dumps({
+                "schema_version": "musializer.semantic-request-sent/v2",
+                "attempt": f"{sent_ns - 1}-0a1b2c3d", "sent_ns": sent_ns,
+                "sent_utc": "2026-11-16T10:30:00Z", "usd_max": 0.073, "earlier": []}))
+        # The J3 build put the request sent at 40 behind the user.
+        semantic_openrouter.charge_log_path(self.ws.cache).write_text(json.dumps({
+            "schema_version": "musializer.semantic-charge-acknowledged/v1", "kind": "unanswered",
+            "at_ns": 40, "by": "start"}) + "\n")
+        expected = ["unanswered@1", "may_be_billed@2", "unanswered@10", "unanswered@30"]
+        self.assertEqual(self.ids(), expected)
+        self.assertTrue(semantic_openrouter.sweep(self.ws.cache))
+        self.assertEqual(self.records(), [])
+        self.assertEqual(self.ids(), expected, "the same four, from the ledger now")
+        self.assertEqual(len(self.ledger()), 5)
+        # The next attempt removes the old receipt, which is a message now.
+        with self.assertRaises(semantic_openrouter.Refused):
+            self.run_lane(refusal(402))
+        self.assertEqual(self.ids(), expected)
+
+    # J4-2: "Cost: nothing" binds the run.
+
+    def test_a_saved_answer_gone_since_the_card_was_drawn_is_not_paid_for(self) -> None:
+        self.run_lane(response(answer()))
+        card = self.status()
+        key = card["saved_answer"]["cache_key"]
+        self.assertEqual(key, json.loads(self.ws.cache.read_text())["cache_key"])
+        for replaced in (False, True):
+            with self.subTest(replaced=replaced):
+                self.ws.cache.unlink(missing_ok=True)
+                if replaced:
+                    # An answer for other settings (ZDR) took its place.
+                    semantic_openrouter.analyze_to_cache(
+                        self.ws.audio, self.ws.cache, audio_duration=DURATION,
+                        model=self.MODEL, zero_data_retention=True,
+                        transport=FakeOpenRouter(response(answer())),
+                        sleeper=lambda _s: None, encoder=fake_encoder)
+                started = time.time_ns()
+                with self.assertRaises(RuntimeError) as refused:
+                    self.start(reuse_answer=key)
+                self.assertEqual(str(refused.exception), semantic_openrouter.ANSWER_GONE_MESSAGE)
+                receipt = json.loads(self.ws.receipt.read_text())
+                self.assertEqual((receipt["kind"], receipt["may_be_billed"]),
+                                 ("answer_gone", False))
+                self.assertGreaterEqual(receipt["failed_ns"], started)
+                self.assertEqual(self.status()["state"], "none", "the card now shows a cost")
+        self.assertEqual(semantic_openrouter.ANSWER_GONE_MESSAGE,
+                         "The saved answer the card offered to reuse is no longer there, so "
+                         "nothing was sent or billed. Open the card again: it now says what a "
+                         "new request would cost.")
+        self.assertLessEqual(len(semantic_openrouter.ANSWER_GONE_MESSAGE.encode()),
+                             semantic_openrouter.ESSENTIAL_MAX_BYTES)
+
+    def test_a_card_that_showed_a_cost_reuses_an_answer_that_appeared(self) -> None:
+        self.assertEqual(self.status()["state"], "none")
+        self.run_lane(response(answer()))   # another window's run, say
+        manifest = self.start()
+        self.assertEqual(manifest["cache_status"]["semantic"], "reused")
+        self.assertIn("nothing was sent or billed this time", manifest["semantic_reused"]["words"])
+
+    def test_the_command_line_carries_the_commitment(self) -> None:
+        self.run_lane(response(answer()))
+        key = self.status()["saved_answer"]["cache_key"]
+        self.ws.cache.unlink()
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            code = external_analysis.main([
+                "assist", str(self.ws.audio), str(self.ws.root), "--duration", str(DURATION),
+                "--mode", "mimo", "--no-dotenv", "--reuse-answer", key,
+                "--acknowledge-charge", "1763290000000000000-0a1b2c3d"])
+        self.assertEqual(code, 1)
+        self.assertIn(semantic_openrouter.ANSWER_GONE_MESSAGE, err.getvalue())
+
 
 class AChangedFileIsNeverPaidFor(LaneTestCase):
     """Defect J1-1 (2026-11-16): a track file replaced after loading.

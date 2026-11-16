@@ -462,6 +462,27 @@ class ListeningReceipt(unittest.TestCase):
         for schema in semantic_openrouter.READABLE_FAILED_RUN_SCHEMAS:
             self.assertIn(f'"{schema}"', source)
 
+    def test_the_panel_reads_every_record_the_helper_writes_and_its_ids(self) -> None:
+        """J4: the record's schemas, and the charge ids the panel hands back
+        to the helper's argv, the same on both sides."""
+        source = rust_source(DIAGNOSIS_RS)
+        for schema in semantic_openrouter.READABLE_SENT_RECORD_SCHEMAS:
+            self.assertIn(f'"{schema}"', source)
+        self.assertEqual(rust_str_const(DIAGNOSIS_RS, "SENT_RECORD_SCHEMA_V3"),
+                         semantic_openrouter.SENT_RECORD_SCHEMA)
+        # The ids the Rust test accepts and refuses, through the helper's own
+        # check: one list, read out of the Rust source.
+        start = source.index("fn a_charge_id_is_an_attempt_or_a_legacy_id_and_nothing_else")
+        good, bad = source[start:].split("for id in [", 2)[1:3]
+        good_ids = re.findall(r'"([^"]*)"', good.split("]", 1)[0])
+        bad_ids = re.findall(r'"([^"]*)"', bad.split("]", 1)[0])
+        self.assertGreater(len(good_ids), 3)
+        self.assertGreater(len(bad_ids), 5)
+        for charge_id in good_ids:
+            self.assertTrue(semantic_openrouter.is_charge_id(charge_id), charge_id)
+        for charge_id in bad_ids:
+            self.assertFalse(semantic_openrouter.is_charge_id(charge_id), charge_id)
+
     def test_the_words_fit_what_the_panel_keeps(self) -> None:
         cause = re.search(r"\bconst\s+CAUSE_MAX_BYTES\s*:\s*usize\s*=\s*([0-9_]+)\s*;",
                           rust_source(DIAGNOSIS_RS))

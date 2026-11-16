@@ -76,8 +76,9 @@ pub const RECEIPT_MAX_BYTES: usize = 1 << 20;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ListeningFailure {
     /// `key_rejected`, `no_credit`, `no_endpoint`, `refused`, `rate_limited`,
-    /// `no_key`, `unreachable`, `not_sent`, `timed_out`, `unanswered` or
-    /// `unusable_answer`; anything else is read as an unknown failure.
+    /// `no_key`, `unreachable`, `not_sent`, `timed_out`, `unanswered`,
+    /// `unusable_answer` or `answer_gone` (J4); anything else is read as an
+    /// unknown failure.
     pub kind: String,
     /// The helper's sentence, sanitized and bounded.
     pub message: String,
@@ -103,6 +104,8 @@ impl ListeningFailure {
             "rate_limited" => "OpenRouter is rate-limiting requests",
             "unreachable" => "OpenRouter could not be reached",
             "no_key" | "not_sent" => "The listening request was not sent",
+            // J4-2: the card said a saved answer would be reused.
+            "answer_gone" => "The saved answer is no longer there",
             _ => "The listening step failed",
         }
     }
@@ -154,12 +157,16 @@ pub fn listening_failure(receipt: &[u8], since_ns: u128) -> Option<ListeningFail
 /// `semantic.cache.sent-<attempt>.json` ([`is_sent_record_name`]).
 pub const SENT_RECORD_NAME: &str = "semantic.cache.sent.json";
 
-/// Its schemas: the J1 record (one per cache) and the J3 one (one per
-/// attempt).
-pub const SENT_RECORD_SCHEMAS: [&str; 2] = [
+/// Its schemas: the J1 record (one per cache), the J3 one (one per attempt)
+/// and the J4 one (whose attempt is its charge's id in the ledger).
+pub const SENT_RECORD_SCHEMAS: [&str; 3] = [
     "musializer.semantic-request-sent/v1",
     "musializer.semantic-request-sent/v2",
+    SENT_RECORD_SCHEMA_V3,
 ];
+
+/// The J4 record, whose `attempt` is its possible charge's id.
+const SENT_RECORD_SCHEMA_V3: &str = "musializer.semantic-request-sent/v3";
 
 /// Records read from one job folder at most; a folder with more is not one
 /// the helper wrote.
@@ -179,55 +186,54 @@ pub fn is_sent_record_name(name: &str) -> bool {
     else {
         return false;
     };
+    is_attempt(attempt)
+}
+
+/// `<1-20 digits>-<8 lowercase hex>`: an attempt (the helper's
+/// `ATTEMPT_PATTERN`).
+fn is_attempt(attempt: &str) -> bool {
     let Some((time, tag)) = attempt.split_once('-') else {
         return false;
     };
-    (1..=20).contains(&time.len())
-        && time.bytes().all(|byte| byte.is_ascii_digit())
+    is_nanoseconds(time)
         && tag.len() == 8
         && tag
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+fn is_nanoseconds(text: &str) -> bool {
+    (1..=20).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Whether a text is a possible charge's id in the job folder's ledger
+/// (J4; the helper's `is_charge_id`): an attempt, or the id the J1 and J3
+/// builds' files give a charge (`unanswered@<ns>`, `may_be_billed@<ns>`).
+/// Only such ids reach the helper's argv.
+#[must_use]
+pub fn is_charge_id(text: &str) -> bool {
+    is_attempt(text)
+        || text
+            .strip_prefix("unanswered@")
+            .or_else(|| text.strip_prefix("may_be_billed@"))
+            .is_some_and(is_nanoseconds)
+}
+
 /// The listening helper's answer cache.
 pub const LISTENING_CACHE_NAME: &str = "semantic.cache.json";
 
-/// The log of possible charges already put behind the user (J3-7,
-/// `tools/semantic_openrouter.py`, `charge_log_path`): the Start pressed after
-/// the confirmation showed one appends it, and it is not said again.
-pub const CHARGE_LOG_NAME: &str = "semantic.cache.charges.jsonl";
-
-/// Its lines' schema.
-pub const CHARGE_LOG_SCHEMA: &str = "musializer.semantic-charge-acknowledged/v1";
-
-/// The tail of the log read: older lines than this name charges long put
-/// behind, and a record that old is gone.
-pub const CHARGE_LOG_TAIL_BYTES: usize = 1 << 20;
-
-/// `(unanswered, at_ns)` of every possible charge the log holds.
-#[must_use]
-pub fn acknowledged_charges(log: &[u8]) -> std::collections::HashSet<(bool, u128)> {
-    let tail = &log[log.len().saturating_sub(CHARGE_LOG_TAIL_BYTES)..];
-    tail.split(|byte| *byte == b'\n')
-        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
-        .filter(|entry| {
-            entry
-                .get("schema_version")
-                .and_then(serde_json::Value::as_str)
-                == Some(CHARGE_LOG_SCHEMA)
-        })
-        .filter_map(|entry| {
-            let kind = entry.get("kind")?.as_str()?;
-            let at = entry.get("at_ns")?.as_u64()?;
-            Some((kind == "unanswered", u128::from(at)))
-        })
-        .collect()
-}
+/// The confirmation's line when the job folder's ledger of possible charges
+/// cannot be read (J4): what it shows may not be all there is, and is not
+/// read as all there is.
+pub const LEDGER_UNREADABLE_SENTENCE: &str = "This track's record of earlier listening requests \
+     could not be read, so this card may not show every request that may have been billed.";
 
 /// One attempt that may have been billed and is not answered.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PossibleCharge {
+    /// Its id in the job folder's ledger (J4, [`is_charge_id`]): what the
+    /// Start pressed after the confirmation showed it acknowledges.
+    pub id: String,
     pub at_ns: u128,
     /// `2026-11-16 10:02 UTC`, or empty when the record has no time.
     pub at_words: String,
@@ -334,17 +340,46 @@ fn charge(entry: &serde_json::Value, unanswered: bool) -> Option<PossibleCharge>
     } else {
         ("failed_ns", "failed_utc")
     };
+    let at_ns = entry.get(time)?.as_u64()?;
+    let unanswered = entry
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .map_or(unanswered, |kind| kind == "unanswered");
+    // The helper's own id when it names one (a status entry, a J4 record's
+    // attempt); otherwise the id the J1 and J3 builds' files give a charge.
+    let attempt = (entry
+        .get("schema_version")
+        .and_then(serde_json::Value::as_str)
+        == Some(SENT_RECORD_SCHEMA_V3))
+    .then(|| entry.get("attempt").and_then(serde_json::Value::as_str))
+    .flatten();
+    let id = entry
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .or(attempt)
+        .filter(|id| is_charge_id(id))
+        .map_or_else(
+            || {
+                format!(
+                    "{}@{at_ns}",
+                    if unanswered {
+                        "unanswered"
+                    } else {
+                        "may_be_billed"
+                    }
+                )
+            },
+            str::to_string,
+        );
     Some(PossibleCharge {
-        at_ns: u128::from(entry.get(time)?.as_u64()?),
+        id,
+        at_ns: u128::from(at_ns),
         at_words: utc_words(entry.get(utc)),
         usd_max: entry
             .get("usd_max")
             .and_then(serde_json::Value::as_f64)
             .filter(|usd| usd.is_finite() && *usd >= 0.0),
-        unanswered: entry
-            .get("kind")
-            .and_then(serde_json::Value::as_str)
-            .map_or(unanswered, |kind| kind == "unanswered"),
+        unanswered,
         audio_sha256: digest_field(entry, "audio_sha256"),
         request_key: digest_field(entry, "request_key"),
     })
@@ -375,58 +410,46 @@ pub fn sent_request(record: &[u8]) -> Option<(PossibleCharge, Vec<PossibleCharge
     Some((this, earlier))
 }
 
-/// Every attempt beside a listening cache that may have been billed and is
-/// not yet put behind the user: a record a killed helper left, a receipt that
-/// says "may have been billed", and what each carried forward (the J1 build),
-/// less what the log holds (J3-7). An answering attempt removes its own
-/// record, so a record still there was never answered.
+/// The possible charges a `semantic-status` answer names (J4): every one the
+/// job folder's ledger and files hold that is not acknowledged or answered,
+/// oldest first, each with its id. The helper decides what is pending, in one
+/// place; the confirmation shows all of them and the Start pressed after it
+/// acknowledges exactly these ids. `None` when the answer names none at all
+/// (an older helper), which shows nothing and acknowledges nothing.
 #[must_use]
-pub fn possible_charges(
-    records: &[Vec<u8>],
-    receipt: Option<&[u8]>,
-    log: Option<&[u8]>,
-) -> Vec<PossibleCharge> {
-    let mut found = Vec::new();
-    for (this, earlier) in records.iter().filter_map(|record| sent_request(record)) {
-        found.extend(earlier);
-        found.push(this);
-    }
-    if let Some(value) = receipt
-        .filter(|bytes| bytes.len() <= RECEIPT_MAX_BYTES)
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
-        .filter(|value| {
-            value
-                .get("schema_version")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|schema| LISTENING_RECEIPT_SCHEMAS.contains(&schema))
-        })
-    {
-        if let Some(earlier) = value.get("earlier").and_then(serde_json::Value::as_array) {
-            found.extend(earlier.iter().filter_map(|entry| charge(entry, false)));
-        }
-        if value
-            .get("may_be_billed")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            let usd_max = value
-                .get("estimate")
-                .and_then(|estimate| estimate.get("usd_max"))
-                .and_then(serde_json::Value::as_f64)
-                .map(crate::assist::cost::ceil_thousandths);
-            if let Some(mut this) = charge(&value, false) {
-                this.usd_max = usd_max;
-                // Answered, by a status that may have been billed.
-                this.unanswered = false;
-                found.push(this);
-            }
-        }
-    }
-    let behind = log.map(acknowledged_charges).unwrap_or_default();
-    found.retain(|entry| !behind.contains(&(entry.unanswered, entry.at_ns)));
-    found.sort_by_key(|entry| (entry.at_ns, entry.unanswered));
-    found.dedup_by(|a, b| a.at_ns == b.at_ns && a.unanswered == b.unanswered);
-    found
+pub fn status_charges(status: &serde_json::Value) -> Option<Vec<PossibleCharge>> {
+    let entries = status.get("pending_charges")?.as_array()?;
+    Some(
+        entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(is_charge_id)
+            })
+            .filter_map(|entry| {
+                // A charge with no time is still a charge: it is shown (with
+                // no date) rather than left pending and never said.
+                if entry
+                    .get("at_ns")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_none()
+                {
+                    let mut timed = entry.clone();
+                    timed["at_ns"] = serde_json::Value::from(0_u64);
+                    return charge(&timed, false);
+                }
+                charge(entry, false)
+            })
+            .collect(),
+    )
+}
+
+/// Whether a `semantic-status` answer says the ledger could not be read.
+#[must_use]
+pub fn status_ledger_unreadable(status: &serde_json::Value) -> bool {
+    status.get("ledger").and_then(serde_json::Value::as_str) == Some("unreadable")
 }
 
 /// `"(at most 0.073 USD)"`, or nothing when no charge names a ceiling.
@@ -478,9 +501,14 @@ pub fn possible_charge_sentence(
     };
     let sentence = if charges.len() > 1 {
         format!(
-            "{} listening requests {subject} may have been sent and billed{}; the last was{when}.",
+            "{} listening requests {subject} may have been sent and billed{}{}.",
             charges.len(),
             at_most(charges, true),
+            if when.is_empty() {
+                String::new()
+            } else {
+                format!("; the last was{when}")
+            },
         )
     } else if last.unanswered {
         format!(
@@ -932,6 +960,7 @@ mod tests {
             ("unreachable", "OpenRouter could not be reached"),
             ("no_key", "The listening request was not sent"),
             ("not_sent", "The listening request was not sent"),
+            ("answer_gone", "The saved answer is no longer there"),
             ("unusable_answer", "The listening answer could not be used"),
             ("something new", "The listening step failed"),
         ];
@@ -975,14 +1004,36 @@ mod tests {
         .into_bytes()
     }
 
-    /// J1-3: a record still there is a request sent and never answered, and
-    /// the sentence says so with what it may have cost; an answer written
-    /// after it settles it.
+    /// A `semantic-status` answer naming these charges (J4).
+    fn status(entries: &str) -> serde_json::Value {
+        serde_json::from_str(&format!(
+            r#"{{"schema_version":"musializer.semantic-status/v1","state":"none",
+                "pending_charges":[{entries}],"ledger":"ok"}}"#
+        ))
+        .expect("json")
+    }
+
+    fn pending(id: &str, kind: &str, at_utc: &str, usd: f64) -> String {
+        format!(
+            r#"{{"id":"{id}","kind":"{kind}","at_ns":2000,"at_utc":"{at_utc}","usd_max":{usd},
+                "audio_sha256":null,"request_key":null,"model":null}}"#
+        )
+    }
+
+    /// J1-3, J4: a charge the status names is said before the next Start,
+    /// with what it may have cost, and carries its id; a stop's clause is
+    /// read from the record itself.
     #[test]
     fn a_request_sent_and_never_answered_is_said_before_the_next_start() {
-        let record = sent(2_000, 0.073, "");
-        let charges = possible_charges(std::slice::from_ref(&record), None, None);
+        let charges = status_charges(&status(&pending(
+            "1763287353000000000-0a1b2c3d",
+            "unanswered",
+            "2026-11-16T10:02:33Z",
+            0.073,
+        )))
+        .expect("named");
         assert_eq!(charges.len(), 1);
+        assert_eq!(charges[0].id, "1763287353000000000-0a1b2c3d");
         assert_eq!(
             possible_charge_sentence(&charges, &NextStart::default()).as_deref(),
             Some(
@@ -991,63 +1042,76 @@ mod tests {
                  most 0.073 USD). After Start this note moves to the job folder's log."
             )
         );
-        // J3-7: once the log holds it, it is not said again; another
-        // charge in the log changes nothing.
-        let log = |kind: &str, at: u64| {
-            format!(
-                "{{\"schema_version\":\"{CHARGE_LOG_SCHEMA}\",\"kind\":\"{kind}\",\"at_ns\":{at}}}\n"
-            )
-        };
-        let behind = log("unanswered", 2_000);
-        assert!(
-            possible_charges(std::slice::from_ref(&record), None, Some(behind.as_bytes()))
-                .is_empty()
-        );
-        for other in [log("unanswered", 1_000), log("may_be_billed", 2_000)] {
-            assert_eq!(
-                possible_charges(std::slice::from_ref(&record), None, Some(other.as_bytes())).len(),
-                1
-            );
-        }
         assert_eq!(possible_charge_sentence(&[], &NextStart::default()), None);
-        let (this, _) = sent_request(&record).expect("a record");
+        assert_eq!(status_charges(&serde_json::json!({"state": "none"})), None);
+        let (this, _) = sent_request(&sent(2_000, 0.073, "")).expect("a record");
+        assert_eq!(this.id, "unanswered@2000", "a J1 record's legacy id");
         assert_eq!(
             sent_clause(&this),
             "the listening request may already have been sent to OpenRouter and billed (at most \
              0.073 USD)"
         );
+        let v3 = br#"{"schema_version":"musializer.semantic-request-sent/v3","sent_ns":5,
+            "attempt":"4-0a1b2c3d","usd_max":0.01}"#;
+        assert_eq!(sent_request(v3).expect("a record").0.id, "4-0a1b2c3d");
     }
 
-    /// A receipt that may have been billed, and what records and receipts
-    /// carried forward, are counted once each and summed, rounded up.
+    /// J4-5: however many the status names, all are shown (a count and a sum,
+    /// rounded up) and all carry their ids; an entry with a malformed id is
+    /// not a charge, one with no time still is.
     #[test]
-    fn earlier_possible_charges_are_counted_once_and_summed_up() {
-        let earlier =
-            r#"{"kind":"unanswered","at_ns":1000,"at_utc":"2026-11-15T09:00:00Z","usd_max":0.073}"#;
-        let record = sent(3_000, 0.073, earlier);
-        let receipt = format!(
-            r#"{{"schema_version":"musializer.semantic-failed-run/v1","failed_ns":2000,
-                "failed_utc":"2026-11-15T20:00:00Z","may_be_billed":true,
-                "estimate":{{"usd_max":0.0721}},"earlier":[{earlier}]}}"#
+    fn every_pending_charge_is_counted_and_summed_up() {
+        // In the status's order: oldest first, an untimed one first of all.
+        let entries: Vec<String> = [
+            r#"{"id":"unanswered@7","kind":"unanswered","usd_max":0.073}"#.to_string(),
+            pending("../etc", "unanswered", "", 1.0),
+        ]
+        .into_iter()
+        .chain((0..40).map(|n| pending(&format!("{n}-0000000{}", n % 10), "unanswered", "", 0.073)))
+        .chain([pending(
+            "may_be_billed@2000",
+            "may_be_billed",
+            "2026-11-16T10:02:33Z",
+            0.073,
+        )])
+        .collect();
+        let charges = status_charges(&status(&entries.join(","))).expect("named");
+        assert_eq!(
+            charges.len(),
+            42,
+            "the malformed id is dropped, the untimed one kept"
         );
-        let charges = possible_charges(
-            std::slice::from_ref(&record),
-            Some(receipt.as_bytes()),
-            None,
-        );
-        assert_eq!(charges.len(), 3, "{charges:?}");
+        assert!(charges.iter().all(|charge| is_charge_id(&charge.id)));
+        assert_eq!(charges[0].at_words, "");
         assert_eq!(
             possible_charge_sentence(&charges, &NextStart::default()).as_deref(),
             Some(
-                "3 listening requests that used this track's job folder may have been sent and \
-                 billed (at most 0.219 USD together); the last was on 2026-11-16 10:02 UTC. After \
+                "42 listening requests that used this track's job folder may have been sent and \
+                 billed (at most 3.066 USD together); the last was on 2026-11-16 10:02 UTC. After \
                  Start this note moves to the job folder's log."
             )
         );
-        let only_receipt = possible_charges(&[], Some(receipt.as_bytes()), None)
-            .into_iter()
-            .filter(|charge| !charge.unanswered)
-            .collect::<Vec<_>>();
+        // A last one with no time says no time, rather than "the last was.".
+        let untimed = status_charges(&status(
+            r#"{"id":"unanswered@7","kind":"unanswered","usd_max":0.073},
+               {"id":"unanswered@8","kind":"unanswered","usd_max":0.073}"#,
+        ))
+        .expect("named");
+        assert_eq!(
+            possible_charge_sentence(&untimed, &NextStart::default()).as_deref(),
+            Some(
+                "2 listening requests that used this track's job folder may have been sent and \
+                 billed (at most 0.146 USD together). After Start this note moves to the job \
+                 folder's log."
+            )
+        );
+        let only_receipt = status_charges(&status(&pending(
+            "may_be_billed@2000",
+            "may_be_billed",
+            "2026-11-15T20:00:00Z",
+            0.0721,
+        )))
+        .expect("named");
         assert_eq!(
             possible_charge_sentence(&only_receipt, &NextStart::default()).as_deref(),
             Some(
@@ -1056,9 +1120,35 @@ mod tests {
                  job folder's log."
             )
         );
-        let not_billed = r#"{"schema_version":"musializer.semantic-failed-run/v1",
-            "failed_ns":2000,"may_be_billed":false}"#;
-        assert!(possible_charges(&[], Some(not_billed.as_bytes()), None).is_empty());
+        assert!(status_ledger_unreadable(
+            &serde_json::json!({"ledger": "unreadable"})
+        ));
+        assert!(!status_ledger_unreadable(&status("")));
+    }
+
+    #[test]
+    fn a_charge_id_is_an_attempt_or_a_legacy_id_and_nothing_else() {
+        for id in [
+            "1763287353000000000-0a1b2c3d",
+            "1-00000000",
+            "unanswered@1763287353000000000",
+            "may_be_billed@2",
+        ] {
+            assert!(is_charge_id(id), "{id}");
+        }
+        for id in [
+            "",
+            "1-0A1B2C3D",
+            "1-0a1b2c3",
+            "x-0a1b2c3d",
+            "charged@1",
+            "unanswered@",
+            "unanswered@123456789012345678901",
+            "1-0a1b2c3d; rm",
+            "--zdr",
+        ] {
+            assert!(!is_charge_id(id), "{id}");
+        }
     }
 
     /// J3-2: a charge says what it was for, against what the next Start
@@ -1082,7 +1172,8 @@ mod tests {
             reuses: false,
         };
         let say = |bytes: Vec<u8>, next: &NextStart<'_>| {
-            possible_charge_sentence(&possible_charges(&[bytes], None, None), next).expect("a line")
+            let (this, _) = sent_request(&bytes).expect("a record");
+            possible_charge_sentence(&[this], next).expect("a line")
         };
         assert_eq!(
             say(record(&track, &mine), &next),
