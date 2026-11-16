@@ -5083,6 +5083,9 @@ impl Shell {
         // and the playhead must stay the topmost thing in the lane because it is
         // the only one of the three the user is moving.
         self.timeline_event_markers = self.event_markers(d, input, strip, duration);
+        // A staged feelings answer's cues, as ghosts beside the placed ones (J2).
+        let hovered = self.timeline_event_markers.hovered.is_some();
+        self.staged_feeling_markers(d, input, strip, duration, hovered);
 
         // Protocol markers ride the same strip, bottom-anchored where the
         // event lollipops are top-anchored — position is the channel that

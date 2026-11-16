@@ -85,6 +85,9 @@ pub struct FeelingsView {
     report: String,
     /// Whether a probe's open row was applied already.
     probe_opened: bool,
+    /// The `staged feelings:` line (the timeline's ghosts), printed when it
+    /// changes. Kept across a new answer, like `report`.
+    timeline_report: String,
 }
 
 impl FeelingsView {
@@ -102,6 +105,7 @@ impl FeelingsView {
                 key: Some(key),
                 report: std::mem::take(&mut self.report),
                 probe_opened: self.probe_opened,
+                timeline_report: std::mem::take(&mut self.timeline_report),
                 ..Self::default()
             };
         }
@@ -446,7 +450,7 @@ impl Shell {
         }
 
         // The rows.
-        let stripe = raylib::prelude::Color::get_color(EventType::Semantic.rgba());
+        let stripe = feel_tint();
         let mut row_report = Vec::new();
         let mut pressed = None;
         for (screen, (index, row)) in layout.rows.iter().enumerate() {
@@ -617,6 +621,159 @@ impl Shell {
         if report != view.report {
             println!("assist feelings: {report}");
             view.report = report;
+        }
+    }
+}
+
+/// The feel type's chartreuse (`EventType::Semantic`), the colour of a
+/// feeling cue on the timeline, for the rows' stripes and the staged cues.
+/// On the light appearance's pale lane it is darkened to an olive that still
+/// reads as the same hue: at full lightness a 2 px dash there measured close
+/// to the waveform behind it (2026-11-16 capture).
+fn feel_tint() -> raylib::prelude::Color {
+    let base = raylib::prelude::Color::get_color(EventType::Semantic.rgba());
+    let surface = color::ui_surface();
+    let light = u32::from(surface.r) + u32::from(surface.g) + u32::from(surface.b) > 3 * 160;
+    if light {
+        widgets::brightness(base, -0.45)
+    } else {
+        base
+    }
+}
+
+/// Widget index of the first staged cue's tooltip on the timeline, in
+/// [`ASSIST_WIDGETS`]: one per staged cue, at most the bridge's 256.
+const GHOST_WIDGET: u32 = 300;
+/// Where a staged cue's ring sits: at the lane's bottom, where the placed
+/// heads sit at its top, so two cues at one time still show both and the tick
+/// labels along the top are never covered (2026-11-16 capture: a ring under
+/// `02:00.000`'s plate). "What goes" hangs from the top, "what comes" stands
+/// on the bottom.
+const GHOST_HEAD_LIFT: f32 = 8.0;
+const GHOST_HEAD_RADIUS: f32 = 4.5;
+const GHOST_RING: f32 = 1.5;
+/// The staged cue's line: dashes, so it can never be read as a placed cue's
+/// solid line, of either lane.
+const GHOST_DASH: f32 = 4.0;
+const GHOST_DASH_GAP: f32 = 3.0;
+
+impl Shell {
+    /// The staged feeling cues on the timeline, while they are staged (J2):
+    /// where Apply would put them, as ghosts — a dashed line standing on a
+    /// thin ring at the lane's bottom edge — beside the placed cues they would replace,
+    /// which stay as they are. So the difference is a picture: the solid
+    /// lines are what goes, the dashed ones what comes, and the filled heads
+    /// (the user's own markers) are not touched either way.
+    ///
+    /// Drawn after the placed markers and before the playhead, the order
+    /// `event_markers` keeps for the same reasons. `hovered` is whether a
+    /// placed marker already raised its tooltip this frame.
+    pub(crate) fn staged_feeling_markers(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        input: &ShellInput<'_>,
+        strip: UiRect,
+        duration: f64,
+        hovered: bool,
+    ) {
+        let session = &input.workspace.assist;
+        let staged = session
+            .candidate
+            .as_ref()
+            .filter(|candidate| candidate.available().semantics)
+            .filter(|_| session.candidate_track == input.workspace.current_index())
+            .map(AnalysisCandidate::feeling_sections)
+            .unwrap_or_default();
+        let replaced = input
+            .workspace
+            .current()
+            .filter(|_| !staged.is_empty())
+            .map_or(0, |track| track.semantic_events.len());
+        let colour = feel_tint();
+        let mouse = input.ui_scale.mouse(d);
+        let mut drawn = 0usize;
+        let mut off_screen = 0usize;
+        let mut tip: Option<(UiRect, String, usize)> = None;
+        {
+            let mut clip = widgets::begin_scissor(d, strip, input.ui_scale);
+            for (index, section) in staged.iter().enumerate() {
+                if section.start_seconds < 0.0 || section.start_seconds > duration {
+                    off_screen += 1;
+                    continue;
+                }
+                let x = self.timeline.x_at(
+                    section.start_seconds,
+                    f64::from(strip.x),
+                    f64::from(strip.width),
+                ) as f32;
+                if x < strip.x - 8.0 || x > strip.x + strip.width + 8.0 {
+                    off_screen += 1;
+                    continue;
+                }
+                let x = x.round();
+                let head_y = strip.y + strip.height - GHOST_HEAD_LIFT;
+                let line_end = head_y - GHOST_HEAD_RADIUS - 2.0;
+                let mut y = strip.y;
+                while y < line_end {
+                    let bottom = (y + GHOST_DASH).min(line_end);
+                    widgets::fill(
+                        &mut *clip,
+                        UiRect::new(x - 1.0, y, 2.0, bottom - y),
+                        widgets::alpha(colour, 0.8),
+                    );
+                    y += GHOST_DASH + GHOST_DASH_GAP;
+                }
+                let centre = raylib::prelude::Vector2::new(x, head_y);
+                clip.draw_circle_v(centre, GHOST_HEAD_RADIUS, colour);
+                clip.draw_circle_v(
+                    centre,
+                    GHOST_HEAD_RADIUS - GHOST_RING,
+                    color::ui_lane_trough(),
+                );
+                drawn += 1;
+                let hit = UiRect::new(
+                    x - GHOST_HEAD_RADIUS - 1.0,
+                    head_y - GHOST_HEAD_RADIUS - 1.0,
+                    GHOST_HEAD_RADIUS * 2.0 + 2.0,
+                    GHOST_HEAD_RADIUS * 2.0 + 2.0,
+                );
+                if tip.is_none() && !hovered && hit.contains_point(mouse.x, mouse.y) {
+                    tip = Some((
+                        hit,
+                        format!(
+                            "Staged feel  \u{00b7}  {}  \u{00b7}  not applied yet",
+                            widgets::format_timestamp(section.start_seconds)
+                        ),
+                        index,
+                    ));
+                }
+            }
+        }
+        if let Some((anchor, text, index)) = tip {
+            self.widgets.hint(
+                d,
+                widgets::ButtonState {
+                    hovered: true,
+                    clicked: false,
+                    pressed: false,
+                },
+                widgets::widget_id(ASSIST_WIDGETS, GHOST_WIDGET + index as u32),
+                anchor,
+                &text,
+            );
+        }
+        let report = format!(
+            "staged={} ghosts={drawn} off-screen={off_screen} replaced={replaced} track={}",
+            staged.len(),
+            session
+                .candidate_track
+                .filter(|_| !staged.is_empty())
+                .map_or_else(|| "none".to_string(), |index| index.to_string()),
+        );
+        let view = &mut self.assist_column.feelings;
+        if report != view.timeline_report {
+            println!("staged feelings: {report}");
+            view.timeline_report = report;
         }
     }
 }
