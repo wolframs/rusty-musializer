@@ -625,6 +625,212 @@ impl Shell {
     }
 }
 
+/// Widget index of the step back on the card, in [`ASSIST_WIDGETS`]: between
+/// the review rows (`60..`) and the cards (`100..`).
+pub(super) const STEP_BACK_WIDGET: u32 = 95;
+
+/// What the card that applied feeling cues says about putting them back.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct StepBackLine {
+    /// The card it sits on: the one whose Apply replaced the cues.
+    pub mode: AssistMode,
+    /// `Some(how many)` while the step back is offered; `None` once it is
+    /// gone, when `text` says why.
+    pub earlier: Option<usize>,
+    pub applied: usize,
+    pub text: String,
+    /// The report's word: `offered`, `gone:closed`, `gone:edited`.
+    pub token: &'static str,
+}
+
+/// The step back's line, from the session's memory and the live track, or
+/// `None` when no Apply of feeling cues left one.
+pub(super) fn step_back_line(workspace: &Workspace) -> Option<StepBackLine> {
+    use musializer_core::project::analysis_candidate::{StepBackGone, StepBackStatus};
+    let (mode, memory) = workspace.assist.feelings_step_back.as_ref()?;
+    let track = workspace
+        .get(memory.track)
+        .map(|track| (track.file_path.as_path(), &track.semantic_events));
+    let earlier = memory.earlier.len();
+    let applied = memory.applied.len();
+    Some(match memory.status(track) {
+        StepBackStatus::Offered => StepBackLine {
+            mode: *mode,
+            earlier: Some(earlier),
+            applied,
+            text: if earlier == 0 {
+                "Before Apply there were none".to_string()
+            } else {
+                format!(
+                    "{earlier} earlier cue{} kept",
+                    if earlier == 1 { "" } else { "s" }
+                )
+            },
+            token: "offered",
+        },
+        StepBackStatus::Gone(gone) => StepBackLine {
+            mode: *mode,
+            earlier: None,
+            applied,
+            text: gone.sentence().to_string(),
+            token: match gone {
+                StepBackGone::TrackClosed => "gone:closed",
+                StepBackGone::LaneChanged => "gone:edited",
+            },
+        },
+    })
+}
+
+/// The step back's button label.
+pub(super) const STEP_BACK_LABEL: &str = "Put back";
+
+/// The button's rect at the right end of the card's step-back row.
+pub(super) fn step_back_button(font: &UiFonts, row: UiRect) -> UiRect {
+    let width = widgets::measure(font, STEP_BACK_LABEL, metric::UI_FONT_CAPTION) + 20.0;
+    let height = 22.0;
+    UiRect::new(
+        row.x + row.width - width,
+        row.y + (row.height - height) * 0.5,
+        width,
+        height,
+    )
+}
+
+/// What Apply will do, said before it is done (J2): how many earlier feeling
+/// cues it replaces, what else it replaces, and what it leaves alone.
+///
+/// Every clause is what `apply_candidate_to_track` does, read there
+/// (2026-11-16): the semantic lane is replaced whole (`AnalysisCandidate::apply`),
+/// the lyric lane and the scene plan only when the run staged them, and the
+/// user's own markers (`manual_events`, where `+ Feel` records too) never.
+/// The semantic lane holds only cues an Assist run or a bridge import wrote.
+pub(super) fn apply_sentence(
+    candidate: &AnalysisCandidate,
+    target: Option<&Track>,
+) -> Option<String> {
+    let available = candidate.available();
+    if !available.semantics {
+        return None;
+    }
+    let staged = candidate.feeling_sections().len();
+    let earlier = target.map_or(0, |track| track.semantic_events.len());
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let mut also = Vec::new();
+    if available.lyrics {
+        also.push("the lyrics");
+    }
+    if available.sections {
+        also.push("the scene plan");
+    }
+    let what = if earlier == 0 {
+        format!(
+            "Apply adds the {staged} feeling cue{} from this answer",
+            plural(staged)
+        )
+    } else {
+        format!(
+            "Apply replaces the {earlier} earlier feeling cue{} with the {staged} from this answer",
+            plural(earlier)
+        )
+    };
+    let what = match also.as_slice() {
+        [] => what,
+        [one] => format!("{what}, and {one}"),
+        [first, second, ..] => format!("{what}, {first} and {second}"),
+    };
+    let mut kept = vec!["your own markers"];
+    if !available.sections {
+        kept.push("the scene plan");
+    }
+    if !available.lyrics {
+        kept.push("the lyrics");
+    }
+    let kept = match kept.as_slice() {
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [] => String::new(),
+    };
+    let back = if earlier == 0 {
+        String::new()
+    } else {
+        " You can put the earlier cues back afterwards.".to_string()
+    };
+    // Always "Your own markers ...": the list starts with them.
+    let kept = kept.replacen("your", "Your", 1);
+    Some(format!("{what}. {kept} stay as they are.{back}"))
+}
+
+impl Shell {
+    /// Draws the step back on its card's row; the press was already claimed
+    /// (`state`) before the card claimed its own. Returns the report line.
+    pub(super) fn draw_step_back(
+        &mut self,
+        d: &mut RaylibDrawHandle<'_>,
+        font: &UiFonts,
+        line: &StepBackLine,
+        row: UiRect,
+        button: Option<(UiRect, widgets::ButtonState)>,
+    ) -> String {
+        let measure = |text: &str| widgets::measure(font, text, 13.0);
+        let text_right = button.map_or(row.x + row.width, |(rect, _)| rect.x - 8.0);
+        widgets::draw_text(
+            d,
+            font,
+            &ellipsize(&line.text, (text_right - row.x).max(0.0), &measure),
+            row.x,
+            row.y + 3.0,
+            13.0,
+            if line.earlier.is_some() {
+                color::ui_ink()
+            } else {
+                color::ui_muted()
+            },
+        );
+        if let Some((rect, state)) = button {
+            let look = widgets::button_look(ButtonStyle::Neutral, false, state.hovered);
+            widgets::rounded_box(d, rect, 4.0, look.fill, look.edge, 1.0);
+            let width = widgets::measure(font, STEP_BACK_LABEL, metric::UI_FONT_CAPTION);
+            widgets::draw_text(
+                d,
+                font,
+                STEP_BACK_LABEL,
+                rect.x + (rect.width - width) * 0.5,
+                rect.y + (rect.height - metric::UI_FONT_CAPTION) * 0.5,
+                metric::UI_FONT_CAPTION,
+                look.ink,
+            );
+            let id = widgets::widget_id(ASSIST_WIDGETS, STEP_BACK_WIDGET);
+            let earlier = line.earlier.unwrap_or(0);
+            self.widgets.hint(
+                d,
+                state,
+                id,
+                rect,
+                &format!(
+                    "Puts back the {earlier} feeling cue{} Apply replaced; the {} from the answer leave the project",
+                    if earlier == 1 { "" } else { "s" },
+                    line.applied
+                ),
+            );
+        }
+        format!(
+            "state={} card={} earlier={} applied={} button{}",
+            line.token,
+            card_token(line.mode),
+            line.earlier
+                .map_or_else(|| "-".to_string(), |count| count.to_string()),
+            line.applied,
+            button.map_or_else(
+                || "=none".to_string(),
+                |(rect, _)| format!(
+                    "@{:.0},{:.0},{:.0},{:.0}",
+                    rect.x, rect.y, rect.width, rect.height
+                )
+            ),
+        )
+    }
+}
+
 /// The feel type's chartreuse (`EventType::Semantic`), the colour of a
 /// feeling cue on the timeline, for the rows' stripes and the staged cues.
 /// On the light appearance's pale lane it is darkened to an olive that still
@@ -854,6 +1060,36 @@ mod tests {
             confidence: 0.9,
             summary: String::new(),
         }
+    }
+
+    /// The sentence names what the run staged and nothing else, and every
+    /// clause is pinned against what `apply_candidate_to_track` does by
+    /// `a_feelings_apply_touches_neither_markers_nor_plan_and_steps_back_exactly`.
+    #[test]
+    fn the_apply_sentence_says_what_goes_and_what_stays() {
+        use musializer_core::project::analysis_bridge;
+        let digest = musializer_core::project::sha256::digest_hex(b"audio");
+        // "a line", ["x"], "calm", "bright", in base64.
+        let document = format!(
+            "MUSIALIZER_BRIDGE\t1\nAUDIO\t{digest}\t60000\n\
+             LYRIC\t1\t1000\t2000\t900\tnone\tYSBsaW5l\n\
+             SECTION\t10\t0\t60000\tspectrum\t500\tWyJ4Il0=\n\
+             SEMANTIC\t20\t0\t30000\t400\t300\t-200\t900\tY2FsbQ==\n\
+             SEMANTIC\t21\t30000\t60000\t800\t700\t600\t950\tYnJpZ2h0\n"
+        );
+        let bridge = analysis_bridge::parse(document.as_bytes(), None, None).unwrap();
+        let prepare = |mode| {
+            AnalysisCandidate::prepare(&bridge, assist_ui_state::mode_lanes(mode), 60.0, 4).unwrap()
+        };
+        assert_eq!(
+            apply_sentence(&prepare(AssistMode::Mimo), None).as_deref(),
+            Some("Apply adds the 2 feeling cues from this answer. Your own markers, the scene plan and the lyrics stay as they are.")
+        );
+        assert_eq!(
+            apply_sentence(&prepare(AssistMode::All), None).as_deref(),
+            Some("Apply adds the 2 feeling cues from this answer, the lyrics and the scene plan. Your own markers stay as they are.")
+        );
+        assert_eq!(apply_sentence(&prepare(AssistMode::Lyrics), None), None);
     }
 
     #[test]

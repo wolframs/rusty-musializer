@@ -485,7 +485,7 @@ pub fn lyric_sibling_path(audio_path: &str) -> Option<String> {
 
 use core::cell::Cell;
 
-use crate::project::analysis_candidate::{AnalysisCandidate, Lanes};
+use crate::project::analysis_candidate::{AnalysisCandidate, FeelingsStepBack, Lanes};
 use crate::ui::workspace_layout::UiRect;
 
 /// Which job artifact a Copy button puts on the clipboard
@@ -576,6 +576,9 @@ pub enum AssistRequest {
     ClearLyricSheet,
     /// Put an artifact path on the clipboard.
     Copy(AssistArtifact),
+    /// Put back the feeling cues the last Apply replaced
+    /// ([`AssistSession::feelings_step_back`], J2).
+    RestoreFeelings,
 }
 
 /// Everything the Assist panel draws from and asks for, in one place.
@@ -644,6 +647,11 @@ pub struct AssistSession {
     /// Resolved once at startup rather than per frame, because the C's per-frame
     /// `FileExists` probe is a syscall inside the drawing pair.
     pub helper_available: bool,
+    /// The one step back the last Apply of feeling cues left, and the card
+    /// that applied it (J2). Written by the frame loop's Apply and taken by
+    /// its [`AssistRequest::RestoreFeelings`]; whether it is still meaningful
+    /// is asked of the live track ([`FeelingsStepBack::status`]).
+    pub feelings_step_back: Option<(AssistMode, FeelingsStepBack)>,
 }
 
 impl Default for AssistSession {
@@ -666,6 +674,7 @@ impl Default for AssistSession {
             output_dir: String::new(),
             failure_detail: String::new(),
             helper_available: false,
+            feelings_step_back: None,
         }
     }
 }

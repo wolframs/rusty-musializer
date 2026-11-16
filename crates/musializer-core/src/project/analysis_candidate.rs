@@ -20,6 +20,7 @@ use serde_json::Value;
 use crate::project::analysis_bridge::AnalysisBridge;
 use crate::project::event_timeline::EventTimeline;
 use crate::project::lyrics::{CueOrigin, LyricCue, LyricsDocument, CUE_CAPACITY};
+use crate::project::model::{AnalysisLaneKind, AnalysisLaneReference};
 use crate::project::scene_switch::{SceneSwitchCue, SceneSwitchTimeline, CAPACITY};
 use crate::scene::events::{EventRecord, EventType};
 use crate::scene::settings::SettingsSnapshot;
@@ -1018,6 +1019,150 @@ const REUSED_ANSWER_MAX_CHARS: usize = 160;
 /// selection uses (`section_rest_seconds`).
 pub const SECTION_SEEK_INSET_SECONDS: f64 = 0.05;
 
+/// The one step back an Apply of feeling cues leaves (J2, 2026-11-16): the
+/// lane it replaced, so the user can put it back.
+///
+/// **One remembered lane, no undo system.** It holds the feeling cues and the
+/// `.musi` analysis-lane record (provenance) exactly as they were before the
+/// Apply, and the lane as the Apply left it. Putting them back is meaningful
+/// only while the lane is still what that Apply wrote, on the track it wrote
+/// it to, so [`Self::status`] answers from the live track every time it is
+/// asked rather than from a flag someone had to remember to clear:
+///
+/// - **another Apply of feeling cues** replaces this memory with its own (the
+///   caller's job: it remembers what *that* Apply replaced);
+/// - **the track was closed**, or another took its slot: gone;
+/// - **the lane changed** after the Apply — any edit, import, reopen or
+///   followed treatment that rewrote it, seen as another revision or other
+///   cues: gone, because putting the old cues back would undo that too.
+///
+/// What goes back is byte-for-byte what was there: the cues, and the
+/// analysis-lane record in its old place, or no record when there was none.
+#[derive(Clone, Debug)]
+pub struct FeelingsStepBack {
+    /// The track slot the Apply wrote to, and the file it was then.
+    pub track: usize,
+    pub track_file: std::path::PathBuf,
+    /// The feeling cues before the Apply.
+    pub earlier: EventTimeline,
+    /// The track's semantic analysis-lane record before the Apply, and its
+    /// place in the list; `None` when it had none.
+    pub earlier_lane: Option<(usize, AnalysisLaneReference)>,
+    /// The lane as the Apply left it, and its revision then.
+    pub applied: EventTimeline,
+    pub applied_revision: u64,
+}
+
+/// Whether a [`FeelingsStepBack`] can still be taken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepBackStatus {
+    Offered,
+    Gone(StepBackGone),
+}
+
+/// Why a step back is no longer offered, in words the card can show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepBackGone {
+    /// The project the Apply wrote to was closed, or another track took its
+    /// slot.
+    TrackClosed,
+    /// The feeling cues changed after the Apply.
+    LaneChanged,
+}
+
+impl StepBackGone {
+    /// The card's line: what happened, short enough for the minimum column.
+    #[must_use]
+    pub const fn sentence(self) -> &'static str {
+        match self {
+            StepBackGone::TrackClosed => "Earlier cues gone \u{00b7} project closed",
+            StepBackGone::LaneChanged => "Earlier cues gone \u{00b7} edited since",
+        }
+    }
+}
+
+/// Whether two lanes hold the same records (the revision aside).
+fn same_records(lane: &EventTimeline, other: &EventTimeline) -> bool {
+    lane.events() == other.events()
+}
+
+impl FeelingsStepBack {
+    /// Remembers an Apply about to replace `lane` on `track`. `lanes` is the
+    /// track's analysis-lane list before the Apply.
+    #[must_use]
+    pub fn before(
+        track: usize,
+        track_file: std::path::PathBuf,
+        lane: &EventTimeline,
+        lanes: &[AnalysisLaneReference],
+    ) -> Self {
+        Self {
+            track,
+            track_file,
+            earlier: lane.clone(),
+            earlier_lane: lanes
+                .iter()
+                .position(|reference| reference.kind == AnalysisLaneKind::SemanticScore)
+                .map(|index| (index, lanes[index].clone())),
+            applied: EventTimeline::new(),
+            applied_revision: 0,
+        }
+    }
+
+    /// Records the lane as the Apply left it.
+    pub fn applied(&mut self, lane: &EventTimeline) {
+        self.applied = lane.clone();
+        self.applied_revision = lane.revision();
+    }
+
+    /// Whether the step back is still meaningful for the track now in its
+    /// slot (`None`: no track there).
+    #[must_use]
+    pub fn status(&self, track: Option<(&std::path::Path, &EventTimeline)>) -> StepBackStatus {
+        match track {
+            Some((file, _)) if file != self.track_file => {
+                StepBackStatus::Gone(StepBackGone::TrackClosed)
+            }
+            None => StepBackStatus::Gone(StepBackGone::TrackClosed),
+            Some((_, lane))
+                if lane.revision() != self.applied_revision
+                    || !same_records(lane, &self.applied) =>
+            {
+                StepBackStatus::Gone(StepBackGone::LaneChanged)
+            }
+            Some(_) => StepBackStatus::Offered,
+        }
+    }
+
+    /// Puts the earlier cues and their analysis-lane record back. The caller
+    /// checked [`Self::status`]; this refuses nothing but a lane the earlier
+    /// cues cannot be written into, which they came out of.
+    pub fn restore(
+        &self,
+        lane: &mut EventTimeline,
+        lanes: &mut Vec<AnalysisLaneReference>,
+    ) -> Result<(), AnalysisCandidateError> {
+        lane.replace(&self.earlier)
+            .map_err(|_| AnalysisCandidateError::Semantics)?;
+        let current = lanes
+            .iter()
+            .position(|reference| reference.kind == AnalysisLaneKind::SemanticScore);
+        match (&self.earlier_lane, current) {
+            // Apply replaced the record in place, so it goes back in place.
+            (Some((_, earlier)), Some(index)) => lanes[index] = earlier.clone(),
+            (Some((index, earlier)), None) => {
+                lanes.insert((*index).min(lanes.len()), earlier.clone());
+            }
+            // Apply pushed a record where there was none: it goes.
+            (None, Some(index)) => {
+                lanes.remove(index);
+            }
+            (None, None) => {}
+        }
+        Ok(())
+    }
+}
+
 /// What an `assist-manifest.json` says about a feelings answer that was a saved
 /// one, reused rather than paid for again (J2), in words for the review; `None`
 /// when it says nothing.
@@ -1625,6 +1770,94 @@ mod tests {
             AnalysisCandidate::prepare(&bridge(), Lanes::ALL, DURATION, SCENES).unwrap();
         assert!(candidate.note_reused_answer("Reused.".to_string()));
         assert_eq!(candidate.reused_answer(), Some("Reused."));
+    }
+
+    fn semantic_lane(model: &str) -> AnalysisLaneReference {
+        AnalysisLaneReference {
+            kind: AnalysisLaneKind::SemanticScore,
+            path: format!("/job/{model}.tsv"),
+            ..AnalysisLaneReference::default()
+        }
+    }
+
+    /// J2: the step back puts the cues and the lane record back exactly, in
+    /// both shapes (a record replaced in place, a record that was not there),
+    /// and stops being offered when the lane or the track changes.
+    #[test]
+    fn a_step_back_restores_the_lane_and_its_record_exactly() {
+        let candidate =
+            AnalysisCandidate::prepare(&bridge(), Lanes::ALL, DURATION, SCENES).unwrap();
+        let file = std::path::PathBuf::from("/music/song.wav");
+        let mut lane = EventTimeline::new();
+        lane.record(EventRecord {
+            timestamp_seconds: 4.0,
+            id: 7,
+            event_type: EventType::Semantic as u32,
+            value_count: 4,
+            values: [0.5, 0.5, 0.0, 0.5],
+        })
+        .unwrap();
+        let lyric = AnalysisLaneReference {
+            kind: AnalysisLaneKind::LyricTiming,
+            ..AnalysisLaneReference::default()
+        };
+        for earlier_lanes in [
+            vec![lyric.clone(), semantic_lane("old")],
+            vec![lyric.clone()],
+        ] {
+            let before_lane = lane.clone();
+            let mut lanes = earlier_lanes.clone();
+            let mut memory = FeelingsStepBack::before(0, file.clone(), &lane, &lanes);
+            // The Apply: the lane replaced, the record replaced or pushed.
+            let mut applied = lane.clone();
+            applied.replace(candidate.semantic_events()).unwrap();
+            match lanes
+                .iter()
+                .position(|reference| reference.kind == AnalysisLaneKind::SemanticScore)
+            {
+                Some(index) => lanes[index] = semantic_lane("new"),
+                None => lanes.push(semantic_lane("new")),
+            }
+            memory.applied(&applied);
+            assert_eq!(
+                memory.status(Some((&file, &applied))),
+                StepBackStatus::Offered
+            );
+            memory.restore(&mut applied, &mut lanes).unwrap();
+            assert_eq!(applied.events(), before_lane.events());
+            assert_eq!(lanes, earlier_lanes);
+        }
+
+        let mut memory = FeelingsStepBack::before(0, file.clone(), &lane, &[]);
+        let mut applied = lane.clone();
+        applied.replace(candidate.semantic_events()).unwrap();
+        memory.applied(&applied);
+        assert_eq!(
+            memory.status(None),
+            StepBackStatus::Gone(StepBackGone::TrackClosed)
+        );
+        assert_eq!(
+            memory.status(Some((std::path::Path::new("/music/other.wav"), &applied))),
+            StepBackStatus::Gone(StepBackGone::TrackClosed)
+        );
+        // An edit of the lane: another revision, even with the same cues.
+        let mut edited = applied.clone();
+        edited.replace(&applied.clone()).unwrap();
+        assert_eq!(
+            memory.status(Some((&file, &edited))),
+            StepBackStatus::Gone(StepBackGone::LaneChanged)
+        );
+        // The same revision with other cues (a reopened project) is not it
+        // either.
+        let mut other = EventTimeline::new();
+        while other.revision() < applied.revision() {
+            other.replace(&lane).unwrap();
+        }
+        assert_eq!(other.revision(), applied.revision());
+        assert_eq!(
+            memory.status(Some((&file, &other))),
+            StepBackStatus::Gone(StepBackGone::LaneChanged)
+        );
     }
 
     /// The seek lands strictly inside: 50 ms past the start, and for a span

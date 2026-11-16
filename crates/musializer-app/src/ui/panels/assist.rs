@@ -374,6 +374,9 @@ impl AssistController {
                 }
                 AssistOutcome::default()
             }
+            AssistRequest::RestoreFeelings => {
+                AssistOutcome::of(self.restore_feelings(workspace, now))
+            }
             AssistRequest::Copy(artifact) => {
                 let path = workspace.assist.artifact_path(artifact).to_string();
                 AssistOutcome {
@@ -838,6 +841,16 @@ impl AssistController {
         let Some(track) = workspace.get_mut(index) else {
             return missing();
         };
+        // The one step back (J2): what this Apply is about to replace in the
+        // feelings lane, remembered before anything changes.
+        let mut step_back = candidate.available().semantics.then(|| {
+            analysis_candidate::FeelingsStepBack::before(
+                index,
+                track.file_path.clone(),
+                &track.semantic_events,
+                &track.analysis_lanes,
+            )
+        });
         if let Err(detail) = apply_candidate_to_track(&candidate, track, now) {
             return vec![AssistNotice::new(
                 Severity::Error,
@@ -848,12 +861,81 @@ impl AssistController {
         track.audio_sha256 = staged.audio_sha256;
         track.analysis_lanes = staged.lanes;
         let name = track.display_name().to_string();
+        if let Some(memory) = step_back.as_mut() {
+            memory.applied(&track.semantic_events);
+        }
+        let earlier = step_back.as_ref().map(|memory| memory.earlier.len());
 
+        let mode = workspace.assist.candidate_mode;
         workspace.assist.clear_candidate();
+        // Another Apply of feeling cues replaces the previous memory: it now
+        // remembers what *this* one replaced.
+        if let Some(memory) = step_back {
+            workspace.assist.feelings_step_back = Some((mode, memory));
+        }
         vec![AssistNotice::new(
             Severity::Success,
             "Suggestions applied",
-            format!("The selected validated lanes are now in {name}."),
+            match earlier {
+                Some(earlier) if earlier > 0 => format!(
+                    "The selected validated lanes are now in {name}. The {earlier} earlier \
+                     feeling cue{} can be put back from the {} card.",
+                    if earlier == 1 { "" } else { "s" },
+                    mode.display_name()
+                ),
+                _ => format!("The selected validated lanes are now in {name}."),
+            },
+        )]
+    }
+
+    /// Puts back the feeling cues the last Apply replaced (J2), when that is
+    /// still meaningful (`FeelingsStepBack::status`). One step: the memory is
+    /// taken. The project is dirtied like any edit, so autosave writes the
+    /// restored lane, as it wrote the applied one.
+    pub fn restore_feelings(&mut self, workspace: &mut Workspace, now: f64) -> Vec<AssistNotice> {
+        use analysis_candidate::StepBackStatus;
+        let Some((mode, memory)) = workspace.assist.feelings_step_back.clone() else {
+            return Vec::new();
+        };
+        let status = memory.status(
+            workspace
+                .get(memory.track)
+                .map(|track| (track.file_path.as_path(), &track.semantic_events)),
+        );
+        if let StepBackStatus::Gone(gone) = status {
+            return vec![AssistNotice::new(
+                Severity::Warning,
+                "The earlier feeling cues cannot be put back",
+                format!("{}.", gone.sentence()),
+            )];
+        }
+        let Some(track) = workspace.get_mut(memory.track) else {
+            return Vec::new();
+        };
+        if memory
+            .restore(&mut track.semantic_events, &mut track.analysis_lanes)
+            .is_err()
+        {
+            return vec![AssistNotice::new(
+                Severity::Error,
+                "The earlier feeling cues were not put back",
+                "They no longer fit the feelings lane; nothing changed.",
+            )];
+        }
+        track.mark_dirty_significant(now);
+        let name = track.display_name().to_string();
+        workspace.assist.feelings_step_back = None;
+        let earlier = memory.earlier.len();
+        vec![AssistNotice::new(
+            Severity::Success,
+            "Earlier feeling cues put back",
+            format!(
+                "{name} has its {earlier} earlier feeling cue{} again; the {} from the {} answer \
+                 left the project.",
+                if earlier == 1 { "" } else { "s" },
+                memory.applied.len(),
+                mode.display_name()
+            ),
         )]
     }
 
@@ -1538,13 +1620,24 @@ fn report_settings_button(line: &str) {
     });
 }
 
-/// Attaches the review where a result is staged. Both callers — a finished job
-/// and the probe — go through here so the two cannot drift.
-///
-/// The report line is **not** printed here any more (review LT1-R, R5): it now
-/// carries how many rows reached the screen, which only the panel knows. The one
-/// case with no rows to count is still reported at once, because a run whose
-/// review is absent has nothing to wait for a frame for.
+thread_local! {
+    /// The last `assist step back:` line printed (J2): printed when it
+    /// changes, like the review's lines.
+    static LAST_STEP_BACK_REPORT: std::cell::RefCell<String> =
+        const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Prints the step back's state, its card and its button's rect, when it
+/// changes.
+fn report_step_back(line: String) {
+    LAST_STEP_BACK_REPORT.with(|last| {
+        if *last.borrow() != line {
+            println!("assist step back: {line}");
+            *last.borrow_mut() = line;
+        }
+    });
+}
+
 /// Notes on the candidate that its feelings answer was a saved one, reused,
 /// when the job's manifest says so (J2). Staged with the candidate, inert.
 fn stage_semantic_reuse(candidate: &mut AnalysisCandidate, output_dir: &str) {
@@ -1559,6 +1652,13 @@ fn stage_semantic_reuse(candidate: &mut AnalysisCandidate, output_dir: &str) {
     }
 }
 
+/// Attaches the review where a result is staged. Both callers — a finished job
+/// and the probe — go through here so the two cannot drift.
+///
+/// The report line is **not** printed here any more (review LT1-R, R5): it now
+/// carries how many rows reached the screen, which only the panel knows. The one
+/// case with no rows to count is still reported at once, because a run whose
+/// review is absent has nothing to wait for a frame for.
 fn stage_lyrics_review(candidate: &mut AnalysisCandidate, output_dir: &str) {
     LAST_REVIEW_REPORT.with(|last| last.borrow_mut().clear());
     REVIEW_SCROLL.with(|first| first.set(0));
@@ -3518,7 +3618,7 @@ impl Shell {
         let measure13 = |text: &str| widgets::measure(font, text, 13.0);
         let measure14 = |text: &str| widgets::measure(font, text, 14.0);
         let intro = wrap_to_width(ASSIST_INTRO, width, 4, &measure13);
-        let descriptions: Vec<Vec<String>> = AssistMode::ALL
+        let mut descriptions: Vec<Vec<String>> = AssistMode::ALL
             .iter()
             .map(|mode| {
                 wrap_to_width(
@@ -3529,6 +3629,15 @@ impl Shell {
                 )
             })
             .collect();
+        // The step back (J2) is one more line on the card that applied: a
+        // row the layout counts like a description line.
+        let step_back = feelings::step_back_line(workspace);
+        if let Some(index) = step_back
+            .as_ref()
+            .and_then(|line| AssistMode::ALL.iter().position(|mode| *mode == line.mode))
+        {
+            descriptions[index].push(String::new());
+        }
         let routes = (panel_content == AssistPanelContent::Confirmation).then(|| {
             confirmation_plan(
                 session.mode(),
@@ -3665,7 +3774,11 @@ impl Shell {
         });
         // The lyric review and the staged feelings share the one extra block
         // the layout reserves above Apply (J2): the review first, as before.
-        let apply_lines: Vec<String> = Vec::new();
+        let apply_lines: Vec<String> = candidate
+            .and_then(|candidate| feelings::apply_sentence(candidate, target))
+            .map_or_else(Vec::new, |sentence| {
+                wrap_to_width(&sentence, inner, 4, &measure13)
+            });
         let lyric_review_height = review_block_height(candidate);
         let feelings_height = self.feelings_height(font, candidate, inner, apply_lines.len());
         let review_height = (lyric_review_height
@@ -3765,6 +3878,7 @@ impl Shell {
 
         let start_block = session.start_block();
         let mut body_report = String::from("none");
+        let mut step_report = String::from("state=none");
         let old_clip = self.widgets.set_input_clip(Some(layout.viewport));
         {
             let mut clip = widgets::begin_scissor(d, layout.viewport, input.ui_scale);
@@ -3795,6 +3909,27 @@ impl Shell {
                 let id = widgets::widget_id(ASSIST_WIDGETS, CARD_WIDGET + index as u32);
                 let press_area = if open { card.title } else { card.card };
                 let can_open = start_block == AssistStartBlock::Allowed;
+                // The step back claims its press before the card does, so a
+                // press on it never also opens the card.
+                let step = step_back
+                    .as_ref()
+                    .filter(|line| line.mode == mode)
+                    .map(|line| {
+                        let row = UiRect::new(
+                            card.description.x,
+                            card.description.y
+                                + (descriptions[index].len() - 1) as f32
+                                    * assist_ui_state::CARD_LINE,
+                            card.description.width,
+                            assist_ui_state::CARD_LINE,
+                        );
+                        let button = line.earlier.map(|_| {
+                            let rect = feelings::step_back_button(font, row);
+                            let id = widgets::widget_id(ASSIST_WIDGETS, feelings::STEP_BACK_WIDGET);
+                            (rect, self.widgets.button(d, id, rect))
+                        });
+                        (line, row, button)
+                    });
                 let state = if open && panel_content != AssistPanelContent::Confirmation {
                     widgets::ButtonState::default()
                 } else {
@@ -3882,6 +4017,13 @@ impl Shell {
                         13.0,
                         color::ui_muted(),
                     );
+                }
+                if let Some((line, row, button)) = step {
+                    let report = self.draw_step_back(d, font, line, row, button);
+                    if button.is_some_and(|(_, state)| state.clicked) {
+                        session.request(AssistRequest::RestoreFeelings);
+                    }
+                    step_report = report;
                 }
                 let replaces = card_replaces(mode, track);
                 widgets::draw_micro(
@@ -3972,6 +4114,7 @@ impl Shell {
             );
         }
         self.widgets.set_input_clip(old_clip);
+        report_step_back(step_report);
 
         // The footer: the status line as a dot and micro words, whole on hover.
         widgets::fill(d, layout.footer, color::ui_surface());
@@ -5371,6 +5514,134 @@ mod tests {
         assert!(workspace.assist.candidate.is_none());
         assert_eq!(workspace.assist.job_state, AssistJobState::Idle);
         assert_eq!(workspace.assist.bridge_path, bridge.display().to_string());
+    }
+
+    /// J2: what the staged card says before Apply, pinned against Apply
+    /// itself — a feelings run replaces the feeling cues and touches neither
+    /// the user's own markers nor the scene plan — and the step back puts the
+    /// lane and its record back exactly, dirtying the project both ways.
+    #[test]
+    fn a_feelings_apply_touches_neither_markers_nor_plan_and_steps_back_exactly() {
+        use musializer_core::scene::events::{EventRecord, EventType};
+        let scratch = Scratch::new("feelings-step-back");
+        let (mut workspace, audio) = workspace_with_track(&scratch);
+        let bridge = bridge_for(&scratch, &audio);
+        {
+            let track = workspace.get_mut(0).unwrap();
+            for (seconds, id) in [(3.0, 1), (20.0, 2)] {
+                track
+                    .semantic_events
+                    .record(EventRecord {
+                        timestamp_seconds: seconds,
+                        id,
+                        event_type: EventType::Semantic as u32,
+                        value_count: 4,
+                        values: [0.5, 0.5, 0.0, 0.5],
+                    })
+                    .unwrap();
+            }
+            track
+                .manual_events
+                .record(EventRecord {
+                    timestamp_seconds: 9.0,
+                    id: 1,
+                    event_type: EventType::Cue as u32,
+                    value_count: 1,
+                    values: [1.0, 0.0, 0.0, 0.0],
+                })
+                .unwrap();
+            track.mark_saved();
+        }
+        let before = workspace.tracks()[0].clone();
+        let lanes = assist_ui_state::mode_lanes(AssistMode::Mimo);
+        let loaded = load_candidate(&bridge, &workspace.tracks()[0], lanes).expect("stages");
+        assert_eq!(
+            feelings::apply_sentence(&loaded.candidate, workspace.get(0)).as_deref(),
+            Some(
+                "Apply replaces the 2 earlier feeling cues with the 1 from this answer. Your own \
+                 markers, the scene plan and the lyrics stay as they are. You can put the \
+                 earlier cues back afterwards."
+            )
+        );
+        workspace.assist.candidate = Some(loaded.candidate);
+        workspace.assist.candidate_track = Some(0);
+        workspace.assist.candidate_mode = AssistMode::Mimo;
+        workspace.assist.bridge_path = bridge.display().to_string();
+        workspace.assist.job_state = AssistJobState::Succeeded;
+
+        let mut assist = controller();
+        assist.apply(&mut workspace, 12.0);
+        let track = &workspace.tracks()[0];
+        assert_eq!(track.semantic_events.len(), 1, "the lane was replaced");
+        assert_eq!(track.manual_events.events(), before.manual_events.events());
+        assert_eq!(
+            track.scene_switches.cues(),
+            before.scene_switches.cues(),
+            "the scene plan is untouched"
+        );
+        assert_eq!(track.lyrics.cues(), before.lyrics.cues());
+        assert!(track.project_dirty);
+        let line = feelings::step_back_line(&workspace).expect("offered");
+        assert_eq!(line.earlier, Some(2));
+        assert_eq!(line.mode, AssistMode::Mimo);
+
+        workspace.get_mut(0).unwrap().mark_saved();
+        let notices = assist.handle(AssistRequest::RestoreFeelings, &mut workspace, 13.0);
+        assert_eq!(notices.notices[0].severity, Severity::Success);
+        let track = &workspace.tracks()[0];
+        assert_eq!(
+            track.semantic_events.events(),
+            before.semantic_events.events()
+        );
+        assert_eq!(
+            track.analysis_lanes, before.analysis_lanes,
+            "no record before, none after"
+        );
+        assert_eq!(track.manual_events.events(), before.manual_events.events());
+        assert!(
+            track.project_dirty,
+            "putting back is an edit autosave must write"
+        );
+        assert!(workspace.assist.feelings_step_back.is_none(), "one step");
+        assert!(feelings::step_back_line(&workspace).is_none());
+    }
+
+    /// J2: an edit of the lane after Apply ends the step back, the card says
+    /// so, and a press then changes nothing.
+    #[test]
+    fn the_step_back_is_gone_once_the_lane_changes() {
+        let scratch = Scratch::new("feelings-gone");
+        let (mut workspace, audio) = workspace_with_track(&scratch);
+        let bridge = bridge_for(&scratch, &audio);
+        let lanes = assist_ui_state::mode_lanes(AssistMode::Mimo);
+        let loaded = load_candidate(&bridge, &workspace.tracks()[0], lanes).expect("stages");
+        workspace.assist.candidate = Some(loaded.candidate);
+        workspace.assist.candidate_track = Some(0);
+        workspace.assist.candidate_mode = AssistMode::Mimo;
+        workspace.assist.bridge_path = bridge.display().to_string();
+        let mut assist = controller();
+        assist.apply(&mut workspace, 12.0);
+        let applied = workspace.tracks()[0].semantic_events.clone();
+        workspace
+            .get_mut(0)
+            .unwrap()
+            .semantic_events
+            .replace(&applied)
+            .unwrap();
+        let line = feelings::step_back_line(&workspace).expect("still said");
+        assert_eq!(line.earlier, None);
+        assert_eq!(line.token, "gone:edited");
+        let notices = assist.handle(AssistRequest::RestoreFeelings, &mut workspace, 13.0);
+        assert_eq!(notices.notices[0].severity, Severity::Warning);
+        assert_eq!(
+            workspace.tracks()[0].semantic_events.events(),
+            applied.events()
+        );
+        workspace.clear();
+        assert_eq!(
+            feelings::step_back_line(&workspace).map(|line| line.token),
+            Some("gone:closed")
+        );
     }
 
     #[test]
