@@ -1736,7 +1736,7 @@ Written so that nothing the user may pay for is unsaid. `ASSIST_PIPELINE.md`,
 | `musializer.semantic-status/v1` | stdout of `external_analysis.py semantic-status` | `audio_sha256`, `state` (`saved`, `none`, `unmeasured`), `saved_answer` (`made_utc`, `model`) or null |
 | `musializer.step-failed/v1` | `measured.failed.json` (any step's `<output stem>.failed.json`) | `step`, `failed_ns`, `audio_sha256`, `message`: a child step's own reason for its parent (`analysis_io.write_step_failure`) |
 | `semantic_repairs` | `assist-manifest.json`, only when something was repaired | the repairs that made the answer fit the bridge, in words ("joined 2 sections shorter than a millisecond to the one before") |
-| `semantic_reused` | `assist-manifest.json`, only when a saved answer was staged with nothing sent | `made_utc` |
+| `semantic_reused` | `assist-manifest.json`, only when a saved answer was staged with nothing sent | `answered_utc` (ISO 8601 UTC, when the reused answer was made), `words` ("Reused the answer saved on 2026-11-15 18:53 UTC; nothing was sent or billed this time."); read by the staged card (`stage_semantic_reuse`, which also accepts a bare `true`) and by the staged notice |
 | `provenance.repairs` | semantic artifact | the same list, on the cached answer |
 | `semantic.cache.refused-<ns>.json` | job folder | a cached answer the later steps refused, set aside (by the helper or the panel) so it is never reused |
 | `musializer-status-<pid>-<ns>.json` | the system temporary directory, removed after the query | the snapshot (listening route only) the confirmation's status query reads; nothing is written into the job folder by opening the card |

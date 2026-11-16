@@ -1459,17 +1459,26 @@ fn semantic_reused_words(output_dir: &str) -> Option<String> {
     let bytes = read_bounded(&Path::new(output_dir).join(ASSIST_MANIFEST_NAME))?;
     let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let reused = manifest.get("semantic_reused")?;
-    Some(
-        match reused.get("made_utc").and_then(serde_json::Value::as_str) {
-            Some(made) => format!(
-                "The feelings are the saved answer from {}; nothing was sent or billed this time.",
-                diagnosis_text(made)
-            ),
-            None => {
-                "The feelings are a saved answer; nothing was sent or billed this time.".to_string()
-            }
-        },
-    )
+    // `{answered_utc, words}` (the staged card's `stage_semantic_reuse` reads
+    // the same key); a bare `true` has no date to say.
+    let words = reused
+        .get("words")
+        .and_then(serde_json::Value::as_str)
+        .map(|words| {
+            words
+                .chars()
+                .filter(|c| !c.is_control() && !diagnosis::is_bidi_control(*c))
+                .take(160)
+                .collect::<String>()
+        })
+        .filter(|words| !words.trim().is_empty());
+    match (reused, words) {
+        (_, Some(words)) => Some(words),
+        (serde_json::Value::Bool(true), None) | (serde_json::Value::Object(_), None) => {
+            Some("Reused a saved answer; nothing was sent or billed this time.".to_string())
+        }
+        _ => None,
+    }
 }
 
 /// A short helper-written phrase made safe to draw.
@@ -5902,15 +5911,25 @@ mod tests {
         std::fs::write(
             scratch.join(ASSIST_MANIFEST_NAME),
             r#"{"schema_version":"musializer.assist-manifest/v1",
-                "semantic_reused":{"made_utc":"2026-11-15 18:53 UTC"}}"#,
+                "semantic_reused":{"answered_utc":"2026-11-15T18:53:49Z",
+                  "words":"Reused the answer saved on 2026-11-15 18:53 UTC; nothing was sent or billed this time."}}"#,
         )
         .unwrap();
         assert_eq!(
             semantic_reused_words(&folder).as_deref(),
             Some(
-                "The feelings are the saved answer from 2026-11-15 18:53 UTC; nothing was sent \
-                 or billed this time."
+                "Reused the answer saved on 2026-11-15 18:53 UTC; nothing was sent or billed \
+                 this time."
             )
+        );
+        std::fs::write(
+            scratch.join(ASSIST_MANIFEST_NAME),
+            r#"{"schema_version":"musializer.assist-manifest/v1","semantic_reused":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            semantic_reused_words(&folder).as_deref(),
+            Some("Reused a saved answer; nothing was sent or billed this time.")
         );
         std::fs::write(
             scratch.join(ASSIST_MANIFEST_NAME),

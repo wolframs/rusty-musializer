@@ -1709,6 +1709,24 @@ def saved_answer_words(envelope: dict[str, Any]) -> str | None:
     return made
 
 
+def semantic_reuse_record(envelope: dict[str, Any]) -> dict[str, Any]:
+    """The manifest's `semantic_reused` (J1-6): when the reused answer was
+    made, ISO 8601 UTC, and the sentence the staged card and notice show.
+    The staged card (`stage_semantic_reuse`) reads both."""
+    generation = (((envelope.get("normalized") or {}).get("provenance") or {})
+                  .get("generation") or {})
+    seconds = generation.get("created") or (envelope.get("raw_response") or {}).get("created")
+    if not (isinstance(seconds, (int, float)) and not isinstance(seconds, bool) and seconds > 0):
+        answered = envelope.get("answered_ns")
+        seconds = answered / 1e9 if isinstance(answered, int) and answered > 0 else None
+    answered_utc = (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
+                    if seconds is not None else None)
+    made = _utc_words(answered_utc) if answered_utc else None
+    words = (f"Reused the answer saved on {made}; nothing was sent or billed this time."
+             if made else "Reused a saved answer; nothing was sent or billed this time.")
+    return {"answered_utc": answered_utc, "words": words}
+
+
 SEMANTIC_STATUS_VERSION = "musializer.semantic-status/v1"
 
 
@@ -2564,7 +2582,7 @@ def run_assist(
             cache_status["semantic"] = "generated"
         else:
             cache_status["semantic"] = "reused"
-            semantic_reused = {"made_utc": saved_answer_words(envelope)}
+            semantic_reused = semantic_reuse_record(envelope)
             semantic_failure = _semantic_latest_failure(paths["semantic"], audio_sha, envelope)
             if semantic_failure is not None:
                 print(f"warning: {semantic_failure['words']}", file=sys.stderr)

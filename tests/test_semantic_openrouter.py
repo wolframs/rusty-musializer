@@ -978,7 +978,11 @@ class TheConfirmationKnowsASavedAnswer(LaneTestCase):
                 self.ws.audio, self.ws.root, audio_duration=DURATION, mode="mimo",
                 allow_dotenv=False, runner=never)
         self.assertEqual(manifest["cache_status"]["semantic"], "reused")
-        self.assertEqual(manifest["semantic_reused"], {"made_utc": "2026-11-14 18:53 UTC"})
+        # The key the staged card reads (`stage_semantic_reuse`).
+        self.assertEqual(manifest["semantic_reused"], {
+            "answered_utc": "2026-11-14T18:53:49Z",
+            "words": "Reused the answer saved on 2026-11-14 18:53 UTC; nothing was sent or "
+                     "billed this time."})
         # Another setting is another request: the status says so, and the run
         # would send.
         other = external_analysis.semantic_status(self.ws.audio, self.ws.root,

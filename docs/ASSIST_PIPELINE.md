@@ -645,9 +645,11 @@ the frame thread when the card opens, with a snapshot of the listening route
 and never the key, and while the answer is unknown the paid wording stands.
 When it says saved, the cost line becomes "Cost: nothing. A saved answer for
 this track and these settings, from 2026-11-15 18:53 UTC, is reused, so this
-run sends nothing to OpenRouter." After the run the staged notice adds "The
-feelings are the saved answer from 2026-11-15 18:53 UTC; nothing was sent or
-billed this time." (manifest `semantic_reused`). The data-boundary sentence
+run sends nothing to OpenRouter." After the run the manifest carries
+`semantic_reused` (`answered_utc`, ISO 8601, and `words`), which the staged
+card reads (`stage_semantic_reuse`) and the staged notice appends: "Reused the
+answer saved on 2026-11-15 18:53 UTC; nothing was sent or billed this time."
+The data-boundary sentence
 above it still says what the job is authorized to send.
 
 **Through the window.** `tools/headless_check.sh --skip-render` presses Start
@@ -675,6 +677,7 @@ restored byte for byte (`cmp` against a saved copy):
 | "Route this task locally" always offered | `a_missing_credential_blocks_a_remote_route_and_names_the_repair` |
 | `semantic-status` always "none" | `TheConfirmationKnowsASavedAnswer` (2 tests) |
 | The saved answer not drawn | `a_saved_answer_is_said_before_start_and_after_the_run` |
+| `semantic_reused` written as `{made_utc}` instead of `{answered_utc, words}` | `test_saved_means_the_run_sends_nothing_and_none_means_it_does` |
 | Gate: the poll path ignoring receipt and record, Start skipping the stamp check | j1-no-credit, j1-cancel, j1-deadline, j1-changed (twice: the helper ran for a changed file) |
 | Gate: the confirmation's three notes dropped | j1-saved (3), j1-catalog (2), j1-billed (3) |
 
