@@ -1754,10 +1754,14 @@ def semantic_status(audio: Path, output_dir: Path, *, execution_snapshot: Path |
     if measured is None:
         status["state"] = "unmeasured"
         return status
-    _, envelope = saved_semantic_answer(
+    request_identity, envelope = saved_semantic_answer(
         audio, cache_path, audio_sha=audio_sha,
         measured_duration=duration(measured.get("audio", {}).get("duration_seconds")),
         zdr=zdr, semantic_route=route, route_identity=route_identity(snapshot, "TC-SEMANTIC"))
+    # The next Start's request as one digest, the same `request_key` its sent
+    # record and receipt would carry: the confirmation tells an earlier charge
+    # for this very request from one for other settings (J3-2).
+    status["request_key"] = canonical_sha256(request_identity)
     if envelope is None:
         status["state"] = "none"
         return status

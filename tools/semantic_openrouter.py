@@ -1396,9 +1396,32 @@ def _dead_records(cache_path: Path) -> list[DeadRecord]:
     return dead
 
 
+def request_key(audio_sha256: Any, settings: Any) -> str | None:
+    """The request's identity as one digest: the cache key the answer to it
+    would carry (`canonical_sha256({"audio_sha256": ..., **settings})`), and
+    what `semantic-status` names for the next Start (J3-2)."""
+    if not isinstance(audio_sha256, str) or not audio_sha256 or not isinstance(settings, dict):
+        return None
+    return canonical_sha256({"audio_sha256": audio_sha256, **settings})
+
+
+def _charge_what(record: dict[str, Any]) -> dict[str, Any]:
+    """What a possible charge was for (J3-2): the audio, the request and the
+    model, so the next confirmation can say whether it was this track and
+    these settings, or something else that used the folder."""
+    request = record.get("request") if isinstance(record.get("request"), dict) else None
+    return {
+        "audio_sha256": record.get("audio_sha256"),
+        "request_key": record.get("request_key") or request_key(record.get("audio_sha256"),
+                                                                 request),
+        "model": record.get("model") or (request or {}).get("model"),
+    }
+
+
 def _charge_of_record(record: dict[str, Any]) -> dict[str, Any]:
     return {"kind": "unanswered", "at_utc": record.get("sent_utc"),
-            "at_ns": record.get("sent_ns"), "usd_max": record.get("usd_max")}
+            "at_ns": record.get("sent_ns"), "usd_max": record.get("usd_max"),
+            **_charge_what(record)}
 
 
 def earlier_possible_charges(cache_path: Path, dead: list[DeadRecord] | None = None,
@@ -1414,9 +1437,12 @@ def earlier_possible_charges(cache_path: Path, dead: list[DeadRecord] | None = N
     if isinstance(receipt, dict) and receipt.get("schema_version") in READABLE_FAILED_RUN_SCHEMAS:
         found.extend(entry for entry in receipt.get("earlier") or [] if isinstance(entry, dict))
         if receipt.get("may_be_billed"):
+            ceiling = (receipt.get("estimate") or {}).get("usd_max")
             found.append({"kind": "may_be_billed", "at_utc": receipt.get("failed_utc"),
                           "at_ns": receipt.get("failed_ns"),
-                          "usd_max": (receipt.get("estimate") or {}).get("usd_max")})
+                          "usd_max": (ceil_usd(ceiling, 3)
+                                      if isinstance(ceiling, (int, float)) else None),
+                          **_charge_what(receipt)})
     unique: dict[tuple[Any, Any], dict[str, Any]] = {}
     for entry in found:
         unique[(entry.get("kind"), entry.get("at_ns"))] = entry
@@ -1474,6 +1500,9 @@ def _write_sent_record(cache_path: Path, *, settings: dict[str, Any], audio_sha2
         "sent_ns": time.time_ns(),
         "audio_sha256": audio_sha256,
         "request": settings,
+        # What it is about, for the next confirmation's words (J3-2).
+        "request_key": request_key(audio_sha256, settings),
+        "model": settings.get("model") or MODEL,
         "model_label": model_label(str(settings.get("model") or MODEL)),
         # The most it can cost, rounded up at the precision every sentence
         # shows it (`ceil_usd`).
@@ -1676,6 +1705,7 @@ def _write_failure_receipt(
         "detail": detail,
         "audio_sha256": audio_sha256,
         "request": settings,
+        "request_key": request_key(audio_sha256, settings),
         "finish_reason": _choice(response).get("finish_reason"),
         "generation": {
             key: response[key]

@@ -3029,6 +3029,9 @@ if args and args[0] == "semantic-status":
               "saved_answer": None}
     if state == "saved":
         answer["saved_answer"] = {"made_utc": "2026-11-15 18:53 UTC", "model": "google/gemini-3.8-flash"}
+    # J3-2: the next Start's request, as the real query names it.
+    if os.environ.get("J1_REQUEST_KEY"):
+        answer["request_key"] = os.environ["J1_REQUEST_KEY"]
     print(json.dumps(answer))
     sys.exit(0)
 out = pathlib.Path(args[2])
@@ -3142,12 +3145,30 @@ if [ "$ASSIST_WIRED" -eq 1 ]; then
     J1_BILLED="$(sed -n 's/^assist charges: *dir=\([^ ]*\) .*/\1/p' "$J1_DIR/billed-first.txt" | tail -1)"
     if [ -n "$J1_BILLED" ]; then
         mkdir -p "$J1_BILLED"
-        printf '{"schema_version":"musializer.semantic-request-sent/v1","sent_ns":%s,"sent_utc":"2026-11-16T10:02:33Z","usd_max":0.073,"earlier":[]}\n' \
-            "$(date +%s%N)" >"$J1_BILLED/semantic.cache.sent.json"
-        j1_run billed "$T" 90 "" J1_STATUS=none || J1_FAILED=1
-        j1_expect billed "assist notes:" "earlier-charges=true" || J1_FAILED=1
-        j1_expect billed "assist notes:" "An earlier listening request for this track was" || J1_FAILED=1
-        j1_expect billed "assist notes:" "may have been billed (at most 0.073 USD)." || J1_FAILED=1
+        # J3-2: a record carries what it was for, and the line says it
+        # against what this Start would send: the same request, other
+        # settings, or other audio that was at this path. The stand-in
+        # status names this Start's request as the real query does.
+        J1_AUDIO_SHA="$(sha256sum "$T" | cut -d' ' -f1)"
+        J1_KEY="$(printf 'j3-request' | sha256sum | cut -d' ' -f1)"
+        J1_OTHER="$(printf 'other' | sha256sum | cut -d' ' -f1)"
+        for variant in same:"$J1_AUDIO_SHA":"$J1_KEY" settings:"$J1_AUDIO_SHA":"$J1_OTHER" audio:"$J1_OTHER":"$J1_KEY"; do
+            IFS=: read -r kind audio key <<<"$variant"
+            rm -f "$J1_BILLED"/semantic.cache.sent*.json
+            printf '{"schema_version":"musializer.semantic-request-sent/v2","sent_ns":%s,"sent_utc":"2026-11-16T10:02:33Z","usd_max":0.073,"audio_sha256":"%s","request_key":"%s","earlier":[]}\n' \
+                "$(date +%s%N)" "$audio" "$key" >"$J1_BILLED/semantic.cache.sent-$(date +%s%N)-0a1b2c3d.json"
+            j1_run "billed-$kind" "$T" 90 "" J1_STATUS=none J1_REQUEST_KEY="$J1_KEY" || J1_FAILED=1
+            j1_expect "billed-$kind" "assist notes:" "earlier-charges=true" || J1_FAILED=1
+            case "$kind" in
+                same) words="A listening request for this track and these settings was started on 2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). Start sends the same request again." ;;
+                settings) words="A listening request for this track with other settings was started on 2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD)." ;;
+                audio) words="A listening request for other audio that was at this track's path was started on 2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD)." ;;
+            esac
+            j1_expect "billed-$kind" "assist charges:" "line=$words" || J1_FAILED=1
+        done
+        # The line as drawn, wrapped, still carries the amount and the
+        # same-request clause.
+        j1_expect billed-same "assist notes:" "billed (at most 0.073 USD). Start sends the same request again." || J1_FAILED=1
     else
         echo "FAIL: j1-billed: no job folder reported" >&2; J1_FAILED=1
     fi

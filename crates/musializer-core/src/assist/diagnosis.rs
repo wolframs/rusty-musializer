@@ -205,6 +205,73 @@ pub struct PossibleCharge {
     /// Sent and never answered (a record), rather than answered by a status
     /// that may have been billed (a receipt).
     pub unanswered: bool,
+    /// The audio it was about, when the record says (J3-2).
+    pub audio_sha256: Option<String>,
+    /// The request's identity as one digest (`request_key`: the cache key its
+    /// answer would carry), when the record says (J3-2).
+    pub request_key: Option<String>,
+}
+
+/// What the next Start would send, for telling an earlier charge for the
+/// same request from one for something else that used the folder (J3-2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NextStart<'a> {
+    /// The track's audio digest.
+    pub audio_sha256: &'a str,
+    /// The next request's `request_key`, from `semantic-status`; `None`
+    /// while it is not known (asking, or the track not measured yet).
+    pub request_key: Option<&'a str>,
+    /// Whether the next Start reuses a saved answer and sends nothing.
+    pub reuses: bool,
+}
+
+/// How an earlier possible charge relates to the next Start (J3-2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChargeRelation {
+    /// This track's audio and these settings: the next Start sends it again.
+    SameRequest,
+    /// This track's audio under other settings (model, providers, limits).
+    OtherSettings,
+    /// This track's audio; whether the settings were the same is not known.
+    SameAudio,
+    /// Other audio that was at this track's path (the file was replaced).
+    OtherAudio,
+    /// The record says nothing about what it was for (the J1 build).
+    Unknown,
+}
+
+impl ChargeRelation {
+    /// The words after "listening request(s)".
+    fn subject(self) -> &'static str {
+        match self {
+            Self::SameRequest => "for this track and these settings",
+            Self::OtherSettings => "for this track with other settings",
+            Self::SameAudio => "for this track",
+            Self::OtherAudio => "for other audio that was at this track's path",
+            Self::Unknown => "that used this track's job folder",
+        }
+    }
+}
+
+impl PossibleCharge {
+    #[must_use]
+    pub fn relation(&self, next: &NextStart<'_>) -> ChargeRelation {
+        let Some(audio) = self
+            .audio_sha256
+            .as_deref()
+            .filter(|audio| !audio.is_empty())
+        else {
+            return ChargeRelation::Unknown;
+        };
+        if !audio.eq_ignore_ascii_case(next.audio_sha256) {
+            return ChargeRelation::OtherAudio;
+        }
+        match (self.request_key.as_deref(), next.request_key) {
+            (Some(this), Some(next)) if this == next => ChargeRelation::SameRequest,
+            (Some(_), Some(_)) => ChargeRelation::OtherSettings,
+            _ => ChargeRelation::SameAudio,
+        }
+    }
 }
 
 fn utc_words(value: Option<&serde_json::Value>) -> String {
@@ -217,6 +284,15 @@ fn utc_words(value: Option<&serde_json::Value>) -> String {
     } else {
         String::new()
     }
+}
+
+/// A 64-hex digest field, or `None`.
+fn digest_field(entry: &serde_json::Value, key: &str) -> Option<String> {
+    entry
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|text| text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
 }
 
 fn charge(entry: &serde_json::Value, unanswered: bool) -> Option<PossibleCharge> {
@@ -238,6 +314,8 @@ fn charge(entry: &serde_json::Value, unanswered: bool) -> Option<PossibleCharge>
             .get("kind")
             .and_then(serde_json::Value::as_str)
             .map_or(unanswered, |kind| kind == "unanswered"),
+        audio_sha256: digest_field(entry, "audio_sha256"),
+        request_key: digest_field(entry, "request_key"),
     })
 }
 
@@ -332,34 +410,60 @@ fn at_most(charges: &[PossibleCharge], together: bool) -> String {
 }
 
 /// The confirmation's sentence about earlier attempts that may have been
-/// billed, or `None` when there are none (J1-3).
+/// billed, or `None` when there are none (J1-3). Each says what it was for,
+/// against what the next Start would send (J3-2): the same request again, or
+/// an earlier one for other audio or other settings that used this folder.
 #[must_use]
-pub fn possible_charge_sentence(charges: &[PossibleCharge]) -> Option<String> {
+pub fn possible_charge_sentence(
+    charges: &[PossibleCharge],
+    next: &NextStart<'_>,
+) -> Option<String> {
     let last = charges.last()?;
     let when = if last.at_words.is_empty() {
         String::new()
     } else {
         format!(" on {}", last.at_words)
     };
-    Some(if charges.len() > 1 {
+    let relations: Vec<ChargeRelation> = charges.iter().map(|entry| entry.relation(next)).collect();
+    let relation = if relations.iter().all(|relation| *relation == relations[0]) {
+        relations[0]
+    } else {
+        ChargeRelation::Unknown
+    };
+    let subject = relation.subject();
+    let again = if relations.contains(&ChargeRelation::SameRequest) {
+        if next.reuses {
+            " This Start reuses a saved answer and sends nothing."
+        } else {
+            " Start sends the same request again."
+        }
+    } else {
+        ""
+    };
+    let sentence = if charges.len() > 1 {
         format!(
-            "{} earlier listening requests for this track may have been billed{}; the last \
-             was{when}.",
+            "{} listening requests {subject} may have been sent and billed{}; the last was{when}.",
             charges.len(),
             at_most(charges, true),
         )
     } else if last.unanswered {
         format!(
-            "An earlier listening request for this track was sent{when} and never answered; it \
-             may have been billed{}.",
+            "A listening request {subject} was started{when} and never answered; it may have \
+             been sent and billed{}.",
             at_most(charges, false),
         )
     } else {
         format!(
-            "The last listening request for this track{when} may have been billed{}.",
+            "A listening request {subject}{} may have been billed{}.",
+            if when.is_empty() {
+                String::new()
+            } else {
+                format!(",{when},")
+            },
             at_most(charges, false),
         )
-    })
+    };
+    Some(format!("{sentence}{again}"))
 }
 
 /// What a stopped job adds when its request had already left: the clause
@@ -842,15 +946,16 @@ mod tests {
         let charges = possible_charges(std::slice::from_ref(&record), None, None);
         assert_eq!(charges.len(), 1);
         assert_eq!(
-            possible_charge_sentence(&charges).as_deref(),
+            possible_charge_sentence(&charges, &NextStart::default()).as_deref(),
             Some(
-                "An earlier listening request for this track was sent on 2026-11-16 10:02 UTC \
-                 and never answered; it may have been billed (at most 0.073 USD)."
+                "A listening request that used this track's job folder was started on \
+                 2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at \
+                 most 0.073 USD)."
             )
         );
         assert!(possible_charges(std::slice::from_ref(&record), None, Some(2_000)).is_empty());
         assert!(possible_charges(std::slice::from_ref(&record), None, Some(1_000)).len() == 1);
-        assert_eq!(possible_charge_sentence(&[]), None);
+        assert_eq!(possible_charge_sentence(&[], &NextStart::default()), None);
         let (this, _) = sent_request(&record).expect("a record");
         assert_eq!(
             sent_clause(&this),
@@ -878,23 +983,88 @@ mod tests {
         );
         assert_eq!(charges.len(), 3, "{charges:?}");
         assert_eq!(
-            possible_charge_sentence(&charges).as_deref(),
+            possible_charge_sentence(&charges, &NextStart::default()).as_deref(),
             Some(
-                "3 earlier listening requests for this track may have been billed (at most \
-                 0.219 USD together); the last was on 2026-11-16 10:02 UTC."
+                "3 listening requests that used this track's job folder may have been sent and \
+                 billed (at most 0.219 USD together); the last was on 2026-11-16 10:02 UTC."
             )
         );
         let only_receipt = possible_charges(&[], Some(receipt.as_bytes()), Some(1_500));
         assert_eq!(
-            possible_charge_sentence(&only_receipt).as_deref(),
+            possible_charge_sentence(&only_receipt, &NextStart::default()).as_deref(),
             Some(
-                "The last listening request for this track on 2026-11-15 20:00 UTC may have \
-                 been billed (at most 0.073 USD)."
+                "A listening request that used this track's job folder, on 2026-11-15 20:00 \
+                 UTC, may have been billed (at most 0.073 USD)."
             )
         );
         let not_billed = r#"{"schema_version":"musializer.semantic-failed-run/v1",
             "failed_ns":2000,"may_be_billed":false}"#;
         assert!(possible_charges(&[], Some(not_billed.as_bytes()), None).is_empty());
+    }
+
+    /// J3-2: a charge says what it was for, against what the next Start
+    /// would send: the same request again, this track with other settings,
+    /// other audio that was at this path, or (not yet known) this track.
+    #[test]
+    fn an_earlier_charge_says_whether_it_was_this_request() {
+        let track = "a".repeat(64);
+        let mine = "b".repeat(64);
+        let record = |audio: &str, key: &str| {
+            format!(
+                r#"{{"schema_version":"musializer.semantic-request-sent/v2","sent_ns":2000,
+                   "sent_utc":"2026-11-16T10:02:33Z","usd_max":0.073,
+                   "audio_sha256":"{audio}","request_key":"{key}"}}"#
+            )
+            .into_bytes()
+        };
+        let next = NextStart {
+            audio_sha256: &track,
+            request_key: Some(&mine),
+            reuses: false,
+        };
+        let say = |bytes: Vec<u8>, next: &NextStart<'_>| {
+            possible_charge_sentence(&possible_charges(&[bytes], None, None), next).expect("a line")
+        };
+        assert_eq!(
+            say(record(&track, &mine), &next),
+            "A listening request for this track and these settings was started on 2026-11-16 \
+             10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). \
+             Start sends the same request again."
+        );
+        assert_eq!(
+            say(
+                record(&track, &mine),
+                &NextStart {
+                    reuses: true,
+                    ..next
+                }
+            ),
+            "A listening request for this track and these settings was started on 2026-11-16 \
+             10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD). \
+             This Start reuses a saved answer and sends nothing."
+        );
+        assert_eq!(
+            say(record(&track, &"c".repeat(64)), &next),
+            "A listening request for this track with other settings was started on 2026-11-16 \
+             10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD)."
+        );
+        assert_eq!(
+            say(record(&"d".repeat(64), &mine), &next),
+            "A listening request for other audio that was at this track's path was started on \
+             2026-11-16 10:02 UTC and never answered; it may have been sent and billed (at most \
+             0.073 USD)."
+        );
+        assert_eq!(
+            say(
+                record(&track, &mine),
+                &NextStart {
+                    request_key: None,
+                    ..next
+                }
+            ),
+            "A listening request for this track was started on 2026-11-16 10:02 UTC and never \
+             answered; it may have been sent and billed (at most 0.073 USD)."
+        );
     }
 
     /// The names the helper writes (`ATTEMPT_PATTERN`) and nothing else.

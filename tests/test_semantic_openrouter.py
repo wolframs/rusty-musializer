@@ -1061,6 +1061,45 @@ class TheConfirmationKnowsASavedAnswer(LaneTestCase):
         self.assertEqual(fake.sent, [])
 
 
+class AChargeSaysWhatItWasFor(LaneTestCase):
+    """Defect J3-2 (2026-11-16): an earlier-charge warning belonged to a
+    folder. The record and the receipt now carry the audio's hash, the
+    request's identity as one digest (`request_key`, the cache key its answer
+    would carry) and the model; `semantic-status` names the next Start's
+    `request_key`, so the confirmation can tell the same request again from an
+    earlier one for other audio or other settings."""
+
+    def test_the_record_and_the_status_name_the_same_request_by_one_digest(self) -> None:
+        (self.ws.root / "measured.json").write_text(json.dumps(measured_document(self.ws.audio)))
+        Attempt(self, "killed")
+        record = json.loads(semantic_openrouter.sent_record_paths(self.ws.cache)[0].read_text())
+        status = external_analysis.semantic_status(self.ws.audio, self.ws.root,
+                                                   execution_snapshot=None)
+        self.assertEqual(record["audio_sha256"], external_analysis.sha256_file(self.ws.audio))
+        self.assertEqual(record["model"], self.MODEL)
+        self.assertEqual(record["request_key"], status["request_key"], "the same request")
+        self.assertEqual(record["request_key"], semantic_openrouter.canonical_sha256(
+            {"audio_sha256": record["audio_sha256"], **record["request"]}))
+        other = external_analysis.semantic_status(self.ws.audio, self.ws.root,
+                                                  execution_snapshot=None, zdr=True)
+        self.assertNotEqual(other["request_key"], record["request_key"], "other settings")
+        charges = semantic_openrouter.earlier_possible_charges(self.ws.cache)
+        self.assertEqual([(c["audio_sha256"], c["request_key"], c["model"]) for c in charges],
+                         [(record["audio_sha256"], record["request_key"], self.MODEL)])
+
+    def test_a_receipt_names_its_request_too(self) -> None:
+        gateway = urllib.error.HTTPError(semantic_openrouter.OPENROUTER_URL, 502, "gateway",
+                                         {}, io.BytesIO(b""))
+        with self.assertRaises(semantic_openrouter.FailedRun):
+            self.run_lane(gateway)
+        receipt = json.loads(self.ws.receipt.read_text())
+        self.assertEqual(receipt["request_key"], semantic_openrouter.canonical_sha256(
+            {"audio_sha256": receipt["audio_sha256"], **receipt["request"]}))
+        charge = semantic_openrouter.earlier_possible_charges(self.ws.cache)[-1]
+        self.assertEqual((charge["kind"], charge["request_key"]),
+                         ("may_be_billed", receipt["request_key"]))
+
+
 class NoFailureEndsWithoutAReceipt(LaneTestCase):
     """Defect J3-6 (2026-11-16): `main` read the audio before the part that
     writes receipts, so a file removed after the job hashed it printed an

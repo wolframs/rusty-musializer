@@ -246,7 +246,7 @@ fn sent_unanswered_notice(
 /// The confirmation's line about earlier attempts for this track that may
 /// have been billed and have no answer after them (J1-3): read from the job
 /// folder the next Start would use.
-fn earlier_charges_sentence(output_dir: &Path) -> Option<String> {
+fn earlier_charges_sentence(output_dir: &Path, next: &diagnosis::NextStart<'_>) -> Option<String> {
     let records = sent_records(output_dir);
     let receipt = read_bounded(&output_dir.join(diagnosis::LISTENING_RECEIPT_NAME));
     if records.is_empty() && receipt.is_none() {
@@ -258,7 +258,7 @@ fn earlier_charges_sentence(output_dir: &Path) -> Option<String> {
         .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|elapsed| elapsed.as_nanos());
     let charges = diagnosis::possible_charges(&records, receipt.as_deref(), answered_ns);
-    diagnosis::possible_charge_sentence(&charges)
+    diagnosis::possible_charge_sentence(&charges, next)
 }
 
 /// The per-track job folder a Start would use (`plug.c:3262-3280`).
@@ -1542,7 +1542,8 @@ enum SavedAnswer {
 
 enum StatusSlot {
     Pending(std::sync::mpsc::Receiver<Option<String>>),
-    Done(SavedAnswer),
+    /// The answer, and the next request's `request_key` when it said (J3-2).
+    Done(SavedAnswer, Option<String>),
 }
 
 thread_local! {
@@ -1629,14 +1630,25 @@ fn status_key(track: &Track, snapshot: &ExecutionSnapshot) -> Option<(String, Ve
     Some((key, bytes))
 }
 
+/// The next request's `request_key` from a `semantic-status` answer (J3-2).
+fn parse_status_request_key(answer: Option<&str>) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(answer?.trim()).ok()?;
+    value
+        .get("request_key")
+        .and_then(serde_json::Value::as_str)
+        .filter(|key| key.len() == 64 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+}
+
 /// Asks the helper, once per key and off the frame thread, whether the next
-/// Start would reuse a saved answer; returns what is known this frame.
-fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> SavedAnswer {
+/// Start would reuse a saved answer; returns what is known this frame, and the
+/// next request's identity when the helper named it.
+fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> (SavedAnswer, Option<String>) {
     let Some(helper) = ASSIST_HELPER.get().cloned().flatten() else {
-        return SavedAnswer::Unknown;
+        return (SavedAnswer::Unknown, None);
     };
     let Some((key, preview_bytes)) = status_key(track, &plan.snapshot) else {
-        return SavedAnswer::Unknown;
+        return (SavedAnswer::Unknown, None);
     };
     let folder = track_output_dir(track);
     let zdr = plan.snapshot.requires_zdr();
@@ -1647,19 +1659,24 @@ fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> SavedAnswer
                 if let StatusSlot::Pending(receiver) = state {
                     match receiver.try_recv() {
                         Ok(answer) => {
-                            *state = StatusSlot::Done(parse_semantic_status(answer.as_deref()))
+                            *state = StatusSlot::Done(
+                                parse_semantic_status(answer.as_deref()),
+                                parse_status_request_key(answer.as_deref()),
+                            );
                         }
-                        Err(std::sync::mpsc::TryRecvError::Empty) => return SavedAnswer::Pending,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            return (SavedAnswer::Pending, None)
+                        }
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            *state = StatusSlot::Done(SavedAnswer::Unknown);
+                            *state = StatusSlot::Done(SavedAnswer::Unknown, None);
                         }
                     }
                 }
-                let StatusSlot::Done(answer) = state else {
-                    return SavedAnswer::Pending;
+                let StatusSlot::Done(answer, request_key) = state else {
+                    return (SavedAnswer::Pending, None);
                 };
                 report_reuse(&format!("dir={} state={answer:?}", folder.display()));
-                return answer.clone();
+                return (answer.clone(), request_key.clone());
             }
         }
         // Outside the job folder, and removed after the query: opening the
@@ -1671,8 +1688,8 @@ fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> SavedAnswer
         ));
         let written = std::fs::write(&snapshot_path, &preview_bytes).is_ok();
         if !written {
-            *slot = Some((key, StatusSlot::Done(SavedAnswer::Unknown)));
-            return SavedAnswer::Unknown;
+            *slot = Some((key, StatusSlot::Done(SavedAnswer::Unknown, None)));
+            return (SavedAnswer::Unknown, None);
         }
         let (sender, receiver) = std::sync::mpsc::channel();
         let audio = track.file_path.clone();
@@ -1690,7 +1707,7 @@ fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> SavedAnswer
             let _ = sender.send(answer);
         });
         *slot = Some((key, StatusSlot::Pending(receiver)));
-        SavedAnswer::Pending
+        (SavedAnswer::Pending, None)
     })
 }
 
@@ -4504,23 +4521,28 @@ impl Shell {
         let audio_check = routes.as_ref().and(track).map(confirmation_audio_check);
         let measure_route = |text: &str| widgets::measure(font, text, ROUTE_FONT_SIZE);
         let wrap_note = |text: &str| wrap_to_width(text, inner, 6, &measure_route);
+        let status = routes
+            .as_ref()
+            .filter(|_| assist_ui_state::mode_lanes(session.mode()).semantics)
+            .zip(track)
+            .map(|(plan, track)| (track, confirmation_saved_answer(track, plan)));
         let confirmation_notes = ConfirmationNotes {
             audio_refusal: audio_check.as_ref().and_then(AudioCheck::refusal),
-            earlier_charges: routes
-                .as_ref()
-                .filter(|_| assist_ui_state::mode_lanes(session.mode()).semantics)
-                .and(track)
-                .and_then(confirmation_earlier_charges),
-            saved_answer: routes
-                .as_ref()
-                .filter(|_| assist_ui_state::mode_lanes(session.mode()).semantics)
-                .zip(track)
-                .and_then(
-                    |(plan, track)| match confirmation_saved_answer(track, plan) {
-                        SavedAnswer::Saved(made) => Some(made),
-                        _ => None,
+            // J3-2: said against what this Start would send.
+            earlier_charges: status.as_ref().and_then(|(track, (saved, request_key))| {
+                confirmation_earlier_charges(
+                    track,
+                    &diagnosis::NextStart {
+                        audio_sha256: &track.audio_sha256,
+                        request_key: request_key.as_deref(),
+                        reuses: matches!(saved, SavedAnswer::Saved(_)),
                     },
-                ),
+                )
+            }),
+            saved_answer: status.as_ref().and_then(|(_, (saved, _))| match saved {
+                SavedAnswer::Saved(made) => Some(made.clone()),
+                _ => None,
+            }),
         };
         let route_lines: Vec<(String, raylib::prelude::Color)> = routes
             .as_ref()
@@ -5658,30 +5680,39 @@ struct ConfirmationNotes {
 }
 
 thread_local! {
-    /// `(job folder, when, sentence)`: the confirmation's earlier-charges
+    /// `(job folder and next request, when, sentence)`: the confirmation's earlier-charges
     /// line, read again at most every two seconds while the card is open.
-    static CONFIRMATION_CHARGES: std::cell::RefCell<Option<(PathBuf, std::time::Instant, Option<String>)>> = const {
+    static CONFIRMATION_CHARGES: std::cell::RefCell<Option<(String, std::time::Instant, Option<String>)>> = const {
         std::cell::RefCell::new(None)
     };
 }
 
-fn confirmation_earlier_charges(track: &Track) -> Option<String> {
+fn confirmation_earlier_charges(track: &Track, next: &diagnosis::NextStart<'_>) -> Option<String> {
     const RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
     let folder = track_output_dir(track);
+    // Read again when the folder or what the next Start would send changes,
+    // and at most every two seconds otherwise.
+    let context = format!(
+        "{}|{}|{}|{}",
+        folder.display(),
+        next.audio_sha256,
+        next.request_key.unwrap_or("-"),
+        next.reuses
+    );
     CONFIRMATION_CHARGES.with(|slot| {
         let mut slot = slot.borrow_mut();
-        if let Some((path, at, sentence)) = slot.as_ref() {
-            if *path == folder && at.elapsed() < RECHECK {
+        if let Some((cached, at, sentence)) = slot.as_ref() {
+            if *cached == context && at.elapsed() < RECHECK {
                 return sentence.clone();
             }
         }
-        let sentence = earlier_charges_sentence(&folder);
+        let sentence = earlier_charges_sentence(&folder, next);
         report_charges(&format!(
             "dir={} line={}",
             folder.display(),
             sentence.as_deref().unwrap_or("none")
         ));
-        *slot = Some((folder, std::time::Instant::now(), sentence.clone()));
+        *slot = Some((context, std::time::Instant::now(), sentence.clone()));
         sentence
     })
 }
@@ -5984,6 +6015,19 @@ mod tests {
         ] {
             assert_eq!(parse_semantic_status(answer), expected, "{answer:?}");
         }
+        // J3-2: the next request's identity, when the helper names it.
+        let key = "ab".repeat(32);
+        assert_eq!(
+            parse_status_request_key(Some(&format!(
+                r#"{{"schema_version":"musializer.semantic-status/v1","state":"none","request_key":"{key}"}}"#
+            ))),
+            Some(key)
+        );
+        assert_eq!(
+            parse_status_request_key(Some(r#"{"request_key":"short"}"#)),
+            None
+        );
+        assert_eq!(parse_status_request_key(None), None);
 
         let plan = ExecutionPlan {
             snapshot: execution::resolve(
@@ -6383,11 +6427,12 @@ mod tests {
         assert!(sentence.ends_with("Nothing was saved."), "{sentence}");
 
         // And the next confirmation for this track says it before Start.
-        let line = earlier_charges_sentence(&scratch.0).expect("a line");
+        let line =
+            earlier_charges_sentence(&scratch.0, &diagnosis::NextStart::default()).expect("a line");
         assert_eq!(
             line,
-            "An earlier listening request for this track was sent on 2026-11-16 10:02 UTC and \
-             never answered; it may have been billed (at most 0.073 USD)."
+            "A listening request that used this track's job folder was started on 2026-11-16 \
+             10:02 UTC and never answered; it may have been sent and billed (at most 0.073 USD)."
         );
     }
 
