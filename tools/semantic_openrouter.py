@@ -453,7 +453,11 @@ def _clean_text(value: str) -> str:
     return "".join(" " if (ord(char) < 32 or ord(char) == 127) else char for char in cleaned)
 
 
-def bridge_fit(normalized: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+REPAIR_KINDS = ("joined", "shortened", "cleaned")
+
+
+def bridge_fit(normalized: dict[str, Any],
+               counts: dict[str, int] | None = None) -> tuple[dict[str, Any], list[str]]:
     """The answer as the bridge will take it, and the repairs that made it so.
 
     Everything the bridge's reader requires of the semantic lane is checked
@@ -463,6 +467,9 @@ def bridge_fit(normalized: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     millisecond joins its neighbour; a summary is shortened at a character
     boundary; an unprintable character becomes a space); an answer that no
     repair can fit raises, and is a failed run with a receipt.
+
+    ``counts``, when given, receives how many of each repair were made
+    (``REPAIR_KINDS``), which the staged card says in its own words (J3-3).
     """
     repairs: list[str] = []
     segments = [dict(segment) for segment in normalized.get("segments") or []]
@@ -511,6 +518,8 @@ def bridge_fit(normalized: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     if shortened:
         repairs.append(f"shortened {shortened} summar{'ies' if shortened != 1 else 'y'} to "
                        f"{BRIDGE_SUMMARY_MAX_BYTES} bytes")
+    if counts is not None:
+        counts.update({"joined": joined, "shortened": shortened, "cleaned": cleaned})
     if not repairs:
         return normalized, []
     fitted = {**normalized, "segments": merged}
@@ -1982,13 +1991,15 @@ def _analyze_to_cache(
     # What the bridge requires, checked before anything is cached (J1-4): an
     # answer that cannot be used is a failed run with its cost, never a cache
     # the next run reuses and fails on again.
+    repair_counts: dict[str, int] = {}
     try:
-        normalized, repairs = bridge_fit(normalized)
+        normalized, repairs = bridge_fit(normalized, repair_counts)
     except AnalysisValidationError as error:
         detail = str(error)
         raise failed(f"{name}'s answer cannot be used: {detail}", detail) from error
     if repairs:
         normalized.setdefault("provenance", {})["repairs"] = repairs
+        normalized["provenance"]["repair_counts"] = repair_counts
     cache_key = canonical_sha256({"audio_sha256": audio_hash, **settings})
     answered_ns = time.time_ns()
     envelope = {

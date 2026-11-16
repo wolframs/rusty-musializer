@@ -1215,6 +1215,102 @@ pub fn semantic_reuse_words(manifest: &[u8]) -> Option<String> {
     }
 }
 
+/// What the application changed in a feelings answer before staging it
+/// (J3-3): `bridge_fit` in `tools/semantic_openrouter.py` joins a section
+/// shorter than a millisecond to its neighbour (its words and marks are
+/// dropped), shortens words past what a cue holds, and replaces unprintable
+/// characters. Read from the job manifest's `semantic_repair_counts`; a
+/// manifest that names repairs (`semantic_repairs`) without counting them
+/// (the J1 build) is `counted: false`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FeelingRepairs {
+    pub joined: u32,
+    pub shortened: u32,
+    pub cleaned: u32,
+    pub counted: bool,
+}
+
+impl FeelingRepairs {
+    /// The staged card's line, in the card's words (sections, their words,
+    /// their marks).
+    #[must_use]
+    pub fn sentence(&self) -> String {
+        if !self.counted {
+            return "The application changed this answer to fit before staging it.".to_string();
+        }
+        let sections = |n: u32| {
+            if n == 1 {
+                "1 section".to_string()
+            } else {
+                format!("{n} sections")
+            }
+        };
+        let mut parts = Vec::new();
+        if self.joined > 0 {
+            parts.push(format!(
+                "{} shorter than a millisecond joined to {}, {} words and marks dropped",
+                sections(self.joined),
+                if self.joined == 1 {
+                    "a neighbour"
+                } else {
+                    "neighbours"
+                },
+                if self.joined == 1 { "its" } else { "their" },
+            ));
+        }
+        if self.shortened > 0 {
+            parts.push(format!(
+                "{} words shortened to fit",
+                if self.shortened == 1 {
+                    "1 section's".to_string()
+                } else {
+                    format!("{} sections'", self.shortened)
+                }
+            ));
+        }
+        if self.cleaned > 0 {
+            parts.push(format!(
+                "unprintable characters replaced in {}",
+                if self.cleaned == 1 {
+                    "1 section's words".to_string()
+                } else {
+                    format!("{} sections' words", self.cleaned)
+                }
+            ));
+        }
+        format!("Fitted before staging: {}.", parts.join("; "))
+    }
+}
+
+/// The manifest's word on what was repaired in the feelings answer (J3-3),
+/// or `None` when nothing was.
+#[must_use]
+pub fn semantic_repairs(manifest: &[u8]) -> Option<FeelingRepairs> {
+    let root = json_value(manifest)?;
+    let count = |fields: &serde_json::Map<String, Value>, key: &str| {
+        fields
+            .get(key)
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+    };
+    if let Some(Value::Object(fields)) = root.get("semantic_repair_counts") {
+        let repairs = FeelingRepairs {
+            joined: count(fields, "joined").unwrap_or(0),
+            shortened: count(fields, "shortened").unwrap_or(0),
+            cleaned: count(fields, "cleaned").unwrap_or(0),
+            counted: true,
+        };
+        if repairs.joined + repairs.shortened + repairs.cleaned > 0 {
+            return Some(repairs);
+        }
+    }
+    let named = root
+        .get("semantic_repairs")
+        .and_then(Value::as_array)
+        .is_some_and(|repairs| !repairs.is_empty());
+    named.then_some(FeelingRepairs::default())
+}
+
 /// Validated, mode-bounded, **inert** analysis state (`Analysis_Candidate`,
 /// `analysis_candidate.h:24-36`).
 #[derive(Clone, Debug)]
@@ -1236,6 +1332,8 @@ pub struct AnalysisCandidate {
     /// saved one rather than paid for again (J2), in words for the review.
     /// `None` when it said nothing, which is not the same as "paid for".
     reused_answer: Option<String>,
+    /// What the application changed in the answer before staging it (J3-3).
+    repairs: Option<FeelingRepairs>,
 }
 
 impl AnalysisCandidate {
@@ -1310,6 +1408,22 @@ impl AnalysisCandidate {
             return false;
         }
         self.reused_answer = Some(clipped(words.trim(), REUSED_ANSWER_MAX_CHARS));
+        true
+    }
+
+    /// What the application changed in the staged feelings answer (J3-3).
+    #[must_use]
+    pub fn repairs(&self) -> Option<FeelingRepairs> {
+        self.repairs
+    }
+
+    /// Notes the repairs, refused when no semantics lane is staged. Inert:
+    /// [`Self::apply`] never reads it.
+    pub fn note_repairs(&mut self, repairs: FeelingRepairs) -> bool {
+        if !self.available.semantics {
+            return false;
+        }
+        self.repairs = Some(repairs);
         true
     }
 
@@ -1426,6 +1540,7 @@ impl AnalysisCandidate {
             semantic_note_count: 0,
             lyrics_review: None,
             reused_answer: None,
+            repairs: None,
         };
 
         if authorized.lyrics && bridge.lyrics_present() {
@@ -1770,6 +1885,58 @@ mod tests {
             AnalysisCandidate::prepare(&bridge(), Lanes::ALL, DURATION, SCENES).unwrap();
         assert!(candidate.note_reused_answer("Reused.".to_string()));
         assert_eq!(candidate.reused_answer(), Some("Reused."));
+    }
+
+    /// J3-3: the repairs are read from the manifest's counts and said in the
+    /// card's words; named but uncounted (the J1 build) still says something.
+    #[test]
+    fn the_repairs_made_to_an_answer_are_said_in_the_cards_words() {
+        let read = |text: &str| semantic_repairs(text.as_bytes());
+        assert_eq!(
+            read(r#"{"semantic_repair_counts":{"joined":2,"shortened":1,"cleaned":0}}"#)
+                .map(|repairs| repairs.sentence())
+                .as_deref(),
+            Some(
+                "Fitted before staging: 2 sections shorter than a millisecond joined to \
+                 neighbours, their words and marks dropped; 1 section's words shortened to fit."
+            )
+        );
+        assert_eq!(
+            read(r#"{"semantic_repair_counts":{"joined":1,"shortened":0,"cleaned":3}}"#)
+                .map(|repairs| repairs.sentence())
+                .as_deref(),
+            Some(
+                "Fitted before staging: 1 section shorter than a millisecond joined to a \
+                 neighbour, its words and marks dropped; unprintable characters replaced in 3 \
+                 sections' words."
+            )
+        );
+        assert_eq!(
+            read(r#"{"semantic_repairs":["joined 1 section shorter than a millisecond"]}"#)
+                .map(|repairs| repairs.sentence())
+                .as_deref(),
+            Some("The application changed this answer to fit before staging it.")
+        );
+        for nothing in [
+            "{}",
+            r#"{"semantic_repairs":[]}"#,
+            r#"{"semantic_repair_counts":{"joined":0,"shortened":0,"cleaned":0}}"#,
+            "not json",
+        ] {
+            assert_eq!(read(nothing), None, "{nothing}");
+        }
+        let repairs = FeelingRepairs {
+            joined: 1,
+            counted: true,
+            ..FeelingRepairs::default()
+        };
+        let mut lyrics_only =
+            AnalysisCandidate::prepare(&bridge(), Lanes::lyrics_only(), DURATION, SCENES).unwrap();
+        assert!(!lyrics_only.note_repairs(repairs));
+        let mut candidate =
+            AnalysisCandidate::prepare(&bridge(), Lanes::ALL, DURATION, SCENES).unwrap();
+        assert!(candidate.note_repairs(repairs));
+        assert_eq!(candidate.repairs(), Some(repairs));
     }
 
     fn semantic_lane(model: &str) -> AnalysisLaneReference {

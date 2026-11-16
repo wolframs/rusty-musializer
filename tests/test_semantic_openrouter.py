@@ -851,6 +851,8 @@ class AnAnswerThatCannotBeUsedIsNeverCached(LaneTestCase):
         self.assertEqual(normalized["segments"][0]["start_seconds"], 0.0)
         self.assertEqual(normalized["provenance"]["repairs"],
                          ["joined 2 sections shorter than a millisecond to the one before"])
+        self.assertEqual(normalized["provenance"]["repair_counts"],
+                         {"joined": 2, "shortened": 0, "cleaned": 0})
         plan = {"audio": {"sha256": "a" * 64, "duration_seconds": DURATION},
                 "sections": [{"start_seconds": 0.0, "end_seconds": DURATION,
                               "recommended_scene": "spectrum", "transition_strength": 0.5,
@@ -869,6 +871,8 @@ class AnAnswerThatCannotBeUsedIsNeverCached(LaneTestCase):
         self.assertEqual(envelope["normalized"]["provenance"]["repairs"], [
             "replaced unprintable characters in 1 summary",
             "shortened 1 summary to 2047 bytes"])
+        self.assertEqual(envelope["normalized"]["provenance"]["repair_counts"],
+                         {"joined": 0, "shortened": 1, "cleaned": 1})
 
     def test_python_refuses_what_the_rust_reader_refuses(self) -> None:
         plan = {"audio": {"sha256": "a" * 64, "duration_seconds": DURATION},
@@ -893,6 +897,53 @@ class RepairsReachTheManifest(unittest.TestCase):
         self.assertEqual(manifest["semantic_repairs"],
                          ["joined 1 section shorter than a millisecond to the one before"])
         self.assertNotIn("semantic_repairs", external_analysis.build_assist_manifest(**common))
+
+
+class RepairsAreCountedForTheCard(LaneTestCase):
+    """Defect J3-3 (2026-11-16): the manifest named `bridge_fit`'s repairs in
+    words no application code read. It now counts them too
+    (`semantic_repair_counts`), for a new answer (from the cache's provenance)
+    and for one reused from a cache made before repairs were recorded (fitted
+    at reuse), and the staged card says them in its own words."""
+
+    def stage(self) -> dict:
+        def never(argv, **_kwargs):  # noqa: ANN001
+            self.fail(f"a saved answer was there, and the run sent: {argv}")
+        with patch.object(external_analysis, "build_scene_plan", return_value={"sections": []}), \
+                patch.object(external_analysis, "build_bridge", return_value=""):
+            return external_analysis.run_assist(
+                self.ws.audio, self.ws.root, audio_duration=DURATION, mode="mimo",
+                allow_dotenv=False, runner=never)
+
+    def test_an_answer_repaired_when_it_was_cached_is_counted(self) -> None:
+        (self.ws.root / "measured.json").write_text(json.dumps(measured_document(self.ws.audio)))
+        body = json.dumps({"global": creative(), "segments": [
+            segment(0.0, 0.0004, summary="a blip"), segment(0.0004, DURATION)]})
+        self.run_lane(response(body))
+        manifest = self.stage()
+        self.assertEqual(manifest["semantic_repair_counts"],
+                         {"joined": 1, "shortened": 0, "cleaned": 0})
+
+    def test_an_answer_cached_before_repairs_were_recorded_is_counted_at_reuse(self) -> None:
+        (self.ws.root / "measured.json").write_text(json.dumps(measured_document(self.ws.audio)))
+        self.run_lane(response(answer()))
+        envelope = json.loads(self.ws.cache.read_text())
+        envelope["normalized"]["segments"] = [
+            segment(0.0, 4.0), segment(4.0, 4.0002, summary="a blip"),
+            segment(4.0002, DURATION, summary="x" * 2100)]
+        envelope["normalized"]["provenance"].pop("repairs", None)
+        self.ws.cache.write_text(json.dumps(envelope))
+        manifest = self.stage()
+        self.assertEqual(manifest["semantic_repair_counts"],
+                         {"joined": 1, "shortened": 1, "cleaned": 0})
+        self.assertEqual(len(manifest["semantic_repairs"]), 2)
+
+    def test_an_answer_with_nothing_repaired_carries_no_counts(self) -> None:
+        (self.ws.root / "measured.json").write_text(json.dumps(measured_document(self.ws.audio)))
+        self.run_lane(response(answer()))
+        manifest = self.stage()
+        self.assertNotIn("semantic_repair_counts", manifest)
+        self.assertNotIn("semantic_repairs", manifest)
 
 
 class LegacyAnswersStillCount(LaneTestCase):

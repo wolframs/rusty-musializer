@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Stage a feelings answer for the Assist review gate, without the network (J2).
 
-    feelings_fixture.py PROJECT.musi AUDIO JOB_DIR [ANSWER.json] [--reused]
+    feelings_fixture.py PROJECT.musi AUDIO JOB_DIR [ANSWER.json] [--reused] [--repairs]
 
 Seeds PROJECT.musi (a project the gate saved from a synthetic treatment) with
 three earlier feeling cues and two of the user's own markers, then writes a job
 folder the panel can stage from: JOB_DIR/result.bridge.tsv carrying AUDIO's
 digest and length, one section and one SEMANTIC cue per answer segment. With
---reused, JOB_DIR/assist-manifest.json says the answer was a saved one.
+--reused, JOB_DIR/assist-manifest.json says the answer was a saved one; with
+--repairs, that the application joined two sections shorter than a
+millisecond and shortened one section's words before staging (J3-3).
 
 ANSWER.json is a semantic cache (`musializer.analysis-cache/v1`, its
 `normalized.segments`) or a bare `musializer.semantic-score/v1` document: a
@@ -67,7 +69,7 @@ def segments_from(path):
 def main(argv):
     flags = [arg for arg in argv[1:] if arg.startswith("--")]
     args = [arg for arg in argv[1:] if not arg.startswith("--")]
-    if len(args) not in (3, 4) or any(flag != "--reused" for flag in flags):
+    if len(args) not in (3, 4) or any(flag not in ("--reused", "--repairs") for flag in flags):
         print(__doc__, file=sys.stderr)
         return 2
     project_path, audio_path, job = Path(args[0]), Path(args[1]), Path(args[2])
@@ -106,11 +108,18 @@ def main(argv):
     job.mkdir(parents=True, exist_ok=True)
     (job / "result.bridge.tsv").write_text("\n".join(lines) + "\n", encoding="utf-8")
     manifest = job / "assist-manifest.json"
+    document = {"schema_version": "musializer.assist-manifest/v1", "mode": "mimo"}
     if "--reused" in flags:
-        manifest.write_text(json.dumps({
-            "schema_version": "musializer.assist-manifest/v1", "mode": "mimo",
-            "semantic_reused": {"reused": True, "answered_utc": "2026-11-15 16:08 UTC"},
-        }) + "\n", encoding="utf-8")
+        document["semantic_reused"] = {"reused": True, "answered_utc": "2026-11-15 16:08 UTC"}
+    if "--repairs" in flags:
+        # What `bridge_fit` writes (tools/external_analysis.py,
+        # `build_assist_manifest`).
+        document["semantic_repairs"] = [
+            "joined 2 sections shorter than a millisecond to the one before",
+            "shortened 1 summary to 2047 bytes"]
+        document["semantic_repair_counts"] = {"joined": 2, "shortened": 1, "cleaned": 0}
+    if len(document) > 2:
+        manifest.write_text(json.dumps(document) + "\n", encoding="utf-8")
     elif manifest.exists():
         manifest.unlink()
     print(f"feelings fixture: sections={len(segments)} earlier={len(EARLIER)} "

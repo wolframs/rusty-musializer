@@ -2429,11 +2429,16 @@ fn stage_semantic_reuse(candidate: &mut AnalysisCandidate, output_dir: &str) {
     if output_dir.is_empty() || !candidate.available().semantics {
         return;
     }
-    if let Some(words) = read_bounded(&Path::new(output_dir).join(ASSIST_MANIFEST_NAME))
-        .as_deref()
-        .and_then(analysis_candidate::semantic_reuse_words)
-    {
+    let Some(manifest) = read_bounded(&Path::new(output_dir).join(ASSIST_MANIFEST_NAME)) else {
+        return;
+    };
+    if let Some(words) = analysis_candidate::semantic_reuse_words(&manifest) {
         candidate.note_reused_answer(words);
+    }
+    // J3-3: what the application changed in the answer before staging it,
+    // for a new answer and a reused one alike.
+    if let Some(repairs) = analysis_candidate::semantic_repairs(&manifest) {
+        candidate.note_repairs(repairs);
     }
 }
 

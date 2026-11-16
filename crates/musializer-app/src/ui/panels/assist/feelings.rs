@@ -28,6 +28,11 @@ const TEXT_SIZE: f32 = 12.0;
 const HEAD_HEIGHT: f32 = 18.0;
 /// The energy strip across the whole song.
 const MAP_HEIGHT: f32 = 26.0;
+/// One line of the notes under the head: a reused answer, and what the
+/// application changed in it before staging (J3-3).
+const NOTE_LINE: f32 = 15.0;
+/// Lines each note may wrap to.
+const NOTE_MAX_LINES: usize = 3;
 /// A resting row: the span and the marks, then one line of the model's words.
 const ROW_HEIGHT: f32 = 36.0;
 /// One line of an open row's whole text.
@@ -170,6 +175,29 @@ fn open_lines(section: &FeelingSection, width: f32, measure: &dyn Fn(&str) -> f3
     wrap_to_width(text, (width - ROW_INSET).max(0.0), OPEN_MAX_LINES, measure)
 }
 
+/// The notes under the head, wrapped: whether the answer is a saved one,
+/// reused, and what the application changed in it before staging (J3-3:
+/// `bridge_fit` joins a section shorter than a millisecond to its neighbour,
+/// its words and marks dropped, and shortens words past what a cue holds; the
+/// card said none of it). Empty when there is nothing to say.
+fn note_lines(
+    candidate: &AnalysisCandidate,
+    width: f32,
+    measure: &dyn Fn(&str) -> f32,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    for note in [
+        candidate.reused_answer().map(str::to_string),
+        candidate.repairs().map(|repairs| repairs.sentence()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        lines.extend(wrap_to_width(&note, width, NOTE_MAX_LINES, measure));
+    }
+    lines
+}
+
 /// One row's height: resting, or open with its lines.
 fn row_height(open_lines: usize) -> f32 {
     if open_lines == 0 {
@@ -183,6 +211,8 @@ fn row_height(open_lines: usize) -> f32 {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct FeelingsGeometry {
     pub head: UiRect,
+    /// The notes under the head; zero height when there are none.
+    pub notes: UiRect,
     pub map: UiRect,
     /// The rows' window.
     pub list: UiRect,
@@ -210,9 +240,16 @@ pub(super) fn geometry(
     heights: &[f32],
     requested_first: usize,
     apply_lines: usize,
+    note_lines: usize,
 ) -> FeelingsGeometry {
     let head = UiRect::new(x, y, width, HEAD_HEIGHT);
-    let map = UiRect::new(x, head.y + HEAD_HEIGHT + 2.0, width, MAP_HEIGHT);
+    let notes = UiRect::new(
+        x,
+        head.y + HEAD_HEIGHT,
+        width,
+        note_lines as f32 * NOTE_LINE,
+    );
+    let map = UiRect::new(x, notes.y + notes.height + 2.0, width, MAP_HEIGHT);
     let list_y = map.y + MAP_HEIGHT + GAP;
     let extra = heights
         .iter()
@@ -255,6 +292,7 @@ pub(super) fn geometry(
     let height = apply.y + apply.height - y;
     FeelingsGeometry {
         head,
+        notes,
         map,
         list,
         rows,
@@ -318,7 +356,8 @@ impl Shell {
         }
         let measure = |text: &str| widgets::measure(font, text, TEXT_SIZE);
         let heights = heights(sections, view.open, width, &measure);
-        geometry(0.0, 0.0, width, &heights, view.first, apply_lines).height
+        let notes = candidate.map_or(0, |candidate| note_lines(candidate, width, &measure).len());
+        geometry(0.0, 0.0, width, &heights, view.first, apply_lines, notes).height
     }
 
     /// The block: head, the energy strip, the rows and the Apply sentence.
@@ -349,6 +388,7 @@ impl Shell {
             return;
         }
         let measure = |text: &str| widgets::measure(font, text, TEXT_SIZE);
+        let notes = note_lines(candidate, area.width, &measure);
         let duration = sections
             .last()
             .map_or(0.0, |section| section.end_seconds)
@@ -368,7 +408,15 @@ impl Shell {
             if let Some(row) = now {
                 let view = &mut self.assist_column.feelings;
                 let heights = heights(sections, view.open, area.width, &measure);
-                let shown = geometry(area.x, area.y, area.width, &heights, view.first, 0);
+                let shown = geometry(
+                    area.x,
+                    area.y,
+                    area.width,
+                    &heights,
+                    view.first,
+                    0,
+                    notes.len(),
+                );
                 if !shown.rows.iter().any(|(index, _)| *index == row) {
                     view.first = row;
                 }
@@ -390,6 +438,7 @@ impl Shell {
             &heights,
             view.first,
             apply.len(),
+            notes.len(),
         );
         let open = view.open;
 
@@ -415,6 +464,18 @@ impl Shell {
                 centre - width * 0.5,
                 layout.head.y + (HEAD_HEIGHT - 11.0) * 0.5,
                 11.0,
+                color::ui_muted(),
+            );
+        }
+
+        for (index, line) in notes.iter().enumerate() {
+            widgets::draw_text(
+                d,
+                font,
+                line,
+                layout.notes.x,
+                layout.notes.y + index as f32 * NOTE_LINE + 1.0,
+                TEXT_SIZE,
                 color::ui_muted(),
             );
         }
@@ -593,7 +654,8 @@ impl Shell {
         }
         let report = format!(
             "sections={} first={} shown={} now={} open={} reused={} head@{:.0},{:.0},{:.0},{:.0} \
-             map@{:.0},{:.0},{:.0},{:.0} list@{:.0},{:.0},{:.0},{:.0} apply-lines={} rows={}",
+             notes@{:.0},{:.0},{:.0},{:.0} map@{:.0},{:.0},{:.0},{:.0} \
+             list@{:.0},{:.0},{:.0},{:.0} apply-lines={} rows={}",
             sections.len(),
             layout.first,
             layout.rows.len(),
@@ -609,6 +671,10 @@ impl Shell {
             layout.head.y,
             layout.head.width,
             layout.head.height,
+            layout.notes.x,
+            layout.notes.y,
+            layout.notes.width,
+            layout.notes.height,
             map.x,
             map.y,
             map.width,
@@ -622,6 +688,15 @@ impl Shell {
         );
         if report != view.report {
             println!("assist feelings: {report}");
+            // The notes' words where they are drawn, for the gate (J3-3).
+            println!(
+                "assist feelings notes: {}",
+                if notes.is_empty() {
+                    "none".to_string()
+                } else {
+                    notes.join(" ")
+                }
+            );
             view.report = report;
         }
     }
@@ -1120,11 +1195,11 @@ mod tests {
     #[test]
     fn a_long_answer_scrolls_inside_a_fixed_window() {
         let heights = vec![ROW_HEIGHT; 11];
-        let top = geometry(10.0, 100.0, 300.0, &heights, 0, 2);
+        let top = geometry(10.0, 100.0, 300.0, &heights, 0, 2, 0);
         assert_eq!(top.rows.len(), LIST_MAX_ROWS);
         assert_eq!(top.list.height, LIST_MAX_ROWS as f32 * ROW_HEIGHT);
         assert!(top.tail.is_some());
-        let scrolled = geometry(10.0, 100.0, 300.0, &heights, 99, 2);
+        let scrolled = geometry(10.0, 100.0, 300.0, &heights, 99, 2, 0);
         assert_eq!(scrolled.first, 6, "the last page starts at 11 - 5");
         assert_eq!(scrolled.rows.first().map(|row| row.0), Some(6));
         assert_eq!(scrolled.rows.last().map(|row| row.0), Some(10));
@@ -1141,7 +1216,7 @@ mod tests {
     #[test]
     fn a_short_answer_shows_every_row_and_no_tail() {
         let heights = vec![ROW_HEIGHT; 4];
-        let layout = geometry(0.0, 0.0, 300.0, &heights, 3, 0);
+        let layout = geometry(0.0, 0.0, 300.0, &heights, 3, 0, 0);
         assert_eq!(layout.first, 0);
         assert_eq!(layout.rows.len(), 4);
         assert_eq!(layout.tail, None);
@@ -1154,7 +1229,7 @@ mod tests {
     fn an_open_row_grows_the_window_rather_than_pushing_rows_out() {
         let mut heights = vec![ROW_HEIGHT; 11];
         heights[2] = row_height(4);
-        let layout = geometry(0.0, 0.0, 300.0, &heights, 0, 0);
+        let layout = geometry(0.0, 0.0, 300.0, &heights, 0, 0, 0);
         assert_eq!(layout.rows.len(), LIST_MAX_ROWS);
         assert_eq!(layout.rows[2].1.height, row_height(4));
         assert_eq!(

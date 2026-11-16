@@ -49,6 +49,9 @@
 #           restores the saved project byte for byte (the playhead aside),
 #           and the control without the press keeps the applied cues;
 #   feelings 5. Discard takes the ghosts off the timeline;
+#   feelings 6. the card says what the application changed in the answer
+#           before staging it, and that it was reused (J3-3); a job with
+#           neither draws no notes;
 #   feelings captures. both appearances at 1280x720, a 300 px column and
 #           960x640, a row open, every rect inside the column.
 #   captures. Look (plain, and with a Surprise trial and the route editor
@@ -387,7 +390,7 @@ EOF
         mkdir -p "$work"
         cp "$FD/reference.musi" "$work/seed.musi"
         cp -al "$FD/seed.assets" "$work/seed.assets"
-        MZ_STATE_DIR="$work/state" MUSIALIZER_ASSIST_PROBE_DIR="$FD/job" \
+        MZ_STATE_DIR="$work/state" MUSIALIZER_ASSIST_PROBE_DIR="${FEEL_JOB:-$FD/job}" \
             MUSIALIZER_ASSIST_PROBE_LANES=mimo MUSIALIZER_ASSIST_PROBE_STAGE="$stage" \
             tools/headless_run.sh "$work/seed.musi" --ui-scale 100 "$@" \
             --ui-probe "size=${FEEL_SIZE:-1280x720},column=assist,time=30,play=0,assist=candidate$probe" \
@@ -500,6 +503,31 @@ PY
         "staged=0 ghosts=0 "*) pass "feelings 5: Discard at $discard took the ghosts off the timeline" ;;
         *) fail "feelings 5: after Discard [$(line_of 'staged feelings' "$FD/discard/log.txt")]" ;;
     esac
+
+    # 6. What the application changed in the answer before staging it is
+    #    said on the card, in its words, under the head (J3-3); a job whose
+    #    manifest names no repair draws no such line (the control: base).
+    mkdir -p "$FD/job-repairs"
+    cp "$FD/reference.musi" "$FD/repairs-seed.musi"
+    python3 tools/feelings_fixture.py "$FD/repairs-seed.musi" "$(ls "$FD"/seed.assets/audio/* | head -n 1)" \
+        "$FD/job-repairs" $ANSWER --reused --repairs >"$FD/repairs-fixture.log"
+    FEEL_JOB="$FD/job-repairs" feel_run repairs bridge "" 24
+    repairs_words="Fitted before staging: 2 sections shorter than a millisecond joined to neighbours, their words and marks dropped; 1 section's words shortened to fit."
+    notes="$(line_of 'assist feelings notes' "$FD/repairs/log.txt")"
+    case "$notes" in
+        "Reused the answer made 2026-11-15 16:08 UTC: no new call was paid for. $repairs_words") pass "feelings 6: the card says the answer was reused and what was changed in it" ;;
+        *) fail "feelings 6: notes [$notes]" ;;
+    esac
+    case "$(line_of 'assist feelings' "$FD/repairs/log.txt")" in
+        *" notes@"*",0 map@"*) fail "feelings 6: the notes take no room [$(line_of 'assist feelings' "$FD/repairs/log.txt")]" ;;
+        *" notes@"*) ;;
+        *) fail "feelings 6: no notes rect reported" ;;
+    esac
+    if [ "$(line_of 'assist feelings notes' "$FD/base/log.txt")" = "none" ]; then
+        pass "feelings 6 control: a job with no repairs and no reuse draws no notes"
+    else
+        fail "feelings 6 control: base notes [$(line_of 'assist feelings notes' "$FD/base/log.txt")]"
+    fi
 
     # Captures: both appearances, 1280x720, the minimum column (a dragged
     # 300) and the 960x640 window, a row open; every rect inside the column.

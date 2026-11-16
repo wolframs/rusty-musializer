@@ -1769,6 +1769,17 @@ def semantic_status(audio: Path, output_dir: Path, *, execution_snapshot: Path |
     return status
 
 
+def _repair_counts(value: Any) -> dict[str, int]:
+    """`bridge_fit`'s counts, as the manifest carries them, or empty."""
+    if not isinstance(value, dict):
+        return {}
+    counts = {kind: value.get(kind) for kind in semantic_adapter.REPAIR_KINDS}
+    if not all(isinstance(count, int) and not isinstance(count, bool) and count >= 0
+               for count in counts.values()):
+        return {}
+    return counts if any(counts.values()) else {}
+
+
 def _set_aside(path: Path) -> Path | None:
     """Moves a cache the later steps refuse out of the way, keeping it beside
     the others for the record (`<name>.refused-<ns>.json`)."""
@@ -2526,6 +2537,7 @@ def run_assist(
     semantic: dict[str, Any] | None = None
     semantic_failure: dict[str, Any] | None = None
     semantic_repairs: list[str] = []
+    semantic_repair_counts: dict[str, int] = {}
     semantic_reused: dict[str, Any] | None = None
     if mode in {"mimo", "all"}:
         # The one reuse decision, shared with `semantic-status`, which is how
@@ -2590,9 +2602,17 @@ def run_assist(
         # The bridge takes the answer as `bridge_fit` leaves it; the repairs
         # are named in the manifest.
         if semantic is not None:
-            semantic, repairs = semantic_adapter.bridge_fit(semantic)
-            semantic_repairs = (((envelope.get("normalized") or {}).get("provenance") or {})
-                                .get("repairs") or repairs)
+            counts: dict[str, int] = {}
+            semantic, repairs = semantic_adapter.bridge_fit(semantic, counts)
+            provenance = ((envelope.get("normalized") or {}).get("provenance") or {})
+            # Repairs made when the answer was cached are in its provenance;
+            # an answer cached before they were (J1-4) is fitted here.
+            if provenance.get("repairs"):
+                semantic_repairs = list(provenance["repairs"])
+                semantic_repair_counts = _repair_counts(provenance.get("repair_counts"))
+            else:
+                semantic_repairs = repairs
+                semantic_repair_counts = _repair_counts(counts)
 
     plan = build_scene_plan(
         paths["measured"], lyrics_path=lyrics_lane_path if lyrics else None,
@@ -2619,7 +2639,8 @@ def run_assist(
         mode=mode, audio_sha=audio_sha, measured_duration=measured_duration,
         cache_status=cache_status, paths=paths, plan=plan, lyrics=lyrics, semantic=semantic,
         performed_lyrics=use_performed_lyrics, semantic_latest_failure=semantic_failure,
-        semantic_repairs=semantic_repairs, semantic_reused=semantic_reused,
+        semantic_repairs=semantic_repairs, semantic_repair_counts=semantic_repair_counts,
+        semantic_reused=semantic_reused,
         execution_snapshot=observe_execution(
             snapshot,
             whisper=whisper_lane if mode in {"lyrics", "all", "sections"} else None,
@@ -2708,6 +2729,7 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
                           performed_lyrics: bool = False,
                           semantic_latest_failure: dict[str, Any] | None = None,
                           semantic_repairs: list[str] | None = None,
+                          semantic_repair_counts: dict[str, int] | None = None,
                           semantic_reused: dict[str, Any] | None = None,
                           ) -> dict[str, Any]:
     """`assist-manifest.json`, as the Assist panel reads it.
@@ -2776,6 +2798,12 @@ def build_assist_manifest(*, mode: str, audio_sha: str, measured_duration: float
     # nothing was.
     if semantic and semantic_repairs:
         manifest["semantic_repairs"] = list(semantic_repairs)
+        # The same, counted, for the staged card's own words (J3-3): how many
+        # sections were joined (their words and marks dropped), how many texts
+        # shortened or cleaned. Absent for an answer cached by the J1 build,
+        # whose repairs were named but not counted.
+        if semantic_repair_counts:
+            manifest["semantic_repair_counts"] = dict(semantic_repair_counts)
     # A saved answer staged with nothing sent (J1-6): when it was made, for
     # the staged result's words. Absent when this run paid.
     if semantic and semantic_reused is not None:
