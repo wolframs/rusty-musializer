@@ -182,11 +182,13 @@ fn open_lines(section: &FeelingSection, width: f32, measure: &dyn Fn(&str) -> f3
 /// card said none of it). Empty when there is nothing to say.
 fn note_lines(
     candidate: &AnalysisCandidate,
+    track: &AnswerTrack,
     width: f32,
     measure: &dyn Fn(&str) -> f32,
 ) -> Vec<String> {
     let mut lines = Vec::new();
     for note in [
+        track.note(),
         candidate.reused_answer().map(str::to_string),
         candidate.repairs().map(|repairs| repairs.sentence()),
     ]
@@ -196,6 +198,69 @@ fn note_lines(
         lines.extend(wrap_to_width(&note, width, NOTE_MAX_LINES, measure));
     }
     lines
+}
+
+/// Which track a staged answer's rows act on (J3-5). A row is a place in the
+/// song the answer was made for: pressed while another track is current, it
+/// moved that track's playhead to this answer's section time.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum AnswerTrack {
+    /// The answer's track is the one playing.
+    Current,
+    /// Another track is current; a row switches to the answer's first.
+    Other { slot: usize, name: String },
+    /// The answer's track is no longer open: the rows move nothing.
+    Gone,
+}
+
+impl AnswerTrack {
+    pub(super) fn of(workspace: &Workspace) -> Self {
+        match workspace.assist.candidate_track {
+            Some(slot) if Some(slot) == workspace.current_index() => Self::Current,
+            Some(slot) => workspace.get(slot).map_or(Self::Gone, |track| Self::Other {
+                slot,
+                name: track.display_name().to_string(),
+            }),
+            None => Self::Gone,
+        }
+    }
+
+    /// The card's note under the head, when the rows do not act on the
+    /// current track.
+    fn note(&self) -> Option<String> {
+        match self {
+            Self::Current => None,
+            Self::Other { name, .. } => Some(format!(
+                "This answer is for {name}; pressing a row switches to that track."
+            )),
+            Self::Gone => Some(
+                "The track this answer is for is no longer open, so its rows move nothing."
+                    .to_string(),
+            ),
+        }
+    }
+
+    /// A row's hint.
+    fn hint(&self, start: f64) -> String {
+        match self {
+            Self::Current => format!(
+                "Listen from {}: the playhead moves just inside this section",
+                span_clock(start)
+            ),
+            Self::Other { name, .. } => {
+                format!("Switch to {name} and listen from {}", span_clock(start))
+            }
+            Self::Gone => "The track this answer is for is no longer open".to_string(),
+        }
+    }
+
+    fn token(&self) -> String {
+        match self {
+            Self::Current => "current".to_string(),
+            Self::Other { slot, .. } => format!("other:{slot}"),
+            Self::Gone => "gone".to_string(),
+        }
+    }
 }
 
 /// One row's height: resting, or open with its lines.
@@ -332,6 +397,7 @@ impl Shell {
         &mut self,
         font: &UiFonts,
         candidate: Option<&AnalysisCandidate>,
+        track: &AnswerTrack,
         width: f32,
         apply_lines: usize,
     ) -> f32 {
@@ -356,7 +422,9 @@ impl Shell {
         }
         let measure = |text: &str| widgets::measure(font, text, TEXT_SIZE);
         let heights = heights(sections, view.open, width, &measure);
-        let notes = candidate.map_or(0, |candidate| note_lines(candidate, width, &measure).len());
+        let notes = candidate.map_or(0, |candidate| {
+            note_lines(candidate, track, width, &measure).len()
+        });
         geometry(0.0, 0.0, width, &heights, view.first, apply_lines, notes).height
     }
 
@@ -388,7 +456,8 @@ impl Shell {
             return;
         }
         let measure = |text: &str| widgets::measure(font, text, TEXT_SIZE);
-        let notes = note_lines(candidate, area.width, &measure);
+        let track = AnswerTrack::of(input.workspace);
+        let notes = note_lines(candidate, &track, area.width, &measure);
         let duration = sections
             .last()
             .map_or(0.0, |section| section.end_seconds)
@@ -594,16 +663,8 @@ impl Shell {
                     color::ui_muted(),
                 );
             }
-            self.widgets.hint(
-                d,
-                state,
-                id,
-                *row,
-                &format!(
-                    "Listen from {}: the playhead moves just inside this section",
-                    span_clock(section.start_seconds)
-                ),
-            );
+            self.widgets
+                .hint(d, state, id, *row, &track.hint(section.start_seconds));
             if state.clicked {
                 pressed = Some(*index);
             }
@@ -642,21 +703,46 @@ impl Shell {
             );
         }
 
+        if let Some(index) = pressed {
+            self.assist_column.feelings.open = Some(index);
+            let seconds = sections[index].seek_seconds();
+            // J3-5: the seek belongs to the answer's track. Another track is
+            // switched to first, through the same guard the track list uses,
+            // and the seek is dropped if that switch did not happen.
+            let outcome = match &track {
+                AnswerTrack::Current => {
+                    let slot = session.candidate_track.unwrap_or(0);
+                    commands.push(ShellCommand::SeekOnTrack {
+                        track_slot: slot,
+                        seconds,
+                    });
+                    format!("seek={seconds:.3} track={slot}")
+                }
+                AnswerTrack::Other { slot, .. } => {
+                    if self.lyric_draft_allows_context_change(input.workspace) {
+                        commands.push(ShellCommand::SelectTrack(*slot));
+                        commands.push(ShellCommand::SeekOnTrack {
+                            track_slot: *slot,
+                            seconds,
+                        });
+                        format!("seek={seconds:.3} track={slot} switch=yes")
+                    } else {
+                        format!("seek=none track={slot} switch=refused")
+                    }
+                }
+                AnswerTrack::Gone => "seek=none track=gone".to_string(),
+            };
+            println!("assist feelings nav: row={index} {outcome}");
+        }
         let view = &mut self.assist_column.feelings;
         view.first = layout.first;
         view.list = layout.list;
-        if let Some(index) = pressed {
-            view.open = Some(index);
-            let section = &sections[index];
-            let seconds = section.seek_seconds();
-            commands.push(ShellCommand::Seek(seconds));
-            println!("assist feelings nav: row={index} seek={seconds:.3}");
-        }
         let report = format!(
-            "sections={} first={} shown={} now={} open={} reused={} head@{:.0},{:.0},{:.0},{:.0} \
+            "sections={} track={} first={} shown={} now={} open={} reused={} head@{:.0},{:.0},{:.0},{:.0} \
              notes@{:.0},{:.0},{:.0},{:.0} map@{:.0},{:.0},{:.0},{:.0} \
              list@{:.0},{:.0},{:.0},{:.0} apply-lines={} rows={}",
             sections.len(),
+            track.token(),
             layout.first,
             layout.rows.len(),
             now.map_or_else(|| "none".to_string(), |row| row.to_string()),
@@ -723,16 +809,41 @@ pub(super) struct StepBackLine {
 /// The step back's line, from the session's memory and the live track, or
 /// `None` when no Apply of feeling cues left one.
 pub(super) fn step_back_line(workspace: &Workspace) -> Option<StepBackLine> {
-    use musializer_core::project::analysis_candidate::{StepBackGone, StepBackStatus};
     let (mode, memory) = workspace.assist.feelings_step_back.as_ref()?;
     let track = workspace
         .get(memory.track)
         .map(|track| (track.file_path.as_path(), &track.semantic_events));
     let earlier = memory.earlier.len();
     let applied = memory.applied.len();
-    Some(match memory.status(track) {
+    // J3-5: Put back acts on the track Apply wrote to, which need not be the
+    // one playing; the line names it then.
+    let elsewhere = (workspace.current_index() != Some(memory.track))
+        .then(|| workspace.get(memory.track).map(Track::display_name))
+        .flatten();
+    let line = step_back_status(memory, track, *mode, earlier, applied);
+    Some(match elsewhere {
+        Some(name) if line.earlier.is_some() => StepBackLine {
+            text: format!("{} in {name}", line.text),
+            ..line
+        },
+        _ => line,
+    })
+}
+
+fn step_back_status(
+    memory: &musializer_core::project::analysis_candidate::FeelingsStepBack,
+    track: Option<(
+        &std::path::Path,
+        &musializer_core::project::event_timeline::EventTimeline,
+    )>,
+    mode: AssistMode,
+    earlier: usize,
+    applied: usize,
+) -> StepBackLine {
+    use musializer_core::project::analysis_candidate::{StepBackGone, StepBackStatus};
+    match memory.status(track) {
         StepBackStatus::Offered => StepBackLine {
-            mode: *mode,
+            mode,
             earlier: Some(earlier),
             applied,
             text: if earlier == 0 {
@@ -746,7 +857,7 @@ pub(super) fn step_back_line(workspace: &Workspace) -> Option<StepBackLine> {
             token: "offered",
         },
         StepBackStatus::Gone(gone) => StepBackLine {
-            mode: *mode,
+            mode,
             earlier: None,
             applied,
             text: gone.sentence().to_string(),
@@ -755,7 +866,7 @@ pub(super) fn step_back_line(workspace: &Workspace) -> Option<StepBackLine> {
                 StepBackGone::LaneChanged => "gone:edited",
             },
         },
-    })
+    }
 }
 
 /// The step back's button label.

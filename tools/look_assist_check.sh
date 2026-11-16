@@ -49,6 +49,9 @@
 #           restores the saved project byte for byte (the playhead aside),
 #           and the control without the press keeps the applied cues;
 #   feelings 5. Discard takes the ghosts off the timeline;
+#   feelings 7. a row of an answer staged for another track switches to that
+#           track and seeks there, and the card says whose answer it is
+#           (J3-5); without the press the current track stays current;
 #   feelings 6. the card says what the application changed in the answer
 #           before staging it, and that it was reused (J3-3); a job with
 #           neither draws no notes;
@@ -528,6 +531,48 @@ PY
     else
         fail "feelings 6 control: base notes [$(line_of 'assist feelings notes' "$FD/base/log.txt")]"
     fi
+
+    # 7. A staged answer belongs to its track (J3-5). The answer is for a
+    #    second track, opened beside the project; the project's track is
+    #    current. Pressing a row switches to the answer's track and seeks
+    #    there, never the current track's playhead to the answer's time; the
+    #    card says whose answer it is. Control: the same staging, no press.
+    cargo run --quiet --bin make-fixture-wav -- "$FD/other.wav" 20 >/dev/null
+    mkdir -p "$FD/job-other"
+    cp "$FD/reference.musi" "$FD/other-seed.musi"
+    python3 tools/feelings_fixture.py "$FD/other-seed.musi" "$FD/other.wav" "$FD/job-other" \
+        $ANSWER >"$FD/other-fixture.log"
+    MUSIALIZER_ASSIST_PROBE_STAGE_TRACK=1 FEEL_JOB="$FD/job-other" \
+        feel_run other-base bridge "" 24 "$FD/other.wav"
+    OTHER="$(line_of 'assist feelings' "$FD/other-base/log.txt")"
+    # Row 1: its span is the longest on screen, so the playback the switch
+    # starts stays inside it until the report is read.
+    row=1
+    point="$(field "$OTHER" "centre(rect('row$row'))")"
+    span="$(echo "$OTHER" | grep -oE "row$row@[-0-9,]+\[[0-9.]+-[0-9.]+\]" | sed -E 's/.*\[(.*)\]/\1/')"
+    case "$(line_of 'assist feelings notes' "$FD/other-base/log.txt")" in
+        "This answer is for other.wav; pressing a row switches to that track.") pass "feelings 7: the card says the answer is another track's" ;;
+        *) fail "feelings 7: notes [$(line_of 'assist feelings notes' "$FD/other-base/log.txt")]" ;;
+    esac
+    MUSIALIZER_ASSIST_PROBE_STAGE_TRACK=1 FEEL_JOB="$FD/job-other" \
+        feel_run other-row bridge ",click=$point" 40 "$FD/other.wav"
+    got="$(playhead "$FD/other-row/log.txt")"
+    nav="$(line_of 'assist feelings nav' "$FD/other-row/log.txt")"
+    tracks="$(line_of tracks "$FD/other-row/log.txt")"
+    case "$tracks" in
+        *"current 1 "*) switched=yes ;;
+        *) switched=no ;;
+    esac
+    if [ "$switched" = yes ] && python3 -c "import sys; s, e = map(float, '$span'.split('-')); g = float('${got:-nan}'); sys.exit(0 if s < g < e else 1)" \
+        && case "$nav" in "row=$row seek="*" track=1 switch=yes") true ;; *) false ;; esac; then
+        pass "feelings 7: a row of the other track's answer switched to it and moved its playhead to $got, inside $span"
+    else
+        fail "feelings 7: row $row at $point: tracks [$tracks], playhead [$got] for span [$span], nav [$nav]"
+    fi
+    case "$(line_of tracks "$FD/other-base/log.txt")" in
+        *"current 0 "*) pass "feelings 7 control: without the press the project's track stays current" ;;
+        *) fail "feelings 7 control: tracks [$(line_of tracks "$FD/other-base/log.txt")]" ;;
+    esac
 
     # Captures: both appearances, 1280x720, the minimum column (a dragged
     # 300) and the 960x640 window, a row open; every rect inside the column.

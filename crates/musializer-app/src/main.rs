@@ -2592,6 +2592,24 @@ fn run(
                         );
                     }
                 }
+                ShellCommand::SeekOnTrack {
+                    track_slot,
+                    seconds,
+                } => {
+                    // A preceding track switch may have been refused; never
+                    // seek another track to this one's time (J3-5).
+                    if app.workspace.current_index() == Some(track_slot) {
+                        if let Some(music) = music.as_ref() {
+                            seek_preview(
+                                music,
+                                &mut analysis,
+                                &mut app,
+                                seconds,
+                                &mut scene_clock_previous,
+                            );
+                        }
+                    }
+                }
                 ShellCommand::SetArtist { track, artist } => {
                     if let Some(current) = app
                         .workspace

@@ -46,6 +46,13 @@ pub enum ShellCommand {
     TogglePlay,
     /// Absolute transport position in seconds.
     Seek(f64),
+    /// A seek that belongs to one track (J3-5: a row of a staged feelings
+    /// answer): applied only while that track is current, so a track switch
+    /// a guard refused before it never moves another track's playhead.
+    SeekOnTrack {
+        track_slot: usize,
+        seconds: f64,
+    },
     SelectScene(SceneId),
     /// Inline top-bar metadata edit, bound to the track that opened it.
     SetArtist {
@@ -298,6 +305,7 @@ impl ShellCommand {
             // stops meaning anything.
             ShellCommand::TogglePlay
             | ShellCommand::Seek(_)
+            | ShellCommand::SeekOnTrack { .. }
             | ShellCommand::SelectTrack(_)
             | ShellCommand::ResumeRouteDraft { .. }
             | ShellCommand::SetVolume(_)

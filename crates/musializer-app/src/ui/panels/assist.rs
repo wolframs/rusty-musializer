@@ -3185,6 +3185,10 @@ pub const PROBE_LANES_VARIABLE: &str = "MUSIALIZER_ASSIST_PROBE_LANES";
 /// in `cli.rs`.
 pub const PROBE_STAGE_VARIABLE: &str = "MUSIALIZER_ASSIST_PROBE_STAGE";
 
+/// `MUSIALIZER_ASSIST_PROBE_STAGE_TRACK=N`: the track a staged bridge is for,
+/// when it is not the current one (J3-5).
+pub const PROBE_STAGE_TRACK_VARIABLE: &str = "MUSIALIZER_ASSIST_PROBE_STAGE_TRACK";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ProbeStage {
     Literal,
@@ -3290,7 +3294,14 @@ pub(crate) fn apply_probe_state(
             } else {
                 let mut artifacts = AssistSession::default();
                 probe_artifacts(&mut artifacts);
-                let track = current
+                // J3-5: `MUSIALIZER_ASSIST_PROBE_STAGE_TRACK=N` stages the
+                // answer for track N, so a capture can press a row while
+                // another track is current.
+                let target = std::env::var(PROBE_STAGE_TRACK_VARIABLE)
+                    .ok()
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .or(current);
+                let track = target
                     .and_then(|index| workspace.get(index))
                     .ok_or_else(|| "a staged bridge needs a loaded track".to_string())?;
                 let loaded = load_candidate(
@@ -3298,7 +3309,7 @@ pub(crate) fn apply_probe_state(
                     track,
                     assist_ui_state::mode_lanes(mode),
                 )?;
-                (loaded.candidate, current)
+                (loaded.candidate, target)
             };
             let session = &mut workspace.assist;
             session.select_mode(mode);
@@ -4626,7 +4637,13 @@ impl Shell {
                 wrap_to_width(&sentence, inner, 4, &measure13)
             });
         let lyric_review_height = review_block_height(candidate);
-        let feelings_height = self.feelings_height(font, candidate, inner, apply_lines.len());
+        let feelings_height = self.feelings_height(
+            font,
+            candidate,
+            &feelings::AnswerTrack::of(workspace),
+            inner,
+            apply_lines.len(),
+        );
         let review_height = (lyric_review_height
             + if lyric_review_height > 0.0 && feelings_height > 0.0 {
                 FEELINGS_GAP
@@ -7100,6 +7117,50 @@ mod tests {
             feelings::step_back_line(&workspace).map(|line| line.token),
             Some("gone:closed")
         );
+    }
+
+    /// J3-5: a staged answer's rows act on the track it was made for. With
+    /// another track current they switch first; with that track closed they
+    /// move nothing. Put back names the track it acts on when it is not the
+    /// current one.
+    #[test]
+    fn a_staged_answer_belongs_to_its_track_and_says_so_elsewhere() {
+        use feelings::AnswerTrack;
+        let scratch = Scratch::new("feelings-other-track");
+        let (mut workspace, audio) = workspace_with_track(&scratch);
+        let other = scratch.join("other.wav");
+        std::fs::write(&other, b"other audio").expect("audio");
+        workspace.push(Track::new(other, 30.0, SceneId::Spectrum, 7).expect("track"));
+        workspace.select(0);
+        let bridge = bridge_for(&scratch, &audio);
+        let lanes = assist_ui_state::mode_lanes(AssistMode::Mimo);
+        let loaded = load_candidate(&bridge, &workspace.tracks()[0], lanes).expect("stages");
+        workspace.assist.candidate = Some(loaded.candidate);
+        workspace.assist.candidate_track = Some(0);
+        workspace.assist.candidate_mode = AssistMode::Mimo;
+        workspace.assist.bridge_path = bridge.display().to_string();
+        assert_eq!(AnswerTrack::of(&workspace), AnswerTrack::Current);
+        workspace.select(1);
+        let name = workspace.tracks()[0].display_name().to_string();
+        assert_eq!(
+            AnswerTrack::of(&workspace),
+            AnswerTrack::Other {
+                slot: 0,
+                name: name.clone()
+            }
+        );
+        workspace.assist.candidate_track = Some(7);
+        assert_eq!(AnswerTrack::of(&workspace), AnswerTrack::Gone);
+        workspace.assist.candidate_track = Some(0);
+
+        workspace.select(0);
+        let mut assist = controller();
+        assist.apply(&mut workspace, 12.0);
+        let here = feelings::step_back_line(&workspace).expect("offered");
+        workspace.select(1);
+        let elsewhere = feelings::step_back_line(&workspace).expect("offered");
+        assert_eq!(elsewhere.text, format!("{} in {name}", here.text));
+        assert_eq!(elsewhere.token, "offered");
     }
 
     #[test]
