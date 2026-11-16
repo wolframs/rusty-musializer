@@ -1739,7 +1739,7 @@ Written so that nothing the user may pay for is unsaid. `ASSIST_PIPELINE.md`,
 | `semantic_reused` | `assist-manifest.json`, only when a saved answer was staged with nothing sent | `made_utc` |
 | `provenance.repairs` | semantic artifact | the same list, on the cached answer |
 | `semantic.cache.refused-<ns>.json` | job folder | a cached answer the later steps refused, set aside (by the helper or the panel) so it is never reused |
-| `assist-execution.status.json` | job folder | the snapshot (listening route only) the confirmation's status query reads |
+| `musializer-status-<pid>-<ns>.json` | the system temporary directory, removed after the query | the snapshot (listening route only) the confirmation's status query reads; nothing is written into the job folder by opening the card |
 | `model_output_schema_sha256` | request identity | moved with the bounded schema (64 sections, 500-character summaries); answers under the unbounded schema's hash `1d1c6b45…25f1` are accepted when they fit (`legacy_request_identity`) |
 | `--expect-audio-hash HEX` | `external_analysis.py assist` | the digest the application verified at Start; a file that no longer hashes to it is refused before anything is measured or sent |
 | `--expect-sha256 HEX` | `semantic_openrouter.py` | the orchestrator's digest; the helper refuses another snapshot before sending |

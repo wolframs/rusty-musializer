@@ -1606,11 +1606,16 @@ fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> SavedAnswer
         preview
             .contracts
             .retain(|entry| entry.contract == ContractId::Semantic);
-        let snapshot_path = folder.join("assist-execution.status.json");
-        let written = std::fs::create_dir_all(&folder).is_ok()
-            && preview
-                .to_bytes()
-                .is_ok_and(|bytes| std::fs::write(&snapshot_path, bytes).is_ok());
+        // Outside the job folder, and removed after the query: opening the
+        // card creates nothing in the track's folder.
+        let snapshot_path = std::env::temp_dir().join(format!(
+            "musializer-status-{}-{:x}.json",
+            std::process::id(),
+            wall_clock_ns()
+        ));
+        let written = preview
+            .to_bytes()
+            .is_ok_and(|bytes| std::fs::write(&snapshot_path, bytes).is_ok());
         if !written {
             *slot = Some((key, StatusSlot::Done(SavedAnswer::Unknown)));
             return SavedAnswer::Unknown;
@@ -1627,6 +1632,7 @@ fn confirmation_saved_answer(track: &Track, plan: &ExecutionPlan) -> SavedAnswer
                     zdr_required: zdr,
                 },
             );
+            let _ = std::fs::remove_file(&snapshot_path);
             let _ = sender.send(answer);
         });
         *slot = Some((key, StatusSlot::Pending(receiver)));
