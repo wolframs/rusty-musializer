@@ -300,7 +300,7 @@ fn login_shell_lookup(name: &str, options: Options) -> Option<PathBuf> {
 /// prints one short line, so it cannot fill the pipe buffer and deadlock, and a
 /// command that tried would be killed at the deadline anyway.
 fn run_briefly(mut command: Command, timeout: Duration) -> Result<Vec<u8>, String> {
-    strip_credential_variables(&mut command);
+    super::env::strip_credential_variables(&mut command);
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::null());
@@ -330,18 +330,6 @@ fn run_briefly(mut command: Command, timeout: Duration) -> Result<Vec<u8>, Strin
         let _ = stdout.read_to_end(&mut bytes);
     }
     Ok(bytes)
-}
-
-/// The same rule `external_analysis.py::_safe_local_env` applies to its own
-/// children (E1). None of these commands needs a credential, and `npm` and a
-/// login shell are exactly the kind of child that would log its environment.
-fn strip_credential_variables(command: &mut Command) {
-    for (name, _) in std::env::vars_os() {
-        let name = name.to_string_lossy();
-        if super::env::is_credential_named(&name) {
-            command.env_remove(name.as_ref());
-        }
-    }
 }
 
 /// The first `PATH` entry holding an executable called `name`.
@@ -673,6 +661,50 @@ mod tests {
             None
         );
         assert_eq!(login_shell_lookup("$(id)", Options::thorough()), None);
+    }
+
+    #[test]
+    fn login_shell_does_not_inherit_credentials() {
+        const CHILD: &str = "MZ_HY3_SHELL_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let dump = PathBuf::from(std::env::var_os("MZ_HY3_DUMP").unwrap());
+            assert_eq!(
+                login_shell_lookup("sh", Options::thorough()),
+                Some(PathBuf::from("/bin/sh"))
+            );
+            let environment = std::fs::read_to_string(dump).unwrap();
+            assert!(!environment.contains("HY3_FAKE_TOKEN="));
+            assert!(environment.contains("MZ_HY3_PLAIN=kept"));
+            return;
+        }
+        let dir = scratch("shell-env");
+        let shell = stub(&dir, "shell");
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\n/usr/bin/env > \"$MZ_HY3_DUMP\"\nprintf '/bin/sh\\n'\n",
+        )
+        .unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "assist::discover::tests::login_shell_does_not_inherit_credentials",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("SHELL", shell)
+            .env(CHILD, "1")
+            .env("MZ_HY3_DUMP", dir.join("env"))
+            .env("HY3_FAKE_TOKEN", "synthetic")
+            .env("MZ_HY3_PLAIN", "kept")
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 
     /// The bounded runner kills rather than hanging.

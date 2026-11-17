@@ -3276,46 +3276,20 @@ fn codex_cache_accepts(document: &CodexCache) -> bool {
     document.schema_version == CODEX_CATALOG_SCHEMA
 }
 
-/// Removes every credential-named variable from a child's environment (E1).
-///
-/// `std::env::vars_os` rather than `vars`: the UTF-8 half **panics** on a
-/// variable this process did not choose, and a desktop session is exactly where
-/// one turns up. Neither discovery tool needs a credential — the OpenRouter
-/// catalog endpoint is unauthenticated and Codex authenticates itself — so this
-/// is the same rule `external_analysis.py::_safe_local_env` applies to its own
-/// children, spelled for the ones spawned from here.
-fn strip_credential_variables(command: &mut Command) {
-    for (name, _) in std::env::vars_os() {
-        let name = name.to_string_lossy();
-        if musializer_runtime::assist::env::is_credential_named(&name) {
-            command.env_remove(name.as_ref());
-        }
-    }
-}
-
-// There was a `which` here. It is gone, and its removal is defect C: `PATH`
-// membership was the *only* thing the dialog asked, so a GUI process started
-// from a desktop entry — which inherits the session manager's minimal PATH —
-// reported "codex not on PATH" about a binary the operator runs by name every
-// day. The replacement is `musializer_runtime::assist::discover`, which asks
-// four questions in order and can say which one answered.
-
-/// `tools/<name>`, resolved the way `find_assist_helper` resolves the analysis
-/// helper (`process::font_import::find_helper`): beside the executable, one and
-/// two directories up, then the working directory. Duplicated rather than
-/// shared because that function is private and takes an application directory
-/// this surface is not handed.
+/// The runtime's helper ladder, including a hard-failing named override.
 fn find_tool(name: &str) -> Option<PathBuf> {
+    let variable = format!(
+        "MUSIALIZER_{}_HELPER",
+        name.trim_start_matches("musializer_")
+            .trim_end_matches(".py")
+            .to_ascii_uppercase()
+    );
     let executable = std::env::current_exe().ok();
-    let directory = executable.as_deref().and_then(Path::parent);
-    let mut candidates = Vec::new();
-    if let Some(directory) = directory {
-        candidates.push(directory.join("tools").join(name));
-        candidates.push(directory.join("..").join("tools").join(name));
-        candidates.push(directory.join("../..").join("tools").join(name));
-    }
-    candidates.push(PathBuf::from("./tools").join(name));
-    candidates.into_iter().find(|path| path.is_file())
+    let directory = executable
+        .as_deref()
+        .and_then(Path::parent)
+        .unwrap_or(Path::new("."));
+    musializer_runtime::process::font_import::find_helper(directory, &variable, name)
 }
 
 // ---------------------------------------------------------------------------
@@ -7219,7 +7193,7 @@ impl AssistSettingsDialog {
         // children (E1): nothing credential-shaped travels to a process that does
         // not need it, and neither of these tools needs one — the OpenRouter
         // catalog endpoint is unauthenticated and Codex authenticates itself.
-        strip_credential_variables(&mut command);
+        musializer_runtime::assist::env::strip_credential_variables(&mut command);
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -7299,10 +7273,10 @@ impl AssistSettingsDialog {
             }
         }
         // And the same credential rule the spawn uses: the application never
-        // lets the repository `.env` authorize a job, so a doctor that read it
+        // lets an unchosen credential file authorize a job, so a doctor that read it
         // would report a key nothing would ever send.
         command.arg("--no-dotenv");
-        strip_credential_variables(&mut command);
+        musializer_runtime::assist::env::strip_credential_variables(&mut command);
         command.stdin(Stdio::null());
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
@@ -9687,5 +9661,22 @@ mod tests {
         };
         assert!(!modalities_fit(ContractId::Coarse, &text));
         assert!(modalities_fit(ContractId::Wording, &text));
+    }
+}
+
+#[cfg(test)]
+mod hy3_tool_tests {
+    #[test]
+    fn dialog_tool_override_wins_and_missing_override_fails_hard() {
+        let variable = "MUSIALIZER_HY3_TEST_HELPER";
+        let path = std::env::temp_dir().join(format!("hy3-helper-{}", std::process::id()));
+        std::fs::write(&path, "synthetic").unwrap();
+        std::env::set_var(variable, &path);
+        assert_eq!(super::find_tool("hy3_test.py"), Some(path.clone()));
+        std::env::set_var("MUSIALIZER_DOCTOR_HELPER", path.with_extension("missing"));
+        assert_eq!(super::find_tool("musializer_doctor.py"), None);
+        std::env::remove_var("MUSIALIZER_DOCTOR_HELPER");
+        std::env::remove_var(variable);
+        std::fs::remove_file(path).unwrap();
     }
 }

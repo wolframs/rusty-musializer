@@ -628,7 +628,8 @@ pub fn find_assist_helper(application_directory: &Path) -> Option<PathBuf> {
     )
 }
 
-fn find_helper(
+/// Shared helper ladder: nonempty override (hard failure), then distribution/source paths.
+pub fn find_helper(
     application_directory: &Path,
     override_variable: &str,
     file_name: &str,

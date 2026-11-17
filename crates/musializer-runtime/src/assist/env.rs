@@ -40,15 +40,26 @@ const CREDENTIAL_MARKERS: [&str; 6] = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CR
 
 /// Whether a variable name looks like it carries a credential.
 ///
-/// Used to *report* what a child can still see, not to decide what to strip —
-/// blanket-stripping the parent environment would break `SSH_AUTH_SOCK`,
-/// `XAUTHORITY` and anything else a desktop session needs.
+/// Reports credential names and filters discovery/diagnostic children only.
+/// Do not blanket-strip the parent or unrelated desktop children: markers also
+/// match `SSH_AUTH_SOCK` and `XAUTHORITY`. Discovery deliberately runs without
+/// those capabilities; extending this policy to other spawns is AX A8.
 #[must_use]
 pub fn is_credential_named(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     CREDENTIAL_MARKERS
         .iter()
         .any(|marker| upper.contains(marker))
+}
+
+/// Remove credential-named variables from a discovery/diagnostic child (E1).
+/// Keep the parent's environment intact, including desktop authentication.
+pub fn strip_credential_variables(command: &mut std::process::Command) {
+    for (name, _) in std::env::vars_os() {
+        if is_credential_named(&name.to_string_lossy()) {
+            command.env_remove(name);
+        }
+    }
 }
 
 /// Every credential-named variable currently visible in an environment snapshot,
