@@ -53,7 +53,7 @@ lands, and move this item to the archive when all have.
   restarts (the lead's choice: a draft lost to a restart is work lost).
 - [x] HY-5 (landed 2026-11-17: dark-theme and UI/UX retired as covered, welcome repaired and in verify; record in the archive) `tools/`: the three gates nothing runs (dark theme, UI/UX, welcome
   theme) run, then fixed or retired; the near-twin helper names.
-- [ ] HY-6 the "OpenAI Knot" scene restyled and renamed. Operator, 2026-11-17,
+- [x] HY-6 (landed 2026-11-17 as **Lumen Knot**, [`docs/LUMEN_KNOT.md`](docs/LUMEN_KNOT.md); it now has 12 controls, `MAX_CONTROLS`, so a 13th needs a format change) the "OpenAI Knot" scene restyled and renamed. Operator, 2026-11-17,
   verbatim: "we have 'Clawd,' and I figured it would be fair to GPT models and
   fans to have openai in there too somehow, but we can perhaps stylize the
   scene and 3d model in it a bit more and name it something more universal."
