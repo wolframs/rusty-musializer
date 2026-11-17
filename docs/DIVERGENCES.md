@@ -628,6 +628,9 @@ flight — Start on Feelings"), built by J4. Details and words:
 
 ### HY-4 — tap anticipation (2026-11-17)
 
+### HY-4 — tap anticipation and chat drafts (2026-11-17)
+
 | Before | Now | Reason |
 | --- | --- | --- |
 | An uncalibrated lyric tap starts at zero offset | New taps default to −100 ms; an explicit stored zero remains zero | CX-4 ruling. The optional workstation preference distinguishes absent/null (follow default) from any explicit calibration, including zero. No offset is in a .musi; stored cue timestamps are never recalculated. Old uncalibrated preferences intentionally gain the new default, not a migration of existing cues |
+| Composer edits survive only incidentally when a transcript save happens; a draft before the first message is lost | Each chat keeps its draft after 750 ms of no edits and on orderly shutdown, including before its first send; reopening focuses the composer at its end; Send persists an empty draft | Reuse the existing versioned, private, atomic per-project chat store and its locks. A draft-only chat becomes a saved chat titled “Unsent draft”, without putting its text in the title. This fits the existing explicit Earlier chats model and preserves separate drafts if several tabs were opened; no global singleton can overwrite another tab's work. No automatic agent chat is opened on startup. Clearing a draft writes empty text rather than leaving an older draft on disk. No new schema or project fields |

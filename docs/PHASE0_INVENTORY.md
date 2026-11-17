@@ -343,7 +343,7 @@ Keys invented here so far include `hover`, `click`, `wheel`, `wheel-shift`, `whe
 `middle-drag`, `drop`, `scene-pick`, `save-to`, `lyric-tap`, `lyric-undo`,
 `tune-seed`, `tune-explore`, `tune-type`, `protocol-flip`, `protocol-answer`,
 `sidebar`, `inspector`, `timeline-height`, `audio-stall`, `route`, `picker`,
-`tune`, `assist`, `dock`, `dock-run`, `dock-focus`, `follow`, `agent`, `agent-say`, `agent-decide`, `agent-press`, `agent-press-at`, `agent-image`, `agent-image-hold`, `click-after`, `click-hold`, `click-shift` and `scrub`. What is *not* negotiable is the shape and the refusal
+`tune`, `assist`, `dock`, `dock-run`, `dock-focus`, `follow`, `agent`, `agent-say`, `agent-draft`, `agent-draft-clear`, `agent-decide`, `agent-press`, `agent-press-at`, `agent-image`, `agent-image-hold`, `click-after`, `click-hold`, `click-shift` and `scrub`. What is *not* negotiable is the shape and the refusal
 rules in this section — one argv word, at most one occurrence of each key, an
 unknown key is an error rather than last-wins — because a capture script's typo
 must not quietly photograph the wrong state.
@@ -2546,4 +2546,8 @@ credential-file fallback; it never enables repository `.env` reads.
 
 HY-4 (2026-11-17): an absent/null workstation `lyric_tap_offset` uses
 −0.100 seconds for new taps; explicit zero and other calibrations retain their
-meaning. Existing lyric cue times in projects are unchanged.
+meaning. Existing lyric cue times in projects are unchanged. Agent-chat v1's
+existing `draft` is saved after a 750 ms edit settle and on orderly shutdown,
+also before the first message. Draft-only chats are titled “Unsent draft” in
+Earlier chats. Sending or erasing persists the empty composer. Drafts remain
+per chat and project, outside .musi.

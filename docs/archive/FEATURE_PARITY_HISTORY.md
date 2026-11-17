@@ -5808,3 +5808,39 @@ the exact offset assertion. Restore byte-for-byte (SHA-256
 rerun the pin: pass. Calibration gesture and operator feel/flash validation
 remain separate work. Lead: remove the stale “-100 ms ... NOT landed” paragraph
 in CX-4; HY-4's chat half is recorded separately below.
+
+### UI toolkit / chat / HY-4 — persistent composer drafts (2026-11-17)
+
+Draft edits now save after 750 ms idle and flush at orderly shutdown. The
+existing versioned per-project chat record, atomic writer, private permissions
+and ownership lock already hold a draft; reuse them. Even before its first
+send a draft becomes a saved “Unsent draft” chat, reopened from Earlier chats.
+Each tab has its own identity, so several unfinished chats cannot overwrite
+one project-wide slot. No draft text is put in titles, report lines or .musi.
+Send and erasure save an empty composer. Reopening focuses its caret at the end.
+
+Evidence: application tests 682 passed (including settle deadline, single
+delivery and erasure); fmt check and all-target clippy exit 0. Clippy reports
+existing warnings on unchanged lines. Updated release build passes.
+The isolated GPU chat gate uses report-addressed agent-press=earlier:0 and
+agent-press=earlier:0+send, captures the restored composer with a synthetic
+track playing muted, checks exact persisted text, project isolation, first
+unsent and resumable-chat drafts, Send, and erasure. The inspected
+build/hy4-final-chats/draft-restored.png shows the text and caret at its end,
+with no restore announcement.
+
+Negative controls: disabling the settle condition makes the deadline test fail;
+disabling restore makes the restart gate fail five draft assertions, including
+the existing restore test and Send of the restored composer. Restore the source
+byte-for-byte, SHA-256
+412cc5e57da497aa7058951ef5ebe1b5588fd45dad0868b77a236d6efdc23efa.
+The first positive run exposed two refused probe specs (duplicate play and an
+empty draft value); fix the test's play override and add agent-draft-clear=1,
+rather than weakening the parser's uniqueness/nonempty rules.
+
+Lead plan cleanup: remove HY-4 (both halves), UI toolkit follow-through's
+draft-persistence question, and CX-4's stale “default NOT landed” paragraph.
+Keep the CX-4 listening/calibration/flash validation tasks.
+
+Final tools/chat_sessions_check.sh result: PASS (build/hy4-final-chats.log),
+including the original session, project, lock, forget and image checks.

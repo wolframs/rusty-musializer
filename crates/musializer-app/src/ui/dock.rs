@@ -662,6 +662,13 @@ impl Dock {
         }
     }
 
+    pub fn probe_draft(&mut self, text: &str) {
+        let index = self.current_chat().unwrap_or(usize::MAX);
+        if let Some(Body::Chat(chat)) = self.tabs.get_mut(index).map(|tab| &mut tab.body) {
+            chat.probe_draft(text);
+        }
+    }
+
     /// Answers the active chat's open permission prompts
     /// (`--ui-probe agent-decide=`).
     pub fn probe_decide(&mut self, allow: bool) {

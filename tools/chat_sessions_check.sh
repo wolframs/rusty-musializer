@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Saved agent chats, against tools/fake_agent.py: kept per project, reopened,
-# resumed in the CLI, forgotten. A real agent is never started. MZ_GL_LAUNCH=""
+# resumed in the CLI, forgotten; unsent drafts restored and cleared on Send. A real agent is never started. MZ_GL_LAUNCH=""
 # selects llvmpipe.
 set -euo pipefail
 cd "$(dirname "$0")/.."

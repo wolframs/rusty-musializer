@@ -7595,6 +7595,12 @@ fn dock_probes(
         (presses, None) => 40 + presses * 12 + 6,
     };
     if frame == say_at {
+        if probe.agent_draft_clear {
+            dock.probe_draft("");
+        }
+        if let Some(text) = probe.agent_draft.as_deref() {
+            dock.probe_draft(text);
+        }
         if let Some(text) = probe.agent_say.as_deref() {
             dock.probe_say(text, context);
         }

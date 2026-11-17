@@ -48,7 +48,7 @@ def run(name, spec, track=song, frames=None, extra=None):
     presses = next((s for s in spec if s.startswith('agent-press=')), '')
     frames = frames or 40 + 12 * (presses.count('+') + bool(presses)) + 40
     done = subprocess.run(['tools/headless_run.sh', str(track), '--ui-scale', '100', '--hud=0', '--ui-probe',
-                           ','.join(['size=1920x1080', 'play=0', *spec]), '--probe-frames', str(frames),
+                           ','.join(['size=1920x1080', *([] if any(s.startswith('play=') for s in spec) else ['play=0']), *spec]), '--probe-frames', str(frames),
                            '--probe-shot', str(out / f'{name}.png')],
                           env=env | (extra or {}), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     (out / f'{name}.log').write_text(done.stdout)
@@ -134,6 +134,29 @@ check(has(dock, 'prompts=0', 'The chat ended before you answered'), 'and comes b
 fresh()
 run('no-words', ['agent=claude'])
 check(files() == [], 'a chat nothing was said to is not kept', str(files()))
+
+# Drafts use the same project-local chat record, even before the first send.
+fresh()
+draft = 'Try a gentler opening'
+run('draft-typed', ['agent=claude', f'agent-draft={draft}'], frames=180)
+check(len(files()) == 1 and json.loads(files()[0].read_text())['draft'] == draft,
+      'an unsent draft is kept without a first message')
+dock = run('draft-restored', ['agent-press=earlier:0', 'play=1'])
+check('draft-lines=1' in dock and 'users=0' in dock, 'reopening restores the unsent composer', dock)
+check(json.loads(files()[0].read_text())['draft'] == draft, 'restoring preserves exact draft text')
+dock = run('draft-other-project', ['dock=1'], track=other)
+check('earlier=0 ' in dock, 'drafts belong to their project', dock)
+dock = run('draft-sent', ['agent-press=earlier:0+send'])
+check('users=1' in dock and 'draft-lines=0' in dock, 'Send sends the restored draft', dock)
+check(json.loads(files()[0].read_text())['draft'] == '', 'sending clears the stored draft')
+dock = run('draft-after-send', ['agent-press=earlier:0'])
+check('draft-lines=0' in dock, 'relaunch after Send has an empty composer', dock)
+run('draft-edit-saved', ['agent-press=earlier:0', 'agent-draft=Another thought'], frames=180)
+dock = run('draft-saved-restored', ['agent-press=earlier:0'])
+check('draft-lines=1' in dock and 'users=1' in dock, 'a resumable chat keeps its own draft', dock)
+run('draft-erased', ['agent-press=earlier:0', 'agent-draft-clear=1'], frames=180)
+dock = run('draft-erased-restored', ['agent-press=earlier:0'])
+check('draft-lines=0' in dock, 'erasing a draft persists too', dock)
 
 # --- Codex and Antigravity ---
 fresh()

@@ -29,6 +29,12 @@ retain keyboard ownership: use Tracks → Save while a field is focused, or
 Ctrl+S after leaving the field. The normal draft still participates in
 quit/recovery guards.
 
+Direct keeps an unsent composer draft with its chat, per project, in the
+private saved-chat store. Edits settle for 750 ms before writing; closing the
+window flushes them. Even before the first message, the chat appears as
+“Unsent draft” under Earlier chats. Reopen it to continue with the cursor at
+the end. Send clears the stored draft. Nothing is put in the music project.
+
 ## Integration boundary
 
 - raylib column widgets emit `ShellCommand` / `LyricsEdit`; `main.rs` owns

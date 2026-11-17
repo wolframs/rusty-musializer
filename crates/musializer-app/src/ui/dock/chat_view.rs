@@ -34,6 +34,8 @@ use super::{Agent, DockContext};
 use crate::ui::chat_store;
 use crate::ui::theme::color32;
 
+/// Save after typing settles; shutdown flushes even before this deadline.
+const DRAFT_SETTLE: std::time::Duration = std::time::Duration::from_millis(750);
 /// How often a turn that is still running is saved, for a crash mid-turn.
 const SAVE_WHILE_BUSY: std::time::Duration = std::time::Duration::from_secs(15);
 
@@ -75,6 +77,8 @@ pub struct ChatTab {
     working_directory: Option<std::path::PathBuf>,
     created_unix: i64,
     save_due: bool,
+    draft_changed: Option<std::time::Instant>,
+    keep_draft_chat: bool,
     was_busy: bool,
     last_save: std::time::Instant,
     /// The chat outgrew the store; said once.
@@ -150,6 +154,7 @@ impl ChatTab {
             (!saved.cwd.is_empty()).then(|| std::path::PathBuf::from(&saved.cwd));
         tab.created_unix = saved.created_unix;
         tab.composer.clone_from(&saved.draft);
+        tab.keep_draft_chat = true;
         tab.preamble_pending = agent == Agent::Antigravity && !tab.transcript.has_user_words();
         let session = tab.transcript.session.clone();
         tab.start(context, session.as_deref());
@@ -173,6 +178,8 @@ impl ChatTab {
             working_directory: context.working_directory.clone(),
             created_unix: chat_store::now_unix(),
             save_due: false,
+            draft_changed: None,
+            keep_draft_chat: false,
             was_busy: false,
             last_save: std::time::Instant::now(),
             too_long_said: false,
@@ -196,10 +203,10 @@ impl ChatTab {
         }
     }
 
-    /// The chat as a file, when anything was said to the agent.
+    /// The chat as a file, once there are sent words or an unsent draft.
     #[must_use]
     pub fn saved(&self) -> Option<SavedChat> {
-        if !self.transcript.has_user_words() {
+        if !self.transcript.has_user_words() && !self.keep_draft_chat {
             return None;
         }
         let mut chat = SavedChat {
@@ -218,6 +225,9 @@ impl ChatTab {
             ..SavedChat::default()
         };
         self.transcript.save_into(&mut chat);
+        if chat.title.is_empty() {
+            chat.title = "Unsent draft".to_owned();
+        }
         Some(chat)
     }
 
@@ -350,6 +360,13 @@ impl ChatTab {
     /// Pumps the agent's output into the transcript; called every frame,
     /// visible or not, so a long turn keeps running while the dock is hidden.
     pub fn tick(&mut self) {
+        if self
+            .draft_changed
+            .is_some_and(|at| at.elapsed() >= DRAFT_SETTLE)
+        {
+            self.draft_changed = None;
+            self.save_due = true;
+        }
         self.save_due |= self.images.scan(&mut self.transcript);
         self.tick_listing();
         self.selection_changed |= self.transcript.take_selection_reverted();
@@ -498,6 +515,7 @@ impl ChatTab {
             }
         }
         self.composer.clear();
+        self.draft_changed = None;
         self.save_due = true;
     }
 
@@ -519,6 +537,17 @@ impl ChatTab {
                 }
             }
         }
+    }
+
+    fn draft_edited(&mut self) {
+        self.keep_draft_chat |= !self.composer.is_empty();
+        self.draft_changed = Some(std::time::Instant::now());
+    }
+
+    pub fn probe_draft(&mut self, text: &str) {
+        self.composer = text.to_owned();
+        self.draft_edited();
+        self.focus_next = true;
     }
 
     /// Sends `text` as if typed (`--ui-probe agent-say=`).
@@ -1117,7 +1146,18 @@ impl ChatTab {
                         )
                     })
                     .inner;
+                if response.changed() {
+                    self.draft_edited();
+                }
                 if std::mem::take(&mut self.focus_next) {
+                    let mut state = egui::text_edit::TextEditState::load(ui.ctx(), composer_id)
+                        .unwrap_or_default();
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(self.composer.chars().count()),
+                        )));
+                    state.store(ui.ctx(), composer_id);
                     response.request_focus();
                 }
                 self.composer_focused = response.has_focus();
@@ -1623,6 +1663,31 @@ fn of_edge() -> egui::Color32 {
 
 #[cfg(test)]
 mod polish_tests {
+    #[test]
+    fn draft_saves_after_settle_and_erasure_replaces_it() {
+        let context = super::DockContext::default();
+        let mut chat = super::ChatTab::assemble(
+            super::Agent::Claude,
+            &context,
+            egui::Id::new("draft"),
+            super::Transcript::new(super::Protocol::Claude),
+            "draft".to_owned(),
+        );
+        chat.probe_draft("a thought");
+        chat.tick();
+        assert!(!chat.take_save_due());
+        chat.draft_changed = Some(std::time::Instant::now() - super::DRAFT_SETTLE);
+        chat.tick();
+        assert!(chat.take_save_due());
+        assert!(!chat.take_save_due());
+        assert_eq!(chat.saved().unwrap().draft, "a thought");
+        chat.probe_draft("");
+        chat.draft_changed = Some(std::time::Instant::now() - super::DRAFT_SETTLE);
+        chat.tick();
+        assert!(chat.take_save_due());
+        assert_eq!(chat.saved().unwrap().draft, "");
+    }
+
     #[test]
     fn failed_restart_preserves_draft_and_does_not_start_a_turn() {
         let context = super::DockContext {

@@ -353,6 +353,10 @@ pub struct UiProbe {
     /// `agent-say=TEXT`: send `TEXT` to that chat on frame 30, or after the
     /// last `agent-press=`.
     pub agent_say: Option<String>,
+    /// Type without sending, through the same draft settle path as the editor.
+    pub agent_draft: Option<String>,
+    /// Erase the composer, since probe values cannot be empty.
+    pub agent_draft_clear: bool,
     /// `agent-decide=allow|deny`: answer the chat's permission prompts on
     /// frame 60, through the same path as the Allow and Deny buttons.
     pub agent_decide: Option<bool>,
@@ -1554,6 +1558,8 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
             probe.dock = true;
             probe.agent = Some(value.to_string());
         }
+        "agent-draft-clear" => probe.agent_draft_clear = parse_probe_flag(value)?,
+        "agent-draft" => probe.agent_draft = Some(value.to_string()),
         "agent-say" => probe.agent_say = Some(value.to_string()),
         "agent-decide" => {
             probe.agent_decide = Some(match value {
