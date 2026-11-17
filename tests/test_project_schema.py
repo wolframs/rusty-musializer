@@ -5,12 +5,20 @@ python -m unittest discover -s tests -p test_project_schema.py. Uses the existin
 example; no window, device, media file or hosted call is involved.
 """
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 
-from jsonschema import Draft202012Validator
+try:
+    from jsonschema import Draft202012Validator
+except ImportError:  # the support bundle's plain discover run has no jsonschema;
+    # tools/verify.sh runs this file through uv with it, and sets the variable
+    # so a missing validator fails there instead of skipping.
+    if os.environ.get("MZ_REQUIRE_JSONSCHEMA"):
+        raise
+    raise unittest.SkipTest("jsonschema is not installed") from None
 
 ROOT = Path(__file__).resolve().parents[1]
 
