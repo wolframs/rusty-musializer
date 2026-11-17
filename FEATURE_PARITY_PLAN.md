@@ -88,7 +88,21 @@ lands, and move this item to the archive when all have.
   fans to have openai in there too somehow, but we can perhaps stylize the
   scene and 3d model in it a bit more and name it something more universal."
   Old CLI names and saved projects keep working.
-- [ ] HY-7 the lead: the Aug 7 stash, the 2026-11-10 branch bundle, `build/`.
+- [x] HY-7 the lead, 2026-11-17. Dropped the Aug 7 `px3-tmp` stash (a WIP of
+  PX3, which landed differently). Deleted the 2026-11-10 branch bundle: every
+  commit in it is in master by subject except a "DROP AT MERGE" seam commit and
+  a regenerable code-map refresh. In `build/` (16 GB → 13 GB): deleted the 258
+  entries older than 2026-11-10 that no doc, tool or memory names (run logs,
+  probe and review captures), and in `build/door/` the compositor
+  intermediates `base_v1–3.mp4` and `door_no_room_v2.mp4` (superseded by v3
+  and by the native render). Kept, with the reason: `build/wave-lead/` (its
+  own note: delete after 2026-11-28), `build/consult/` (the CX consultation
+  answers the archive cites), `build/lyrics-recording-2026-09-08/` (hosted
+  answers, LT2 evidence), `build/lyrics-research-v2/` (the research venv, until
+  LT2 closes), `build/protocols/` (CX-4's blind protocols), everything a doc or
+  gate names, and everything newer than 2026-11-10. The repository `.env`
+  stays until HY-3 lands: one of its two keys is in the credential file, the
+  other is not, so it is not yet provably redundant.
 - Not in this round, by the lead's choice: splitting `main.rs`'s `run()`,
   regrouping `tools/` into folders, and the rules-layer items (the trap list's
   length, "cite the C file and line", the one-file-per-agent rules), which go
