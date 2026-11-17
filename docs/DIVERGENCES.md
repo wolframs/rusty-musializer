@@ -607,3 +607,21 @@ flight — Start on Feelings"), built by J4. Details and words:
 | Several charges whose last has no time read "…; the last was." | The clause is left out | The sentence ended on nothing |
 | The status query's answer was read after its process exited, capped at 64 KiB | Read while it runs, capped at 1 MiB | It names every pending charge; past the pipe's 64 KiB the child would block until the 15 s timeout killed it |
 | The J3 log's lines kept to its last 1 MiB | The ledger is read whole up to 16 MiB; past that, or unreadable, the card says it could not be read | A line dropped from the front is a charge lost; an unreadable ledger is not an empty one |
+
+## HY-3 credential boundaries (2026-11-17)
+
+- The CLI no longer reads a repository `.env`: AGENTS.md forbids repository
+  credential storage. Environment credentials still win; otherwise the CLI
+  reads the desktop's `openrouter/default` entry at the same configured path.
+  Doctor retains its `dotenv_consulted`/`dotenv_path` report field names; they
+  now describe this file fallback, as does Assist's `dotenv_fallback` flag.
+  Unlike the older Rust reader, the Python boundary requires exact `0600`,
+  current-user ownership, a regular file, and no symlink, checked on the open
+  handle. `--no-dotenv` keeps its grammar and refuses all file fallback.
+- Discovery and diagnostic children share `assist::env::strip_credential_variables`.
+  All six credential markers still apply, including AUTH. This policy is local
+  to those children; it does not strip the parent or extend AX A8 to other
+  desktop spawns. The login shell already reached the filtered `run_briefly`
+  in this checkout; the new regression pins that actual path.
+- Doctor and catalog helpers share `process::font_import::find_helper` with
+  analysis. Their named `MUSIALIZER_*_HELPER` overrides fail hard when missing.

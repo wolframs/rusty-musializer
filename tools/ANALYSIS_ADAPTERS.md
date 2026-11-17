@@ -1,11 +1,13 @@
 # Optional analysis adapters
 
 These Python 3 helpers run outside Musializer's Rust renderer. Remote analysis
-reads `OPENROUTER_API_KEY` from the process environment. The explicit
-`external_analysis.py assist --mode mimo|all` desktop workflow may instead read
-that one named value from the repository's ignored `.env`; it parses the file
-as data and never sources it as shell code. No other dotenv values are copied
-to child processes.
+reads `OPENROUTER_API_KEY` from the process environment first. CLI runs may
+fall back to `openrouter/default` in the application's private credential store
+(`$XDG_CONFIG_HOME/musializer/credentials.json`, else `$HOME/.config/…`;
+`MUSIALIZER_ASSIST_CREDENTIALS` overrides the path). The file must be owned by
+the current user and have mode `0600`. Repository `.env` files are ignored.
+The desktop hands over its authorized key explicitly and passes `--no-dotenv`,
+whose legacy spelling now refuses all credential-file fallback.
 
 ## Whisper timing import
 
@@ -147,8 +149,7 @@ Private lyric/audio content is passed by file or stdin, not argv; captured child
 output is never copied into error logs. Local FFmpeg, Whisper, measured-analysis,
 and Codex children receive an environment with credential-like variables
 removed. The OpenRouter helper receives only `OPENROUTER_API_KEY`, inherited
-from the environment or parsed as the one permitted key from the ignored
-repository `.env`; it is never written to an argument, request dump, cache key,
+from the environment or the private application credential store; it is never written to an argument, request dump, cache key,
 or manifest.
 
 The lower-level commands remain available for diagnosis and custom workflows:

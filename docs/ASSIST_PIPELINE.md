@@ -1439,3 +1439,14 @@ The dated investigation also records the controls that failed: restoring the old
 special-token parser, weakening the coherent-cluster bound, enabling real DTW,
 batching CTC cues, deleting every low-score cue, using a symmetric search window,
 and retaining duplicate candidates on one acoustic span.
+
+### CLI credential fallback (HY-3, 2026-11-17)
+
+CLI analysis and doctor use `OPENROUTER_API_KEY` first, then `openrouter/default`
+in `$XDG_CONFIG_HOME/musializer/credentials.json` (or `$HOME/.config/musializer/credentials.json`).
+`MUSIALIZER_ASSIST_CREDENTIALS` overrides that path, matching the desktop.
+The file must belong to the current user, be a regular file with mode exactly
+`0600`, and contain the desktop's `musializer.assist-credentials/v1` schema.
+Invalid files are refused with a contents-free diagnostic. Repository `.env`
+files are never read. The desktop still passes its authorized key explicitly;
+its legacy `--no-dotenv` flag now disables this file fallback as well.

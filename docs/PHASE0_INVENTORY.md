@@ -2352,7 +2352,7 @@ headless gate's own knobs — `MZ_NO_WAYLAND`, `MZ_GL_LAUNCH`, `MZ_VGL_DEVICE`,
 | Variable | Site | Purpose | Unset behaviour | Parsing |
 | --- | --- | --- | --- | --- |
 | `OPENROUTER_API_KEY` | `tools/semantic_openrouter.py` (`submit_request`; `tools/mimo_openrouter.py:319` until 2026-11-15) | Bearer credential | `raise RuntimeError("OPENROUTER_API_KEY is not set in the process environment")` (`:320-321`) | truthiness only |
-| `OPENROUTER_API_KEY` | `tools/external_analysis.py:287` | Same credential for the semantic helper | Falls back to parsing the repo `.env` **as data, not shell** (`:288-300`): skips blanks, `#`, and lines without `=`; matches the exact name; strips one layer of matching `"` or `'` | `.strip()`ed string, truthiness |
+| `OPENROUTER_API_KEY` | `tools/external_analysis.py::_openrouter_env` | Same credential for the semantic helper | Environment first, then `openrouter/default` in the application credential file (mode exactly `0600`, current user owner, schema `musializer.assist-credentials/v1`); repository `.env` ignored; legacy `--no-dotenv` refuses file fallback | Environment value `.strip()`ed; file secret as stored |
 | `MUSIALIZER_WHISPER_BIN` | `tools/external_analysis.py:1220`, `--whisper-bin` default `:1450` | whisper.cpp CLI path | Discovers `<install>/build/bin/whisper-cli` (`:1223-1227`); if still unresolved → `AnalysisValidationError` (`:1493`) | raw string → `Path`; **env always wins over discovery**, comment `:1197-1198` |
 | `MUSIALIZER_WHISPER_MODEL` | `tools/external_analysis.py:1221`, `:1451` | ggml model file | Preference-ordered discovery `_WHISPER_MODEL_PREFERENCE` (`:1204-1209`); a better model anywhere beats a lesser model in a preferred install (`:1229-1235`) | raw string → `Path` |
 | `MUSIALIZER_WHISPER_VAD_MODEL` | `tools/external_analysis.py`, `whisper_vad_model()` | Opt-in whisper.cpp VAD model (`--vad`/`--vad-model`). **Added by tranche LT1**, and off by default: Silero v6.2.0 rejects sung vocals over accompaniment (canary kept 0.4 s of 114.84 s) | no VAD; a named path that is not a readable file logs the reason and also runs without VAD, rather than failing the job | `.strip()`, `expanduser()` → `Path`; its SHA-256 enters the Whisper cache identity |
@@ -2536,3 +2536,10 @@ source audio wording and exact local reference spans. This choice does not
 change the audio-transfer boundary or authorize another provider.
 
 `--ui-probe about=1` opens the in-app attribution surface; `about:` reports its live table row count, modal and control rectangles, notice index, scroll position and last action. `key=escape` follows the same modal dismissal path as native Escape.
+
+HY-3 (2026-11-17): dialog tools share the runtime helper ladder.
+`MUSIALIZER_DOCTOR_HELPER`, `MUSIALIZER_PROVIDER_CATALOG_HELPER`, and
+`MUSIALIZER_CODEX_MODEL_DISCOVERY_HELPER` select their respective Python
+helpers. A nonempty override pointing to a missing file fails without probing.
+`--no-dotenv` remains accepted by doctor and Assist and disables the application
+credential-file fallback; it never enables repository `.env` reads.

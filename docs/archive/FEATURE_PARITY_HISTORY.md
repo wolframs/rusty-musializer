@@ -4762,6 +4762,44 @@ made hotter, since `plan::resolve` now reaches the login-shell rung at Start),
 and B12's `find_tool` override rung. A12 was skipped with a recorded reason (a
 schema decision, not a defect), A8 stays an operator contract decision.
 
+### AX-7 / AX-8 closed by HY-3 (2026-11-17)
+
+- One runtime `assist::env::strip_credential_variables` now serves discovery
+  and the dialog. The six-marker policy is confined to discovery/diagnostic
+  children, including AUTH; parent and other desktop spawns are unchanged.
+  The audit's unfiltered-shell claim was stale in this checkout: the shell
+  already went through `run_briefly`. A fake `$SHELL`, launched by an isolated
+  test process carrying a fake token, now pins that actual path and confirms
+  ordinary environment variables survive.
+- Dialog doctor/catalog helpers use the same `font_import::find_helper` ladder
+  as analysis, with `MUSIALIZER_DOCTOR_HELPER`,
+  `MUSIALIZER_PROVIDER_CATALOG_HELPER`, and
+  `MUSIALIZER_CODEX_MODEL_DISCOVERY_HELPER`. Valid overrides win and missing
+  nonempty overrides refuse without probing.
+- CLI analysis and doctor no longer read repository `.env` files. Environment
+  wins; fallback reads the desktop's `openrouter/default` entry in the private
+  application credential file, with exact 0600 mode, current ownership, bounded
+  schema validation and handle-based checks. Legacy `--no-dotenv` disables
+  that fallback. The desktop continues to provide its key explicitly.
+- Tests: 682 app tests pass; runtime passes 245 with one ignored when serial.
+  The initial parallel runtime run hit the untouched decoder-budget assertion in
+  `clip::tests::a_budget_of_two_decoders_runs_two_whatever_the_clips` (244 pass,
+  one fail, one ignored); the serial rerun passes that check. Python discovery
+  runs 636 tests, two skipped, all pass. `cargo fmt --check` passes;
+  `cargo clippy --all-targets` succeeds with existing warnings outside the
+  changed sections. The secret-canary gate passes with only its private file
+  authorized as a plaintext sink. `headless_check.sh --skip-render` passes on
+  display `:83` through VirtualGL, muted, with private worktree state.
+  `cargo build --release` succeeds.
+- Negative controls: removing the strip fails the shell test; breaking the
+  dialog override variable fails its resolution test. Both restored
+  byte-for-byte and pass again. Seven Python mutations are caught: precedence,
+  file fallback, refusal flag, mode, owner, schema, and repository fallback;
+  restored byte-for-byte. The canary's planted artifact leak is caught too.
+- A8 and A12 remain deliberately open; no hosted requests, real credentials,
+  model loads, or repository `.env` edits were needed. The lead can remove
+  AX-7, AX-8, and HY-3 from the live plan after integration.
+
 ## MV9 — the "Door, No Room" compositor's work, moved into the renderer (2026-10-21)
 
 **Why.** The operator's video for "Door, No Room" (Chaos Cat Familiar,
