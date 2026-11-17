@@ -5729,3 +5729,21 @@ Throwaway relative-link scan: 47 Markdown documents, zero unresolved targets;
 an injected missing README target was caught and restored byte-for-byte.
 Touched lyric-anchor Python tests: 45 passed. The lead updates HY-1 and the
 root plan's references at lines 284 (MiMo results); line 237 stays valid.
+
+HY-1 schema evidence: project-v1.schema.json keeps its shipped name and now
+explicitly describes v1/v2, the clip library, scene/section placements and
+generated provenance, including omitted defaults. No application format change.
+tests/test_project_schema.py uses the real project_io_dump writer and reader,
+validating all four combinations of artist/no artist and clips/no clips with
+Python jsonschema (optional dependency in tests/requirements-schema.txt; no
+existing validator dependency was found). The existing build-clips writer
+fixture validates too. Removing the schema's clips property made both clip
+cases fail on additionalProperties; restored byte-for-byte, the test passes.
+
+Validation: cargo fmt --check, cargo clippy --all-targets (exit 0 with existing
+style warnings), 45 lyric Python tests, schema test, current code map and
+47-document link scan pass. cargo test: app 681 and core 1410 pass; runtime
+243 pass, 1 ignored, decoder-budget test failed with (1,3,0) versus (2,2,0).
+Its single targeted rerun passes; the full-run failure is not erased or fixed
+in this documentation batch. cargo build --release passes. No UI/audio or ML
+model was launched; tools/verify.sh is reserved for the lead.

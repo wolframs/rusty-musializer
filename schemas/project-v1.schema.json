@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://musializer.local/schemas/project-v1.schema.json",
-  "title": "Musializer project v1",
-  "description": "Canonical .musi project contract. Arrays are serialized in evaluation order. Cue ordering and non-overlap constraints described below are additionally enforced by the C validator.",
-  "$comment": "For the bounded C codec, every string maxLength is also the maximum UTF-8 byte count and U+0000 is forbidden. JSON Schema maxLength alone counts Unicode code points, so producers must honor this stricter portable representation rule.",
+  "title": "Musializer project (v1 and v2)",
+  "description": "Canonical .musi project contract for v1 and v2. The historical v1 filename is retained for shipped support-bundle references. Arrays are in evaluation order; relational, UTF-8 byte, uniqueness and non-overlap constraints are additionally enforced by the Rust reader and writer.",
+  "$comment": "For the bounded project codec, every string maxLength is also the maximum UTF-8 byte count and U+0000 is forbidden. JSON Schema maxLength alone counts Unicode code points, so producers must honor this stricter portable representation rule.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -127,6 +127,15 @@
         "$ref": "#/$defs/manual_event"
       },
       "description": "User-authored events only. Model-derived semantic events remain in semantic_events and must not be promoted into this authored lane."
+    },
+    "clips": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/clip_asset"
+      },
+      "description": "Optional library, omitted when empty. Digest uniqueness, pixel budget and placement references are checked by the Rust codec."
     }
   },
   "$defs": {
@@ -982,6 +991,9 @@
           "items": {
             "$ref": "#/$defs/mapping"
           }
+        },
+        "clip": {
+          "$ref": "#/$defs/clip_placement"
         }
       },
       "description": "end_seconds must be greater than start_seconds and no greater than audio.duration_seconds."
@@ -1080,6 +1092,9 @@
             }
           ],
           "description": "This section's pixel look over the finish's (2026-10-24): \"off\" switches it off here; omitted when the section wears the video's."
+        },
+        "clip": {
+          "$ref": "#/$defs/clip_placement"
         }
       }
     },
@@ -1414,6 +1429,154 @@
         }
       },
       "description": "The pixel cartridge: the frame drawn at a low resolution through a palette with ordered dithering and shown through a screen; split, shake and zoom answer the kick. Post-legacy (2026-10-24); never written when off."
+    },
+    "clip_placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clip"
+      ],
+      "properties": {
+        "clip": {
+          "$ref": "#/$defs/sha256"
+        },
+        "from": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 600
+        },
+        "after": {
+          "enum": [
+            "loop",
+            "bounce"
+          ]
+        },
+        "fit": {
+          "const": "contain"
+        }
+      },
+      "description": "Defaults hold and cover are spelled by omission; from is optional and must be inside the referenced clip."
+    },
+    "clip_asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "name",
+        "width",
+        "height",
+        "frames",
+        "duration_seconds"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 7680
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 7680
+        },
+        "frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 36000
+        },
+        "duration_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 600
+        },
+        "generated": {
+          "$ref": "#/$defs/clip_provenance"
+        }
+      }
+    },
+    "clip_provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "prompt",
+        "seconds",
+        "resolution",
+        "aspect_ratio",
+        "request_sha256",
+        "generated_utc"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120
+        },
+        "resolution": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "aspect_ratio": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "first_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "last_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "request_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "generated_utc": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "estimate_usd": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "cost_usd": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10000
+        }
+      }
     }
   }
 }

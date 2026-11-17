@@ -1,0 +1,2 @@
+# Optional schema contract test: python -m pip install -r tests/requirements-schema.txt
+jsonschema>=4.18,<5
