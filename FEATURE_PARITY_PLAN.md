@@ -47,7 +47,7 @@ lands, and move this item to the archive when all have.
 - [x] HY-2 this file (landed 2026-11-17, 679 → 519 lines; record in the archive): one telling of the Gemini decision, the stale MiMo
   standing fact, pointers instead of copies of `AGENTS.md`, LT2 condensed, the
   waiting-for-review items in one place.
-- [ ] HY-3 credentials: AX-7 and AX-8 below, and the CLI's repository-`.env`
+- [x] HY-3 (landed 2026-11-17; record under AX in the archive) credentials: AX-7 and AX-8 below, and the CLI's repository-`.env`
   fallback replaced by the 0600 credential file `AGENTS.md` names.
 - [ ] HY-4 the CX-4 −100 ms tap-offset default; chat drafts persist across
   restarts (the lead's choice: a draft lost to a restart is work lost).
@@ -309,28 +309,9 @@ it.
 **AX — the 2026-08-29 assist audit.** AX-1 through AX-6 all landed 2026-08-31
 across seven commits; the wave and its negative controls are in
 `docs/archive/FEATURE_PARITY_HISTORY.md`, the findings themselves in
-`docs/archive/ASSIST_AUDIT_2026-08-29.md`. What the wave left open:
+`docs/archive/ASSIST_AUDIT_2026-08-29.md`. AX-7 and AX-8 landed 2026-11-17 as HY-3 (record under AX in the archive).
+What the wave left open:
 
-- **AX-7 (HY-3) — A7's two `strip_credential_variables` copies, and the login shell
-  that gets neither.** `runtime/assist/discover.rs:338` and
-  `app/ui/assist_settings.rs:3176` are the same function in two crates, and
-  `discover::login_shell_lookup` (`discover.rs:270-295`) spawns `$SHELL -lc`
-  with an unfiltered environment — the one spawn in the discovery path that
-  runs a user's rc files. AX-1 made this *hotter*, not cooler: `plan::resolve`
-  now reaches the `thorough()` rung on the UI thread for every graph carrying a
-  Codex route (documented at `plan.rs:438-452`), so the login shell runs at
-  Start, not only from the dialog. One copy in `runtime`, called by both, plus
-  the strip applied to the shell child. `env.rs:43-45`'s doc comment still
-  forbids the blanket strip both copies perform, so the fix has to reconcile
-  the comment with the callers rather than pick one.
-- **AX-8 (HY-3) — B12's remaining two duplications.** `cache_dir` was unified
-  (`runtime::assist::files::cache_dir`, matching Python's XDG rule), but
-  `assist_settings::find_tool` (`:3197`) still has no `MUSIALIZER_*_HELPER`
-  override rung while its own doc comment says it resolves "the way
-  `find_assist_helper` resolves the analysis helper" — and that function
-  (`process/font_import.rs:603-626`) honours the override and fails hard on a
-  set-but-missing one. So the doctor and both catalog helpers cannot be
-  redirected the way the analysis helper can, and the comment is wrong about it.
 - **A12** — skipped by AX-1 on purpose, and the reason is worth keeping:
   `CredentialState::Session` is only ever set from the env import today, so the
   display fix is cosmetic. The real question is whether the app should persist a
@@ -513,11 +494,12 @@ lane moves to Gemini 3.8 Flash"; request/evidence details in
   pressed in the application itself. See GX-5 for the newer Feelings review
   and remaining real-interaction checks.
 
-## Credential location (HY-3)
+## Credential location
 
-The operator's OpenRouter key lives in `~/.config/musializer/credentials.json`.
-The desktop refuses repository `.env` credentials; HY-3 owns replacing the
-legacy CLI fallback with that credential file.
+The operator's OpenRouter key lives in `~/.config/musializer/credentials.json`
+(0600). Since HY-3 the command-line helpers read it when the environment holds
+no key; the desktop hands its key over explicitly and passes `--no-dotenv`,
+which now refuses the file. No code reads a repository `.env`.
 
 ## How this file stays authoritative
 
