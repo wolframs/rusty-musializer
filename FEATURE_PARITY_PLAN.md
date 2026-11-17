@@ -28,8 +28,8 @@ History and operator wording: [FEATURE_PARITY_HISTORY](docs/archive/FEATURE_PARI
 Full descriptions and verification boundaries: archive, "HY-2 — live queue
 consolidation (2026-11-17)". Waiting is not aesthetic acceptance.
 
-Rules: [AGENTS.md — Not built, and not going to be](AGENTS.md#not-built-and-not-going-to-be).
-Contracts: [AGENTS.md — Judge by what a user or a file can observe](AGENTS.md#judge-by-what-a-user-or-a-file-can-observe).
+Deliberate exclusions: [AGENTS.md — Not built, and not going to be](AGENTS.md#not-built-and-not-going-to-be).
+What changes only on purpose: [AGENTS.md — Judge by what a user or a file can observe](AGENTS.md#judge-by-what-a-user-or-a-file-can-observe).
 
 ## Open work
 
@@ -44,7 +44,7 @@ lands, and move this item to the archive when all have.
   `.gitignore`'s raylib 5.5 and `UI_REVIEW.md` lines, the project schema's v1
   name and missing `clips`, the finished `LYRICS_*`/`MIMO_*` investigations
   to `docs/archive/`, the stale "Agent G note" comments.
-- [ ] HY-2 this file: one telling of the Gemini decision, the stale MiMo
+- [x] HY-2 this file (landed 2026-11-17, 679 → 519 lines; record in the archive): one telling of the Gemini decision, the stale MiMo
   standing fact, pointers instead of copies of `AGENTS.md`, LT2 condensed, the
   waiting-for-review items in one place.
 - [ ] HY-3 credentials: AX-7 and AX-8 below, and the CLI's repository-`.env`
