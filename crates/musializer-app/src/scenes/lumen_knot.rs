@@ -225,6 +225,10 @@ struct Sample {
     /// Angle in the knot's own frame: colour and band glow are fixed to the
     /// knot, so the passes that meet in a change's ring agree.
     angle: f32,
+    /// How far the shadow reaches, in tube radii: [`GAP`], or less where the
+    /// strand turns tighter on screen than the shadow is wide, whose quads
+    /// would fold into a dark spike inside the corner.
+    reach: f32,
 }
 
 #[allow(clippy::too_many_lines)] // One frame's composition, read top to bottom.
@@ -393,11 +397,32 @@ fn draw_base(
         if toward[2] < 0.0 {
             toward = [-toward[0], -toward[1], -toward[2]];
         }
+        let (back_step, fore_step) = (
+            sub(centres[j], centres[(j + n - 1) % n]),
+            sub(centres[(j + 1) % n], centres[j]),
+        );
+        let (a, b) = (
+            back_step[0].hypot(back_step[1]),
+            fore_step[0].hypot(fore_step[1]),
+        );
+        let turn = if a > 1e-7 && b > 1e-7 {
+            ((back_step[0] * fore_step[0] + back_step[1] * fore_step[1]) / (a * b))
+                .clamp(-1.0, 1.0)
+                .acos()
+        } else {
+            0.0
+        };
+        let bend_radius = if turn > 1e-6 {
+            0.5 * (a + b) / turn
+        } else {
+            f32::INFINITY
+        };
         samples.push(Sample {
             p: centres[j],
             across,
             toward,
             angle: angles[j],
+            reach: (0.9 * bend_radius / tube).clamp(1.0, GAP),
         });
     }
 
@@ -516,13 +541,13 @@ fn draw_base(
             let dark = Color::new(2, 3, 12, 235);
             shadow.push([
                 (
-                    project(add_scaled(sample.p, sample.across, -tube * GAP)),
+                    project(add_scaled(sample.p, sample.across, -tube * sample.reach)),
                     shade,
                 ),
                 (project(add_scaled(sample.p, sample.across, -tube)), dark),
                 (project(add_scaled(sample.p, sample.across, tube)), dark),
                 (
-                    project(add_scaled(sample.p, sample.across, tube * GAP)),
+                    project(add_scaled(sample.p, sample.across, tube * sample.reach)),
                     shade,
                 ),
             ]);
