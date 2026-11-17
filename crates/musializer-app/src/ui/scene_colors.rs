@@ -44,7 +44,7 @@ pub(crate) fn scene_color(scene: SceneId, alpha: u8) -> Color {
         // by sitting well into orange, and 21° red of the dark accent — the
         // swatch should *be* Clawd at a glance.
         SceneId::Clawd => (222, 112, 68),
-        SceneId::OpenAiKnot => (131, 89, 230),
+        SceneId::LumenKnot => (88, 132, 236),
         SceneId::Stage => (214, 92, 148),
         // The door's lavender.
         SceneId::Threshold => (156, 144, 200),

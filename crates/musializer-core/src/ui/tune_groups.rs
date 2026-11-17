@@ -125,7 +125,8 @@ const TABLE: &[(&str, &[(&str, Group)])] = &[
                 ("terminal", T), ("hue", C), ("daylight", L), ("ink", H), ("glow", L),
                 ("wiggle", M)]),
     ("knot", &[("size", H), ("response", M), ("pulse", M), ("drift", M), ("flow", L), ("hue", C),
-               ("atmosphere", L), ("polish", L), ("bloom", L), ("fringe", C), ("grain", L)]),
+               ("atmosphere", L), ("polish", L), ("bloom", L), ("fringe", C), ("grain", L),
+               ("form", S)]),
     ("stage", &[("layout", S), ("hue", C), ("saturation", C), ("scale", T), ("bounce", M),
                 ("tilt", T), ("light", L), ("accent", T), ("grain", L), ("pace", T),
                 ("familiar", S)]),
@@ -696,10 +697,11 @@ mod tests {
             total += descriptors.len();
         }
         // The count the design was written against (§3.3) was 29 scenes and
-        // 271 descriptors; the Video Clip (VG) added one and six. A new scene
-        // or parameter moves it, and must move it with its table row.
+        // 271 descriptors; the Video Clip (VG) added one and six, Lumen Knot's
+        // `form` (HY-6) one more. A new scene or parameter moves it, and must
+        // move it with its table row.
         assert_eq!(SceneId::ALL.len(), 30);
-        assert_eq!(total, 277);
+        assert_eq!(total, 278);
     }
 
     #[test]
@@ -715,7 +717,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(seen.len(), 277);
+        assert_eq!(seen.len(), 278);
     }
 
     #[test]

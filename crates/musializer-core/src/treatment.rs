@@ -2940,9 +2940,15 @@ pub fn scene_look(scene: SceneId) -> &'static str {
              `familiar` seats a black cat in the corner. The caption overlay is not \
              drawn on top of it."
         }
-        SceneId::OpenAiKnot => {
-            "Six glossy interlocked ribbons forming one knot, lit by the audio. A bold \
-             single object on a deep ground."
+        SceneId::LumenKnot => {
+            "One glass strand tied as a woven rosette, turning slowly in a night-blue \
+             haze. Kicks send amber comets racing round it, over and under its own \
+             crossings; the bands swell and tint its petals. `form` picks the knot per \
+             section (0 lets the song move on at a drop or after a long hold: 1 six \
+             petals, 2 seven, 3 five, 4 eight, 5 five-point star, 6 seven-point star); \
+             a change pulls it tight into a ring of light on the hit and blooms out as \
+             the next, so a cut between two sections of this scene with different \
+             forms is a gesture, not a jump."
         }
         SceneId::Threshold => {
             "A dark slate room with a lavender door; light from beyond pools on a wet \
@@ -3343,7 +3349,7 @@ mod tests {
             vec![
                 (0.0, 23.0, SceneId::SongAtlas.index() as u32),
                 (23.0, 73.5, SceneId::Cadence.index() as u32),
-                (73.5, 96.25, SceneId::OpenAiKnot.index() as u32),
+                (73.5, 96.25, SceneId::LumenKnot.index() as u32),
                 (96.25, 240.0, SceneId::SongAtlas.index() as u32),
             ]
         );

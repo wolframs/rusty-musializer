@@ -51,7 +51,7 @@ pub enum SceneId {
     /// Post-legacy, no C counterpart (2026-08-24).
     Clawd = 11,
     /// Procedural sixfold weave (2026-09-09).
-    OpenAiKnot = 12,
+    LumenKnot = 12,
     /// The lyric line, staged (2026-10-12).
     Stage = 13,
     /// A room, a door, and another scene through it (2026-10-21, MV9-d).
@@ -132,7 +132,7 @@ impl SceneId {
         SceneId::Pentagram,
         SceneId::PhosphorDream,
         SceneId::Clawd,
-        SceneId::OpenAiKnot,
+        SceneId::LumenKnot,
         SceneId::Stage,
         SceneId::Threshold,
         SceneId::FluidInk,
@@ -202,7 +202,7 @@ impl SceneId {
             SceneId::Pentagram => "Pentagram Orbits",
             SceneId::PhosphorDream => "Phosphor Dream",
             SceneId::Clawd => "Clawd",
-            SceneId::OpenAiKnot => "OpenAI Knot",
+            SceneId::LumenKnot => "Lumen Knot",
             SceneId::Stage => "Stage",
             SceneId::Threshold => "Threshold",
             SceneId::FluidInk => "Fluid Ink",
@@ -247,7 +247,7 @@ impl SceneId {
             // persisted identifier and a scene is not the assistant. "clawd" is
             // the name thebes' flower answers to.
             SceneId::Clawd => "clawd",
-            SceneId::OpenAiKnot => "knot",
+            SceneId::LumenKnot => "knot",
             SceneId::Stage => "stage",
             SceneId::Threshold => "threshold",
             SceneId::FluidInk => "fluid",
@@ -800,7 +800,7 @@ mod tests {
         // what lets a .musi written before 2026-08-08 still resolve its scenes.
         assert_eq!(SceneId::PhosphorDream as u32, 10);
         assert_eq!(SceneId::Clawd as u32, 11);
-        assert_eq!(SceneId::OpenAiKnot as u32, 12);
+        assert_eq!(SceneId::LumenKnot as u32, 12);
         assert_eq!(SceneId::Stage as u32, 13);
         assert_eq!(SceneId::Threshold as u32, 14);
         assert_eq!(SceneId::FluidInk as u32, 15);

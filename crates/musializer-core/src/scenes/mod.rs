@@ -33,9 +33,9 @@ pub mod fluid_ink;
 pub mod glyph_lattice;
 pub mod iridescent_pool;
 pub mod liquid_chrome;
+pub mod lumen_knot;
 pub mod metaball_garden;
 pub mod neon_tunnel;
-pub mod openai_knot;
 /// Post-legacy (2026-10-24): six pixel-art stagings, one scene each, one
 /// implementation.
 pub mod pixel_cats;
@@ -79,7 +79,7 @@ pub fn descriptor(id: SceneId) -> SceneDescriptor {
         SceneId::Pentagram => simple(1, |seed| Box::new(pentagram::PentagramState::new(seed))),
         SceneId::PhosphorDream => phosphor_dream::descriptor(),
         SceneId::Clawd => clawd::descriptor(),
-        SceneId::OpenAiKnot => openai_knot::descriptor(),
+        SceneId::LumenKnot => lumen_knot::descriptor(),
         SceneId::Stage => stage::descriptor(),
         SceneId::Threshold => threshold::descriptor(),
         SceneId::FluidInk => fluid_ink::descriptor(),

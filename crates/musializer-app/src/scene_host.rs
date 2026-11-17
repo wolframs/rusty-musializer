@@ -101,7 +101,7 @@ fn stateless(id: SceneId) -> SceneDescriptor {
             SceneId::Pentagram => |_| Box::new(StatelessScene::new(SceneId::Pentagram)),
             SceneId::PhosphorDream => |_| Box::new(StatelessScene::new(SceneId::PhosphorDream)),
             SceneId::Clawd => |_| Box::new(StatelessScene::new(SceneId::Clawd)),
-            SceneId::OpenAiKnot => |_| Box::new(StatelessScene::new(SceneId::OpenAiKnot)),
+            SceneId::LumenKnot => |_| Box::new(StatelessScene::new(SceneId::LumenKnot)),
             SceneId::Stage => |_| Box::new(StatelessScene::new(SceneId::Stage)),
             SceneId::Threshold => |_| Box::new(StatelessScene::new(SceneId::Threshold)),
             SceneId::FluidInk => |_| Box::new(StatelessScene::new(SceneId::FluidInk)),
@@ -165,7 +165,7 @@ pub fn oracle_source(id: SceneId) -> &'static str {
         // through to a plausible-looking C filename that does not exist.
         SceneId::PhosphorDream => "(no oracle: post-legacy addition)",
         SceneId::Clawd => "(no oracle: post-legacy addition)",
-        SceneId::OpenAiKnot => "(no oracle: post-legacy addition)",
+        SceneId::LumenKnot => "(no oracle: post-legacy addition)",
         SceneId::Stage => "(no oracle: post-legacy addition)",
         SceneId::Threshold => "(no oracle: post-legacy addition)",
         SceneId::FluidInk => "(no oracle: post-legacy addition)",
@@ -269,7 +269,7 @@ pub struct SceneRenderer {
     /// empty floor that should have cats), so its evidence lives here like
     /// phosphor's.
     clawd: scenes::clawd::ClawdResources,
-    knot: scenes::openai_knot::KnotResources,
+    knot: scenes::lumen_knot::KnotResources,
     /// What Stage last drew. No GPU resources; the report is the point, for
     /// the reason Cadence's is: a staged line and a bare ground are both
     /// plausible pictures of this scene.
@@ -406,7 +406,7 @@ impl SceneRenderer {
             sample_caption: None,
             phosphor: scenes::phosphor_dream::PhosphorResources::load(rl, thread),
             clawd: scenes::clawd::ClawdResources::new(),
-            knot: scenes::openai_knot::KnotResources::load(rl, thread),
+            knot: scenes::lumen_knot::KnotResources::load(rl, thread),
             stage: scenes::stage::StageReport::default(),
             feedback_identity: None,
         })
@@ -837,9 +837,9 @@ impl SceneRenderer {
                 scenes::phosphor_dream::prepare(d, &mut self.phosphor, state, frame, boundary);
             }
         }
-        if id == SceneId::OpenAiKnot {
+        if id == SceneId::LumenKnot {
             if let Some(state) = state_of(instance, id) {
-                scenes::openai_knot::prepare(d, &mut self.knot, state, frame, boundary);
+                scenes::lumen_knot::prepare(d, &mut self.knot, state, frame, boundary);
             }
         }
         // Clawd's trail accumulates offscreen for the same reason, and drops
@@ -1002,9 +1002,9 @@ impl SceneRenderer {
                         scenes::pentagram::draw(d, frame, state, &mut self.circle, boundary);
                     }
                 }
-                SceneId::OpenAiKnot => {
+                SceneId::LumenKnot => {
                     if let Some(state) = state_of(instance, id) {
-                        scenes::openai_knot::draw(d, frame, state, &mut self.knot, boundary);
+                        scenes::lumen_knot::draw(d, frame, state, &mut self.knot, boundary);
                     }
                 }
                 SceneId::Stage => {
@@ -1460,7 +1460,7 @@ mod tests {
                 SceneId::Pentagram => any.is::<cs::pentagram::PentagramState>(),
                 SceneId::PhosphorDream => any.is::<cs::phosphor_dream::PhosphorDreamState>(),
                 SceneId::Clawd => any.is::<cs::clawd::ClawdState>(),
-                SceneId::OpenAiKnot => any.is::<cs::openai_knot::KnotState>(),
+                SceneId::LumenKnot => any.is::<cs::lumen_knot::LumenKnotState>(),
                 SceneId::Stage => any.is::<cs::stage::StageState>(),
                 SceneId::Threshold => any.is::<cs::threshold::ThresholdState>(),
                 SceneId::FluidInk => any.is::<cs::fluid_ink::FluidInkState>(),

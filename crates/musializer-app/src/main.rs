@@ -6877,7 +6877,7 @@ impl Report {
         // cats all photograph as a perfectly plausible cute picture. `none`
         // means it has not drawn.
         println!("clawd:           {}", renderer.describe_clawd());
-        println!("openai knot:     {}", renderer.describe_knot());
+        println!("lumen knot:      {}", renderer.describe_knot());
         // Stage: which staging drew, how the line wrapped and at what size.
         println!("stage:           {}", renderer.describe_stage());
         // Threshold: the camera, the door, and whether the doorway was live.

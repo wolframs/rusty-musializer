@@ -67,7 +67,7 @@ impl SceneFamily {
             }
             SceneId::OrbitalLattice
             | SceneId::Pentagram
-            | SceneId::OpenAiKnot
+            | SceneId::LumenKnot
             | SceneId::MetaballGarden
             | SceneId::VoronoiBloom
             | SceneId::GlyphLattice => Self::Geometry,

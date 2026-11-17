@@ -441,16 +441,6 @@ pub const CREDITS: &[Credit] = &[
         dependency: None,
         font: None,
     },
-    Credit {
-        group: "Inspired by",
-        name: "Six-ribbon geometry study (visual reference)",
-        author: "OpenAI",
-        license: None,
-        urls: &["https://openai.com/brand/"],
-        notice: None,
-        dependency: None,
-        font: None,
-    },
 ];
 
 #[cfg(test)]

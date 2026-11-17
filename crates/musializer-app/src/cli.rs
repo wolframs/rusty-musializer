@@ -865,7 +865,9 @@ pub fn scene_from_cli_name(name: &str) -> Option<SceneId> {
         // The one alias that is a courtesy rather than a display-name spelling:
         // someone who knows who the flower is will type the assistant's name.
         "claude" => Some(SceneId::Clawd),
-        "openai-knot" => Some(SceneId::OpenAiKnot),
+        // The display name, and the scene's old name (until 2026-11-17), which
+        // scripts and treatments written before then still use.
+        "lumen-knot" | "openai-knot" => Some(SceneId::LumenKnot),
         // What the threshold is a picture of.
         "door" => Some(SceneId::Threshold),
         "fluid-ink" => Some(SceneId::FluidInk),
@@ -887,7 +889,7 @@ pub const SCENE_NAME_HELP: &str = "spectrum, pulse, orbital, ascii, atlas, terra
 constellation, cadence, loom, pentagram, phosphor, clawd, knot, stage, threshold, fluid, chrome, aurora, metaballs, tunnel, voronoi, iridescent, \
 pixel-boot, pixel-shell, pixel-run, pixel-quartet, pixel-chapel, pixel-rave, glyphs, clip (also pulse-field, \
 orbital-lattice, ascii-field, song-atlas, spectral-terrarium, pentagram-orbits, \
-phosphor-dream, claude, openai-knot, door, fluid-ink, liquid-chrome, aurora-veil, \
+phosphor-dream, claude, lumen-knot, openai-knot, door, fluid-ink, liquid-chrome, aurora-veil, \
 metaball-garden, neon-tunnel, voronoi-bloom, iridescent-pool, pixel-runner, pixel-scroller, \
 glyph-lattice)";
 
@@ -2276,8 +2278,9 @@ mod tests {
             ("phosphor", SceneId::PhosphorDream),
             ("phosphor-dream", SceneId::PhosphorDream),
             ("clawd", SceneId::Clawd),
-            ("knot", SceneId::OpenAiKnot),
-            ("openai-knot", SceneId::OpenAiKnot),
+            ("knot", SceneId::LumenKnot),
+            ("lumen-knot", SceneId::LumenKnot),
+            ("openai-knot", SceneId::LumenKnot),
             ("stage", SceneId::Stage),
             ("threshold", SceneId::Threshold),
             ("door", SceneId::Threshold),

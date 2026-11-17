@@ -442,7 +442,8 @@ pub mod index {
         /// Scales everything the music does; 0 is the clip as it is.
         pub const RESPONSE: usize = 5;
     }
-    /// OpenAI Knot: the persisted control order; new finish controls are appended.
+    /// Lumen Knot (`knot`, named OpenAI Knot until 2026-11-17): the persisted
+    /// control order; the finish controls and `form` were appended.
     pub mod knot {
         pub const SIZE: usize = 0;
         pub const RESPONSE: usize = 1;
@@ -455,6 +456,9 @@ pub mod index {
         pub const BLOOM: usize = 8;
         pub const FRINGE: usize = 9;
         pub const GRAIN: usize = 10;
+        /// Which knot is tied (`scenes::lumen_knot::FORMS`, 1-based); 0 lets
+        /// the song move on at a drop or after a long hold. HY-6, 2026-11-17.
+        pub const FORM: usize = 11;
     }
 }
 
@@ -663,7 +667,8 @@ const CLAWD: &[SettingDescriptor] = &[
     D::slider("settings.clawd.wiggle", "Idle sway", 0.00, 2.00, 1.00, 2),
 ];
 
-/// SX5: topology-safe controls. Width and crossing order are structural constants.
+/// Lumen Knot: topology-safe controls. The tube, the forms and the crossing order
+/// are structural constants; `form` only picks which knot.
 #[rustfmt::skip]
 const KNOT: &[SettingDescriptor] = &[
     D::slider("settings.knot.size", "Knot size", 0.50, 1.15, 0.92, 2),
@@ -677,6 +682,7 @@ const KNOT: &[SettingDescriptor] = &[
     D::slider("settings.knot.bloom", "Bloom", 0.00, 2.00, 1.10, 2),
     D::slider("settings.knot.fringe", "Spectral fringe", 0.00, 2.00, 0.70, 2),
     D::slider("settings.knot.grain", "Film grain", 0.00, 1.00, 0.35, 2),
+    D::slider("settings.knot.form", "Form (0 = follow the song)", 0.0, 6.0, 0.0, 0),
 ];
 
 /// The descriptor table, in scene registry order (`scene_settings.c:129-141`
@@ -1125,7 +1131,9 @@ pub fn count_is_legacy(scene: SceneId, count: usize) -> bool {
         // another count; both postdate the C entirely, so there is no legacy
         // shape to admit.
         SceneId::Loom | SceneId::Pentagram | SceneId::PhosphorDream | SceneId::Clawd => false,
-        SceneId::OpenAiKnot => count == 8,
+        // Eight before the finish controls (2026-09), eleven before `form`
+        // (2026-11-17).
+        SceneId::LumenKnot => count == 8 || count == 11,
         SceneId::Stage
         | SceneId::Threshold
         | SceneId::FluidInk

@@ -27,9 +27,9 @@ pub mod fluid_ink;
 pub mod glyph_lattice;
 pub mod iridescent_pool;
 pub mod liquid_chrome;
+pub mod lumen_knot;
 pub mod metaball_garden;
 pub mod neon_tunnel;
-pub mod openai_knot;
 /// Post-legacy (2026-10-24): the six pixel-art stagings' shared drawing half.
 pub mod pixel_cats;
 pub mod stage;

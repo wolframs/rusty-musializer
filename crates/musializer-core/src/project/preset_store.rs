@@ -1092,14 +1092,15 @@ mod tests {
         assert!(presets[0].snapshot.is_valid_for(scene));
     }
     #[test]
-    fn knot_preset_round_trip_keeps_all_eleven_controls() {
-        let scene = SceneId::OpenAiKnot;
+    fn knot_preset_round_trip_keeps_all_twelve_controls() {
+        let scene = SceneId::LumenKnot;
         let mut values = SceneSettings::new();
         assert!(values.set(scene, 0, 0.75));
         assert!(values.set(scene, 7, 0.25));
         assert!(values.set(scene, 10, 0.65));
+        assert!(values.set(scene, 11, 4.0));
         let snapshot = values.capture(scene).unwrap();
-        assert_eq!(snapshot.count, 11);
+        assert_eq!(snapshot.count, 12);
         let mut library = PresetLibrary::new();
         library.push(scene, "Porcelain current", &snapshot).unwrap();
         let text = save_to_string(&library).unwrap();
@@ -1109,7 +1110,7 @@ mod tests {
     }
     #[test]
     fn eight_control_knot_preset_backfills_the_finish() {
-        let scene = SceneId::OpenAiKnot;
+        let scene = SceneId::LumenKnot;
         let mut values = SceneSettings::new();
         values.set(scene, 0, 0.75);
         let mut old = values.capture(scene).unwrap();
@@ -1123,6 +1124,27 @@ mod tests {
         assert_eq!(values.get(scene, 8), 1.10);
         assert_eq!(values.get(scene, 9), 0.70);
         assert_eq!(values.get(scene, 10), 0.35);
+        assert_eq!(values.get(scene, 11), 0.0);
+    }
+
+    #[test]
+    fn eleven_control_knot_preset_lets_the_song_choose_the_form() {
+        // Every Knot preset saved between the finish controls (2026-09) and
+        // `form` (2026-11-17) is this shape: it keeps its eleven and takes
+        // `form` from its default, 0, rather than from whatever the scene held.
+        let scene = SceneId::LumenKnot;
+        let mut values = SceneSettings::new();
+        values.set(scene, 9, 1.5);
+        values.set(scene, 11, 5.0);
+        let mut old = values.capture(scene).unwrap();
+        old.count = 11;
+        old.values[11..].fill(0.0);
+        let mut library = PresetLibrary::new();
+        library.push(scene, "Before the forms", &old).unwrap();
+        let loaded = load_from_bytes(save_to_string(&library).unwrap().as_bytes()).unwrap();
+        assert!(values.apply_snapshot(scene, &loaded.presets(scene)[0].snapshot));
+        assert_eq!(values.get(scene, 9), 1.5);
+        assert_eq!(values.get(scene, 11), 0.0);
     }
 
     #[test]
