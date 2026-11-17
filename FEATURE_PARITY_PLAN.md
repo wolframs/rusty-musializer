@@ -63,6 +63,38 @@ needs a schema bump or an updated harness and a recorded reason:
 
 ## Open work
 
+**HY — housekeeping from the 2026-11-17 audit** (claimed by the lead session of
+that day). The operator brought an earlier session's audit and asked for "the
+obvious ones" to be batched to GPT-6.1-Sol workers and polished by the lead.
+Each batch runs in its own worktree and is cherry-picked; tick here as each one
+lands, and move this item to the archive when all have.
+
+- [ ] HY-1 docs and references: current-state mentions of `mimo_openrouter.py`,
+  the C-era `ui_fixture.sh`/`ui_capture.sh` rows in `docs/PHASE0_INVENTORY.md`,
+  `.gitignore`'s raylib 5.5 and `UI_REVIEW.md` lines, the project schema's v1
+  name and missing `clips`, the finished `LYRICS_*`/`MIMO_*` investigations
+  to `docs/archive/`, the stale "Agent G note" comments.
+- [ ] HY-2 this file: one telling of the Gemini decision, the stale MiMo
+  standing fact, pointers instead of copies of `AGENTS.md`, LT2 condensed, the
+  waiting-for-review items in one place.
+- [ ] HY-3 credentials: AX-7 and AX-8 below, and the CLI's repository-`.env`
+  fallback replaced by the 0600 credential file `AGENTS.md` names.
+- [ ] HY-4 the CX-4 −100 ms tap-offset default; chat drafts persist across
+  restarts (the lead's choice: a draft lost to a restart is work lost).
+- [ ] HY-5 `tools/`: the three gates nothing runs (dark theme, UI/UX, welcome
+  theme) run, then fixed or retired; the near-twin helper names.
+- [ ] HY-6 the "OpenAI Knot" scene restyled and renamed. Operator, 2026-11-17,
+  verbatim: "we have 'Clawd,' and I figured it would be fair to GPT models and
+  fans to have openai in there too somehow, but we can perhaps stylize the
+  scene and 3d model in it a bit more and name it something more universal."
+  Old CLI names and saved projects keep working.
+- [ ] HY-7 the lead: the Aug 7 stash, the 2026-11-10 branch bundle, `build/`.
+- Not in this round, by the lead's choice: splitting `main.rs`'s `run()`,
+  regrouping `tools/` into folders, and the rules-layer items (the trap list's
+  length, "cite the C file and line", the one-file-per-agent rules), which go
+  to the operator as proposals. The public GitHub mirror is published through
+  the wsiener.dev mirror procedure, not from here.
+
 **The operator's, from the 2026-11-14 follow-up** (record in the archive,
 "The 2026-11-14 follow-up"):
 
