@@ -101,8 +101,9 @@ lands, and move this item to the archive when all have.
   answers, LT2 evidence), `build/lyrics-research-v2/` (the research venv, until
   LT2 closes), `build/protocols/` (CX-4's blind protocols), everything a doc or
   gate names, and everything newer than 2026-11-10. The repository `.env`
-  stays until HY-3 lands: one of its two keys is in the credential file, the
-  other is not, so it is not yet provably redundant.
+  stays: kubuntu's project `.env` files move to the fleet key store as one
+  step of that plan (move 9, see the `fleet-secrets` skill), not one by one;
+  after HY-3 nothing in this repository reads it.
 - Not in this round, by the lead's choice: splitting `main.rs`'s `run()`,
   regrouping `tools/` into folders, and the rules-layer items (the trap list's
   length, "cite the C file and line", the one-file-per-agent rules), which go
