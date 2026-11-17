@@ -81,12 +81,12 @@ pub struct Form {
 /// the six-petal rosette the scene opens on.
 #[rustfmt::skip]
 pub const FORMS: [Form; 6] = [
-    Form { name: "six-petal rosette",   winds: 5, petals: 6, ring: 0.58, swing: 0.30, tube: 0.042 },
-    Form { name: "seven-petal rosette", winds: 3, petals: 7, ring: 0.60, swing: 0.31, tube: 0.050 },
-    Form { name: "five-petal rosette",  winds: 3, petals: 5, ring: 0.60, swing: 0.31, tube: 0.055 },
-    Form { name: "eight-petal rosette", winds: 3, petals: 8, ring: 0.60, swing: 0.31, tube: 0.046 },
+    Form { name: "six-petal rosette",   winds: 5, petals: 6, ring: 0.58, swing: 0.30, tube: 0.052 },
+    Form { name: "seven-petal rosette", winds: 3, petals: 7, ring: 0.60, swing: 0.31, tube: 0.060 },
+    Form { name: "five-petal rosette",  winds: 3, petals: 5, ring: 0.60, swing: 0.31, tube: 0.064 },
+    Form { name: "eight-petal rosette", winds: 3, petals: 8, ring: 0.60, swing: 0.31, tube: 0.056 },
     Form { name: "five-point star",     winds: 2, petals: 5, ring: 0.60, swing: 0.32, tube: 0.060 },
-    Form { name: "seven-point star",    winds: 2, petals: 7, ring: 0.61, swing: 0.31, tube: 0.056 },
+    Form { name: "seven-point star",    winds: 2, petals: 7, ring: 0.61, swing: 0.31, tube: 0.060 },
 ];
 
 /// `form` 1..=6 names one; 0 (or anything unreadable) lets the song choose.

@@ -23,14 +23,16 @@ the far ones sink toward indigo.
 
 | `form` | Knot | Petals | Tube |
 | --- | --- | --- | --- |
-| 1 | T(5,6), six-petal rosette — the form a fresh scene opens on | 6 | 0.042 |
-| 2 | T(3,7), seven-petal rosette | 7 | 0.050 |
-| 3 | T(3,5), five-petal rosette | 5 | 0.055 |
-| 4 | T(3,8), eight-petal rosette | 8 | 0.046 |
+| 1 | T(5,6), six-petal rosette — the form a fresh scene opens on | 6 | 0.052 |
+| 2 | T(3,7), seven-petal rosette | 7 | 0.060 |
+| 3 | T(3,5), five-petal rosette | 5 | 0.064 |
+| 4 | T(3,8), eight-petal rosette | 8 | 0.056 |
 | 5 | T(2,5), five-point star | 5 | 0.060 |
-| 6 | T(2,7), seven-point star | 7 | 0.056 |
+| 6 | T(2,7), seven-point star | 7 | 0.060 |
 
-Denser forms get a thinner tube so the weave stays open at a phone's width. The
+Denser forms get a thinner tube so the weave stays open at a phone's width; each
+tube is near the thickest its form allows (clearance 2.6 tubes at the strongest
+breathing, an opening of 0.2, the frame's extent). The
 table lives in `musializer_core::scenes::lumen_knot::FORMS`; it is a persisted
 index (append, never reorder).
 
@@ -82,7 +84,9 @@ Comets, band glow and the change's flare are light carried inside the glass,
 strongest along the crown.
 
 The weave comes from the painter's order over true depth: every segment lays a
-soft shadow either side of itself, sorted 2.2 tube radii behind the segment.
+soft shadow either side of itself, reaching 1.6 tube radii from its centre (less
+on a bend tighter than that, where its quads would fold into a spike), sorted
+2.2 tube radii behind the segment.
 Two crossing passes are always more than 2.6 radii apart in depth (pinned in
 the core), and a pass's own neighbours on a bend are always less, so the shadow
 falls on the strand beneath — the woven gap — and never on the strand that cast

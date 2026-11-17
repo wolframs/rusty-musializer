@@ -21,7 +21,7 @@ const ID: SceneId = SceneId::LumenKnot;
 const FOCAL: f32 = 4.0;
 /// The woven gap: the soft shadow each pass lays either side of itself
 /// reaches this many tube radii from its centre line.
-const GAP: f32 = 2.1;
+const GAP: f32 = 1.6;
 /// How far behind its own pass a shadow sorts, in tube radii. Less than the
 /// depth between two crossing passes (the core pins more than 2.6), more than
 /// the depth between a pass and its own neighbours on a bend, so the shadow
@@ -309,7 +309,7 @@ fn draw_base(
             // a ring of glow round the knot's own ring keeps the centre a dark
             // window the weave reads against.
             let halo =
-                0.3 * (-(r * 2.4).powi(2)).exp() + 0.75 * (-((r - 0.27) / 0.15).powi(2)).exp();
+                0.45 * (-(r * 2.4).powi(2)).exp() + 0.75 * (-((r - 0.27) / 0.15).powi(2)).exp();
             let ground = hsv(229.0 + hue, 0.78, 0.075 + 0.05 * v);
             let glow = hsv(248.0 + hue, 0.62, 0.20 + 0.14 * energy + 0.08 * beat);
             let veil = hsv(
