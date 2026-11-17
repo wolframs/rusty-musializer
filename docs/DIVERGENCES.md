@@ -626,8 +626,6 @@ flight — Start on Feelings"), built by J4. Details and words:
 - Doctor and catalog helpers share `process::font_import::find_helper` with
   analysis. Their named `MUSIALIZER_*_HELPER` overrides fail hard when missing.
 
-### HY-4 — tap anticipation (2026-11-17)
-
 ### HY-4 — tap anticipation and chat drafts (2026-11-17)
 
 | Before | Now | Reason |

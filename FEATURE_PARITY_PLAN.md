@@ -49,7 +49,7 @@ lands, and move this item to the archive when all have.
   waiting-for-review items in one place.
 - [x] HY-3 (landed 2026-11-17; record under AX in the archive) credentials: AX-7 and AX-8 below, and the CLI's repository-`.env`
   fallback replaced by the 0600 credential file `AGENTS.md` names.
-- [ ] HY-4 the CX-4 −100 ms tap-offset default; chat drafts persist across
+- [x] HY-4 (landed 2026-11-17; record in the archive) the CX-4 −100 ms tap-offset default; chat drafts persist across
   restarts (the lead's choice: a draft lost to a restart is work lost).
 - [x] HY-5 (landed 2026-11-17: dark-theme and UI/UX retired as covered, welcome repaired and in verify; record in the archive) `tools/`: the three gates nothing runs (dark theme, UI/UX, welcome
   theme) run, then fixed or retired; the near-twin helper names.
@@ -94,8 +94,7 @@ decisions are in the archive's "The 2026-11-14 follow-up" and
 
 The right-column workspace replaces the duplicate modal; shared egui styling,
 Direct and the welcome picker remain. See [UI_TOOLKIT](docs/UI_TOOLKIT.md).
-Remaining: persist unfinished toolkit chat drafts across restarts (HY-4;
-the lead's 2026-11-17 choice, recorded in HY above).
+Chat drafts persist per chat since HY-4 (2026-11-17).
 
 **WX-6 appearance coverage — still open (2026-10-30).** The EX4-c CPU
 failure is diagnosed and fixed: it predates WX-5d (5/5
@@ -178,14 +177,12 @@ prefix.
   resolve and spends band height doing it. Carries the proposal review queue.
 - **CX-2** — the clip window belongs in `.musi`, as one of a **list** of named
   export variants. Schema v2. Prerequisite: PXF-4.
-- **CX-4 (HY-4: tap offset)** — the operator listening session above. The rulings it already made
+- **CX-4** — the operator listening session above. The rulings it already made
   (visual-only tap feedback with no stamp click, revised Surprise constants) are
   landed. Track A was rejected on 2026-09-05; track B and tap/flash validation
   remain open. SX4 is the response to that rejection, not a passing CX-4 result.
-  The **-100 ms tap-offset default is NOT landed** (found 2026-08-29: `LyricTap`
-  derives `Default`, 0.0, and core tests pin it). Since PXF-2 the persistence
-  path defers to `LyricTap::default()`, so the ruling is one constant plus
-  `tools/headless_check.sh`'s `last stamp` expectation and two core tests.
+  The −100 ms default for uncalibrated taps landed 2026-11-17 (HY-4); the
+  eight-press calibration gesture is still open.
 - **CX-5** — the thumbnail review is in the waiting section above. The stable
   representative moment does not require resume-position persistence.
 
