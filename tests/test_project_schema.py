@@ -1,6 +1,7 @@
-"""Validate real writer output: python -m unittest discover -s tests -p test_project_schema.py.
+"""Validate real writer output (tools/verify.sh runs this through uv).
 
-Install tests/requirements-schema.txt first. Uses the existing headless codec
+By hand: install tests/requirements-schema.txt, then
+python -m unittest discover -s tests -p test_project_schema.py. Uses the existing headless codec
 example; no window, device, media file or hosted call is involved.
 """
 import json

@@ -171,6 +171,11 @@ step "cargo clippy" cargo clippy --all-targets --quiet
 queue_step "cargo-test" "cargo test" cargo test --quiet
 queue_step "support-bundle" "support bundle (offline Assist)" tools/support_bundle_check.sh
 queue_step "secret-canary" "secret canary (provider credentials)" tools/secret_canary_check.sh
+# The project schema ships in the support bundle; validate it against what the
+# writer actually produces, or it drifts the way it did until 2026-11-17.
+queue_step "project-schema" "project schema (writer output, v1/v2/clips)" \
+    uv run --quiet --no-project --with 'jsonschema>=4.18,<5' \
+    python -m unittest discover -s tests -p test_project_schema.py
 # Static isolation checks on the capture scripts. Cheap, and it guards two
 # defects that shipped for months because nothing they break is visible until a
 # capture spawns a GUI child — at which point a file dialog opens on the

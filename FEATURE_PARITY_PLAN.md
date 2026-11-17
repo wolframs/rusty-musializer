@@ -39,7 +39,7 @@ obvious ones" to be batched to GPT-6.1-Sol workers and polished by the lead.
 Each batch runs in its own worktree and is cherry-picked; tick here as each one
 lands, and move this item to the archive when all have.
 
-- [ ] HY-1 docs and references: current-state mentions of `mimo_openrouter.py`,
+- [x] HY-1 (landed 2026-11-17; the schema test runs in verify; record in the archive) docs and references: current-state mentions of `mimo_openrouter.py`,
   the C-era `ui_fixture.sh`/`ui_capture.sh` rows in `docs/PHASE0_INVENTORY.md`,
   `.gitignore`'s raylib 5.5 and `UI_REVIEW.md` lines, the project schema's v1
   name and missing `clips`, the finished `LYRICS_*`/`MIMO_*` investigations
@@ -499,7 +499,7 @@ lane moves to Gemini 3.8 Flash"; request/evidence details in
   differently. These are observations, not a benchmark.
 - Pointing the harness at Gemini needs a price row and removal of its fixed
   temperature; a new paid run needs the operator's go-ahead. The first MiMo run
-  was 60 calls on 2026-11-14 ([results](docs/MIMO_BENCHMARK_RESULTS.md));
+  was 60 calls on 2026-11-14 ([results](docs/archive/MIMO_BENCHMARK_RESULTS.md));
   repeats 2 and 3 of most cells remain unrun and are not worth running for a
   model set aside. The truth session and converter in `tools/mimo_bench/` stay
   for a later benchmark; answers are no longer waited for (the app uses none
