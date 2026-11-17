@@ -41,7 +41,7 @@ tools/headless_check.sh --skip-render  # Assist/routing checks only
 tools/headless_run.sh ARGS...      # any hand launch: isolated, muted, on the GPU
 tools/treatment_check.sh           # directing gate: --treatment, sheets, stills
 tools/poster_check.sh              # poster frames gate
-tools/welcome_theme_check.sh      # welcome restores saved dark/light appearance before opening audio
+tools/welcome_theme_check.sh       # welcome screen in the saved dark/light appearance
 tools/column_check.sh              # the right column: views, frame, census, dock, render
 tools/agent_controls_check.sh      # the composer's model, effort and access, against a fake agent
 tools/chat_sessions_check.sh       # saved chats: reopen, resume, per project, forget
