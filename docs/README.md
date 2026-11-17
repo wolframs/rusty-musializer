@@ -85,41 +85,12 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
   guide for analysis dependencies, discovery, privacy boundaries and commands.
 - [`../tools/MEASURED_ANALYSIS.md`](../tools/MEASURED_ANALYSIS.md) — the
   deterministic measured-audio artifacts consumed by higher-level analysis.
-- [`MIMO_BENCHMARK_PLAN.md`](MIMO_BENCHMARK_PLAN.md) — the benchmark of
-  `xiaomi/mimo-v2.5`'s musical description, with its chunking / register /
-  output-shaping axes, scoring rubric and decision gates. Running it spends
-  credits and sends audio off the machine, and needs an explicit operator
-  go-ahead.
-- [`MIMO_BENCHMARK_RESULTS.md`](MIMO_BENCHMARK_RESULTS.md) — what the first live
-  run (2026-11-14) said, hypothesis by hypothesis and gate by gate, its real
-  cost, and the listening session that supplies key, metre and instruments.
+### Lyrics timing policy
 
-### Lyrics timing
-
-Four dated records and one design proposal, kept because the policy they
-produced is deliberately conservative in ways nobody would guess from the code
-alone. Read them in this order if you are changing localization:
-
-- [`LYRICS_TIMING_INCIDENT_2026-08-17.md`](LYRICS_TIMING_INCIDENT_2026-08-17.md)
-  — **read this one first.** The Groyper Idol wrong-source and wrong-occurrence
-  failure, the replay measurements, the external-project review, and
-  localization policy v2's evidence and abstention rules. It is also where the
-  acceptance metric moved from coverage to accepted-cue precision, which
-  supersedes the gate the benchmark below used.
-- [`LYRICS_TIMING_INVESTIGATION.md`](LYRICS_TIMING_INVESTIGATION.md) — the
-  2026-08-01 repair: five compounding failures, the acceptance tracks, the
-  forced-alignment policy, and seven negative controls with what each caught.
-- [`LYRICS_TIMING_BENCHMARK_RESULTS.md`](LYRICS_TIMING_BENCHMARK_RESULTS.md) —
-  the 2026-08-04 four-track scoreboard that selected anchor→block MMS, the
-  operator's listen-check adjudication, and the finding that the aligner's own
-  score does not separate right from wrong. Carries a superseded-acceptance
-  header pointing at the incident.
-- [`LYRICS_TIMING_WEB_EVIDENCE.md`](LYRICS_TIMING_WEB_EVIDENCE.md) — the
-  published and community evidence that answered the experiment matrix's cut
-  questions, so nobody re-benches them on local GPU time.
-- [`LYRICS_TIMING_RESEARCH_PLAN.md`](LYRICS_TIMING_RESEARCH_PLAN.md) — the
-  2026-08-04 design proposal. Its status header says which parts shipped as LT1
-  and which were superseded; it is not a queue.
+Before changing localization, read
+[`LYRICS_TIMING_INCIDENT_2026-08-17.md`](LYRICS_TIMING_INCIDENT_2026-08-17.md):
+wrong-source and wrong-occurrence failures, accepted-cue precision, and
+localization policy v2. Completed experiments are listed under history below.
 
 ## Live queues and repository rules
 
@@ -143,6 +114,13 @@ alone. Read them in this order if you are changing localization:
 `archive/` holds closed records. They are kept for their evidence and their
 method, not as instructions, and each carries its own archived-on header.
 
+- [`archive/LYRICS_TIMING_BENCHMARK_RESULTS.md`](archive/LYRICS_TIMING_BENCHMARK_RESULTS.md) — dated investigation evidence.
+- [`archive/LYRICS_TIMING_INVESTIGATION.md`](archive/LYRICS_TIMING_INVESTIGATION.md) — dated investigation evidence.
+- [`archive/LYRICS_TIMING_RESEARCH_PLAN.md`](archive/LYRICS_TIMING_RESEARCH_PLAN.md) — dated investigation evidence.
+- [`archive/LYRICS_TIMING_WEB_EVIDENCE.md`](archive/LYRICS_TIMING_WEB_EVIDENCE.md) — dated investigation evidence.
+- [`archive/MIMO_BENCHMARK_PLAN.md`](archive/MIMO_BENCHMARK_PLAN.md) — dated investigation evidence.
+- [`archive/MIMO_BENCHMARK_RESULTS.md`](archive/MIMO_BENCHMARK_RESULTS.md) — dated investigation evidence.
+- [`archive/C_UI_CAPTURE_HARNESS.md`](archive/C_UI_CAPTURE_HARNESS.md) — removed C capture tools and fixture provenance.
 - [`archive/LYRICS_GROUPING_REVIEW.md`](archive/LYRICS_GROUPING_REVIEW.md): two
   resolved phrase judgments, browser audition and private evidence record.
 - [`archive/LYRICS_RECORDING_2026-09-08.md`](archive/LYRICS_RECORDING_2026-09-08.md):

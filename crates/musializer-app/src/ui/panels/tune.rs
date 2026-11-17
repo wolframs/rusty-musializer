@@ -451,13 +451,8 @@ fn push_snapshot(scene: SceneId, snapshot: &SettingsSnapshot, commands: &mut Vec
 
 /// Whether an open, dirty route draft should stop the application quitting.
 ///
-/// This is `route_editor_dirty` in the C's close guard (`plug.c:7248`), which
-/// `main.rs`'s `confirm_close` still weighs only dirty projects. Exposed here so
-/// adding it there is one call rather than a second copy of the draft.
-#[allow(
-    dead_code,
-    reason = "the close guard in main.rs is the integration owner's line to add; see the Agent G note in REWRITE_PLAN.md"
-)]
+/// The close guard in `main.rs` reads the open editor's draft as well as
+/// project dirtiness, so an unsaved route edit also prompts before quitting.
 impl Shell {
     pub(crate) fn route_edit_is_dirty(&self) -> bool {
         self.peek_editor(|host| host.state.is_dirty())

@@ -1,5 +1,8 @@
 # Lyrics timing: trimmed benchmark results (2026-08-04)
 
+> Archived 2026-11-17: completed investigation; current behavior is in
+> [Assist pipeline](../ASSIST_PIPELINE.md), work in the root live queue.
+
 > **Superseded acceptance interpretation (2026-08-17).** The matrix below is
 > valid historical evidence, but its 100% coverage gate was insufficient.
 > Groyper Idol produced 18/18 cues while ten placements disagreed by as much as
@@ -7,7 +10,7 @@
 > occurrence-scale and backwards-order disagreements abstain, section/coarse
 > evidence bounds sparse-anchor searches only with an unconditioned global
 > challenger, and the authored source is visible.
-> See [`LYRICS_TIMING_INCIDENT_2026-08-17.md`](LYRICS_TIMING_INCIDENT_2026-08-17.md).
+> See [`LYRICS_TIMING_INCIDENT_2026-08-17.md`](../LYRICS_TIMING_INCIDENT_2026-08-17.md).
 
 Companion to `LYRICS_TIMING_RESEARCH_PLAN.md` (design) and
 `LYRICS_TIMING_WEB_EVIDENCE.md` (why the cut lanes stayed cut). Harness:

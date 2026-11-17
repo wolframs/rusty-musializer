@@ -16,7 +16,7 @@ The previous production path made Whisper the *authority* for localization: an
 authored line that did not match Whisper evidence was omitted before the
 acoustic aligner ever saw it, and a line that did match was refined only inside
 a window derived from that same suspect evidence. Both failure classes are
-documented in ``docs/LYRICS_TIMING_RESEARCH_PLAN.md`` and both were measured on
+documented in ``docs/archive/LYRICS_TIMING_RESEARCH_PLAN.md`` and both were measured on
 the coverage canary, which lost its two outro lines to a Whisper repetition
 loop.
 

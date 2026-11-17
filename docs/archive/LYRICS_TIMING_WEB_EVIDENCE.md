@@ -1,5 +1,8 @@
 # Lyrics timing: web evidence for the trimmed benchmark (2026-08-04)
 
+> Archived 2026-11-17: completed investigation; current behavior is in
+> [Assist pipeline](../ASSIST_PIPELINE.md), work in the root live queue.
+
 Companion to `LYRICS_TIMING_RESEARCH_PLAN.md`. The operator cut the plan's
 seven-variant experiment matrix to two local lanes (whole-song
 Qwen3-ForcedAligner; anchor→block MMS). This memo records the published and

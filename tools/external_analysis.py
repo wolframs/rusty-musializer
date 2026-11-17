@@ -1938,7 +1938,7 @@ def _semantic_cache_accepts_as(
             envelope.get("request") == request_identity and
             envelope.get("cache_key") == canonical_sha256(request_identity) and
             # The helper's name, or its name before 2026-11-15
-            # (`tools/mimo_openrouter.py`): the identity decides, not the file.
+            # (`tools/semantic_openrouter.py`): the identity decides, not the file.
             any(_provenance_matches(
                 normalized,
                 adapter=adapter,

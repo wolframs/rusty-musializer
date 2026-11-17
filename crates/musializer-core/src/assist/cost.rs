@@ -1,6 +1,6 @@
 //! What a semantic listening call should cost, said before it is sent.
 //!
-//! The 2026-11-14 MiMo benchmark (`docs/MIMO_BENCHMARK_RESULTS.md`, "Cost")
+//! The 2026-11-14 MiMo benchmark (`docs/archive/MIMO_BENCHMARK_RESULTS.md`, "Cost")
 //! found the money is in the **answer**, not the audio: a reasoning model
 //! thinks before it answers, billed at the completion rate, while audio bills
 //! at the prompt rate. An estimate built on audio seconds alone is wrong by an

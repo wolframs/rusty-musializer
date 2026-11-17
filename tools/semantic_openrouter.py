@@ -168,7 +168,7 @@ class ModelProfile:
 # the 2026-11-14 benchmark one MiMo call emitted that many tokens of whitespace
 # (0.131 USD) and another ran to 43 578. The largest legitimate answer used
 # 10 942 on a 100-second excerpt; the cap leaves half again as much room and
-# still cuts both runaways. docs/MIMO_BENCHMARK_RESULTS.md, "Cost".
+# still cuts both runaways. docs/archive/MIMO_BENCHMARK_RESULTS.md, "Cost".
 DEFAULT_MAX_COMPLETION_TOKENS = 16_000
 UNLISTED = ModelProfile(
     label="",

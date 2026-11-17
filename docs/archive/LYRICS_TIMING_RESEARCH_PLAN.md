@@ -1,5 +1,8 @@
 # Lyrics timing: global localization research and implementation plan
 
+> Archived 2026-11-17: completed investigation; current behavior is in
+> [Assist pipeline](../ASSIST_PIPELINE.md), work in the root live queue.
+
 Date: 2026-08-04
 
 Status: research/design proposal. This is not a second live repository queue.

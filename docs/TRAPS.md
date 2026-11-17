@@ -650,7 +650,7 @@ same limit. Send `max_tokens` on every hosted model call, and treat `length`
 as a failure even when the text parses, since a truncated JSON list is still
 JSON. Symptom: a call costing ten times its neighbours with a `usage` of
 exactly 65 536 completion tokens. Found in the MiMo benchmark and fixed in
-`tools/mimo_openrouter.py` (H3b), 2026-11-14.
+`tools/semantic_openrouter.py` (H3b), 2026-11-14.
 
 ## A helper's own reason dies at `_run`
 

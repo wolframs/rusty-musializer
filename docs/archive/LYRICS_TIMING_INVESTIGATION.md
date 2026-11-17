@@ -1,5 +1,8 @@
 # Lyrics timing investigation
 
+> Archived 2026-11-17: completed investigation; current behavior is in
+> [Assist pipeline](../ASSIST_PIPELINE.md), work in the root live queue.
+
 Date: 2026-08-01
 
 ## Outcome

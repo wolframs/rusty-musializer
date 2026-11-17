@@ -475,7 +475,7 @@ pub struct BrowserView {
     /// re-resolution — `can_import` only bounds-checks the index
     /// (`lyrics_editor_ui.c:813-814`) — so a refresh between choosing and
     /// pressing downloads a *different family*. Storing the name is the comment's
-    /// stated intent and closes it; see the Agent K note in `REWRITE_PLAN.md`.
+    /// stated intent: re-resolving the chosen name cannot select a different family.
     selected: Option<String>,
     network_allowed: bool,
 }

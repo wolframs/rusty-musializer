@@ -1,5 +1,8 @@
 # MiMo v2.5 description benchmark
 
+> Archived 2026-11-17: completed investigation; current behavior is in
+> [Assist pipeline](../ASSIST_PIPELINE.md), work in the root live queue.
+
 **Question.** How exactly can `xiaomi/mimo-v2.5` — the model behind the app's
 *MiMo feelings* lane — describe music? Instruments, feel, lyric positioning,
 sonic texture, and music-theoretical content (key, tempo, meter, harmony, form).

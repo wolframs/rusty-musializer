@@ -1866,7 +1866,7 @@ open, in the order a session should pick it up:
 | # | Work | Where | Size |
 | --- | --- | --- | --- |
 | 0 | **The fifteen-minute listening session** — the only thing in the whole PXF debrief that a human genuinely has to do, now that CX has scoped it: validate the tap offset (4 min), compare 80/120/200 ms flashes (2 min), and blind-compare five current against five proposed Surprise seeds on two tracks (9 min), against CX-4's stated pass condition | CX-4 | 15 minutes, operator |
-| 1 | **MiMo v2.5 capability benchmark** — operator's stated priority. Design and harness in `docs/MIMO_BENCHMARK_PLAN.md` + `tools/mimo_bench/`. Needs an explicit operator go-ahead: it sends audio to OpenRouter and spends credits | new | one session |
+| 1 | **MiMo v2.5 capability benchmark** — operator's stated priority. Design and harness in `docs/archive/MIMO_BENCHMARK_PLAN.md` + `tools/mimo_bench/`. Needs an explicit operator go-ahead: it sends audio to OpenRouter and spends credits | new | one session |
 | 2 | **The remaining CX rulings, in their stated order:** CX-3 save trust is closed; next is CX-5 thumbnails behind a poster-frame service (PXF-7 first), then CX-1 marker rails and the proposal review queue, then CX-2 export variants (PXF-4 first, schema v2). CX-4's revised Surprise constants are already landed; its listening protocol remains operator work. Trust outranks delight — that ordering is a ruling, not a preference | CX + PX sections | large; four or five agents |
 | 2b | The remaining UX0-B (B06, B10–B19) and UX0-C (C08, C09, C17); PXF-3, PXF-5, PXF-10, PXF-12 | UX0 sections | medium |
 | 3 | C2/C3/C5 durable-edit remainder, D5–D8, then E2–E4 (prove the copied bundle runs), then F/G honesty and gates; DX1–DX9 dev-ex items, DX8 first | this document | large |
@@ -3275,7 +3275,7 @@ refined lane. Two embedded-metadata tracks and audio-identical tag-stripped
 copies complete end to end, including native bridge parsing, independent
 Demucs-vocal controls, remote phrase-count audits, and targeted negative
 controls. The full methodology and metrics are in
-`docs/LYRICS_TIMING_INVESTIGATION.md`. This closes the timing investigation but
+`docs/archive/LYRICS_TIMING_INVESTIGATION.md`. This closes the timing investigation but
 does not close E2's remaining discovery, lifecycle, staging, or UI work.
 
 - [ ] Verify all local/offline Assist modes without network credentials.
@@ -3326,12 +3326,12 @@ Design authority: `docs/ASSIST_PROVIDER_CONTRACTS.md` (P0, done), which carries
 the operator's storage decisions from `AGENTS.md` — no OS/vendor wallet, a 0600
 credentials file, user-chosen models directory. Later phases (dialog, execution
 wiring) get their tranches only after these land. The lyrics-timing benchmark
-(`docs/LYRICS_TIMING_RESEARCH_PLAN.md`, trimmed per
-`docs/LYRICS_TIMING_WEB_EVIDENCE.md`) runs in parallel and is not gated on this.
+(`docs/archive/LYRICS_TIMING_RESEARCH_PLAN.md`, trimmed per
+`docs/archive/LYRICS_TIMING_WEB_EVIDENCE.md`) runs in parallel and is not gated on this.
 
 ### LT1 — anchor→block lyric localization in production
 
-Benchmark verdict 2026-08-04 (`docs/LYRICS_TIMING_BENCHMARK_RESULTS.md`):
+Benchmark verdict 2026-08-04 (`docs/archive/LYRICS_TIMING_BENCHMARK_RESULTS.md`):
 anchor→block MMS reached 100% authored-line coverage on all four tracks and
 recovered the canary's Whisper-looped outro lines; whole-song Qwen failed its
 decision gate. Both gates cleared 2026-08-04: AP1 landed (`d132a3e`) and the
@@ -3680,7 +3680,7 @@ gate carries the checks so none of them can regress quietly.
 - [x] S8 the built-in recommended profile's own models were labelled
       experimental and their pickers permanently disabled — `whisper.cpp` /
       TC-COARSE is a `recommended` suitability row on the four-track benchmark's
-      own Whisper evidence (`docs/LYRICS_TIMING_BENCHMARK_RESULTS.md`,
+      own Whisper evidence (`docs/archive/LYRICS_TIMING_BENCHMARK_RESULTS.md`,
       2026-08-04, `anchor-block-mms/1`, `musializer.lyric-timing/v1`).
       `xiaomi/mimo-v2.5` stays experimental. A picker whose only option is the
       current selection is disabled **with** a hint naming the Show experimental
@@ -3748,7 +3748,7 @@ the unit suite cannot express at all, caught by a capture.
 
 ### AP3 — the AI settings entry point and dialog
 
-Design intent: `docs/LYRICS_TIMING_RESEARCH_PLAN.md`, "Visible settings entry
+Design intent: `docs/archive/LYRICS_TIMING_RESEARCH_PLAN.md`, "Visible settings entry
 point and dialog". Authority: `docs/ASSIST_PROVIDER_CONTRACTS.md`. Landed
 2026-08-05 in `crates/musializer-app/src/ui/assist_settings.rs` (one module),
 plus the heading-row button in `ui/panels/assist.rs` and five wiring lines in
@@ -5112,7 +5112,7 @@ recorded `usage.cost` (`86bd13f`), billed empty answers kept and counted
 (`9e2c1a4`). Cost **0.49 to 0.63 USD**: two billed calls came back empty
 before the harness kept such responses, so **the 0.60 ceiling may have been
 passed by up to 0.03**. Results, hypotheses and gates, read at n = 1 for most
-cells: `docs/MIMO_BENCHMARK_RESULTS.md`. The Listening Lab session for key,
+cells: `docs/archive/MIMO_BENCHMARK_RESULTS.md`. The Listening Lab session for key,
 metre and instruments and its converter (`41fe23b`) supply the missing truth
 the operator asked for; it waits for his ears (commands in the results doc).
 
@@ -5711,3 +5711,21 @@ no tool regrouped, no Rust test required, and verify.sh was not run.
 Lead plan change: mark HY-5 complete when these commits land; this worker did
 not edit FEATURE_PARITY_PLAN.md. Broad gate reruns remain the lead's integration
 work. Release build result is reported in the worker handoff.
+
+### HY-1 — documentation and reference audit (2026-11-17)
+
+Current helper/test references name semantic_openrouter; history, hash-pinned
+identities and read compatibility keep the old names. The live inventory now
+describes the isolated headless scripts and colon-prefixed display; the removed
+C capture inventory is in archive/C_UI_CAPTURE_HARNESS.md. raylib-link builds
+6.0 into Cargo OUT_DIR, so no vendor build-output ignore is needed. Before/after
+ignored-status snapshots exposed no previously ignored paths.
+
+Six completed lyrics/MiMo investigations moved to archive with links repaired.
+The September repair stays live (paused LT2 evidence); the August 17 incident
+stays as the localization policy reference. Obsolete agent-note comments now
+give the reason; the route close guard and font pane are already wired.
+Throwaway relative-link scan: 47 Markdown documents, zero unresolved targets;
+an injected missing README target was caught and restored byte-for-byte.
+Touched lyric-anchor Python tests: 45 passed. The lead updates HY-1 and the
+root plan's references at lines 284 (MiMo results); line 237 stays valid.

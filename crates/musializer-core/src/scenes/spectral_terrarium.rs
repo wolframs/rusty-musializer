@@ -41,8 +41,7 @@ use std::f32::consts::PI;
 /// A three-component position/velocity.
 ///
 /// `musializer-core` cannot use raylib's `Vector3`, so scenes carry their own.
-/// A shared small-vector type in core would suit both scene agents; see the
-/// Agent D note in REWRITE_PLAN.md.
+/// This local value type keeps simulation independent of the drawing backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Vec3 {
     pub x: f32,

@@ -104,10 +104,8 @@ pub fn profile_valence(profile: &[f32; weave::BINS]) -> f32 {
 
 /// Port of `semantic_lane_sample` (`../musializer/src/semantic_lane.c`).
 ///
-/// This is Agent B's module in the ownership map, and it is still a stub in
-/// `core::project::semantic_lane`. Loom needs it now, so this is a local faithful
-/// copy that should collapse into a call once B lands the real one — see the
-/// Agent D note in REWRITE_PLAN.md.
+/// This local sampler preserves the scene's four-value event filtering and
+/// timeline capacity limit; the project sampler serves project evaluation.
 ///
 /// Two details are reproduced deliberately rather than improved:
 ///
@@ -418,8 +416,7 @@ mod tests {
         };
         let first = semantic_at(&frame, &state.weave, 1.0);
         let second = semantic_at(&frame, &state.weave, 1.0);
-        // Compared field-by-field because `SemanticFrame` in the shared contract
-        // does not derive `PartialEq` yet; see the Agent D note in REWRITE_PLAN.md.
+        // Pin all four semantic channels, including confidence.
         assert_eq!(
             (first.energy, first.tension, first.valence, first.confidence),
             (

@@ -30,16 +30,9 @@
 //! anyone later") and the consent copy promises it in as many words. Do not
 //! "improve" it into a saved setting.
 
-// Nothing in this module has a caller yet, and both of its two entry points are
-// in files this agent may not edit: `Shell::font_browser_pane` is called from
-// Agent I's lyrics editor, and `FontBrowser` is constructed and polled by
-// `main.rs`. The scaffold carried the same allow on the stub for the same
-// reason. The Agent K note in `REWRITE_PLAN.md` has both diffs; **delete this
-// attribute when they land** — after that, a dead function here is a real one.
-#![allow(
-    dead_code,
-    reason = "the two call sites are in shared files this fan-out agent may not edit"
-)]
+// The pane is wired into the shell; the legacy import handoff is retained
+// for callers that consume a completed manifest directly.
+#![allow(dead_code, reason = "retain the unused direct font import handoff")]
 
 use musializer_core::ui::font_import_state::{
     self as font_state, BrowserLayout, BrowserView, FontImportPanel,
@@ -299,10 +292,7 @@ impl Shell {
     /// Called by [`super::lyrics`] when its font pane is showing, so the two
     /// never fight over the same rectangle.
     ///
-    /// `browser` is a separate argument rather than a field of `Shell` only
-    /// because `shell.rs` is a shared file this fan-out's agents may not edit.
-    /// The Agent K note in `REWRITE_PLAN.md` carries the two-line diff that makes
-    /// it `self.font_browser` and drops this parameter.
+    /// The pane owns its importer; the result leaves through `take_import`.
     pub(crate) fn font_browser_pane(
         &mut self,
         d: &mut RaylibDrawHandle<'_>,

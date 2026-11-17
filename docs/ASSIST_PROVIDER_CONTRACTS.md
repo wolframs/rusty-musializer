@@ -3,7 +3,7 @@
 Date: 2026-08-04. Status: design authority for the provider-configuration
 workstream. Not a task queue — P1–P5 items belong in `FEATURE_PARITY_PLAN.md`.
 
-Design intent: `docs/LYRICS_TIMING_RESEARCH_PLAN.md`, "Assistance provider
+Design intent: `docs/archive/LYRICS_TIMING_RESEARCH_PLAN.md`, "Assistance provider
 configuration workstream". Where that section and this document disagree, this
 one wins: it carries the operator's 2026-08-04 storage decisions recorded in
 `AGENTS.md`, "Persistent file storage" — **no OS/vendor wallet**, a
@@ -11,8 +11,8 @@ one wins: it carries the operator's 2026-08-04 storage decisions recorded in
 
 Current mechanisms this replaces or wraps: `tools/external_analysis.py`
 (`_safe_local_env`, `_openrouter_env`, `--codex-model`),
-`tools/mimo_openrouter.py` (hard-coded `MODEL = "xiaomi/mimo-v2.5"`; since
-2026-11-15 `tools/semantic_openrouter.py`, model from the route),
+`tools/semantic_openrouter.py` (model from the route; until 2026-11-15
+named `tools/mimo_openrouter.py` with MiMo as the default),
 `crates/musializer-runtime/src/process/assist.rs` (`AssistSpec`, argv, `--zdr`),
 `crates/musializer-app/src/ui/panels/assist.rs` (staging boundary).
 

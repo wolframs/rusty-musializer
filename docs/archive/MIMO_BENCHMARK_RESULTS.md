@@ -1,5 +1,8 @@
 # MiMo v2.5 description benchmark — results of the first live run
 
+> Archived 2026-11-17: completed investigation; current behavior is in
+> [Assist pipeline](../ASSIST_PIPELINE.md), work in the root live queue.
+
 **Since 2026-11-15 the application's listening lane runs on Gemini 3.8
 Flash** (operator's choice; `ASSIST_PIPELINE.md`, "Gemini 3.8 Flash through
 OpenRouter"); MiMo stays selectable as experimental, and this file is the

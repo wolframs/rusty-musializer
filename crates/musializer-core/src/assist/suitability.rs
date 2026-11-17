@@ -17,8 +17,8 @@
 //!   "must not be accepted as benchmark evidence". The test enforces it on the
 //!   table, so a future row cannot be promoted by editing one word.
 //! - **Rows are seeded only from grounds this repository records**: a
-//!   measurement (`docs/LYRICS_TIMING_BENCHMARK_RESULTS.md`,
-//!   `docs/MIMO_BENCHMARK_RESULTS.md`), or an operator's decision recorded in
+//!   measurement (`docs/archive/LYRICS_TIMING_BENCHMARK_RESULTS.md`,
+//!   `docs/archive/MIMO_BENCHMARK_RESULTS.md`), or an operator's decision recorded in
 //!   `docs/DIVERGENCES.md` with its date and words. The evidence line says
 //!   which of the two it is, so an operator's judgment is never read as a
 //!   benchmark. The table is short on purpose.
@@ -153,7 +153,7 @@ pub struct SuitabilityRow {
 /// The table.
 ///
 /// `#[rustfmt::skip]` for the repository-guide reason: this is checked row by
-/// row against `docs/LYRICS_TIMING_BENCHMARK_RESULTS.md`, and one field per
+/// row against `docs/archive/LYRICS_TIMING_BENCHMARK_RESULTS.md`, and one field per
 /// line stops being checkable.
 #[rustfmt::skip]
 pub const OVERLAY: &[SuitabilityRow] = &[
@@ -167,7 +167,7 @@ pub const OVERLAY: &[SuitabilityRow] = &[
         contract: ContractId::Align,
         status: Suitability::Recommended,
         evidence_date: Some("2026-08-04"),
-        evidence: "docs/LYRICS_TIMING_BENCHMARK_RESULTS.md: four-track benchmark plus operator adjudication",
+        evidence: "docs/archive/LYRICS_TIMING_BENCHMARK_RESULTS.md: four-track benchmark plus operator adjudication",
         prompt_version: Some("anchor-block-mms/1"),
         schema_version: Some("musializer.lyric-timing/v1"),
         audio_scope: AudioScope::WholeTrack,
@@ -193,7 +193,7 @@ pub const OVERLAY: &[SuitabilityRow] = &[
         contract: ContractId::Coarse,
         status: Suitability::Recommended,
         evidence_date: Some("2026-08-04"),
-        evidence: "docs/LYRICS_TIMING_BENCHMARK_RESULTS.md: the four-track benchmark ran on this Whisper evidence; decision gates fix the configuration",
+        evidence: "docs/archive/LYRICS_TIMING_BENCHMARK_RESULTS.md: the four-track benchmark ran on this Whisper evidence; decision gates fix the configuration",
         prompt_version: Some("anchor-block-mms/1"),
         schema_version: Some("musializer.lyric-timing/v1"),
         audio_scope: AudioScope::WholeTrack,
@@ -212,7 +212,7 @@ pub const OVERLAY: &[SuitabilityRow] = &[
         contract: ContractId::Align,
         status: Suitability::Unsupported,
         evidence_date: Some("2026-08-04"),
-        evidence: "docs/LYRICS_TIMING_BENCHMARK_RESULTS.md: Qwen3-ForcedAligner fails its gate",
+        evidence: "docs/archive/LYRICS_TIMING_BENCHMARK_RESULTS.md: Qwen3-ForcedAligner fails its gate",
         prompt_version: None,
         schema_version: Some("musializer.lyric-timing/v1"),
         audio_scope: AudioScope::WholeTrack,
@@ -253,7 +253,7 @@ pub const OVERLAY: &[SuitabilityRow] = &[
         contract: ContractId::Semantic,
         status: Suitability::Experimental,
         evidence_date: Some("2026-11-14"),
-        evidence: "docs/MIMO_BENCHMARK_RESULTS.md: first live run, one sample per cell; superseded for this lane by the operator on 2026-11-15",
+        evidence: "docs/archive/MIMO_BENCHMARK_RESULTS.md: first live run, one sample per cell; superseded for this lane by the operator on 2026-11-15",
         prompt_version: Some("musializer-semantic-score/v2"),
         schema_version: Some("musializer.semantic-score/v1"),
         audio_scope: AudioScope::WholeTrack,

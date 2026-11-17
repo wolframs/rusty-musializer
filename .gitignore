@@ -4,14 +4,10 @@
 *.rs.bk
 *.pdb
 
-# Vendored raylib build output (source is tracked, artifacts are not)
-/vendor/raylib-5.5/**/*.o
-/vendor/raylib-5.5/**/*.a
-/vendor/raylib-5.5/**/*.so
-/vendor/raylib-5.5/**/*.so.*
+# raylib-link builds vendored raylib 6.0 through cc in Cargo OUT_DIR (target/).
 /build/
 
-# Headless UI review artifacts (see tools/ui_capture.sh, UI_REVIEW.md)
+# Headless capture artifacts (tools/headless_check.sh and tools/headless_run.sh)
 /build/ui-review/
 *.png.tmp
 

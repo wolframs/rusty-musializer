@@ -6,7 +6,7 @@ deliberately more conservative than the code alone suggests. For installation,
 dependency discovery, commands, and privacy details, use
 [`tools/ANALYSIS_ADAPTERS.md`](../tools/ANALYSIS_ADAPTERS.md). For the dated
 experiment log and acceptance evidence behind the lyrics policy, use
-[`LYRICS_TIMING_INVESTIGATION.md`](LYRICS_TIMING_INVESTIGATION.md) and
+[`LYRICS_TIMING_INVESTIGATION.md`](archive/LYRICS_TIMING_INVESTIGATION.md) and
 [`LYRICS_TIMING_INCIDENT_2026-08-17.md`](LYRICS_TIMING_INCIDENT_2026-08-17.md).
 For provider
 task contracts, credential storage, the codex discovery ladder, and the
@@ -254,7 +254,7 @@ Changing a timing policy must invalidate the artifact it changes.
 
 `tools/semantic_openrouter.py` (until 2026-11-15 `tools/mimo_openrouter.py`)
 sends the whole track once, with the checklist-style prompt the MiMo benchmark
-kept ([`MIMO_BENCHMARK_RESULTS.md`](MIMO_BENCHMARK_RESULTS.md)), and the guards
+kept ([`MIMO_BENCHMARK_RESULTS.md`](archive/MIMO_BENCHMARK_RESULTS.md)), and the guards
 below. They were built on MiMo and hold for every model; what is really per
 model is one row of `MODEL_PROFILES` (Rust twin `core::assist::cost::MODELS`),
 and the lane's model since 2026-11-15 is Gemini 3.8 Flash (next section). The
@@ -1268,7 +1268,7 @@ The previous path made Whisper the *authority*: a line it missed was omitted
 before MMS ever saw it, and a line it kept was searched only near its own
 proposal. Both classes were measured — the coverage canary lost its two outro
 lines to a 90-second repetition loop. The benchmark in
-[`LYRICS_TIMING_BENCHMARK_RESULTS.md`](LYRICS_TIMING_BENCHMARK_RESULTS.md)
+[`LYRICS_TIMING_BENCHMARK_RESULTS.md`](archive/LYRICS_TIMING_BENCHMARK_RESULTS.md)
 selected anchor→block, and it is now the production default.
 
 - **Coverage.** Every alignable authored line reaches the acoustic stage,
@@ -1433,7 +1433,7 @@ Failure should remain visible at the narrowest boundary that can explain it:
 | Installed helper and local-lyrics assets | `python3 tools/musializer_doctor.py --require local_lyrics` |
 | Support workflow | `tools/support_bundle_check.sh` |
 | Full repository gate | `tools/verify.sh` |
-| Two metadata plus two stripped-track acceptance | [`LYRICS_TIMING_INVESTIGATION.md`](LYRICS_TIMING_INVESTIGATION.md) and gitignored `build/lyrics-investigation` artifacts |
+| Two metadata plus two stripped-track acceptance | [`LYRICS_TIMING_INVESTIGATION.md`](archive/LYRICS_TIMING_INVESTIGATION.md) and gitignored `build/lyrics-investigation` artifacts |
 
 The dated investigation also records the controls that failed: restoring the old
 special-token parser, weakening the coherent-cluster bound, enabling real DTW,

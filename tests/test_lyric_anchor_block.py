@@ -212,7 +212,7 @@ class RepeatedPhraseAbstentionTests(unittest.TestCase):
     """Invariant 2: an undecidable repeated occurrence abstains."""
 
     # Recorded from the pre-LT1 artifacts of `shut-up-cat`, the pinned example
-    # in `docs/LYRICS_TIMING_BENCHMARK_RESULTS.md`. "The queen of the sky just
+    # in `docs/archive/LYRICS_TIMING_BENCHMARK_RESULTS.md`. "The queen of the sky just
     # came through" is authored six times; the anchor lane placed reference
     # line 26 at 106.78 s and the coarse lane at 122.27 s, and the operator
     # adjudicated both wrong with the true occurrence unlocated. 122.27 s is

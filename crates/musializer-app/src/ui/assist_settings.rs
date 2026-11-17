@@ -1,7 +1,7 @@
 //! The **AI settings** dialog: one modal surface for assist routing, local
 //! runtimes, Codex, OpenRouter and the privacy/provenance summary.
 //!
-//! Design intent: `docs/LYRICS_TIMING_RESEARCH_PLAN.md`, "Visible settings entry
+//! Design intent: `docs/archive/LYRICS_TIMING_RESEARCH_PLAN.md`, "Visible settings entry
 //! point and dialog". Authority: `docs/ASSIST_PROVIDER_CONTRACTS.md` §1 (task
 //! contracts), §2 (the preferences record), §3 (credential lifecycle) and §5
 //! (fallback rules). Where the two disagree the contracts document wins, and it

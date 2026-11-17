@@ -501,15 +501,13 @@ edited in the window, in Look. The code is `ui/panels/tune/cards.rs` and
 
 ## The MiMo lane's request (H3b, 2026-11-14)
 
-The three changes `docs/MIMO_BENCHMARK_RESULTS.md` asked of the application's
+The three changes `docs/archive/MIMO_BENCHMARK_RESULTS.md` asked of the application's
 own MiMo call. They hold for every model since the lane moved to Gemini (next
-section); file and function names below are as they were that day (the helper
-is `tools/semantic_openrouter.py` now, `_mimo_failure` is `_semantic_failure`,
-the tests `tests/test_semantic_openrouter.py`, the pins `SemanticCostEstimate`).
-Code: `tools/mimo_openrouter.py`, the failure surfacing in
-`tools/external_analysis.py` (`_mimo_failure`), `core::assist::cost` and the
+section). Current code and test names are listed below.
+Code: `tools/semantic_openrouter.py`, the failure surfacing in
+`tools/external_analysis.py` (`_semantic_failure`), `core::assist::cost` and the
 confirmation's cost line in `ui/panels/assist.rs`. Tests:
-`tests/test_mimo_openrouter.py`, the `MimoCostEstimate` pins in
+`tests/test_semantic_openrouter.py`, the `SemanticCostEstimate` pins in
 `tests/test_cross_language_pins.py`, `core::assist::cost` tests.
 
 | Before | Now | Why |
