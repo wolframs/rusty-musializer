@@ -1,5 +1,8 @@
 """Corroborated performed words outside the authored lyric lane.
 
+Unlike ``authored_audio_occurrences.py``, which finds extra deliveries of sheet
+words, this module keeps independently heard wording absent from that sheet.
+
 These additions retain audio wording and its provenance. Original and fresh
 crop pairs must independently agree; an isolated ASR guess stays Potential.
 """

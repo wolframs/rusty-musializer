@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Refine lyric cue boundaries with an independent CTC forced aligner.
 
+The Assist per-cue refinement helper, distinct from the director CLI
+``align_lyrics.py`` (whole-track CTC) and ``anchor_block_align.py`` (joint
+ordered blocks). ``external_analysis.py`` keeps this adapter name in caches.
+
 Whisper supplies text/order evidence, but its decoder timestamps are not an
 acoustic word aligner: on produced singing the first token of a segment can be
 seconds early. This helper teacher-forces the already-decided cue text through

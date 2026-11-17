@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Anchor-to-block forced alignment of authored lyrics: the acoustic half.
 
+Executable used by ``external_analysis.py``; imports the pure policy twin
+``lyric_anchor_block.py``. Its name is also the persisted timing-refinement
+adapter identity, checked when accepting cached results.
+
 Runs under the installed alignment runtime (torch + torchaudio + soundfile),
 which is why it is a separate executable from ``external_analysis.py``. The
 policy it applies lives in ``tools/lyric_anchor_block.py`` and needs no model,

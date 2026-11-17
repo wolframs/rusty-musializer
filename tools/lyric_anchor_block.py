@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Anchor-to-block localization of authored lyrics: the pure half.
 
+Imported policy library, paired with the model-running executable
+``anchor_block_align.py``; this file plans and judges blocks, never runs CTC.
+
 This module owns every decision the anchor/block lane makes that does not need
 an acoustic model, so the policy can be tested, cached and versioned without a
 CUDA device. ``tools/anchor_block_align.py`` supplies the CTC evidence and

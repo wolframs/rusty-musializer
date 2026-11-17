@@ -1,5 +1,8 @@
 """Additional performed instances of authored words, independent of sheet order.
 
+Unlike ``observed_audio_occurrences.py``, candidates here use authored wording;
+that twin retains newly heard words outside the authored lane.
+
 Two original crops propose an occurrence; two fresh short audio-only crops must
 confirm it. These instances never consume or reorder the authored-line ledger.
 """

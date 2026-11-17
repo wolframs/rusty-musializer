@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Time a track's known lyrics with one whole-track CTC pass (MV9-g).
 
+Director-facing CLI producing treatment-ready aligned-lyrics JSON. Its twin
+``lyric_align.py`` is the pure Whisper-word synchronization library for Assist;
+this command decodes audio and runs MMS instead of consuming Whisper evidence.
+
     tools/align_lyrics.py song.mp3 song.lyrics.json            # embedded tags
     tools/align_lyrics.py song.mp3 song.lyrics.json --lyrics words.txt
 

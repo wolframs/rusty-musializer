@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """CTC alignment with a separate allowed time window for every target token.
 
+Pure trellis solver used by ``antigravity_lyrics.py``, not an audio/model CLI
+like ``anchor_block_align.py`` or ``force_align_lyrics.py``.
+
 An emission score alone cannot distinguish repeated deliveries. Position-specific
 windows preserve independently observed phrase locations even when two phrases
 contain identical characters. This module is pure NumPy; it opens no audio device.

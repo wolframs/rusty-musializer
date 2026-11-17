@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Deterministic alignment of known reference lyrics to Whisper word evidence.
 
+Pure Assist library producing lyric-sync documents, with no model or audio I/O.
+Its twin ``align_lyrics.py`` is a director-facing whole-track MMS CTC CLI that
+produces treatment-ready aligned-lyrics JSON directly from audio.
+
 This module is the timing core of the "sync known lyrics" assist mode. It is
 intentionally dependency-free and fully deterministic: the display text always
 comes verbatim from the authored reference lines, timing always comes from
