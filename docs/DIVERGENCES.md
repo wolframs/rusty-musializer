@@ -625,3 +625,9 @@ flight — Start on Feelings"), built by J4. Details and words:
   in this checkout; the new regression pins that actual path.
 - Doctor and catalog helpers share `process::font_import::find_helper` with
   analysis. Their named `MUSIALIZER_*_HELPER` overrides fail hard when missing.
+
+### HY-4 — tap anticipation (2026-11-17)
+
+| Before | Now | Reason |
+| --- | --- | --- |
+| An uncalibrated lyric tap starts at zero offset | New taps default to −100 ms; an explicit stored zero remains zero | CX-4 ruling. The optional workstation preference distinguishes absent/null (follow default) from any explicit calibration, including zero. No offset is in a .musi; stored cue timestamps are never recalculated. Old uncalibrated preferences intentionally gain the new default, not a migration of existing cues |

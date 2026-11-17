@@ -2543,3 +2543,7 @@ HY-3 (2026-11-17): dialog tools share the runtime helper ladder.
 helpers. A nonempty override pointing to a missing file fails without probing.
 `--no-dotenv` remains accepted by doctor and Assist and disables the application
 credential-file fallback; it never enables repository `.env` reads.
+
+HY-4 (2026-11-17): an absent/null workstation `lyric_tap_offset` uses
+−0.100 seconds for new taps; explicit zero and other calibrations retain their
+meaning. Existing lyric cue times in projects are unchanged.

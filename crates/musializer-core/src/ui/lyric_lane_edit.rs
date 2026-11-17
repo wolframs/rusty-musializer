@@ -717,7 +717,7 @@ pub struct TapStamp {
 /// the re-sort, and a cue deleted mid-run is skipped by
 /// [`LaneCues::find`] returning `None` rather than silently stamping its
 /// neighbour.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LyricTap {
     armed: bool,
     order: Vec<u64>,
@@ -731,6 +731,23 @@ pub struct LyricTap {
     /// previous line at its *old* end.
     open_id: u64,
     open_start: f64,
+}
+
+/// CX-4: anticipate the keypress by 100 ms for newly stamped cues only.
+pub const LYRIC_TAP_DEFAULT_OFFSET_SECONDS: f64 = -0.1;
+
+impl Default for LyricTap {
+    fn default() -> Self {
+        Self {
+            armed: false,
+            order: Vec::new(),
+            cursor: 0,
+            offset_seconds: LYRIC_TAP_DEFAULT_OFFSET_SECONDS,
+            stamped: 0,
+            open_id: 0,
+            open_start: 0.0,
+        }
+    }
 }
 
 /// Largest tap offset the control will take, either way, in seconds.
@@ -1664,9 +1681,30 @@ mod tests {
     }
 
     #[test]
+    fn default_anticipates_new_taps_without_moving_existing_cues() {
+        let document = tap_fixture();
+        let before = (document.span(1), document.span(2));
+        let mut tap = LyricTap::default();
+        assert_eq!(tap.offset_seconds(), -0.1);
+        assert!(tap.arm(&document, 0.0));
+        let stamp = tap.tap(&document, 10.0).unwrap();
+        expect_near(stamp.retimes[0].1, 9.9, 1e-9);
+        assert_eq!((document.span(1), document.span(2)), before);
+        let mut calibrated = LyricTap::default();
+        calibrated.set_offset_seconds(0.0);
+        assert!(calibrated.arm(&document, 0.0));
+        expect_near(
+            calibrated.tap(&document, 10.0).unwrap().retimes[0].1,
+            10.0,
+            1e-9,
+        );
+    }
+
+    #[test]
     fn arming_starts_at_the_playhead_rather_than_at_the_top_of_the_track() {
         let document = tap_fixture();
         let mut tap = LyricTap::default();
+        tap.set_offset_seconds(0.0);
         assert!(tap.arm(&document, 0.0));
         assert_eq!(tap.target_id(), Some(1));
         assert_eq!(tap.total(), 4);
@@ -1691,6 +1729,7 @@ mod tests {
     fn each_tap_closes_the_line_before_it_and_opens_the_next() {
         let mut document = tap_fixture();
         let mut tap = LyricTap::default();
+        tap.set_offset_seconds(0.0);
         assert!(tap.arm(&document, 0.0));
 
         // The first tap has nothing to close, so it is one retime.
@@ -1726,6 +1765,7 @@ mod tests {
         // line 4, and never reach line 1 — or hand out line 2 twice.
         let mut document = tap_fixture();
         let mut tap = LyricTap::default();
+        tap.set_offset_seconds(0.0);
         assert!(tap.arm(&document, 0.0));
 
         let mut opened = Vec::new();
@@ -1752,6 +1792,7 @@ mod tests {
     fn a_double_keypress_is_refused_rather_than_collapsing_a_cue() {
         let mut document = tap_fixture();
         let mut tap = LyricTap::default();
+        tap.set_offset_seconds(0.0);
         assert!(tap.arm(&document, 0.0));
         let first = tap.tap(&document, 10.0).expect("the first tap");
         document.commit(&first);
@@ -1770,6 +1811,7 @@ mod tests {
     fn the_offset_moves_the_stamp_and_saturates_rather_than_running_away() {
         let document = tap_fixture();
         let mut tap = LyricTap::default();
+        tap.set_offset_seconds(0.0);
         assert!(tap.arm(&document, 0.0));
         tap.adjust_offset(-10);
         expect_near(tap.offset_seconds(), -0.1, 1e-9);
@@ -1786,6 +1828,7 @@ mod tests {
 
         // A negative offset can never stamp before the track starts.
         let mut tap = LyricTap::default();
+        tap.set_offset_seconds(0.0);
         assert!(tap.arm(&document, 0.0));
         tap.adjust_offset(-25);
         let stamp = tap.tap(&document, 0.05).expect("a tap near zero");
@@ -1796,6 +1839,7 @@ mod tests {
     fn the_offset_outlives_the_run_but_the_cursor_does_not() {
         let document = tap_fixture();
         let mut tap = LyricTap::default();
+        tap.set_offset_seconds(0.0);
         assert!(tap.arm(&document, 0.0));
         tap.adjust_offset(-8);
         let _ = tap.tap(&document, 10.0).expect("one stamp");
@@ -1816,6 +1860,7 @@ mod tests {
         // clamped to what they could, and a non-finite one reads as no
         // calibration rather than as a poisoned offset every later tap carries.
         let mut tap = LyricTap::default();
+        tap.set_offset_seconds(0.0);
         tap.set_offset_seconds(-0.1);
         expect_near(tap.offset_seconds(), -0.1, 1e-9);
         tap.set_offset_seconds(9.0);
@@ -1830,6 +1875,7 @@ mod tests {
     fn a_cue_deleted_mid_run_costs_one_line_rather_than_misrouting_the_stamp() {
         let mut document = tap_fixture();
         let mut tap = LyricTap::default();
+        tap.set_offset_seconds(0.0);
         assert!(tap.arm(&document, 0.0));
         let first = tap.tap(&document, 10.0).expect("the first tap");
         document.commit(&first);
@@ -1847,6 +1893,7 @@ mod tests {
     fn tapping_refuses_where_it_cannot_produce_a_cue_the_model_would_take() {
         let document = tap_fixture();
         let mut tap = LyricTap::default();
+        tap.set_offset_seconds(0.0);
         assert_eq!(tap.tap(&document, 1.0), Err(TapRefusal::NotArmed));
 
         let empty = TestDocument::new(TRACK);
@@ -1875,6 +1922,7 @@ mod tests {
         // than spot-checked, because the arithmetic has three clamps in it.
         let mut document = tap_fixture();
         let mut tap = LyricTap::default();
+        tap.set_offset_seconds(0.0);
         for offset_steps in [-25, -7, 0, 3, 25] {
             assert!(tap.arm(&document, 0.0));
             tap.disarm();

@@ -6936,12 +6936,12 @@ PY
 
     # Four taps at 0.5 s intervals from 2.0 s. Each one closes the line before it
     # and opens the next, so the run has to end armed on line 5 of 6 with the
-    # form bound to line 4 at exactly 2.0 + 3 * 0.5.
+    # form bound to line 4 at 2.0 + 3 * 0.5 - 0.1 (CX-4 anticipation).
     timing_capture timing-tap 1280x720 "panel=lyrics,time=2.0,lyric-tap=4" || SWEEP_FAILED=1
     timing_expect timing-tap \
-        "tap armed 5/6 stamped 4 offset +0ms" \
-        "last stamp 00:03.500" \
-        "selected #4 at 00:03.500" \
+        "tap armed 5/6 stamped 4 offset -100ms" \
+        "last stamp 00:03.400" \
+        "selected #4 at 00:03.400" \
         "history 1/0"
     # A tap must not leave a dirty draft. It did, until a capture said so: the
     # form was bound from the document while the stamp's own retime was still

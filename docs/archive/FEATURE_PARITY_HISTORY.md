@@ -5785,3 +5785,26 @@ style warnings), 45 lyric Python tests, schema test, current code map and
 Its single targeted rerun passes; the full-run failure is not erased or fixed
 in this documentation batch. cargo build --release passes. No UI/audio or ML
 model was launched; tools/verify.sh is reserved for the lead.
+
+### CX-4 / HY-4 — −100 ms tap default landed (2026-11-17)
+
+Uncalibrated taps now anticipate the keypress by 100 ms. PXF-2 already stores
+calibration as an Option: missing/null intentionally follows the new default,
+and explicit zero is written and preserved. No calibration lives in .musi and
+no old cue time is migrated. Existing mechanics tests explicitly calibrate
+their fixtures to zero; a separate default pin asserts 10.0 → 9.9 seconds,
+explicit zero → 10.0, and unchanged existing cue spans.
+
+Evidence: core tests 1,411 passed; application tests 682 passed, including the
+existing explicit-zero preference round-trip. Focused isolated muted timing
+capture (display :84, build/hy4-timing) reports four stamps, −100 ms, last
+stamp and selected cue 00:03.400, clean draft, history 1/0. Its source .musi
+remains byte-identical. --skip-render exits before this timing block, so it
+was not used as evidence. tools/headless_check.sh's timing pins now match.
+
+Negative: set the default constant to zero; the new default pin fails at
+the exact offset assertion. Restore byte-for-byte (SHA-256
+0a8f16f81bae54f12c42b259a46e5b8cd40a540861270dd0ca5515096181469e);
+rerun the pin: pass. Calibration gesture and operator feel/flash validation
+remain separate work. Lead: remove the stale “-100 ms ... NOT landed” paragraph
+in CX-4; HY-4's chat half is recorded separately below.
