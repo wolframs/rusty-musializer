@@ -30,7 +30,7 @@ scene 11 count 12
 11 9 settings.clawd.ink|Line weight|0.5|2|1|2|0
 11 10 settings.clawd.glow|Bass glow|0|2|1|2|0
 11 11 settings.clawd.wiggle|Idle sway|0|2|1|2|0
-scene 12 count 11
+scene 12 count 12
 12 0 settings.knot.size|Knot size|0.5|1.14999998|0.920000017|2|0
 12 1 settings.knot.response|Strand response|0|2|1|2|0
 12 2 settings.knot.pulse|Beat lift|0|2|1|2|0
@@ -42,6 +42,7 @@ scene 12 count 11
 12 8 settings.knot.bloom|Bloom|0|2|1.10000002|2|0
 12 9 settings.knot.fringe|Spectral fringe|0|2|0.699999988|2|0
 12 10 settings.knot.grain|Film grain|0|1|0.349999994|2|0
+12 11 settings.knot.form|Form (0 = follow the song)|0|6|0|0|0
 scene 13 count 11
 13 0 settings.stage.layout|Staging|0|5|0|0|0
 13 1 settings.stage.hue|Hue (deg)|-180|180|0|0|0

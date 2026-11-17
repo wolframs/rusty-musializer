@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SX5 visual/export gate. Private Xvfb + unreachable Wayland/audio endpoints;
+# Lumen Knot (`knot`, id 12) visual/export gate. Private Xvfb + unreachable Wayland/audio endpoints;
 # --mute preserves real fixture PCM for the analyzer and exported soundtrack.
 # Optional KNOT_BIN allows testing a negative-control binary without replacement.
 set -euo pipefail
@@ -29,6 +29,28 @@ with wave.open(sys.argv[1],'wb') as f:
         arp=(math.sin(2*math.pi*note*t)+0.3*math.sin(2*math.pi*note*3*t))*math.exp(-eighth*12)*0.2
         hat=(math.sin(t*70123)+math.sin(t*91371))*math.exp(-eighth*85)*0.07
         x=max(-1,min(1,kick+bass+arp+hat)); pcm.extend(struct.pack('<hh',int(x*30000),int(x*26000)))
+    f.writeframes(pcm)
+PY
+# A drop: seven seconds of soft pad, then the same kick, bass and arpeggio.
+python3 - "$OUT/drop.wav" <<'PY'
+import math, struct, sys, wave
+rate=44100
+notes=[220,261.626,329.628,391.995,329.628,261.626,293.665,246.942]
+with wave.open(sys.argv[1],'wb') as f:
+    f.setparams((2,2,rate,0,'NONE','not compressed'))
+    pcm=bytearray()
+    for i in range(rate*11):
+        t=i/rate
+        if t < 7.0:
+            x=0.04*math.sin(2*math.pi*110*t)+0.03*math.sin(2*math.pi*164.8*t)
+        else:
+            u=t-7.0; beat=u%0.5; eighth=u%0.25; note=notes[int(u*4)%8]
+            kick=math.sin(2*math.pi*(48*beat+8*(1-math.exp(-beat*35))))*math.exp(-beat*18)*0.6
+            bass=math.sin(2*math.pi*55*t)*0.25
+            arp=(math.sin(2*math.pi*note*t)+0.3*math.sin(2*math.pi*note*3*t))*math.exp(-eighth*12)*0.2
+            hat=(math.sin(t*70123)+math.sin(t*91371))*math.exp(-eighth*85)*0.07
+            x=kick+bass+arp+hat
+        x=max(-1,min(1,x)); pcm.extend(struct.pack('<hh',int(x*30000),int(x*26000)))
     f.writeframes(pcm)
 PY
 launch() {
@@ -79,6 +101,20 @@ launch "$OUT/phrase.wav" --scene knot --render-window 1 1 \
     --route knot.fringe:rms:0:0:1:-1:0 \
     --route knot.grain:rms:0:0:1:-1:0 \
     --resolution 360x640 --fps 30 --render "$OUT/finish-off.mp4" > "$OUT/finish-off.log" 2>&1
+# A named form: the eight-petal rosette, by a constant route on `form`.
+launch "$OUT/phrase.wav" --scene knot --render-window 1 1 \
+    --route knot.form:rms:0:0:1:3.999:4 \
+    --resolution 360x640 --fps 30 --render "$OUT/form.mp4" > "$OUT/form.log" 2>&1
+# The drop at 7 s moves the form on: about half a second after it the knot is
+# pulled tight into its ring; by 10 s it has bloomed into the next form. The
+# matched response-off control must not move at all.
+launch "$OUT/drop.wav" --scene knot --render-window 6 1.5 \
+    --resolution 360x640 --fps 30 --render "$OUT/drop-ring.mp4" > "$OUT/drop-ring.log" 2>&1
+launch "$OUT/drop.wav" --scene knot --render-window 6 4 \
+    --resolution 360x640 --fps 30 --render "$OUT/drop.mp4" > "$OUT/drop.log" 2>&1
+launch "$OUT/drop.wav" --scene knot --render-window 6 4 \
+    --route knot.response:rms:0:0:1:0:0.000001 \
+    --resolution 360x640 --fps 30 --render "$OUT/drop-off.mp4" > "$OUT/drop-off.log" 2>&1
 launch "$OUT/phrase.wav" --scene knot --route knot.polish:rms:0:0:1:0.25:0.8 \
     --save-project "$OUT/knot.musi" > "$OUT/save.log" 2>&1
 launch --project "$OUT/knot.musi" --hud=0 --probe-frames 40 \
@@ -92,5 +128,7 @@ ffmpeg -v error -i "$OUT/portrait.mp4" -frames:v 1 -y "$OUT/portrait.png"
 ffmpeg -v error -i "$OUT/response-off.mp4" -frames:v 1 -y "$OUT/response-off.png"
 ffmpeg -v error -i "$OUT/strong.mp4" -frames:v 1 -y "$OUT/strong.png"
 ffmpeg -v error -i "$OUT/finish-off.mp4" -frames:v 1 -y "$OUT/finish-off.png"
+ffmpeg -v error -i "$OUT/form.mp4" -frames:v 1 -y "$OUT/form.png"
+ffmpeg -v error -i "$OUT/drop.mp4" -vf 'fps=6,scale=180:-1,tile=6x4' -frames:v 1 -y "$OUT/drop-sheet.png"
 python3 tools/knot_check.py "$OUT"
-echo "PASS: SX5 preview, idle, rhythmic motion, portrait, project/routes and warm/cold export ($OUT)"
+echo "PASS: Lumen Knot preview, idle, rhythmic motion, portrait, forms, the drop, project/routes and warm/cold export ($OUT)"
