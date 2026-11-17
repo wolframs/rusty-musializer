@@ -5641,3 +5641,73 @@ windows were chosen by a reader, so it is a lead rather than a result:
 section-bounded CTC with a repetition cross-check may recover what anchor-block
 localization drops.
 ```
+
+## HY-5 — dormant review gates and similar helper names (2026-11-17)
+
+No invocation of `dark_theme_check.sh`, `ui_ux_check.sh` or
+`welcome_theme_check.sh` existed in tools, AGENTS.md or README.md. The matches
+in docs were code-map entries and historical WX-5 run/design records, not
+scheduled checks. HY-5 ran the scripts before deciding their disposition.
+
+| Script | Before | Disposition / after |
+| --- | --- | --- |
+| `dark_theme_check.sh` | exit 1 at `editor-dark`; the log warns that `--editor-ui` is retired; its final pixel assertions were never reached | Retired. `headless_check.sh`'s transport and dark-appearance sections already compare hovered/bare tooltip text and changed pixels in light and dark, including 125% light. The obsolete editor capture has no remaining surface; `pixel_look_check.sh` checks its replacement. No threshold was changed. |
+| `ui_ux_check.sh` | exit 1 at `editor-light-960`, likewise warning about the retired flag | Retired. This was a screenshot collector with no content assertions. `headless_check.sh` captures welcome at 960/1280, workspace, panel states, failed Assist, and scene flyout; `column_check.sh` captures today's Lyrics/Look/Assist/Render/Direct views in both appearances, and checks welcome column suppression. The main gate's entry/recent-project and rail checks cover Tracks/scenes flyouts. Pixel Look covers the retired editor's replacement. These are coverage mappings from source, not claims that those full gates were rerun for HY-5. |
+| `welcome_theme_check.sh` | exit 1: dark restores by fallback, light also draws dark | Repaired and retained as an on-demand Commands entry. The fixture used `schema_version:1`, rejected by the actual UI preference reader. It now supplies `schema:musializer.ui-preferences/v1` and `scale:100`, pins its private preference path, requires a welcome report and a fresh screenshot, and holds/reaps an owned Xvfb using the existing pixel-gate ownership pattern. Final NVIDIA and llvmpipe runs both exit 0. |
+
+The welcome path is distinct from Pixel Look's track-open theme presses and
+restart: it verifies saved dark/light choices before any track is opened.
+The exact new AGENTS.md Commands line is:
+
+```sh
+tools/welcome_theme_check.sh      # welcome restores saved dark/light appearance before opening audio
+```
+
+Negative controls: replacing the repaired fixture with its original
+`schema_version:1` shape failed (exit 1) on both NVIDIA and llvmpipe; the script
+was restored byte-for-byte (SHA-256
+`903674bd89d6e22e00fcfc4b08166d755f3e20dde26e143ff6bf376142a5aed9`). Replay
+binaries with an otherwise genuine dark capture/report failed separately when
+the welcome report was removed and when no screenshot was written. No Rust
+or pixel threshold changed. `bash -n`, capture isolation lint and generated
+code-map checking passed; shellcheck was not installed. Both actual welcome
+screens were inspected: dark/light selector and palette, entry buttons and
+recent-project area are present at 960x640. These checks exercise restoration,
+not picker clicks (already covered by egui input tests / Pixel Look).
+
+Evidence is ignored under `build/hy5/`: original script logs, corrected-display
+welcome baseline, `gpu-positive`, `gpu-negative`, `cpu-positive`, `cpu-negative`,
+`missing-welcome`, `missing-shot`. The original two retired scripts use their
+own auto-numbered Xvfb/CPU path, ignoring the exported assigned display; that
+baseline deviation is preserved rather than called GPU evidence. All repaired
+welcome trials use assigned display :85, private state and the muted isolated
+launcher. Early welcome attempts with a malformed display, no compiled binary,
+or an unreaped display were setup failures, excluded from the before/after
+verdict. No other process was stopped and no foreign lock was removed.
+
+Helper audit: all four named helpers are live. `align_lyrics.py` is the
+whole-track MMS director CLI producing `musializer.aligned-lyrics/v1`, used by
+MUSIC_VIDEO_CLI/treatments and `test_align_lyrics.py`. `lyric_align.py` is the
+pure Whisper-word synchronization library imported by `external_analysis.py`,
+the anchor policy and other lyric stages. `anchor_block_align.py` is the MMS
+executable spawned by `external_analysis.py`; `lyric_anchor_block.py` is its
+pure planning/abstention/assembly policy. Tests exercise both, and runtime
+support inventories include the Assist helpers. There is no dead twin here.
+
+PHASE0_INVENTORY's provenance and lyric-sync timing-refinement rows were checked;
+`external_analysis._anchor_block_cache_accepts` literally checks
+`tools/anchor_block_align.py`, and `_alignment_cache_accepts` checks
+`tools/force_align_lyrics.py`. Names and cache identities remain unchanged.
+Docstring heads now distinguish the four, the related per-cue
+`force_align_lyrics.py` and NumPy trellis `ctc_window_align.py`, plus authored
+versus observed occurrence modules. Other nearby families remain distinct:
+Antigravity transport versus lyric discovery, local recovery versus spelling,
+and shell gate drivers versus Python checkers. Their existing heads state
+those roles; callers/tests remain live. An AST comparison with the leading
+module docstring removed proves all eight Python changes are documentation
+only. CODE_MAP.md was regenerated. No helper renamed, no cache read changed,
+no tool regrouped, no Rust test required, and verify.sh was not run.
+
+Lead plan change: mark HY-5 complete when these commits land; this worker did
+not edit FEATURE_PARITY_PLAN.md. Broad gate reruns remain the lead's integration
+work. Release build result is reported in the worker handoff.
