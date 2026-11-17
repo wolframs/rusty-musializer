@@ -148,25 +148,19 @@ print(f"execution hand-off: local=absent remote=present({fingerprint}) "
 PY
 
 # ---------------------------------------------------------------------------
-# The desktop path refuses the repository .env fallback; the CLI keeps it.
+# The desktop refuses file fallback; CLI uses the private credential store.
 # ---------------------------------------------------------------------------
-
-DOTENV="$WORK/dotenv/.env"
-mkdir -p "$WORK/dotenv"
-printf 'OPENROUTER_API_KEY="%s"\n' "$CANARY_KEY" >"$DOTENV"
-
-env -u OPENROUTER_API_KEY python3 - "$DOTENV" <<'PY' || fail "the .env fallback flag does not gate the credential"
-import pathlib, sys
+env -u OPENROUTER_API_KEY python3 - <<'PYTEST' || fail "credential-file fallback flag failed"
+import sys
 sys.path.insert(0, "tools")
 import external_analysis
 
-path = pathlib.Path(sys.argv[1])
-desktop = external_analysis._openrouter_env(path, allow_dotenv=False)
-command_line = external_analysis._openrouter_env(path)
-assert "OPENROUTER_API_KEY" not in desktop, "the desktop path accepted a .env credential"
-assert command_line.get("OPENROUTER_API_KEY"), "the command line lost its .env fallback"
-assert not any("KEY" in name.upper() for name in desktop), "a credential-named variable survived the strip"
-PY
+desktop = external_analysis._openrouter_env(allow_dotenv=False)
+command_line = external_analysis._openrouter_env()
+assert "OPENROUTER_API_KEY" not in desktop, "desktop accepted a file credential"
+assert command_line.get("OPENROUTER_API_KEY"), "CLI lost its private file fallback"
+assert not any("KEY" in name.upper() for name in desktop), "credential name survived"
+PYTEST
 
 # ---------------------------------------------------------------------------
 # A dry-run job, with the key in the environment the whole time.
@@ -188,7 +182,7 @@ OPENROUTER_API_KEY="$CANARY_KEY" python3 tools/external_analysis.py assist \
     --duration 2 --mode mimo --timeout 600 --dry-run \
     >"$ANALYSIS_DIR/cli.json"
 grep -q '"dotenv_fallback": true' "$ANALYSIS_DIR/cli.json" \
-    || fail "the command line lost its .env fallback"
+    || fail "the command line lost its file fallback"
 
 # E7: the doctor reports membership, never the value. Its exit status is allowed
 # to be non-zero — a missing optional helper is a legitimate report — but an
@@ -203,10 +197,9 @@ OPENROUTER_API_KEY="$CANARY_KEY" python3 tools/musializer_doctor.py --json \
 
 CREDENTIALS_FILE="$XDG_CONFIG_HOME/musializer/credentials.json"
 
-# The two files that are *supposed* to hold the key in plaintext: the 0600
-# credentials store, and the .env fixture written above to prove the command
-# line still honours it. Everything else is a leak.
-AUTHORIZED_SINKS="$(printf '%s\n%s\n' "$CREDENTIALS_FILE" "$DOTENV")"
+# The only file supposed to hold the key in plaintext: the 0600
+# credentials store, and no other file. Everything else is a leak.
+AUTHORIZED_SINKS="$CREDENTIALS_FILE"
 
 if [ "$NEGATIVE" -eq 1 ]; then
     # Deliberately leak the sentinel into a scanned artifact and require the scan
@@ -255,5 +248,5 @@ SCANNED="$(find "${SCAN_ROOTS[@]}" -type f | wc -l)"
 printf 'secret canary: %s files scanned across the config dir, cache dir, %s, the .musi,\n' \
     "$SCANNED" "build/analysis-canary"
 printf '  the job log, the support-bundle output and /proc/self/cmdline.\n'
-printf 'secret canary: found only in the 0600 credentials file and the .env fixture,\n'
-printf '  which are the two sinks that are supposed to hold it.\n'
+printf 'secret canary: found only in the 0600 credentials file,\n'
+printf '  which is the only sink supposed to hold it.\n'

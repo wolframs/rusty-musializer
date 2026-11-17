@@ -4,7 +4,7 @@
 The doctor never invokes FFmpeg, Whisper, Codex, or OpenRouter. It reports
 discovery and filesystem readiness only. Credential values are neither read by
 this module nor included in its output; OpenRouter presence is delegated to the
-same strict dotenv helper used by ``external_analysis.py``.
+same strict credential helper used by ``external_analysis.py``.
 """
 
 from __future__ import annotations
@@ -494,29 +494,23 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
                 "run the forced-align helper once to install the MMS_FA model"),
     ))
 
-    # This is the sole credential read. Membership is checked, never the value.
-    #
-    # `allow_dotenv` is the desktop's reality, not a convenience: the
-    # application always spawns the helper with `--no-dotenv`, so a key living
-    # only in the repository `.env` authorizes nothing there. A doctor that read
-    # it anyway answered "configured" about a credential no job would use
-    # (audit B1). The dotenv rung stays for the command line, which is the only
-    # place it was ever meant to serve.
+    # Desktop jobs pass --no-dotenv and supply only the authorized key.
     openrouter_ok = False
+    credential_error = None
     if external_analysis is not None:
-        openrouter_environment = external_analysis._openrouter_env(
-            root / ".env", allow_dotenv=allow_dotenv)
-        openrouter_ok = "OPENROUTER_API_KEY" in openrouter_environment
+        try:
+            openrouter_environment = external_analysis._openrouter_env(allow_dotenv=allow_dotenv)
+            openrouter_ok = "OPENROUTER_API_KEY" in openrouter_environment
+        except ValueError as error:
+            credential_error = str(error)
     checks.append(_check(
         "openrouter", openrouter_ok, "OpenRouter credential for remote MiMo",
         required_for=("remote_mimo",),
-        detail="configured in the environment" if openrouter_ok else (
-            "no OPENROUTER_API_KEY in this environment; the repository .env was "
-            "not consulted, because the application never does (--no-dotenv). "
-            "The desktop supplies its own key from the credentials store, which "
-            "this doctor deliberately does not read"
+        detail="configured" if openrouter_ok else credential_error or (
+            "no OPENROUTER_API_KEY; application credential-file fallback refused (--no-dotenv); "
+            "the desktop supplies its authorized key explicitly"
             if not allow_dotenv else
-            "set OPENROUTER_API_KEY or add only that key to the repository .env"),
+            "set OPENROUTER_API_KEY or save the OpenRouter key in the application's private credentials.json"),
     ))
 
     # Audit B7. A helper that failed to import is named here, with the
@@ -592,7 +586,7 @@ def audit(*, root: Path = ROOT, analysis_dir: Optional[Path] = None,
                 ("discovered" if codex else "none")),
             "openrouter": {
                 "dotenv_consulted": bool(allow_dotenv),
-                "dotenv_path": str(root / ".env"),
+                "dotenv_path": str(external_analysis._credentials_path()) if external_analysis else None,
             },
         },
         "import_failures": dict(sorted(_IMPORT_FAILURES.items())),
@@ -708,7 +702,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--antigravity-harness", type=Path)
     parser.add_argument("--antigravity-profile", type=Path)
     parser.add_argument("--no-dotenv", action="store_true",
-                        help="do not consult the repository .env for OPENROUTER_API_KEY, "
+                        help="refuse application credential-file fallback (legacy flag), "
                              "which is what the desktop always does")
     parser.add_argument("--require", action="append", choices=CAPABILITIES,
                         default=[], help="exit nonzero unless this capability is ready")

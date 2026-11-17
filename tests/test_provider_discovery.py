@@ -22,6 +22,7 @@ import unittest
 from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -379,12 +380,11 @@ class DoctorProbedInstallationTests(unittest.TestCase):
         self.assertIn("Probed paths:", rendered)
         self.assertIn("whisper_bin: /w/bin (configured)", rendered)
 
-    def test_no_dotenv_keeps_the_repository_env_out_of_the_credential_verdict(self) -> None:
+    def test_no_dotenv_keeps_the_credential_file_out_of_the_verdict(self) -> None:
         """The desktop always passes `--no-dotenv`; the doctor must agree.
 
-        A key living only in the repository `.env` authorizes nothing in the
-        application, so a doctor that reads it answers "configured" about a
-        credential no job would ever use.
+        A credential file authorizes the CLI, but the desktop must receive its
+        key explicitly. The repository `.env` fixture authorizes neither.
         """
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "root"
@@ -392,7 +392,14 @@ class DoctorProbedInstallationTests(unittest.TestCase):
             (root / ".env").write_text("OPENROUTER_API_KEY=sk-or-v1-doctor-fixture\n")
             environment = {key: value for key, value in os.environ.items()
                            if key != "OPENROUTER_API_KEY"}
+            config = Path(tmp) / "config"
+            credentials = config / "musializer/credentials.json"
+            credentials.parent.mkdir(parents=True)
+            credentials.write_text(json.dumps({"schema": "musializer.assist-credentials/v1", "entries": {"openrouter/default": {"secret": "sk-or-v1-doctor-fixture"}}}))
+            credentials.chmod(0o600)
             previous = os.environ.pop("OPENROUTER_API_KEY", None)
+            env_patch = patch.dict(os.environ, {"XDG_CONFIG_HOME": str(config), "MUSIALIZER_ASSIST_CREDENTIALS": str(credentials)})
+            env_patch.start()
             try:
                 strict = musializer_doctor.audit(
                     root=root, analysis_dir=Path(tmp), output_dir=Path(tmp),
@@ -403,6 +410,7 @@ class DoctorProbedInstallationTests(unittest.TestCase):
                     allow_dotenv=True, environ=environment,
                     which=lambda _name: None, runner=lambda *a, **k: _completed())
             finally:
+                env_patch.stop()
                 if previous is not None:
                     os.environ["OPENROUTER_API_KEY"] = previous
 

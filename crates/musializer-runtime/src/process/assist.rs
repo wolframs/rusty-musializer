@@ -504,7 +504,7 @@ impl AssistJob {
             // whisper.cpp and codex, not just python.
             .arg("--new-process-group");
         // The desktop flow must never authorize a job with a key the settings
-        // dialog never saw, so the helper's repository-`.env` fallback is
+        // dialog never saw, so the helper's application credential-file fallback is
         // CLI-only (docs/ASSIST_PROVIDER_CONTRACTS.md §3, AP1-e).
         command.arg("--no-dotenv");
         // Zero data retention as the **snapshot** states it, not as the mode
@@ -983,7 +983,7 @@ mod tests {
         assert_eq!(argv[11], "--new-process-group");
         assert_eq!(
             argv[12], "--no-dotenv",
-            "the desktop path must refuse the repository-`.env` fallback"
+            "the desktop path must refuse the application credential-file fallback"
         );
         assert_eq!(
             argv[13], "--zdr",

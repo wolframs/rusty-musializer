@@ -18,6 +18,7 @@ import math
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -362,36 +363,78 @@ def _local_runtime_env(executable: str | Path) -> dict[str, str]:
     return environment
 
 
-def _openrouter_env(dotenv_path: Path | None = None, *, allow_dotenv: bool = True) -> dict[str, str]:
-    """Expose only the one credential authorized for the semantic helper.
+def _credentials_path() -> Path | None:
+    """Match runtime::assist::files::credentials_path (including its override)."""
+    if "MUSIALIZER_ASSIST_CREDENTIALS" in os.environ:
+        value = os.environ["MUSIALIZER_ASSIST_CREDENTIALS"]
+        return Path(value) if value else None
+    if "XDG_CONFIG_HOME" in os.environ:
+        value = os.environ["XDG_CONFIG_HOME"]
+        return Path(value) / "musializer/credentials.json" if value else None
+    home = os.environ.get("HOME")
+    return Path(home) / ".config/musializer/credentials.json" if home else None
 
-    Desktop launchers do not normally inherit interactive shell variables, so
-    the repository's ignored .env is accepted as an explicit local credential
-    store. It is parsed as data, never sourced as shell code.
 
-    allow_dotenv=False is what the desktop passes. The application imports its
-    key through a dialog and hands it over deliberately, so a .env the dialog
-    never saw must not be able to authorize a job: the run would succeed and
-    then record a provenance snapshot naming a credential nobody chose. The
-    command line keeps the fallback, which is the only place it was ever meant
-    to serve.
+def _stored_openrouter_key(path: Path) -> str:
+    # Open once, validate the handle before reading; never report file contents
+    # or a parser exception (which might quote a secret).
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return ""
+    except OSError:
+        raise ValueError("could not open application credentials file") from None
+    try:
+        metadata = os.fstat(fd)
+        if (not stat.S_ISREG(metadata.st_mode)
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+                or metadata.st_uid != os.getuid()):
+            raise ValueError("application credentials file must be owned by this user and have mode 0600")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            data = stream.read(64 * 1024 + 1)
+    finally:
+        os.close(fd)
+    if len(data) > 64 * 1024:
+        raise ValueError("application credentials file exceeds 64 KiB")
+    try:
+        store = json.loads(data)
+        if (not isinstance(store, dict) or set(store) - {"schema", "entries"}
+                or store.get("schema") != "musializer.assist-credentials/v1"):
+            raise ValueError()
+        entries = store.get("entries", {})
+        if not isinstance(entries, dict) or len(entries) > 64:
+            raise ValueError()
+        for name, entry in entries.items():
+            parts = name.split("/")
+            if len(parts) != 2 or any(
+                    not re.fullmatch(r"[a-z0-9_-][a-z0-9_.-]{0,63}", part)
+                    or ".." in part for part in parts):
+                raise ValueError()
+            if (not isinstance(entry, dict) or set(entry) - {"secret", "label"}
+                    or not isinstance(entry.get("secret"), str) or not entry["secret"]):
+                raise ValueError()
+            label = entry.get("label")
+            if label is not None and (not isinstance(label, str) or not label
+                    or len(label.encode()) > 256 or any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in label)):
+                raise ValueError()
+        return entries.get("openrouter/default", {}).get("secret", "")
+    except (ValueError, TypeError, UnicodeError):
+        raise ValueError("application credentials file has an invalid schema") from None
+
+
+def _openrouter_env(*, allow_dotenv: bool = True) -> dict[str, str]:
+    """Environment first, then the private application credential store.
+
+    The legacy --no-dotenv spelling disables all file fallback. The desktop
+    passes it because only the key it explicitly hands over authorizes a job.
+    Repository .env files are never consulted.
     """
     environment = _safe_local_env()
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
-    path = dotenv_path or ROOT / ".env"
-    if not key and allow_dotenv and path.is_file():
-        for raw_line in path.read_text(encoding="utf-8").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            name, value = line.split("=", 1)
-            if name.strip() != "OPENROUTER_API_KEY":
-                continue
-            value = value.strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                value = value[1:-1]
-            key = value.strip()
-            break
+    if not key and allow_dotenv:
+        path = _credentials_path()
+        if path is not None:
+            key = _stored_openrouter_key(path)
     if key:
         environment["OPENROUTER_API_KEY"] = key
     return environment
@@ -2995,7 +3038,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "repeatable")
     assist.add_argument("--zdr", action="store_true"); assist.add_argument("--timeout", type=float, default=2400)
     assist.add_argument("--no-dotenv", action="store_true",
-                        help="refuse the repository .env credential fallback (the desktop path)")
+                        help="refuse application credential-file fallback (legacy flag; the desktop path)")
     assist.add_argument("--new-process-group", action="store_true", help=argparse.SUPPRESS)
     assist.add_argument("--dry-run", action="store_true"); assist.add_argument("--request-dump", type=Path)
 
