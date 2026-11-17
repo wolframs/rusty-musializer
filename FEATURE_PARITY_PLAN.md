@@ -9,57 +9,27 @@ argument for or against any item below.
 If another document, source comment, old agent handoff or ignored worktree names
 unfinished work, reconcile it here before acting on it. There is one queue.
 
-**Where the closed work went (2026-08-29).** Every finished wave — LX, EX, PX,
-CX, HX, AP, LT1, DX's landed half, P0–P4's landed half, UX0-A, UX0-D, and the
-three scene waves SX1–SX3 — is in
-[`docs/archive/FEATURE_PARITY_HISTORY.md`](docs/archive/FEATURE_PARITY_HISTORY.md),
-verbatim, with its evidence, its operator quotes and its negative controls
-intact. Read it when you need to know *why* something is the way it is. The item
-ids below are the ids it uses, so `grep` finds the context.
+Open now: HY housekeeping, LT2 acoustic acceptance, WX-6 appearance coverage,
+and the ordered remainders below. Built work awaiting a human look is separate.
+History and operator wording: [FEATURE_PARITY_HISTORY](docs/archive/FEATURE_PARITY_HISTORY.md)
+(search by id; an id cited by source but absent here is closed).
 
-Roughly a dozen source doc comments cite `FEATURE_PARITY_PLAN.md` plus an id
-(`UX0-C01`, `LT1-R R9`, `F1`, `CX-4`). **An id a source comment names and this
-file does not list is a closed item** — its record is in the archive under the
-same id. Nothing was renamed.
+## Built, waiting for the operator's look
 
-Other standing references: `AGENTS.md` for repository rules and the deliberate exclusions,
-`docs/UNSAFE.md` and `docs/DIVERGENCES.md` for the `unsafe` inventory and the divergence table; `REWRITE_PLAN.md`
-and `docs/archive/` for history; `docs/PHASE0_INVENTORY.md` for formats, CLI
-grammar and schemas.
+- **Glyph Lattice** — since 2026-10-24; Scenes → Geometry → Glyph Lattice with music, then decide whether `words` defaults on; [design](docs/GLYPH_LATTICE.md).
+- **Pixel Cats** — since 2026-10-24; Scenes → Pixel cats, play with lyrics; [six stagings](docs/PIXEL_CATS.md). Unbuilt stagings remain below.
+- **Scene families and native gallery** — since 2026-10-23; Scenes flyout, compare the six new scenes and their Look controls while playing; [guide](docs/SCENE_GALLERY.md).
+- **Fluid Ink** — since 2026-10-23; Scenes → Fluid Ink, play and open Look; [design and reproduction](docs/FLUID_INK.md).
+- **SX4 Tideline / Cadence** — since 2026-09-05, the priority then; now waiting with these items. Use the fresh SX4 listening protocols in the Rust runner and the browser's cut-quality question; [design](docs/SCENE_DESIGN.md), [runner instructions](tools/listening-lab/README.md).
+- **CX-5 thumbnails** — awaiting review (start date not recorded in the queue; scene-picker integration documented 2026-10-30); open Scenes on a track; [poster service](docs/POSTER_FRAMES.md).
+- **D6 Inspector scrolling** — since 2026-09-05; scroll Look to the last setting on a tall-control scene; [reachability and visual boundary](docs/SCENE_DESIGN.md).
+- **MV7 Cadence second pass** — landed 2026-10-12, wants the operator's eye before more is added; Scenes → Cadence with lyrics, then Look; [design](docs/SCENE_DESIGN.md).
 
-## UI toolkit follow-through
+Full descriptions and verification boundaries: archive, "HY-2 — live queue
+consolidation (2026-11-17)". Waiting is not aesthetic acceptance.
 
-The right-column workspace replaces the duplicate modal; shared egui styling,
-Direct and the welcome picker remain. See [UI_TOOLKIT](docs/UI_TOOLKIT.md).
-Remaining follow-through: decide whether unfinished toolkit chat drafts should
-persist across application restarts.
-
-## Deliberate exclusions
-
-These are not open work and do not block anything. They are restated from
-`AGENTS.md`, which is authoritative:
-
-- Microphone capture (`MUSIALIZER_MICROPHONE`)
-- Hot reload, including a functional `--reload-once`
-- Non-Linux platforms, including Windows, macOS and OpenBSD
-
-Exact pixel identity with the frozen C, its source organization and its known
-defects are also not goals. A new deliberate exclusion needs operator approval
-and lands in both files.
-
-## What is not negotiable while any of this is built
-
-Restated because it is the one thing an open queue can quietly break. An
-unplanned change in any of these is a bug, not a design choice — a *planned* one
-needs a schema bump or an updated harness and a recorded reason:
-
-- The `.musi` format and every schema in `docs/PHASE0_INVENTORY.md`. A project
-  saved by any earlier build of *this* application must still open.
-- Analysis numbers: analyzer, beat tracker, band layout.
-- Settings semantics: descriptor keys, bounds, defaults, precision, clamping.
-- Export determinism. The same project produces the same frames.
-- The CLI grammar, including flag-order effects and exit status.
-- Anything with a `tools/differential_*.sh` harness. The harness is the contract.
+Rules: [AGENTS.md — Not built, and not going to be](AGENTS.md#not-built-and-not-going-to-be).
+Contracts: [AGENTS.md — Judge by what a user or a file can observe](AGENTS.md#judge-by-what-a-user-or-a-file-can-observe).
 
 ## Open work
 
@@ -110,54 +80,22 @@ lands, and move this item to the archive when all have.
   to the operator as proposals. The public GitHub mirror is published through
   the wsiener.dev mirror procedure, not from here.
 
-**The operator's, from the 2026-11-14 follow-up** (record in the archive,
-"The 2026-11-14 follow-up"):
+**Standing decisions from the 2026-11-14 follow-up.** The listening lane's
+choice and open remainder are [below](#the-listening-lane-and-the-benchmarks-remainder).
+The lead's `--max-spend N` rule bounds only a treatment run's new sends;
+prior possible charges are reported separately (2026-11-15, his to overrule;
+`docs/VIDEO_GENERATION.md`, "The ceiling, redefined"). Balanced stays as it is;
+High is the answer for gradients and grain (his to revisit;
+[measurement](docs/archive/BALANCED_ENCODER_2026-11.md)). Operator wording and
+decisions are in the archive's "The 2026-11-14 follow-up" and
+"The listening lane moves to Gemini 3.8 Flash" sections.
 
-- **MiMo is the wrong model for this lane** (operator, 2026-11-15, while answering
-  the truth session, verbatim): "I'm also ONLY JUST remembering that Mimo
-  V2.5's perception of audio is worse than the newer gemini flash models' is,
-  so the entire 'use mimo for this task' setup is outdated. It started that
-  way because Mimo V2.5 was the first model that had *any* usable *music*
-  training for something like this, but the gemini flash series has since
-  superseded it in usefulness by a lot..." So the semantic lane's model is to
-  be reconsidered before more is built on MiMo; the benchmark harness, the
-  lane's cap, failed-run and estimate handling, and the truth session are not
-  specific to MiMo. **Decided by him, 2026-11-15:** "Gemini Flash 3.8, no
-  competition ;)", in answer to whether to measure it first; no benchmark is
-  wanted for the choice. The route is the lead's choice: OpenRouter lists
-  `google/gemini-3.8-flash` with audio input (2026-11-15: 0.825 USD per million
-  input and audio tokens, 4.125 per million output), so the application's
-  existing hosted lane takes it and no second route is needed.
-- **The listening lane runs on Gemini 3.8 Flash** (merged, reviewed, fully
-  verified and in the release build, 2026-11-15): default and recommended on
-  the operator's word, MiMo selectable as experimental, three real calls for
-  0.0475 USD. Record: `docs/ASSIST_PIPELINE.md`, "Gemini 3.8 Flash through
-  OpenRouter", and `docs/DIVERGENCES.md`, "The listening lane's model". What
-  the three answers showed, which is not a benchmark: on one excerpt the
-  sections sat on the lyric changes and energy followed loudness; on the
-  other a section 2 to 4 dB quieter was called a quiet breakdown and a hook's
-  return was placed 8 s early; the same audio heard twice in one call was cut
-  into different sections. Open from it: whether the plan the application
-  suggests from these sections is good enough to act on unchecked; the
-  benchmark harness is not pointed at Gemini (it needs a price row and its
-  fixed temperature removed first); never tried for real: a Gemini refusal, a
-  track near the size limit, a route without zero data retention.
-- **The benchmark's truth is no longer waited for** (2026-11-15). He started
-  the Listening Lab session and found the key question hard ("both eb minor
-  and F# fit parts of this track": relative keys, one scale). With MiMo set
-  aside and nothing in the application using key, metre or instruments, his
-  answers are not needed; the session and its converter stay in
-  `tools/mimo_bench/` for a later benchmark of whichever model, and its key
-  question should then not make a listener choose between a relative pair.
-- **The lead's ceiling rule, his to overrule** (2026-11-15): `--max-spend N`
-  is the most a treatment run may newly send; what earlier runs may already
-  have spent is reported on its own line, not counted. Reason: counting prior
-  possible charges was wrong in a new way in each of three reviews, and a rule
-  about the run's own sends is enforced at the moment of each send
-  (`docs/VIDEO_GENERATION.md`, "The ceiling, redefined").
-- **Decided by measurement, his to revisit**: Balanced stays as it is; High
-  is the answer for gradients and grain
-  (`docs/archive/BALANCED_ENCODER_2026-11.md`).
+## UI toolkit follow-through
+
+The right-column workspace replaces the duplicate modal; shared egui styling,
+Direct and the welcome picker remain. See [UI_TOOLKIT](docs/UI_TOOLKIT.md).
+Remaining: persist unfinished toolkit chat drafts across restarts (HY-4;
+the lead's 2026-11-17 choice, recorded in HY above).
 
 **WX-6 appearance coverage — still open (2026-10-30).** The EX4-c CPU
 failure is diagnosed and fixed: it predates WX-5d (5/5
@@ -182,113 +120,33 @@ through this grip remains a layout decision, separate from appearance coverage.
 resize grip should grow the whole band. WX-6 appearance coverage is tracked
 above; the rest is in [the workstation guide](docs/WORKSTATION.md#open-work).
 
-**Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
-solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28, Geometry family),
-after the modal.com hero the operator wanted in his own form. Kicks run comets
-along the edges, solids morph per section, and `words` sets the sung line in
-the same cells. The gallery check, its negative control, the differential
-pins and live playback pass. Open: the operator's look at it,
-and whether `words` should default on. See [`docs/GLYPH_LATTICE.md`](docs/GLYPH_LATTICE.md).
+**LT2 — lyrics Assist repair.** Goal: audit the complete production lyrics
+path on the ten-track corpus in [the investigation](docs/LYRICS_ASSIST_REPAIR_2026-09-06.md),
+counting missing/extra performed phrases and boundaries beyond ±0.5 s as errors,
+with a ≤3% per-track target (lead and echo count separately; a continuous chop
+run counts once). Latest recorded status (2026-09-08): the local
+crop repair renders 27 captions instead of 13 on the recorded failure, but
+missing choruses and backing-vocal boundaries remain. Ten corpus runs and the
+v6 comparison are complete; reference disagreements are not adjudicated error
+rates. Detection/timing and whole-track acceptance remain open.
+Next: resume the normal local Whisper/MMS investigation from
+[the recording](docs/archive/LYRICS_RECORDING_2026-09-08.md), adjudicate wording/
+grouping conflicts against independent audio evidence, and verify staged/apply/
+render behavior. Try section-bounded CTC with a repetition cross-check, a
+single-track lead rather than an accepted result. Normal Assist stays local;
+the later approved Antigravity audio route is opt-in. Preserve SX4 work.
+[Grouping handoff](docs/archive/LYRICS_GROUPING_REVIEW.md); full status,
+operator decisions and measurement: archive, "HY-2", the two LT2 entries.
 
-**Pixel Cats — built, ready for operator review (2026-10-24).** Six pixel-art
-stagings of the lyric line as one scene family (`pixel-boot`, `pixel-shell`,
-`pixel-run`, `pixel-quartet`, `pixel-chapel`, `pixel-rave`, ids 22–27), after
-the model-made video for the meow track. Each draws its line, reacts to the
-music and is byte-identical without it at `response` 0. The scene check and its
-negative control pass, as do the picker clicks for all seven families and a
-treatment of the meow track and of one other song. Open:
-the operator's look at it, and the unbuilt stagings (progress bar, pause menu,
-handheld, music box). See [`docs/PIXEL_CATS.md`](docs/PIXEL_CATS.md).
+**Pixel Cats remainder.** Unbuilt stagings: progress bar, pause menu, handheld,
+music box ([design](docs/PIXEL_CATS.md)); built scenes await the look above.
 
-**Scene families and native gallery — built, ready for operator review (2026-10-23).**
-The Scenes flyout groups scenes by family and shows poster tiles in two
-columns. Liquid Chrome, Aurora Veil, Metaball Garden, Neon Tunnel, Voronoi Bloom
-and Iridescent Pool each have eight Look controls, routes and persistence.
-All 22 tiles pass actual minimum-size clicks; the six scenes pass musical,
-portrait, project and export checks, and real-track release playback has no
-PCM drops or output underruns. Two Sol review rounds resolved shader portability
-and codec-test objections. Prior ids/settings and Fluid Ink are preserved.
-See [`docs/SCENE_GALLERY.md`](docs/SCENE_GALLERY.md) for design, reproduction,
-the corrected older picker fixtures and the exact verification boundary.
-The release is rebuilt; operator aesthetic judgment remains open.
-
-**Fluid Ink — built, ready for operator review (2026-10-23).** The requested
-music-stirred luminous fluid is selectable in Scenes, with eight Look controls,
-routes and project persistence. Synthetic visual/replay checks and the disabled-
-response negative control pass; a muted release run entered through the scene
-tile on a real track has zero dropped PCM frames and zero output underruns.
-See [`docs/FLUID_INK.md`](docs/FLUID_INK.md) for the design, live-seek policy,
-measurements and reproduction commands. Aesthetic judgment remains the operator's.
-
-**LT2 — lyrics Assist repair, resumed for the recorded local-route failure (2026-09-08).**
-The frozen elapsed counter is repaired and verified during playback, pause and
-seeking; the release is rebuilt. The recorded local run freshly generated only
-13 placed written lines, 13 unresolved lines and nine unplaced Whisper proposals.
-Three fresh Gemini 3.8 Flash audio reviews succeeded. The route mismatch,
-remaining acoustic defects and prior-session evidence are recorded in
-[the recording investigation](docs/archive/LYRICS_RECORDING_2026-09-08.md).
-The local crop-recovery repair now renders 27 captions for this recording
-(previously 13), including the two opening performances. The recommended
-no-sheet wording stage also stays local. Missing chorus entries and backing
-vocal boundaries remain; this is not whole-track acceptance.
-Detection/timing acceptance remains open. Operator priority: audit
-the normal local Whisper/MMS path; Gemini is for independent research checks
-only (operator choice, 2026-09-08). Do not change normal Assist to a remote route.
-Continue to audit and iterate the complete production lyrics path on Fence Around, i rly think so,
-Groyper Idol, Resolve to You, Cat Gradient Optimizer (Learn), Eight Thousand
-Tokens, Floor Mechanics I: Load Bearing, Breaking What Remains, The Cage Went
-Deep, and Autoregressive Kitty. Collaborate with Gemini 3.8 Flash through the
-official Antigravity CLI on short audio chunks. Acceptance counts missing/extra
-performed phrases (audible lead and echo count separately; a continuous chop
-run counts once) and either boundary
-exceeding ±0.5 seconds as errors, aiming at ≤3% per
-track. Dependencies: verified audio-capable Antigravity transport, independent
-reference evidence, source classification, acoustic localization, cache
-invalidation, and actual staged/apply/render behavior. Preserve existing SX4
-work; passing model/unit tests alone does not close the acoustic target.
-T3-authenticated `agy_acp_server_1.1.1` audio calls to Gemini 3.8 Flash are now
-verified. The operator approved an **opt-in Antigravity audio route in normal
-Assist**. Investigation and private evidence pointers are in
-[`docs/LYRICS_ASSIST_REPAIR_2026-09-06.md`](docs/LYRICS_ASSIST_REPAIR_2026-09-06.md).
-Authored boundaries and missing-line recovery now use original crop evidence;
-additional performed instances and conditional main phrases now have separate
-fresh audio confirmation. Confirmed lead/echo splits now reach the lyric lane
-with authored review identity preserved. Confirmed audio-observed ad-libs now
-have distinct captions and review entries. All ten current corpus runs and
-independent audio-only reference proposals are complete after the provider
-reset; ordinary-sentence splits also require fresh audio confirmation. Unicode
-apostrophes now preserve equivalent matching and acoustic tokenization. The
-normal track-02 helper completes and its muted staged/apply/playback replay
-passes. Reference grouping and wording conflicts remain unadjudicated;
-complete per-track timing/coverage acceptance remains open. An explicit saved
-Antigravity performed-phrase choice now bypasses written-line localization and
-uses exact local sheet spelling. The actual track-02 helper and muted UI Apply/
-playback pass; all ten normal-mode corpus runs and the final v6 comparison
-are complete. Model-reference disagreements remain substantial and are not
-adjudicated error rates. No research helper remains running. The operator
-requested a pause on September 7 and accepted both reviewed two-phrase groupings;
-see [the handoff](docs/archive/LYRICS_GROUPING_REVIEW.md). The September 8 recording
-resumes investigation of the normal local workflow.
-
-**SX4 — built, awaiting operator review (2026-09-05).** The operator
-completed CX-4 track A in the Rust runner: ten `reject` and two `neither`
-answers. Song Atlas needs a
-creative redesign; Cadence has discontinuous motion; the audition windows cut
-across musical phrases. Preserve those answers and the original protocols.
-Atlas now has the Tideline spiral relief and traveling warm light; Cadence's
-onset/beat-wrap/word-envelope discontinuities are repaired, with soft ambient
-strata. New Tideline auditions
-use measured candidate cuts and output fades. Cuts are **not yet verified phrase
-boundaries**. The reusable generator and browser form distinguish bad cuts from
-bad looks. Design decisions, compatibility and evidence are recorded in
-[`docs/SCENE_DESIGN.md`](docs/SCENE_DESIGN.md). This is the current operator
-priority; human acceptance remains open. Revisit cue-to-cue type sizing or
-remaining motion defects if the new listening pass finds them.
-The operator found the first Tideline version effectively frozen. The follow-up
-adds traveling surface folds, stronger musical deformation, flowing light and
-visible camera movement. Nonvisual checks only for this correction, as requested;
-the operator will judge its motion. Earlier render evidence is for the first
-version and does not establish acceptance or performance of the correction.
+**SX4 remainder.** The September 5 priority is now a waiting item above.
+Candidate audition cuts remain unverified phrase boundaries; revisit cue-to-cue
+type sizing or remaining motion defects if the listening pass finds them.
+The Tideline motion correction has only nonvisual verification by request;
+earlier renders establish neither its acceptance nor its performance.
+[Design and protocols](docs/SCENE_DESIGN.md).
 
 Ordered as a session should pick it up. Trust outranks delight — that ordering is
 a CX ruling, not a preference.
@@ -296,7 +154,7 @@ a CX ruling, not a preference.
 | # | Work | Ids | Size |
 | --- | --- | --- | --- |
 | 1 | **Review SX4, then revisit CX-4.** Track A's original session was rejected; track B is unreviewed. The new design review has four questions per track and a separate cut-quality question in the browser. Original CX-4 files/answers remain intact; do not unblind until both original sessions are complete. Tap-offset and 80/120/200 ms flash comparisons also remain unvalidated | SX4, CX-4 | operator listening |
-| 2 | **The listening model** — was the MiMo v2.5 capability benchmark, the operator's stated priority. Its first live run is done (2026-11-14, 60 calls; `docs/MIMO_BENCHMARK_RESULTS.md`), and on 2026-11-15 he set MiMo aside for Gemini 3.8 Flash without wanting a benchmark for the choice (the block above; archive, "The listening lane moves to Gemini 3.8 Flash"). Open: whether the plan the application suggests from Gemini's sections is good enough to act on unchecked; pointing the harness at Gemini needs a price row and its fixed temperature removed, and a new paid run needs his go-ahead | — | operator listening, then one session |
+| 2 | **Listening-lane plan quality and benchmark remainder** — [details below](#the-listening-lane-and-the-benchmarks-remainder) | — | operator listening, then one session |
 | 3 | **The remaining CX rulings, in their stated order.** Review the implemented track-specific CX-5 scene thumbnails, then CX-1 marker rails and the proposal review queue (PXF-8), then CX-2 export variants (PXF-4 first, schema v2 — PXF-9) | CX-1, CX-2, CX-5 | large; four or five agents |
 | 4 | **Workflow friction and product opportunities** left from the user-perspective review | UX0-B06, B07, B10–B19; UX0-C05, C08, C09, C17; PXF-3, PXF-12, PXF-13 | medium |
 | 5 | **Durable-edit remainder, then the missing product surfaces, then honesty and gates** | B3; C2, C3, C5; D6, D8; E2, E3, E4; F1/F2/F3 remainder; G1, G2; GX-3, GX-4, GX-5 | large |
@@ -320,7 +178,7 @@ prefix.
   resolve and spends band height doing it. Carries the proposal review queue.
 - **CX-2** — the clip window belongs in `.musi`, as one of a **list** of named
   export variants. Schema v2. Prerequisite: PXF-4.
-- **CX-4** — the operator listening session above. The rulings it already made
+- **CX-4 (HY-4: tap offset)** — the operator listening session above. The rulings it already made
   (visual-only tap feedback with no stamp click, revised Surprise constants) are
   landed. Track A was rejected on 2026-09-05; track B and tap/flash validation
   remain open. SX4 is the response to that rejection, not a passing CX-4 result.
@@ -328,9 +186,8 @@ prefix.
   derives `Default`, 0.0, and core tests pin it). Since PXF-2 the persistence
   path defers to `LyricTap::default()`, so the ruling is one constant plus
   `tools/headless_check.sh`'s `last stamp` expectation and two core tests.
-- **CX-5** — track-specific scene thumbnails are implemented through the poster
-  service; awaiting operator review. The stable representative moment does
-  not require resume-position persistence.
+- **CX-5** — the thumbnail review is in the waiting section above. The stable
+  representative moment does not require resume-position persistence.
 
 **PXF — PX-wave debrief follow-ups.** PXF-6, PXF-8, PXF-9 and PXF-11 are not
 separate work: they are the *questions* CX-5, CX-1, CX-2 and CX-4 answered, and
@@ -377,8 +234,7 @@ here.
   the C's dedup rule, and never let the in-memory and on-disk libraries silently
   disagree after a failed write.
 - **D6** — `SettingKind::Toggle` drawn as a labelled binary control rather than
-  a numeric slider. Inspector scrolling is implemented (2026-09-05), with
-  nonvisual reachability/input checks; the operator's visual check is pending.
+  a numeric slider. Inspector scrolling awaits the visual check listed above (nonvisual checks only, 2026-09-05).
 - **D8** — an actionable notice tray: call-site-provided specifications, paths and
   tooltips, Dismiss, Copy path, Assist Retry, a `+N more` indicator. UX0-A11
   landed the opaque card, wrapping, `Severity::dwell` and the close box; start
@@ -410,8 +266,8 @@ here.
   cards with a real mouse and keyboard; a real agent session beside the
   picker; a 4K export with a slow preset (EX4); a GPU that refuses the 16-bit
   export target; a real phone video, and a clip longer than 20 s or above
-  1080p. From the 2026-11-14 follow-up: the generation and MiMo items listed
-  under VG and MiMo below.
+  1080p. From the 2026-11-14 follow-up: the generation and listening-lane items
+  listed under VG and the listening-lane remainder below.
 
 **EX3/EX4 — the export defects' remainder.** Both defects landed in the
 2026-11-13 wave (the 16-bit export target with one dithered quantise; the
@@ -455,7 +311,7 @@ across seven commits; the wave and its negative controls are in
 `docs/archive/FEATURE_PARITY_HISTORY.md`, the findings themselves in
 `docs/archive/ASSIST_AUDIT_2026-08-29.md`. What the wave left open:
 
-- **AX-7 — A7's two `strip_credential_variables` copies, and the login shell
+- **AX-7 (HY-3) — A7's two `strip_credential_variables` copies, and the login shell
   that gets neither.** `runtime/assist/discover.rs:338` and
   `app/ui/assist_settings.rs:3176` are the same function in two crates, and
   `discover::login_shell_lookup` (`discover.rs:270-295`) spawns `$SHELL -lc`
@@ -467,7 +323,7 @@ across seven commits; the wave and its negative controls are in
   the strip applied to the shell child. `env.rs:43-45`'s doc comment still
   forbids the blanket strip both copies perform, so the fix has to reconcile
   the comment with the callers rather than pick one.
-- **AX-8 — B12's remaining two duplications.** `cache_dir` was unified
+- **AX-8 (HY-3) — B12's remaining two duplications.** `cache_dir` was unified
   (`runtime::assist::files::cache_dir`, matching Python's XDG rule), but
   `assist_settings::find_tool` (`:3197`) still has no `MUSIALIZER_*_HELPER`
   override rung while its own doc comment says it resolves "the way
@@ -622,62 +478,46 @@ one real video with it found these, each from a contact sheet:
     refused real job, a second model family, a lost answer, two callers at
     once, a cut-short download, an expired job.
 
-- **The listening lane and the benchmark's remainder** (the model question is
-  row 2; the lane runs on Gemini 3.8 Flash since 2026-11-15):
-  - Not known: whether the plan suggested from Gemini's sections can be acted
-    on unchecked. Three real answers showed one song cut well, one with a
-    section misjudged and a return placed 8 s early, and the same audio cut
-    differently when heard twice in one call.
-  - The benchmark's repeats 2 and 3 of most MiMo cells are not run, and are
-    not worth running for a model set aside.
-  - Accepted from the reviews, to fix only if it ever matters: the "latest
-    attempt failed" notice can be wrong when two helpers act on one cache at
-    the same moment or when the wall clock is set back between attempts; an
-    older build does not reuse a cache a newer build wrote.
-  - Never tried for real: a cut-off or refused answer from either model, a
-    track near the request's size limit, a route without zero data retention,
-    Start pressed in the application itself.
-
 - **WX — the window as a directing workstation** (2026-10-21). Parts, order,
   decisions and status live in [`docs/WORKSTATION.md`](docs/WORKSTATION.md);
   that file is updated as each part lands, and its "Open work" is the rest.
 
-- **Disk decisions left over from the 2026-11-10 cleanup — the operator's to
-  make, in a session here.** Both live in the gitignored `build/`; measure
-  their sizes again before deciding.
-  - The "Door, No Room" renders and intermediates in `build/door/`: the
-    `door_no_room_*` and `base_v*` MP4s. Which ones does the operator keep (or
-    move off `/`), and which can go? The `.musi`, treatment and analysis files
-    next to them are small.
-  - `build/lyrics-research-v2/.venv`: the uv venv that `tools/lyrics_research/`
-    and `tools/mimo_bench/` run in. Most of its files are hardlinks shared with
-    the uv cache, so deleting it frees little unless the research is finished.
-  - The audio-model apps DiffRhythm and stable-audio-3 in `~/apps/` belong to
-    AI Pantheon; that question is queued in its `docs/local-models.md`.
+### The listening lane and the benchmark's remainder
 
-One measurement for **LT2**, from the same session and not yet acted on: on a
-3:59 track with an embedded 27-line sheet, the normal local route
-(`external_analysis.py assist --mode lyrics --lyrics-file`) placed 15 lines and
-left 12 unplaced — both pre-chorus lines, the whole first chorus, the first line
-of verse two. MMS CTC forced alignment of the *same* sheet inside nine
-hand-chosen section windows gave a placement for every line, and its three
-choruses agreed with each other to within 30 ms at whole-bar offsets (60.41 s
-and 68.00 s). Five placements scored under 0.2 — the two shouted responses, the
-two whispered lines, one held word — and were accepted because they sat on the
-bar grid the others established, not on their score; one first word was off by
-2.6 s and was caught only by the chorus-to-chorus comparison. The windows came
-from the measured kick sections, not from Whisper. That is one track and the
-windows were chosen by a reader, so it is a lead rather than a result:
-section-bounded CTC with a repetition cross-check may recover what anchor-block
-localization drops.
+Gemini 3.8 Flash through OpenRouter is default and recommended on the operator's
+word (2026-11-15), without a benchmark for that choice. MiMo was set aside;
+its overlay row remains experimental and selectable with **Show experimental**.
+The operator's quotes and the route decision are in the archive, "The listening
+lane moves to Gemini 3.8 Flash"; request/evidence details in
+[ASSIST_PIPELINE](docs/ASSIST_PIPELINE.md) and
+[DIVERGENCES](docs/DIVERGENCES.md), "The listening lane's model".
 
-## Two standing facts a new session needs
+- Not known: whether the suggested plan from Gemini's sections is good enough
+  to act on unchecked. Three real answers (0.0475 USD) showed one excerpt cut
+  well and energy following loudness; another misjudged a section 2–4 dB quieter
+  and put a return 8 s early. Identical audio heard twice in one call was cut
+  differently. These are observations, not a benchmark.
+- Pointing the harness at Gemini needs a price row and removal of its fixed
+  temperature; a new paid run needs the operator's go-ahead. The first MiMo run
+  was 60 calls on 2026-11-14 ([results](docs/MIMO_BENCHMARK_RESULTS.md));
+  repeats 2 and 3 of most cells remain unrun and are not worth running for a
+  model set aside. The truth session and converter in `tools/mimo_bench/` stay
+  for a later benchmark; answers are no longer waited for (the app uses none
+  of key, metre or instruments). A future key question must not force a choice
+  between relative keys.
+- Accepted from reviews, to fix only if it matters: the "latest attempt failed"
+  notice can be wrong with simultaneous helpers on one cache or a wall-clock
+  rollback; an older build does not reuse a cache a newer build wrote.
+- Never tried for real: a cut-off or refused answer from either model, a track
+  near the request size limit, a route without zero data retention, Start
+  pressed in the application itself. See GX-5 for the newer Feelings review
+  and remaining real-interaction checks.
 
-- The operator's OpenRouter key lives in `~/.config/musializer/credentials.json`.
-  The repository `.env` is legacy CLI-only and the desktop path refuses it.
-- `xiaomi/mimo-v2.5` is `experimental` in the suitability overlay, so **Show
-  experimental** must be on for the MiMo lane to be routable until a benchmark
-  earns it a `recommended` row.
+## Credential location (HY-3)
+
+The operator's OpenRouter key lives in `~/.config/musializer/credentials.json`.
+The desktop refuses repository `.env` credentials; HY-3 owns replacing the
+legacy CLI fallback with that credential file.
 
 ## How this file stays authoritative
 
