@@ -51,7 +51,7 @@ lands, and move this item to the archive when all have.
   fallback replaced by the 0600 credential file `AGENTS.md` names.
 - [ ] HY-4 the CX-4 −100 ms tap-offset default; chat drafts persist across
   restarts (the lead's choice: a draft lost to a restart is work lost).
-- [ ] HY-5 `tools/`: the three gates nothing runs (dark theme, UI/UX, welcome
+- [x] HY-5 (landed 2026-11-17: dark-theme and UI/UX retired as covered, welcome repaired and in verify; record in the archive) `tools/`: the three gates nothing runs (dark theme, UI/UX, welcome
   theme) run, then fixed or retired; the near-twin helper names.
 - [ ] HY-6 the "OpenAI Knot" scene restyled and renamed. Operator, 2026-11-17,
   verbatim: "we have 'Clawd,' and I figured it would be fair to GPT models and
