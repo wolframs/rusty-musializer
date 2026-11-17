@@ -5380,3 +5380,264 @@ then fix / preempt issues in the code, before I test it myself? :)"
   real answer (the probe has one click per run; the gate presses both on a
   fixture answer), Cancel while a request is in flight, a settings change
   through the AI dialog while the card is open, two windows on one track.
+
+## HY-2 — live queue consolidation (2026-11-17)
+
+The following are verbatim snapshots from the queue before consolidation.
+Paths in these source snapshots are relative to the repository root. They
+preserve evidence and operator decisions; they are not another live queue.
+The Gemini operator quotes already appear above under "The listening lane
+moves to Gemini 3.8 Flash (2026-11-15)".
+
+Disposition: duplicate rules now point to AGENTS.md; completed implementation
+records and old status detail live here, with open remainders retained in the
+queue. The cleanup item transfers to HY-7 under the operator's global
+2026-09-29 rule: agents delete provably redundant backups themselves and record
+why anything else is kept. No deletion was performed by HY-2.
+
+The old exclusions also contained details not stated explicitly in AGENTS.md:
+the MUSIALIZER_MICROPHONE name, --reload-once, the named non-Linux examples,
+exact pixel/source-organization parity exclusions, and the requirement for new
+exclusions to receive operator approval and land in both files. These words
+are preserved below rather than silently discarded or added to the rules.
+
+### Duplicated rules and exclusions
+
+```markdown
+## Deliberate exclusions
+
+These are not open work and do not block anything. They are restated from
+`AGENTS.md`, which is authoritative:
+
+- Microphone capture (`MUSIALIZER_MICROPHONE`)
+- Hot reload, including a functional `--reload-once`
+- Non-Linux platforms, including Windows, macOS and OpenBSD
+
+Exact pixel identity with the frozen C, its source organization and its known
+defects are also not goals. A new deliberate exclusion needs operator approval
+and lands in both files.
+
+## What is not negotiable while any of this is built
+
+Restated because it is the one thing an open queue can quietly break. An
+unplanned change in any of these is a bug, not a design choice — a *planned* one
+needs a schema bump or an updated harness and a recorded reason:
+
+- The `.musi` format and every schema in `docs/PHASE0_INVENTORY.md`. A project
+  saved by any earlier build of *this* application must still open.
+- Analysis numbers: analyzer, beat tracker, band layout.
+- Settings semantics: descriptor keys, bounds, defaults, precision, clamping.
+- Export determinism. The same project produces the same frames.
+- The CLI grammar, including flag-order effects and exit status.
+- Anything with a `tools/differential_*.sh` harness. The harness is the contract.
+```
+
+### Listening-lane follow-up snapshot (decisions dated 2026-11-15)
+
+```markdown
+**The operator's, from the 2026-11-14 follow-up** (record in the archive,
+"The 2026-11-14 follow-up"):
+
+- **MiMo is the wrong model for this lane** (operator, 2026-11-15, while answering
+  the truth session, verbatim): "I'm also ONLY JUST remembering that Mimo
+  V2.5's perception of audio is worse than the newer gemini flash models' is,
+  so the entire 'use mimo for this task' setup is outdated. It started that
+  way because Mimo V2.5 was the first model that had *any* usable *music*
+  training for something like this, but the gemini flash series has since
+  superseded it in usefulness by a lot..." So the semantic lane's model is to
+  be reconsidered before more is built on MiMo; the benchmark harness, the
+  lane's cap, failed-run and estimate handling, and the truth session are not
+  specific to MiMo. **Decided by him, 2026-11-15:** "Gemini Flash 3.8, no
+  competition ;)", in answer to whether to measure it first; no benchmark is
+  wanted for the choice. The route is the lead's choice: OpenRouter lists
+  `google/gemini-3.8-flash` with audio input (2026-11-15: 0.825 USD per million
+  input and audio tokens, 4.125 per million output), so the application's
+  existing hosted lane takes it and no second route is needed.
+- **The listening lane runs on Gemini 3.8 Flash** (merged, reviewed, fully
+  verified and in the release build, 2026-11-15): default and recommended on
+  the operator's word, MiMo selectable as experimental, three real calls for
+  0.0475 USD. Record: `docs/ASSIST_PIPELINE.md`, "Gemini 3.8 Flash through
+  OpenRouter", and `docs/DIVERGENCES.md`, "The listening lane's model". What
+  the three answers showed, which is not a benchmark: on one excerpt the
+  sections sat on the lyric changes and energy followed loudness; on the
+  other a section 2 to 4 dB quieter was called a quiet breakdown and a hook's
+  return was placed 8 s early; the same audio heard twice in one call was cut
+  into different sections. Open from it: whether the plan the application
+  suggests from these sections is good enough to act on unchecked; the
+  benchmark harness is not pointed at Gemini (it needs a price row and its
+  fixed temperature removed first); never tried for real: a Gemini refusal, a
+  track near the size limit, a route without zero data retention.
+- **The benchmark's truth is no longer waited for** (2026-11-15). He started
+  the Listening Lab session and found the key question hard ("both eb minor
+  and F# fit parts of this track": relative keys, one scale). With MiMo set
+  aside and nothing in the application using key, metre or instruments, his
+  answers are not needed; the session and its converter stay in
+  `tools/mimo_bench/` for a later benchmark of whichever model, and its key
+  question should then not make a listener choose between a relative pair.
+- **The lead's ceiling rule, his to overrule** (2026-11-15): `--max-spend N`
+  is the most a treatment run may newly send; what earlier runs may already
+  have spent is reported on its own line, not counted. Reason: counting prior
+  possible charges was wrong in a new way in each of three reviews, and a rule
+  about the run's own sends is enforced at the moment of each send
+  (`docs/VIDEO_GENERATION.md`, "The ceiling, redefined").
+- **Decided by measurement, his to revisit**: Balanced stays as it is; High
+  is the answer for gradients and grain
+  (`docs/archive/BALANCED_ENCODER_2026-11.md`).
+```
+
+### Scene reviews waiting since 2026-10-23 and 2026-10-24
+
+```markdown
+**Glyph Lattice — built, ready for operator review (2026-10-24).** A wireframe
+solid lit on a honeycomb of tiny glyphs (`glyphs`, id 28, Geometry family),
+after the modal.com hero the operator wanted in his own form. Kicks run comets
+along the edges, solids morph per section, and `words` sets the sung line in
+the same cells. The gallery check, its negative control, the differential
+pins and live playback pass. Open: the operator's look at it,
+and whether `words` should default on. See [`docs/GLYPH_LATTICE.md`](docs/GLYPH_LATTICE.md).
+
+**Pixel Cats — built, ready for operator review (2026-10-24).** Six pixel-art
+stagings of the lyric line as one scene family (`pixel-boot`, `pixel-shell`,
+`pixel-run`, `pixel-quartet`, `pixel-chapel`, `pixel-rave`, ids 22–27), after
+the model-made video for the meow track. Each draws its line, reacts to the
+music and is byte-identical without it at `response` 0. The scene check and its
+negative control pass, as do the picker clicks for all seven families and a
+treatment of the meow track and of one other song. Open:
+the operator's look at it, and the unbuilt stagings (progress bar, pause menu,
+handheld, music box). See [`docs/PIXEL_CATS.md`](docs/PIXEL_CATS.md).
+
+**Scene families and native gallery — built, ready for operator review (2026-10-23).**
+The Scenes flyout groups scenes by family and shows poster tiles in two
+columns. Liquid Chrome, Aurora Veil, Metaball Garden, Neon Tunnel, Voronoi Bloom
+and Iridescent Pool each have eight Look controls, routes and persistence.
+All 22 tiles pass actual minimum-size clicks; the six scenes pass musical,
+portrait, project and export checks, and real-track release playback has no
+PCM drops or output underruns. Two Sol review rounds resolved shader portability
+and codec-test objections. Prior ids/settings and Fluid Ink are preserved.
+See [`docs/SCENE_GALLERY.md`](docs/SCENE_GALLERY.md) for design, reproduction,
+the corrected older picker fixtures and the exact verification boundary.
+The release is rebuilt; operator aesthetic judgment remains open.
+
+**Fluid Ink — built, ready for operator review (2026-10-23).** The requested
+music-stirred luminous fluid is selectable in Scenes, with eight Look controls,
+routes and project persistence. Synthetic visual/replay checks and the disabled-
+response negative control pass; a muted release run entered through the scene
+tile on a real track has zero dropped PCM frames and zero output underruns.
+See [`docs/FLUID_INK.md`](docs/FLUID_INK.md) for the design, live-seek policy,
+measurements and reproduction commands. Aesthetic judgment remains the operator's.
+```
+
+### LT2 — status dated 2026-09-08
+
+```markdown
+**LT2 — lyrics Assist repair, resumed for the recorded local-route failure (2026-09-08).**
+The frozen elapsed counter is repaired and verified during playback, pause and
+seeking; the release is rebuilt. The recorded local run freshly generated only
+13 placed written lines, 13 unresolved lines and nine unplaced Whisper proposals.
+Three fresh Gemini 3.8 Flash audio reviews succeeded. The route mismatch,
+remaining acoustic defects and prior-session evidence are recorded in
+[the recording investigation](docs/archive/LYRICS_RECORDING_2026-09-08.md).
+The local crop-recovery repair now renders 27 captions for this recording
+(previously 13), including the two opening performances. The recommended
+no-sheet wording stage also stays local. Missing chorus entries and backing
+vocal boundaries remain; this is not whole-track acceptance.
+Detection/timing acceptance remains open. Operator priority: audit
+the normal local Whisper/MMS path; Gemini is for independent research checks
+only (operator choice, 2026-09-08). Do not change normal Assist to a remote route.
+Continue to audit and iterate the complete production lyrics path on Fence Around, i rly think so,
+Groyper Idol, Resolve to You, Cat Gradient Optimizer (Learn), Eight Thousand
+Tokens, Floor Mechanics I: Load Bearing, Breaking What Remains, The Cage Went
+Deep, and Autoregressive Kitty. Collaborate with Gemini 3.8 Flash through the
+official Antigravity CLI on short audio chunks. Acceptance counts missing/extra
+performed phrases (audible lead and echo count separately; a continuous chop
+run counts once) and either boundary
+exceeding ±0.5 seconds as errors, aiming at ≤3% per
+track. Dependencies: verified audio-capable Antigravity transport, independent
+reference evidence, source classification, acoustic localization, cache
+invalidation, and actual staged/apply/render behavior. Preserve existing SX4
+work; passing model/unit tests alone does not close the acoustic target.
+T3-authenticated `agy_acp_server_1.1.1` audio calls to Gemini 3.8 Flash are now
+verified. The operator approved an **opt-in Antigravity audio route in normal
+Assist**. Investigation and private evidence pointers are in
+[`docs/LYRICS_ASSIST_REPAIR_2026-09-06.md`](docs/LYRICS_ASSIST_REPAIR_2026-09-06.md).
+Authored boundaries and missing-line recovery now use original crop evidence;
+additional performed instances and conditional main phrases now have separate
+fresh audio confirmation. Confirmed lead/echo splits now reach the lyric lane
+with authored review identity preserved. Confirmed audio-observed ad-libs now
+have distinct captions and review entries. All ten current corpus runs and
+independent audio-only reference proposals are complete after the provider
+reset; ordinary-sentence splits also require fresh audio confirmation. Unicode
+apostrophes now preserve equivalent matching and acoustic tokenization. The
+normal track-02 helper completes and its muted staged/apply/playback replay
+passes. Reference grouping and wording conflicts remain unadjudicated;
+complete per-track timing/coverage acceptance remains open. An explicit saved
+Antigravity performed-phrase choice now bypasses written-line localization and
+uses exact local sheet spelling. The actual track-02 helper and muted UI Apply/
+playback pass; all ten normal-mode corpus runs and the final v6 comparison
+are complete. Model-reference disagreements remain substantial and are not
+adjudicated error rates. No research helper remains running. The operator
+requested a pause on September 7 and accepted both reviewed two-phrase groupings;
+see [the handoff](docs/archive/LYRICS_GROUPING_REVIEW.md). The September 8 recording
+resumes investigation of the normal local workflow.
+```
+
+### SX4 — review waiting since 2026-09-05
+
+```markdown
+**SX4 — built, awaiting operator review (2026-09-05).** The operator
+completed CX-4 track A in the Rust runner: ten `reject` and two `neither`
+answers. Song Atlas needs a
+creative redesign; Cadence has discontinuous motion; the audition windows cut
+across musical phrases. Preserve those answers and the original protocols.
+Atlas now has the Tideline spiral relief and traveling warm light; Cadence's
+onset/beat-wrap/word-envelope discontinuities are repaired, with soft ambient
+strata. New Tideline auditions
+use measured candidate cuts and output fades. Cuts are **not yet verified phrase
+boundaries**. The reusable generator and browser form distinguish bad cuts from
+bad looks. Design decisions, compatibility and evidence are recorded in
+[`docs/SCENE_DESIGN.md`](docs/SCENE_DESIGN.md). This is the current operator
+priority; human acceptance remains open. Revisit cue-to-cue type sizing or
+remaining motion defects if the new listening pass finds them.
+The operator found the first Tideline version effectively frozen. The follow-up
+adds traveling surface folds, stronger musical deformation, flowing light and
+visible camera movement. Nonvisual checks only for this correction, as requested;
+the operator will judge its motion. Earlier render evidence is for the first
+version and does not establish acceptance or performance of the correction.
+```
+
+### 2026-11-10 cleanup leftovers
+
+```markdown
+- **Disk decisions left over from the 2026-11-10 cleanup — the operator's to
+  make, in a session here.** Both live in the gitignored `build/`; measure
+  their sizes again before deciding.
+  - The "Door, No Room" renders and intermediates in `build/door/`: the
+    `door_no_room_*` and `base_v*` MP4s. Which ones does the operator keep (or
+    move off `/`), and which can go? The `.musi`, treatment and analysis files
+    next to them are small.
+  - `build/lyrics-research-v2/.venv`: the uv venv that `tools/lyrics_research/`
+    and `tools/mimo_bench/` run in. Most of its files are hardlinks shared with
+    the uv cache, so deleting it frees little unless the research is finished.
+  - The audio-model apps DiffRhythm and stable-audio-3 in `~/apps/` belong to
+    AI Pantheon; that question is queued in its `docs/local-models.md`.
+```
+
+### LT2 — section-bounded CTC measurement (date not stated in the queue)
+
+```markdown
+One measurement for **LT2**, from the same session and not yet acted on: on a
+3:59 track with an embedded 27-line sheet, the normal local route
+(`external_analysis.py assist --mode lyrics --lyrics-file`) placed 15 lines and
+left 12 unplaced — both pre-chorus lines, the whole first chorus, the first line
+of verse two. MMS CTC forced alignment of the *same* sheet inside nine
+hand-chosen section windows gave a placement for every line, and its three
+choruses agreed with each other to within 30 ms at whole-bar offsets (60.41 s
+and 68.00 s). Five placements scored under 0.2 — the two shouted responses, the
+two whispered lines, one held word — and were accepted because they sat on the
+bar grid the others established, not on their score; one first word was off by
+2.6 s and was caught only by the chorus-to-chorus comparison. The windows came
+from the measured kick sections, not from Whisper. That is one track and the
+windows were chosen by a reader, so it is a lead rather than a result:
+section-bounded CTC with a repetition cross-check may recover what anchor-block
+localization drops.
+```
