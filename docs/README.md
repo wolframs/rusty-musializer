@@ -55,8 +55,8 @@ a grammar*, that is a defect until somebody changes one of them on purpose.
   their controls and measurements.
 - [`ORGANIC_SCENES.md`](ORGANIC_SCENES.md): Metaball Garden and Voronoi Bloom,
   their controls and measurements.
-- [`OPENAI_KNOT.md`](OPENAI_KNOT.md): procedural weave, audio response and muted
-  scene checks.
+- [`LUMEN_KNOT.md`](LUMEN_KNOT.md): a glass torus knot in six forms, its comets,
+  changes, audio response and muted scene checks.
 
 - [`SCENE_GALLERY.md`](SCENE_GALLERY.md) — compact scene families, six native
   website-inspired scenes, compatibility and the visible gallery gate.

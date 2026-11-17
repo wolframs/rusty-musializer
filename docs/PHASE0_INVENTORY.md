@@ -257,7 +257,7 @@ short names **and six long aliases**:
 | `pentagram`, `pentagram-orbits` | Pentagram Orbits |
 | `phosphor`, `phosphor-dream` | Phosphor Dream (post-legacy; the C rejects both) |
 | `clawd`, `claude` | Clawd (post-legacy; the C rejects both) |
-| `knot`, `openai-knot` | OpenAI Knot (post-legacy, id 12) |
+| `knot`, `lumen-knot`, `openai-knot` | Lumen Knot (post-legacy, id 12; `openai-knot` is its name until 2026-11-17) |
 | `stage` | Stage (post-legacy, id 13) |
 | `threshold`, `door` | Threshold (post-legacy, id 14) |
 | `fluid`, `fluid-ink` | Fluid Ink (post-legacy, id 15) |
@@ -516,9 +516,10 @@ tests and pinned expectation files rather than a diff. Because both are
 appended, every id above keeps its value and a `.musi` written before those
 dates resolves its scenes unchanged. Their descriptor tables are in 5.
 
-OpenAI Knot — id 12, stable name `knot`, display name `OpenAI Knot`, eleven
-controls — was added on 2026-09-09. Its procedural geometry and response
-contract are documented in [`OPENAI_KNOT.md`](OPENAI_KNOT.md).
+Lumen Knot — id 12, stable name `knot`, display name `Lumen Knot` (`OpenAI
+Knot` until 2026-11-17), twelve controls — was added on 2026-09-09 and rebuilt
+on 2026-11-17 (HY-6). Its geometry, forms and response contract are documented
+in [`LUMEN_KNOT.md`](LUMEN_KNOT.md).
 
 Stage — id 13, stable name `stage`, display name `Stage`, eleven controls —
 was added on 2026-10-12. It draws the current lyric line in one of six
@@ -1004,7 +1005,7 @@ drift keeps its own clock), and a still is then the same bytes over any audio.
 | 4 | `settings.clip.tint` | Tint | 0 | 1 | 0.15 | 2 | slider |
 | 5 | `settings.clip.response` | Music response | 0 | 2 | 1 | 2 | slider |
 
-### `knot` — OpenAI Knot (11 controls, no C counterpart)
+### `knot` — Lumen Knot (12 controls, no C counterpart)
 
 | Slot | Key | Label | Min | Max | Default | Precision | Kind |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1019,13 +1020,19 @@ drift keeps its own clock), and a still is then the same bytes over any audio.
 | 8 | `settings.knot.bloom` | Bloom | 0.00 | 2.00 | 1.10 | 2 | slider |
 | 9 | `settings.knot.fringe` | Spectral fringe | 0.00 | 2.00 | 0.70 | 2 | slider |
 | 10 | `settings.knot.grain` | Film grain | 0.00 | 1.00 | 0.35 | 2 | slider |
+| 11 | `settings.knot.form` | Form (0 = follow the song) | 0.0 | 6.0 | 0.0 | 0 | slider |
 
-Size is fitted against maximum current breathing so portrait output cannot
-clip a lobe. Response and Beat lift at zero leave the authored idle motion;
-Slow turn and Light travel control that motion independently. There are no
-new project fields: settings, routes and saved tuning presets use the existing
-scene machinery. Eight-control snapshots are accepted as legacy and backfill
-Bloom, Spectral fringe and Film grain from defaults.
+Size is fitted against maximum current breathing and perspective so portrait
+output cannot clip a petal. Response at zero disables every musical coupling
+(breathing, kicks, comets they send, automatic form changes) and leaves the
+idle motion; Slow turn and Light travel control that motion independently.
+Form is a persisted index into `scenes::lumen_knot::FORMS` (1 six-petal, 2
+seven-petal, 3 five-petal, 4 eight-petal rosette, 5 five-point, 6 seven-point
+star); 0 lets the song move on. There are no new project fields: settings,
+routes and saved tuning presets use the existing scene machinery. Eight- and
+eleven-control snapshots are accepted as legacy and backfill the appended
+controls (Bloom, Spectral fringe, Film grain; Form) from defaults. Meaning
+changes on 2026-11-17 are in `DIVERGENCES.md`, "Lumen Knot".
 
 ### `clawd` — Clawd (12 controls, no C counterpart)
 

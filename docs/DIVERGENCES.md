@@ -632,3 +632,25 @@ flight — Start on Feelings"), built by J4. Details and words:
 | --- | --- | --- |
 | An uncalibrated lyric tap starts at zero offset | New taps default to −100 ms; an explicit stored zero remains zero | CX-4 ruling. The optional workstation preference distinguishes absent/null (follow default) from any explicit calibration, including zero. No offset is in a .musi; stored cue timestamps are never recalculated. Old uncalibrated preferences intentionally gain the new default, not a migration of existing cues |
 | Composer edits survive only incidentally when a transcript save happens; a draft before the first message is lost | Each chat keeps its draft after 750 ms of no edits and on orderly shutdown, including before its first send; reopening focuses the composer at its end; Send persists an empty draft | Reuse the existing versioned, private, atomic per-project chat store and its locks. A draft-only chat becomes a saved chat titled “Unsent draft”, without putting its text in the title. This fits the existing explicit Earlier chats model and preserves separate drafts if several tabs were opened; no global singleton can overwrite another tab's work. No automatic agent chat is opened on startup. Clearing a draft writes empty text rather than leaving an older draft on disk. No new schema or project fields |
+
+## Lumen Knot (HY-6, 2026-11-17)
+
+Operator, 2026-11-17: *"we have 'Clawd,' and I figured it would be fair to GPT
+models and fans to have openai in there too somehow, but we can perhaps stylize
+the scene and 3d model in it a bit more and name it something more universal."*
+The name and construction are the design agent's choice. Details:
+[`LUMEN_KNOT.md`](LUMEN_KNOT.md).
+
+| Before | Now | Why |
+| --- | --- | --- |
+| **OpenAI Knot**: six fixed hooked ribbons after a company's mark, flat, one shape forever | **Lumen Knot**: one glass tube tied as a torus knot in true 3D (tilted, perspective, depth-sorted over and under), six forms of five to eight petals, amber comets on kicks | A scene's name and shape should belong to no one, like every other scene here (the Glyph Lattice row). The six-petal rosette it opens on is the nod that remains |
+| `--scene knot` and `openai-knot` | Both still accepted; `lumen-knot` added. Stable name `knot`, id 12, keys `settings.knot.*` unchanged | The CLI grammar and every saved project are contracts |
+| Eleven controls | Twelve: `settings.knot.form` appended (0–6, default 0 = follow the song; 1–6 a form, a persisted index). Eight- and eleven-value presets and projects load and take `form` = 0 | Append, never reorder (`count_is_legacy` admits 8 and 11). `MAX_CONTROLS` is 12, so this is the last control the scene can gain without a format change |
+| Slow turn: an in-plane rock of about ±5° | Slow turn: the speed of a continuous spin about the knot's axis (with a lean that sways) | Same key, bounds and default; a knot that only rocks never shows its other side. Projects that set it keep their number and get a faster or slower spin |
+| Strand response: six ribbons, one band each | Six angular sixths of the knot, each band swelling and tinting the petals there; also gates the kicks, the comets they send and the automatic form changes (0 disables all musical coupling) | Same key and meaning — how strongly the strands answer the bands |
+| Beat lift: onsets lifted scale and light | Onsets and kicks flash the strand, lift its scale a little and tick its spin | Same key and meaning |
+| Light travel: a beam's speed along each ribbon | The speed of the comets and the slow sheen along the one strand | Same key and meaning |
+| Aurora, Pearlescence, Hue, Bloom, Spectral fringe, Film grain, Knot size | Same keys, bounds, defaults and roles, on a new palette (night-blue haze, sapphire glass, violet-rose rims, teal band glow, amber comets) | — |
+| `openai knot:` report line | `lumen knot:` with `form`, `petals`, `winds`, `swing`, `morph`, `comets` | Renamed with the gate that parses it (`tools/knot_check.py`) |
+| In-app credit "Six-ribbon geometry study (visual reference)" | Removed | The construction is no longer drawn after that reference |
+| The automatic cycle's quiet, first written on the instantaneous level | On a loudness follower that falls over about 0.7 s | The dips between the kicks of a loud loop summed to "quiet" and fired a false drop every few seconds; pinned by `a_loud_loop_with_dips_between_kicks_is_not_a_drop` |

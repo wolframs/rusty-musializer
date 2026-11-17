@@ -140,7 +140,8 @@ encoder code (`build/knot/finish-verified.log`).
 
 Implemented in the local working tree; no commit or push was requested.
 The current behavior and its controls are documented in
-[`../OPENAI_KNOT.md`](../OPENAI_KNOT.md).
+[`../LUMEN_KNOT.md`](../LUMEN_KNOT.md) (renamed and rebuilt as Lumen Knot on
+2026-11-17, HY-6).
 
 Six procedural hooked ribbons form the recognizable mark, with a pearlescent
 violet/cyan/magenta material, travelling highlights, an aurora and six independent
