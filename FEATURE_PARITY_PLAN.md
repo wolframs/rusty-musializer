@@ -9,7 +9,7 @@ argument for or against any item below.
 If another document, source comment, old agent handoff or ignored worktree names
 unfinished work, reconcile it here before acting on it. There is one queue.
 
-Open now: HY housekeeping, LT2 acoustic acceptance, WX-6 appearance coverage,
+Open now: LT2 acoustic acceptance, WX-6 appearance coverage,
 and the ordered remainders below. Built work awaiting a human look is separate.
 History and operator wording: [FEATURE_PARITY_HISTORY](docs/archive/FEATURE_PARITY_HISTORY.md)
 (search by id; an id cited by source but absent here is closed).
@@ -33,52 +33,19 @@ What changes only on purpose: [AGENTS.md — Judge by what a user or a file can 
 
 ## Open work
 
-**HY — housekeeping from the 2026-11-17 audit** (claimed by the lead session of
-that day). The operator brought an earlier session's audit and asked for "the
-obvious ones" to be batched to GPT-6.1-Sol workers and polished by the lead.
-Each batch runs in its own worktree and is cherry-picked; tick here as each one
-lands, and move this item to the archive when all have.
-
-- [x] HY-1 (landed 2026-11-17; the schema test runs in verify; record in the archive) docs and references: current-state mentions of `mimo_openrouter.py`,
-  the C-era `ui_fixture.sh`/`ui_capture.sh` rows in `docs/PHASE0_INVENTORY.md`,
-  `.gitignore`'s raylib 5.5 and `UI_REVIEW.md` lines, the project schema's v1
-  name and missing `clips`, the finished `LYRICS_*`/`MIMO_*` investigations
-  to `docs/archive/`, the stale "Agent G note" comments.
-- [x] HY-2 this file (landed 2026-11-17, 679 → 519 lines; record in the archive): one telling of the Gemini decision, the stale MiMo
-  standing fact, pointers instead of copies of `AGENTS.md`, LT2 condensed, the
-  waiting-for-review items in one place.
-- [x] HY-3 (landed 2026-11-17; record under AX in the archive) credentials: AX-7 and AX-8 below, and the CLI's repository-`.env`
-  fallback replaced by the 0600 credential file `AGENTS.md` names.
-- [x] HY-4 (landed 2026-11-17; record in the archive) the CX-4 −100 ms tap-offset default; chat drafts persist across
-  restarts (the lead's choice: a draft lost to a restart is work lost).
-- [x] HY-5 (landed 2026-11-17: dark-theme and UI/UX retired as covered, welcome repaired and in verify; record in the archive) `tools/`: the three gates nothing runs (dark theme, UI/UX, welcome
-  theme) run, then fixed or retired; the near-twin helper names.
-- [x] HY-6 (landed 2026-11-17 as **Lumen Knot**, [`docs/LUMEN_KNOT.md`](docs/LUMEN_KNOT.md); it now has 12 controls, `MAX_CONTROLS`, so a 13th needs a format change) the "OpenAI Knot" scene restyled and renamed. Operator, 2026-11-17,
-  verbatim: "we have 'Clawd,' and I figured it would be fair to GPT models and
-  fans to have openai in there too somehow, but we can perhaps stylize the
-  scene and 3d model in it a bit more and name it something more universal."
-  Old CLI names and saved projects keep working.
-- [x] HY-7 the lead, 2026-11-17. Dropped the Aug 7 `px3-tmp` stash (a WIP of
-  PX3, which landed differently). Deleted the 2026-11-10 branch bundle: every
-  commit in it is in master by subject except a "DROP AT MERGE" seam commit and
-  a regenerable code-map refresh. In `build/` (16 GB → 13 GB): deleted the 258
-  entries older than 2026-11-10 that no doc, tool or memory names (run logs,
-  probe and review captures), and in `build/door/` the compositor
-  intermediates `base_v1–3.mp4` and `door_no_room_v2.mp4` (superseded by v3
-  and by the native render). Kept, with the reason: `build/wave-lead/` (its
-  own note: delete after 2026-11-28), `build/consult/` (the CX consultation
-  answers the archive cites), `build/lyrics-recording-2026-09-08/` (hosted
-  answers, LT2 evidence), `build/lyrics-research-v2/` (the research venv, until
-  LT2 closes), `build/protocols/` (CX-4's blind protocols), everything a doc or
-  gate names, and everything newer than 2026-11-10. The repository `.env`
-  stays: kubuntu's project `.env` files move to the fleet key store as one
-  step of that plan (move 9, see the `fleet-secrets` skill), not one by one;
-  after HY-3 nothing in this repository reads it.
-- Not in this round, by the lead's choice: splitting `main.rs`'s `run()`,
-  regrouping `tools/` into folders, and the rules-layer items (the trap list's
-  length, "cite the C file and line", the one-file-per-agent rules), which go
-  to the operator as proposals. The public GitHub mirror is published through
-  the wsiener.dev mirror procedure, not from here.
+**Left by HY (2026-11-17; the round's record is in the archive).**
+- `main.rs`'s `run()` is one function of about 3,050 lines, and several panels
+  carry single functions of 400–770 lines (lyrics column, Assist, export).
+  Split along the seams the code already has, one checkpoint per seam.
+- `tools/` is 115 flat entries (gates, helpers, research one-offs, a Node app);
+  grouping it means moving every path AGENTS.md, the docs and the gates name.
+- Lumen Knot polish, from its designer: a faint sliver where the tube's inner
+  edge folds on the tightest bends (1080p, zoomed), a small flash on the first
+  frame of a soft-attack track, the six-petal rosette busy at tile size, and
+  the woven gap checked only through geometry, not a capture.
+- The runtime decoder-budget test failed twice under parallel `cargo test`
+  load during HY (passed alone both times, and in the merged verify): a
+  timing-sensitive assertion to find before it fails a real run.
 
 **Standing decisions from the 2026-11-14 follow-up.** The listening lane's
 choice and open remainder are [below](#the-listening-lane-and-the-benchmarks-remainder).
