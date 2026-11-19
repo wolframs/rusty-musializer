@@ -13,9 +13,9 @@ regeneration with unchanged inputs is byte-for-byte stable.
 
 | Crate | Purpose | Cargo targets | Rust files | Lines | Tests |
 | --- | --- | --- | ---: | ---: | ---: |
-| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 93 | 113,428 | 689 |
+| [`musializer-app`](../crates/musializer-app/Cargo.toml) | The Musializer binary: CLI, workspace UI, scene drawing, orchestration | `make-fixture-wav` (bin), `musializer` (bin) | 93 | 113,779 | 691 |
 | [`musializer-core`](../crates/musializer-core/Cargo.toml) | Pure, deterministic, headlessly testable Musializer code: model, analysis, timelines, layout | `musializer_core` (lib), `analysis_bridge_check` (example), `analyzer_dump` (example), `ascii_art_dump` (example), `assist_ui_dump` (example), `atmosphere_probe` (example), `beat_tracker_dump` (example), `cat_probe` (example), `cx4_surprise_protocol` (example), `event_merge_dump` (example), `fluid_probe` (example), `layout_dump` (example), `listening_defaults` (example), `organic_probe` (example), `pixel_cats_bench` (example), `preset_store_dump` (example), `project_io_dump` (example), `route_persistence_dump` (example), `routes_dump` (example), `settings_dump` (example), `song_atlas_map_dump` (example), `timeline_view_dump` (example) | 153 | 106,968 | 1,418 |
-| [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 36 | 23,695 | 247 |
+| [`musializer-runtime`](../crates/musializer-runtime/Cargo.toml) | raylib, resources, processes and filesystem edges behind small safe APIs | `musializer_runtime` (lib), `assist_canary_probe` (example), `export_probe` (example) | 36 | 23,701 | 247 |
 | [`raylib-link`](../crates/raylib-link/Cargo.toml) | Builds and links raylib 6.0 from vendored source, for raylib-sys nobuild mode | `raylib_link` (lib), `build-script-build` (custom-build) | 2 | 112 | 0 |
 
 Dependency direction: `musializer-app` → `musializer-runtime` → raylib,
@@ -71,7 +71,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/generation/treatment.rs`](../crates/musializer-app/src/generation/treatment.rs) | 1,378 | 3 | A treatment's generated clips, in a batch run (VG H4). |
 | [`src/generation/window.rs`](../crates/musializer-app/src/generation/window.rs) | 1,162 | 2 | Generating from the window (VG H4): the section card's Generate. |
 | [`src/generation.rs`](../crates/musializer-app/src/generation.rs) | 165 | 0 | Generating a clip with a video model (post-legacy, 2026-11-14, VG H4). |
-| [`src/main.rs`](../crates/musializer-app/src/main.rs) | 7,978 | 5 | The Musializer binary: composition root. |
+| [`src/main.rs`](../crates/musializer-app/src/main.rs) | 8,112 | 5 | The Musializer binary: composition root. |
 | [`src/posters/audio.rs`](../crates/musializer-app/src/posters/audio.rs) | 106 | 1 | The track's audio as the poster replay hears it. |
 | [`src/posters/recipe.rs`](../crates/musializer-app/src/posters/recipe.rs) | 274 | 1 | A run's poster recipe, built from the track every time the lane asks. |
 | [`src/posters/replay.rs`](../crates/musializer-app/src/posters/replay.rs) | 242 | 0 | One poster's replay: the export's per-frame sequence over the service's own state. |
@@ -124,7 +124,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/ui/egui_backend/renderer.rs`](../crates/musializer-app/src/ui/egui_backend/renderer.rs) | 61 | 0 | Egui triangle and clipping submission into raylib’s normal 2D pass. |
 | [`src/ui/egui_backend/textures.rs`](../crates/musializer-app/src/ui/egui_backend/textures.rs) | 132 | 0 | Egui-owned texture allocation, patching and sampler updates. |
 | [`src/ui/egui_backend.rs`](../crates/musializer-app/src/ui/egui_backend.rs) | 138 | 0 | Egui's frame/input/texture bridge into the application's existing raylib window. |
-| [`src/ui/egui_theme.rs`](../crates/musializer-app/src/ui/egui_theme.rs) | 263 | 2 | Shared dock and welcome appearance, derived solely from workstation roles. |
+| [`src/ui/egui_theme.rs`](../crates/musializer-app/src/ui/egui_theme.rs) | 271 | 2 | Shared dock and welcome appearance, derived solely from workstation roles. |
 | [`src/ui/icons.rs`](../crates/musializer-app/src/ui/icons.rs) | 221 | 2 | The transport row's control vocabulary: an icon, a text fallback, and the tooltip that names both. |
 | [`src/ui/mapping_editor.rs`](../crates/musializer-app/src/ui/mapping_editor.rs) | 278 | 2 | Shared mapping-editor componentry (UX0-C14). |
 | [`src/ui/mod.rs`](../crates/musializer-app/src/ui/mod.rs) | 39 | 0 | The workspace shell: drawing, input, and the palette. |
@@ -146,9 +146,9 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/ui/preferences.rs`](../crates/musializer-app/src/ui/preferences.rs) | 1,011 | 23 | Per-user shell scale and split preferences. |
 | [`src/ui/protocol.rs`](../crates/musializer-app/src/ui/protocol.rs) | 775 | 8 | The in-app protocol runner (HX-2): markers, the question card, and the session state machine. |
 | [`src/ui/rail.rs`](../crates/musializer-app/src/ui/rail.rs) | 899 | 3 | The rail and its flyouts (WX-5c, `docs/archive/WX5C_DESIGN.md` §1). |
-| [`src/ui/scale.rs`](../crates/musializer-app/src/ui/scale.rs) | 537 | 10 | Logical UI units and their mapping to the window framebuffer. |
+| [`src/ui/scale.rs`](../crates/musializer-app/src/ui/scale.rs) | 688 | 12 | Logical UI units and their mapping to the window framebuffer. |
 | [`src/ui/scene_colors.rs`](../crates/musializer-app/src/ui/scene_colors.rs) | 172 | 2 | Each scene's identity colour: the swatch the plan lane, and anything else that names a scene by colour, draws it in. |
-| [`src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 7,268 | 46 | The workspace shell: one frame of chrome around the scene preview. |
+| [`src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 7,326 | 46 | The workspace shell: one frame of chrome around the scene preview. |
 | [`src/ui/shell_layout.rs`](../crates/musializer-app/src/ui/shell_layout.rs) | 951 | 21 | Where the workspace's regions go. |
 | [`src/ui/text_input.rs`](../crates/musializer-app/src/ui/text_input.rs) | 404 | 0 | The single-line text field: pixels, keyboard, and the caret's blink. |
 | [`src/ui/theme.rs`](../crates/musializer-app/src/ui/theme.rs) | 924 | 12 | The workspace palette, type scale and metrics: the one source of truth for how the chrome looks, read by the raylib widgets and by egui alike (WX-5a). |
@@ -332,7 +332,7 @@ while both outer crates depend on the raylib-free `musializer-core`.
 | [`src/clipboard.rs`](../crates/musializer-runtime/src/clipboard.rs) | 24 | 0 | Clipboard reads with the nullable GLFW result checked before dereferencing. |
 | [`src/decode.rs`](../crates/musializer-runtime/src/decode.rs) | 1,190 | 21 | Whole-file decoding: audio to PCM, images to RGBA8. |
 | [`src/deep_target.rs`](../crates/musializer-runtime/src/deep_target.rs) | 333 | 0 | The export's 16-bit render target (EX3). |
-| [`src/desktop_scale.rs`](../crates/musializer-runtime/src/desktop_scale.rs) | 66 | 1 | The desktop's scale, asked of GLFW because raylib 6.0 no longer says. |
+| [`src/desktop_scale.rs`](../crates/musializer-runtime/src/desktop_scale.rs) | 72 | 1 | The desktop's scale, asked of GLFW because raylib 6.0 no longer says. |
 | [`src/draw.rs`](../crates/musializer-runtime/src/draw.rs) | 643 | 1 | Drawing primitives shared by every scene. |
 | [`src/feedback.rs`](../crates/musializer-runtime/src/feedback.rs) | 450 | 5 | Frame-persistence feedback: the classic visualizer trick, as a resource. |
 | [`src/font.rs`](../crates/musializer-runtime/src/font.rs) | 2,581 | 19 | The interface and caption faces. |
@@ -372,8 +372,8 @@ with the module documentation and searching for a narrow symbol before scrolling
 | --- | ---: | ---: |
 | [`crates/musializer-app/src/ui/assist_settings.rs`](../crates/musializer-app/src/ui/assist_settings.rs) | 9,682 | 69 |
 | [`crates/musializer-app/src/ui/panels/assist.rs`](../crates/musializer-app/src/ui/panels/assist.rs) | 8,968 | 78 |
-| [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 7,978 | 5 |
-| [`crates/musializer-app/src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 7,268 | 46 |
+| [`crates/musializer-app/src/main.rs`](../crates/musializer-app/src/main.rs) | 8,112 | 5 |
+| [`crates/musializer-app/src/ui/shell.rs`](../crates/musializer-app/src/ui/shell.rs) | 7,326 | 46 |
 | [`crates/musializer-app/src/ui/panels/lyrics.rs`](../crates/musializer-app/src/ui/panels/lyrics.rs) | 5,749 | 47 |
 | [`crates/musializer-core/src/project/io.rs`](../crates/musializer-core/src/project/io.rs) | 4,840 | 51 |
 | [`crates/musializer-core/src/treatment.rs`](../crates/musializer-core/src/treatment.rs) | 4,753 | 45 |
@@ -427,6 +427,8 @@ generated build output, fixtures, and media assets are intentionally excluded.
 | [`tools/ctc_window_align.py`](../tools/ctc_window_align.py) | CTC alignment with a separate allowed time window for every target token. Pure trellis solver used by ``antigravity_lyrics.py``, not an audio/model CLI like ``anchor_block_align.py`` or ``force_align_lyrics.py``. An emission score alone cannot distinguish repeated deliveries. Position-specific windows preserve independently observed phrase locations even when two phrases contain identical characters. This module is pure NumPy; it opens no audio device. |
 | [`tools/cx4_surprise_session.sh`](../tools/cx4_surprise_session.sh) | Emit the CX-4 Surprise keepability session as HX protocol files. |
 | [`tools/desktop_scale_check.sh`](../tools/desktop_scale_check.sh) | The desktop-scale gate (DS, 2026-11-19): window sizes follow the scale the shell wants, so the first frame is drawn at the desktop's scale. |
+| [`tools/desktop_scale_input.py`](../tools/desktop_scale_input.py) | Real keys for tools/desktop_scale_check.sh. Run ONLY as MZ_BIN under headless_run.sh. Starts the real binary (DESKTOP_SCALE_REAL_BIN) with the arguments it was given, waits for its window, then sends native X events through XTest: DESKTOP_SCALE_POINTER=X,Y park the pointer there first (window pixels) DESKTOP_SCALE_KEYS=plus,plus,minus,zero,equal each one a Ctrl chord, by keysym, so the key that is pressed is the one the display's keyboard layout labels with that character `--ui-probe key=scale-up` sets the shell's flags after the keys are read, so it cannot tell whether the key a user presses is the key the shell listens to. On a German layout it was not (docs/DIVERGENCES.md, DS). |
+| [`tools/desktop_scale_wm.py`](../tools/desktop_scale_wm.py) | A window manager that says no, for tools/desktop_scale_check.sh. desktop_scale_wm.py refuse a mapped window keeps the size it has desktop_scale_wm.py clamp WxH a mapped window gets at most WxH It takes SubstructureRedirect on the root of $DISPLAY (the gate's own Xvfb, never a real session: it refuses to start without the gate's marker), maps whatever asks to be mapped, lets windows move, and answers a resize of a mapped window as its mode says. That is the one thing a bare Xvfb cannot do: with no window manager every resize is granted at once, so a window that was refused its size, as a tiling window manager refuses it, was never seen. Prints `ready` once it owns the root. |
 | [`tools/differential_analyzer.sh`](../tools/differential_analyzer.sh) | Differential test: the frozen C analyzer versus the Rust port, on identical synthetic PCM. |
 | [`tools/differential_ascii_art.sh`](../tools/differential_ascii_art.sh) | Differential test: the frozen C `ascii_art` versus the Rust port, on identical synthetic RGBA8 pixel buffers. |
 | [`tools/differential_assist_ui.sh`](../tools/differential_assist_ui.sh) | Differential test: the frozen C's Assist panel policy versus the Rust port. |

@@ -16,6 +16,7 @@ History and operator wording: [FEATURE_PARITY_HISTORY](docs/archive/FEATURE_PARI
 
 ## Built, waiting for the operator's look
 
+- **DS desktop scale** — since 2026-11-19; start the application with no arguments on the 125 % desktop: the welcome window should open about the size other windows open, its text at 125 %. Then Ctrl+plus and Ctrl+minus on the main keys of the German keyboard, there and with a track open. Never run under KWin itself; [what changed](docs/DIVERGENCES.md), "Window sizes follow the desktop scale".
 - **Glyph Lattice** — since 2026-10-24; Scenes → Geometry → Glyph Lattice with music, then decide whether `words` defaults on; [design](docs/GLYPH_LATTICE.md).
 - **Pixel Cats** — since 2026-10-24; Scenes → Pixel cats, play with lyrics; [six stagings](docs/PIXEL_CATS.md). Unbuilt stagings remain below.
 - **Scene families and native gallery** — since 2026-10-23; Scenes flyout, compare the six new scenes and their Look controls while playing; [guide](docs/SCENE_GALLERY.md).
@@ -33,56 +34,14 @@ What changes only on purpose: [AGENTS.md — Judge by what a user or a file can 
 
 ## Open work
 
-**DS — window sizes follow the desktop scale (claimed 2026-11-19, in flight).**
-Operator, 2026-11-19, with a screenshot of the welcome window at 100 % beside
-a 125 % desktop: "do we do something about ui & text scaling? because i feel
-like we should do something about it, consistently, across all ui, magically".
-Finding: the stepped UI scale and its Auto have existed since 2026-08-01, but
-every window size is in raw pixels. The default 1280x720 window cannot hold
-the 960x640 logical minimum at 125 %, so Auto is clamped to 100 % on a 125 %
-desktop until the window is enlarged (and reads 150 % once maximized at 1440p).
-- [x] DS-1 pure policy in `ui/scale.rs`: the desktop's rung, the scale a
-      preference wants before any window exists, the startup window and the
-      window floor, each capped to the monitor; `effective_scale` unchanged
-      (its tests pin that).
-- [x] DS-2 `main.rs`: with no `--size`, open at the default size times the
-      wanted scale, centred on its monitor; the minimum window follows the
-      wanted scale, and a window smaller than a raised floor grows to it
-      (Ctrl+plus in a small window). `--size`, `--ui-probe size=` and
-      `--ui-scale` stay raw pixels: they are the test seams.
-- [x] DS-3 a `window:` report line (size, desktop scale, startup, floor) and
-      `tools/desktop_scale_check.sh`: a private Xvfb carrying `Xft.dpi: 120`,
-      asserting the window, the floor and `ui layout: scale=125`, with a
-      photograph of the welcome screen and a negative control.
-- [x] DS-2b found on the way: raylib 6.0's `GetWindowScaleDPI` answers 1.0
-      without `FLAG_WINDOW_HIGHDPI`, so Auto never saw a desktop scale at all;
-      `runtime::desktop_scale` asks GLFW. And the welcome screen read no keys;
-      it takes the scale shortcuts now.
-- [x] DS-4a records: `docs/DIVERGENCES.md` (DS), `docs/TRAPS.md` and its
-      one-liner, `docs/UNSAFE.md`, the Commands list, `tools/verify.sh`. Five
-      negative controls caught on the GPU path, three of them also on the CPU.
-- [ ] DS-5 from the outside review (2026-11-19, eight findings), in order:
-  - [ ] a. gate: never `rm -rf` an OUT it did not make; prove the Xvfb on the
-        display is the one it started (lock pid) before `xrdb` touches it.
-  - [ ] b. `content_scale` takes the `RaylibThread` token (GLFW: main thread).
-  - [ ] c. seams: `--ui-scale` keeps the default first window; `--ui-scale`
-        and `--ui-probe size=` keep the 960x640 floor; a window grows only
-        to a raised floor (at 960x640 the hint alone, as before).
-  - [ ] d. keep the centre raylib chose (work area), not the monitor's.
-  - [ ] e. floor: re-derived when the window moves (another monitor); the
-        grow skipped while fullscreen or maximized is retried after; Ctrl+plus
-        grows to the size that holds the rung when nine tenths of the monitor
-        has room, not only to the capped floor.
-  - [ ] f. a size the desktop refused: adopt the framebuffer's size after a
-        settle instead of laying out for a window that does not exist.
-  - [ ] g. welcome: the scale keys while the pointer rests on the Theme picker.
-  - [ ] h. plus and minus by the layout's key names: on a German keyboard the
-        `+` key is GLFW's right bracket and `-` its slash, so Ctrl+plus and
-        Ctrl+minus never worked on the operator's keyboard except the numpad.
-  - [ ] i. gate: `FALLBACK` in `fonts:` fails; real key events (XTest) under
-        a German layout for plus, minus and 0; seeded seams.
-- [ ] DS-4b one full verify, the release build; then this entry moves to the
-      archive with what it left open.
+**Left by DS (2026-11-19; record in the archive, "DS").**
+- The "UI scale: N%" notice names the scale asked for. Where neither the
+  window nor nine tenths of the monitor can hold it, the shell draws a rung
+  lower and the notice does not say so.
+- In a lyric tap run `]` is the calibration key; on a German keyboard that is
+  the `+` key, so Ctrl+plus there also steps the tap offset.
+- No check covers a window carried to a monitor of another size, or the grow
+  that waits for a maximized or fullscreen window to be windowed again.
 
 **Left by HY (2026-11-17; the round's record is in the archive).**
 - `main.rs`'s `run()` is one function of about 3,050 lines, and several panels

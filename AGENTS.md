@@ -42,7 +42,7 @@ tools/headless_run.sh ARGS...      # any hand launch: isolated, muted, on the GP
 tools/treatment_check.sh           # directing gate: --treatment, sheets, stills
 tools/poster_check.sh              # poster frames gate
 tools/welcome_theme_check.sh       # welcome screen in the saved dark/light appearance
-tools/desktop_scale_check.sh       # window, floor and Ctrl+plus on a 125 % desktop
+tools/desktop_scale_check.sh       # window, floor and the real scale keys on a 125 % desktop
 tools/column_check.sh              # the right column: views, frame, census, dock, render
 tools/agent_controls_check.sh      # the composer's model, effort and access, against a fake agent
 tools/chat_sessions_check.sh       # saved chats: reopen, resume, per project, forget
@@ -271,6 +271,8 @@ number disagrees, grep it there before debugging from scratch.
 - **Acknowledging "what is there now" acknowledges what nobody was shown**: carry the ids, or the key, the card drew into the run and act on those only. See `docs/TRAPS.md`.
 - **A child's pipe read only after it exits holds 64 KiB**: read while it runs, with a cap, and bound the join. See `docs/TRAPS.md`.
 - **raylib 6.0's `GetWindowScaleDPI` answers 1.0 without `FLAG_WINDOW_HIGHDPI`, and an Xvfb has no desktop scale**: ask `runtime::desktop_scale`; a check that depends on the desktop's scale sets `Xft.dpi` on its own `-noreset` Xvfb. See `docs/TRAPS.md`.
+- **raylib's key codes are US positions**: a shortcut on a punctuation key asks the layout which key carries the character (`get_key_name`), and only a real key event sent by keysym tests it. See `docs/TRAPS.md`.
+- **A point read from a report is in the window, XTest's is on the root**: add the window's origin; a window nothing placed is not at 0,0. See `docs/TRAPS.md`.
 - **The native cursor is outside the framebuffer**: check the cursor image and XFixes events on a private display when testing hover flicker. See `docs/TRAPS.md`.
 
 ## Judge by what a user or a file can observe

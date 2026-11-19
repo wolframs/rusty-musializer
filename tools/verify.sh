@@ -197,7 +197,7 @@ if [ "$QUICK" -eq 0 ]; then
         step "lyrics column (cues, style, sample caption, 292 px browser)" tools/lyrics_column_check.sh
         step "pixel look (video, sections, appearance, persistence)" tools/pixel_look_check.sh
         step "welcome appearance (saved dark/light before any track)" tools/welcome_theme_check.sh
-        step "desktop scale (first window, floor, Ctrl+plus at 125 %)" tools/desktop_scale_check.sh
+        step "desktop scale (first window, floor, real keys, a refused resize)" tools/desktop_scale_check.sh
         fixture_step "look & assist column (rows, trial, cards, dialog, 64 captures)" tools/look_assist_check.sh
         fixture_step "lyric focus (typing elsewhere never reaches cues)" tools/lyric_focus_check.sh
         fixture_step "WX-5 polish (welcome, protocol, Direct, READY, route geometry)" tools/wx5_polish_check.sh

@@ -1043,6 +1043,31 @@ client, disconnects, and the resource is gone before the application connects.
 `tools/desktop_scale_check.sh` is the worked example; its `window:` line
 prints `desktop-scale=` so a run that silently had none says so.
 
+## raylib's key codes are positions on a US keyboard
+
+`KEY_EQUAL` is the key right of `0` on a US keyboard, whatever it is labelled
+elsewhere. The scale shortcuts listened for `KEY_EQUAL` and `KEY_MINUS`; on a
+German keyboard those are `´` and `ß`, and the keys labelled `+` and `-` are
+`KEY_RIGHT_BRACKET` and `KEY_SLASH`. Ctrl+plus did nothing there from
+2026-08-01 until the outside review of DS read the installed keymap
+(2026-11-19). Letters and digits mostly survive a layout change; punctuation
+does not. A shortcut on a punctuation key asks the layout which key carries the
+character (`RaylibHandle::get_key_name`, as `ui::scale::scale_keys` does).
+
+A probe that sets the shell's key flags cannot find this: it starts after the
+keys are read. Only a real key event sent by keysym does (`XKeysymToKeycode`
+then XTest, `tools/desktop_scale_input.py`), on a display whose layout was set
+with `setxkbmap`. The report says which keys were taken (`plus=`, `minus=`).
+
+## A check that passes on the build without the fix is not a check
+
+The first "pointer resting on the Theme picker" check parked the pointer at
+the picker's rect read as root coordinates. The window was not at the root's
+corner (only a probe run moves it there), so the pointer was outside the
+window, nothing owned it, and the check passed on a binary with the fix taken
+out. The negative control is what said so. A point read from a report is in
+the window; add the window's origin before handing it to XTest.
+
 ## The pointer is outside the captured framebuffer
 
 The chat composer set the native I-beam during egui output and the workspace

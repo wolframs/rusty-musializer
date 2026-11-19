@@ -5902,3 +5902,78 @@ lands, and move this item to the archive when all have.
   length, "cite the C file and line", the one-file-per-agent rules), which go
   to the operator as proposals. The public GitHub mirror is published through
   the wsiener.dev mirror procedure, not from here.
+
+## DS — window sizes follow the desktop scale (2026-11-19)
+
+Operator, 2026-11-19, with a screenshot of the welcome window beside a T3 Code
+window on a 125 % KDE desktop (2560x1440, X11 through XWayland), the welcome
+text about half the size of everything around it: *"do we do something about
+ui & text scaling? because i feel like we should do something about it,
+consistently, across all ui, magically"*. The lead read it as a request and
+acted (his to overrule).
+
+**What was wrong.** The stepped scale and Auto had existed since 2026-08-01,
+and three things kept them from the screenshot:
+
+1. raylib 6.0's `GetWindowScaleDPI` answers 1.0 without `FLAG_WINDOW_HIGHDPI`
+   (5.5.1 always asked GLFW). Since the upgrade Auto knew no desktop scale and
+   ran on window height: 150 % maximized at 1440p, 100 % in the first window.
+2. Window sizes were raw pixels. 1280x720 cannot hold the 960x640 logical
+   minimum at 125 %, so even a known scale would have been clamped to 100 %.
+3. The welcome screen read no keys, and on a German layout the main-block
+   plus and minus were never the keys the shell listened to.
+
+**What was built.** `docs/DIVERGENCES.md`, "Window sizes follow the desktop
+scale", row by row. Gate: `tools/desktop_scale_check.sh`, twelve checks on an
+Xvfb it owns, with `Xft.dpi` set, real key events on a German and a US layout,
+and a window manager that refuses or clamps a resize. Traps: the two raylib
+ones and the root-coordinate one in `docs/TRAPS.md`.
+
+**The outside review** (GPT-6.2-Sol, high, on the first commit) returned eight
+findings, all taken:
+
+| Finding | Outcome |
+| --- | --- |
+| 1. The gate emptied `OUT` unseen and could set a resource on a display another gate won | It empties only a directory carrying its marker, and proves by the X lock that the server on the display is the one it started, before `xrdb` |
+| 2. `content_scale` took a `Sync` handle and so proved no thread | It takes the `RaylibThread` token |
+| 3. Layout for a size X had not granted, forever under a refusing window manager | The framebuffer's size is adopted 30 frames after a resize this code asked for. One frame at the requested size before the first event poll stays, as a probe's `size=` always had it |
+| 4. The floor stale after a monitor change; a grow skipped in fullscreen never retried | Re-derived when the window's position changes; the grow stays pending until the window is windowed again |
+| 5. The seams changed: a saved 150 % grew a probe's window, `--ui-scale` alone opened a scaled window, `--size 800x600` grew to 960x640 | `--ui-scale` keeps the default first window; it and `--ui-probe size=` keep the 960x640 floor; nothing grows to the application's own minimum |
+| 6. The four-fifths cap left 150 % out of reach of Ctrl+plus on 1080p; centring ignored the work area | `window_to_hold` (nine tenths); the first window keeps the centre raylib chose. The notice still names the requested scale where the screen has no room (open, below) |
+| 7. The welcome shortcuts died with the pointer on the Theme picker; plus and minus were US positions | Read whenever About is closed; keys by the layout's names |
+| 8. The gate passed with the atlas, the native keys or a refused resize broken | `FALLBACK` and non-native requests fail; real keys; seeded seams; the two window managers. Not covered: the first frame's framebuffer, a monitor change, leaving fullscreen or maximized |
+
+**Negative controls**, each a perturbed debug build copied aside, run as
+`DESKTOP_SCALE_BIN`, the tree restored with `git checkout` and shown clean; the
+real build passed on the GPU path and with `MZ_GL_LAUNCH=""` after each round.
+
+- A (20 failures; also on the CPU path): the desktop scale read from raylib
+  again. Checks 1, 3, 7 and both window managers: `desktop-scale=1.00`, the
+  first window 1280x720 at 100 %.
+- B (9; CPU too): `startup_window` returning the default. The scaled desktop
+  opened 1280x800 (the floor's grow, not the first window) and a saved 150 %
+  opened 1440x960.
+- C (25; CPU too): the grow never taken. Under-floor, hold-200, the probe key
+  and every real-key run stayed at their first size.
+- D (11): all four seam guards off at once; each seam check failed on its own
+  case (`seam` 1200x800, `seam-scale` 1920x1080, `seam-probe` 1440x960 at
+  150 %, `seam-small` 960x640).
+- E: the welcome keys under the old condition (not with the pointer on the
+  picker). **First passed.** The pointer had been parked at the picker's rect
+  taken as root coordinates, outside the centred window. With the window's
+  origin added: 4 failures, all `over-picker`.
+- F (15): the layout's names ignored. Every German run failed and `plus=`
+  read `unread`; the US presses still scaled.
+- G (4; CPU too): the adoption removed. Under the refusing window manager
+  the shell drew 1600x900 at 125 % into a 1280x720 window.
+- H (3): `window_to_hold` returning the floor. A saved 200 % stopped at
+  1680x1120 and 175 %.
+
+The first gate's five controls (the same A, B, C, the `--ui-scale` exemption
+and the welcome keys) were all caught before the review, on the GPU path, A
+to C also on the CPU.
+
+**Not tried.** A real KWin session: the first window's resize and centre, and
+whether KWin honours the raised minimum, were seen only on a bare Xvfb and
+under `tools/desktop_scale_wm.py`. Two monitors of different size. Leaving
+fullscreen or a maximized window after a scale change.

@@ -4,7 +4,7 @@
 Starts the real binary (DESKTOP_SCALE_REAL_BIN) with the arguments it was
 given, waits for its window, then sends native X events through XTest:
 
-  DESKTOP_SCALE_POINTER=X,Y   park the pointer there first (root pixels)
+  DESKTOP_SCALE_POINTER=X,Y   park the pointer there first (window pixels)
   DESKTOP_SCALE_KEYS=plus,plus,minus,zero,equal
                               each one a Ctrl chord, by keysym, so the key
                               that is pressed is the one the display's
@@ -62,6 +62,7 @@ try:
     x.XGetWindowAttributes.argtypes = [C.c_void_p, C.c_ulong, C.POINTER(Attributes)]
     root = x.XDefaultRootWindow(display)
     window = None
+    origin = (0, 0)
     # The app's own window: mapped (IsViewable) and window-sized.
     for _ in range(150):
         assert process.poll() is None, 'app ended before its window'
@@ -75,6 +76,7 @@ try:
                 if (x.XGetWindowAttributes(display, children[index], C.byref(attributes))
                         and attributes.map_state == 2 and attributes.width >= 640):
                     window = children[index]
+                    origin = (attributes.x, attributes.y)
         if window:
             break
         time.sleep(.1)
@@ -87,8 +89,10 @@ try:
     x.XFlush(display)
     pointer = os.environ.get('DESKTOP_SCALE_POINTER')
     if pointer:
+        # A window nothing placed sits where raylib centred it, not at the
+        # root's corner: a point given in the window is moved by its origin.
         px, py = (int(value) for value in pointer.split(','))
-        test.XTestFakeMotionEvent(display, 0, px, py, 0)
+        test.XTestFakeMotionEvent(display, 0, origin[0] + px, origin[1] + py, 0)
         x.XFlush(display)
         time.sleep(.4)
 
