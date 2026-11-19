@@ -41,22 +41,28 @@ Finding: the stepped UI scale and its Auto have existed since 2026-08-01, but
 every window size is in raw pixels. The default 1280x720 window cannot hold
 the 960x640 logical minimum at 125 %, so Auto is clamped to 100 % on a 125 %
 desktop until the window is enlarged (and reads 150 % once maximized at 1440p).
-- [ ] DS-1 pure policy in `ui/scale.rs`: the desktop's rung, the scale a
+- [x] DS-1 pure policy in `ui/scale.rs`: the desktop's rung, the scale a
       preference wants before any window exists, the startup window and the
       window floor, each capped to the monitor; `effective_scale` unchanged
       (its tests pin that).
-- [ ] DS-2 `main.rs`: with no `--size`, open at the default size times the
+- [x] DS-2 `main.rs`: with no `--size`, open at the default size times the
       wanted scale, centred on its monitor; the minimum window follows the
       wanted scale, and a window smaller than a raised floor grows to it
       (Ctrl+plus in a small window). `--size`, `--ui-probe size=` and
       `--ui-scale` stay raw pixels: they are the test seams.
-- [ ] DS-3 a `window:` report line (size, desktop scale, startup, floor) and
+- [x] DS-3 a `window:` report line (size, desktop scale, startup, floor) and
       `tools/desktop_scale_check.sh`: a private Xvfb carrying `Xft.dpi: 120`,
       asserting the window, the floor and `ui layout: scale=125`, with a
       photograph of the welcome screen and a negative control.
-- [ ] DS-4 records: `docs/DIVERGENCES.md`, `docs/PHASE0_INVENTORY.md`, the
-      Commands list, `tools/verify.sh`; then one full verify, an outside
-      review, the release build; this entry moves to the archive.
+- [x] DS-2b found on the way: raylib 6.0's `GetWindowScaleDPI` answers 1.0
+      without `FLAG_WINDOW_HIGHDPI`, so Auto never saw a desktop scale at all;
+      `runtime::desktop_scale` asks GLFW. And the welcome screen read no keys;
+      it takes the scale shortcuts now.
+- [x] DS-4a records: `docs/DIVERGENCES.md` (DS), `docs/TRAPS.md` and its
+      one-liner, `docs/UNSAFE.md`, the Commands list, `tools/verify.sh`. Five
+      negative controls caught on the GPU path, three of them also on the CPU.
+- [ ] DS-4b the outside review's findings, one full verify, the release
+      build; then this entry moves to the archive with what it left open.
 
 **Left by HY (2026-11-17; the round's record is in the archive).**
 - `main.rs`'s `run()` is one function of about 3,050 lines, and several panels

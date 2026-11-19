@@ -76,6 +76,14 @@ C probe likewise needs `--gc-sections` or explicit `-lX11`. If clipboard-image
 support is added, the link contract must include X11 rather than assuming every
 GLFW-related X11 symbol is dynamically resolved.
 
+## Desktop scale regression no gate could catch (found 2026-11-19)
+
+6.0's `GetWindowScaleDPI` answers 1.0 unless the window has
+`FLAG_WINDOW_HIGHDPI`; 5.5.1 always asked GLFW. The shell's Auto scale lost
+the desktop's scale with the upgrade. The story, the replacement and why a
+headless run cannot see it: `docs/TRAPS.md`, "raylib 6.0 reports no desktop
+scale, and neither does Xvfb".
+
 ## Transport semantic regression caught by the full gate
 
 raylib 6 changed both halves of our seek transaction: `PlayAudioBuffer` resets

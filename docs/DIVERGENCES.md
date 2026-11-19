@@ -656,6 +656,24 @@ The name and construction are the design agent's choice. Details:
 | In-app credit "Six-ribbon geometry study (visual reference)" | Removed | The construction is no longer drawn after that reference |
 | The automatic cycle's quiet, first written on the instantaneous level | On a loudness follower that falls over about 0.7 s | The dips between the kicks of a loud loop summed to "quiet" and fired a false drop every few seconds; pinned by `a_loud_loop_with_dips_between_kicks_is_not_a_drop` |
 
+## Window sizes follow the desktop scale (DS, 2026-11-19)
+
+Operator, 2026-11-19, with a screenshot of the welcome window at 100 % on a
+125 % desktop: *"do we do something about ui & text scaling? because i feel
+like we should do something about it, consistently, across all ui,
+magically"*. The stepped scale and its Auto existed since 2026-08-01; what was
+missing is below. Gate: `tools/desktop_scale_check.sh`.
+
+| Before | Now | Why |
+| --- | --- | --- |
+| The desktop's scale read from raylib's `GetWindowScaleDPI` | Read from GLFW (`runtime::desktop_scale::content_scale`), once, after the window exists | raylib 6.0 answers 1.0 on a window without `FLAG_WINDOW_HIGHDPI` (`rcore_desktop_glfw.c:1025`), and that flag makes raylib scale the whole frame itself, over the shell's own logical units. Auto was handed 1.0 on every desktop and ran on window height alone. No gate could see it: Xvfb has no desktop scale |
+| The first window is 1280x720 pixels on every desktop (`musializer.c:346-349`) | With no `--size`: 1280x720 times the scale the saved preference wants (Auto: the desktop's rung; a fixed scale: itself), each side capped at nine tenths of the monitor, never under the floor, centred on its monitor. At a wanted scale of 100 % it is 1280x720 untouched, whatever the monitor (`ui::scale::startup_window`) | 1280x720 cannot hold the 960x640 logical minimum at 125 %, so the shell drew at 100 % on a 125 % desktop until the window was enlarged by hand. The untouched 100 % case keeps every existing capture's window |
+| The minimum window is 960x640 pixels (`musializer.c:354`) | 960x640 times the wanted scale, at the largest rung up to it whose floor takes at most four fifths of the monitor either way (`ui::scale::window_floor`); a window under a raised floor grows to it unless it is maximized or fullscreen. Re-derived when the preference changes | A window dragged under 1200x800 on a 125 % desktop dropped the shell to 100 %, and Ctrl+plus in a window too small for the next rung saved the preference, posted "UI scale: 125%" and changed nothing. The four-fifths cap keeps the floor from becoming the whole screen; under it the fit clamp steps down as before |
+| `--ui-scale` only overrides the scale | While `--ui-scale` speaks, the floor stays 960x640. `--size` and `--ui-probe size=` are raw pixels as before (`--size` no longer scaled, still raised to the floor) | They are the capture seams: a gate names its window in pixels and its scale in a flag, on whatever desktop it runs |
+| The welcome screen reads no keys | It takes Ctrl+plus, Ctrl+minus and Ctrl+0 (`Shell::scale_shortcuts`), and nothing else | The screen every session starts on was the one where the scale could not be changed |
+| Auto raises the scale in a tall window (900, 1260, 1800 px) | Unchanged, as the larger of that and the desktop's rung | Left alone on purpose: it is what the operator has used maximized since 2026-08-01. It does mean a 125 % desktop reads 150 % once the window is 1260 px tall |
+| — | `--ui-probe key=scale-up` (one Ctrl+plus on `key=DIGIT`'s frame) and the `window:` report line: final size, `desktop-scale=`, `startup=default\|scaled:WxH\|explicit`, `floor=`, `monitor=` | Invented, 2026-11-19. The shortcut's effect on the window and how the first window was sized were visible in no report |
+
 ## Reopening timed projects and retrying autosave (2026-11-20)
 
 A reopened project and a restored recovery use the saved audio duration for the

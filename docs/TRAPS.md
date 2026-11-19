@@ -1023,6 +1023,26 @@ timeout, as no answer. Read while the child runs, with a cap, and bound the
 join after the exit. Found 2026-11-16 (J4), when the status began naming every
 pending charge.
 
+## raylib 6.0 reports no desktop scale, and neither does Xvfb
+
+`GetWindowScaleDPI` returns `{1, 1}` unless the window was created with
+`FLAG_WINDOW_HIGHDPI` (`rcore_desktop_glfw.c:1025-1031`). The shell's Auto scale
+read it from the raylib 6 upgrade on and was told 1.0 on every desktop; it kept
+looking right because Auto also raises the scale in a tall window, so a
+maximized window on a 1440p monitor read 150 % either way. The welcome window
+at 1280x720 read 100 % on a 125 % desktop, which is how it was found
+(2026-11-19, DS). Ask GLFW through `runtime::desktop_scale::content_scale`.
+
+No gate could have caught it. On X11 the desktop's scale is the `Xft.dpi`
+resource, read once when GLFW starts, and an Xvfb has none: every headless run
+is a 100 % desktop. A check of anything that depends on the desktop's scale
+sets the resource itself, on an Xvfb it started (`xrdb -merge`; the resource
+is the whole display's, so never under another gate's server), and starts that
+Xvfb with `-noreset`: without it the server regenerates when `xrdb`, its only
+client, disconnects, and the resource is gone before the application connects.
+`tools/desktop_scale_check.sh` is the worked example; its `window:` line
+prints `desktop-scale=` so a run that silently had none says so.
+
 ## The pointer is outside the captured framebuffer
 
 The chat composer set the native I-beam during egui output and the workspace
