@@ -76,21 +76,17 @@ as one gesture, not a jump.
 
 ## Drawing
 
-The tube is a depth-sorted mesh: 960 samples along the strand, ten steps across
-(four in the bloom pass), each vertex lit from its own 3D normal — a key light,
-a back light, a sharp highlight and a broad sheen (Pearlescence), and
-thin-film iridescence that turns the edges violet and rose as they face away.
-Comets, band glow and the change's flare are light carried inside the glass,
-strongest along the crown.
+The glass has 960 circular sections with 32 vertices each (480 sections of
+16 vertices for bloom). The section frame follows the knot's axis and tangent
+through each bend. Position and lighting use the same surface normal. Projected
+front-facing triangles draw in depth order, so the silhouette stays round as a
+bend turns toward the camera. The key light, back light, pearlescent highlights
+and iridescent rim follow the glass. The crown carries the band and comet light.
 
-The weave comes from the painter's order over true depth: every segment lays a
-soft shadow either side of itself, reaching 1.6 tube radii from its centre (less
-on a bend tighter than that, where its quads would fold into a spike), sorted
-2.2 tube radii behind the segment.
-Two crossing passes are always more than 2.6 radii apart in depth (pinned in
-the core), and a pass's own neighbours on a bend are always less, so the shadow
-falls on the strand beneath — the woven gap — and never on the strand that cast
-it.
+At a crossing, the nearer strand shades the glass beneath it. Each receiving
+vertex measures its projected distance to the nearer centre line. The shadow
+softens to zero at 1.6 tube radii, and fades with depth separation as the knot
+changes form. Both the visible glass and the bloom source receive this shading.
 
 The fit reserves room for the strongest breathing and the near side's
 perspective at every control extreme, so raising Size never clips a petal in

@@ -39,10 +39,10 @@ What changes only on purpose: [AGENTS.md — Judge by what a user or a file can 
   Split along the seams the code already has, one checkpoint per seam.
 - `tools/` is 115 flat entries (gates, helpers, research one-offs, a Node app);
   grouping it means moving every path AGENTS.md, the docs and the gates name.
-- Lumen Knot polish, from its designer: a faint sliver where the tube's inner
-  edge folds on the tightest bends (1080p, zoomed), a small flash on the first
-  frame of a soft-attack track, the six-petal rosette busy at tile size, and
-  the woven gap checked only through geometry, not a capture.
+- Lumen Knot polish: a small flash on the first frame of a soft-attack track
+  and the six-petal rosette busy at tile size. The capture gate now checks
+  the exposed inner bend. A separate capture assertion for the shadow on
+  the receiving strand at a crossing is still open.
 - The runtime decoder-budget test failed twice under parallel `cargo test`
   load during HY (passed alone both times, and in the merged verify): a
   timing-sensitive assertion to find before it fails a real run.

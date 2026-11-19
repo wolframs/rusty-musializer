@@ -19,17 +19,11 @@ const ID: SceneId = SceneId::LumenKnot;
 /// Perspective focal distance in knot units: enough to swell the near petals,
 /// little enough that the fit's allowance for it stays a few percent.
 const FOCAL: f32 = 4.0;
-/// The woven gap: the soft shadow each pass lays either side of itself
-/// reaches this many tube radii from its centre line.
+/// Shadow fades between the caster's silhouette and this many tube radii.
 const GAP: f32 = 1.6;
-/// How far behind its own pass a shadow sorts, in tube radii. Less than the
-/// depth between two crossing passes (the core pins more than 2.6), more than
-/// the depth between a pass and its own neighbours on a bend, so the shadow
-/// falls on the strand beneath and never on the strand that cast it.
-const SHADOW_SINK: f32 = 2.2;
-/// Cross-section steps of the tube at full resolution and in the bloom pass.
-const CROSS: usize = 10;
-const CROSS_BLOOM: usize = 4;
+/// Samples around a complete circular section, including its hidden side.
+const CROSS: usize = 32;
+const CROSS_BLOOM: usize = 16;
 
 type Vertex = (Vector2, Color);
 pub struct KnotResources {
@@ -215,20 +209,33 @@ fn normalized(a: V3) -> Option<V3> {
     (len > 1e-7).then(|| [a[0] / len, a[1] / len, a[2] / len])
 }
 
-/// One sample of the strand after breathing and turning: its centre, the
-/// screen-across direction and the toward-the-viewer direction of its tube.
+/// Centre and orthogonal cross-section axes of the posed strand.
 #[derive(Clone, Copy)]
 struct Sample {
     p: V3,
-    across: V3,
-    toward: V3,
+    side: V3,
+    radial: V3,
     /// Angle in the knot's own frame: colour and band glow are fixed to the
     /// knot, so the passes that meet in a change's ring agree.
     angle: f32,
-    /// How far the shadow reaches, in tube radii: [`GAP`], or less where the
-    /// strand turns tighter on screen than the shadow is wide, whose quads
-    /// would fold into a dark spike inside the corner.
-    reach: f32,
+}
+
+/// Projected centre-line segment. Evaluate its penumbra on the receiving
+/// glass, so the background never inherits an outline from the silhouette.
+struct Caster {
+    start: Vector2,
+    step: Vector2,
+    inv_length_sq: f32,
+    z: f32,
+    dz: f32,
+}
+
+impl Caster {
+    fn closest(&self, point: Vector2) -> (f32, f32) {
+        let offset = point - self.start;
+        let t = (offset.dot(self.step) * self.inv_length_sq).clamp(0.0, 1.0);
+        ((offset - self.step * t).length_sqr(), self.z + t * self.dz)
+    }
 }
 
 #[allow(clippy::too_many_lines)] // One frame's composition, read top to bottom.
@@ -386,45 +393,39 @@ fn draw_base(
         centres.push(turn(breathe(base, &state.bands, response)));
     }
     let view = [0.0, 0.0, 1.0];
-    let mut last_across = [1.0, 0.0, 0.0];
+    let axis = turn(view);
     for j in 0..n {
         let tangent = sub(centres[(j + 1) % n], centres[(j + n - 1) % n]);
-        // A pass seen end-on has no screen direction of its own; it keeps its
-        // neighbour's rather than snapping.
-        let across = normalized(cross(tangent, view)).unwrap_or(last_across);
-        last_across = across;
-        let mut toward = normalized(cross(across, tangent)).unwrap_or(view);
-        if toward[2] < 0.0 {
-            toward = [-toward[0], -toward[1], -toward[2]];
-        }
-        let (back_step, fore_step) = (
-            sub(centres[j], centres[(j + n - 1) % n]),
-            sub(centres[(j + 1) % n], centres[j]),
-        );
-        let (a, b) = (
-            back_step[0].hypot(back_step[1]),
-            fore_step[0].hypot(fore_step[1]),
-        );
-        let turn = if a > 1e-7 && b > 1e-7 {
-            ((back_step[0] * fore_step[0] + back_step[1] * fore_step[1]) / (a * b))
-                .clamp(-1.0, 1.0)
-                .acos()
-        } else {
-            0.0
-        };
-        let bend_radius = if turn > 1e-6 {
-            0.5 * (a + b) / turn
-        } else {
-            f32::INFINITY
-        };
+        // Every form winds around this axis. Its tangent stays transverse to
+        // the axis even when a bend points straight at the camera.
+        let side = normalized(cross(tangent, axis)).unwrap_or(view);
+        let radial = normalized(cross(side, tangent)).unwrap_or(axis);
         samples.push(Sample {
             p: centres[j],
-            across,
-            toward,
+            side,
+            radial,
             angle: angles[j],
-            reach: (0.9 * bend_radius / tube).clamp(1.0, GAP),
         });
     }
+
+    let casters: Vec<_> = (0..n)
+        .step_by(3)
+        .map(|j| {
+            let a = centres[j];
+            let b = centres[(j + 3) % n];
+            let start = project(a);
+            let step = project(b) - start;
+            Caster {
+                start,
+                step,
+                inv_length_sq: step.length_sqr().max(1e-10).recip(),
+                z: a[2],
+                dz: b[2] - a[2],
+            }
+        })
+        .collect();
+    let max_pixel_radius = scale * tube * FOCAL / (FOCAL - reach);
+    let mut nearby = Vec::new();
 
     // Lights, in the turned frame (x right, y up, z toward the viewer).
     let key = normalized([-0.45, 0.62, 0.64]).unwrap_or(view);
@@ -464,9 +465,10 @@ fn draw_base(
     };
     let depth_span = reach.max(0.01);
     let cross_steps = if emission { CROSS_BLOOM } else { CROSS };
-    let stride = cross_steps + 1;
-    let mut mesh: Vec<Vertex> = Vec::with_capacity(n * stride);
-    let mut shadow: Vec<[Vertex; 4]> = Vec::with_capacity(n);
+    let circle: Vec<_> = (0..cross_steps)
+        .map(|i| (TAU * i as f32 / cross_steps as f32).sin_cos())
+        .collect();
+    let mut mesh: Vec<(Vertex, f32)> = Vec::with_capacity(n * cross_steps);
     for (j, sample) in samples.iter().enumerate() {
         let u = j as f32 / n as f32;
         let glow = band_glow(sample.angle) * response;
@@ -483,20 +485,21 @@ fn draw_base(
             + 22.0 * (1.0 - near);
         let band_color = hsv(base_hue - 36.0, 0.70, 1.0);
         let carried = 1.5 * comet + 0.7 * pose.flare + 0.30 * beat + 0.22 * shimmer;
-        for k in 0..=cross_steps {
-            let s = -1.0 + 2.0 * k as f32 / cross_steps as f32;
-            let crown = (1.0 - s * s).max(0.0).sqrt();
-            let normal = add_scaled(
-                [
-                    sample.across[0] * s,
-                    sample.across[1] * s,
-                    sample.across[2] * s,
-                ],
-                sample.toward,
-                crown,
-            );
-            let position = project(add_scaled(sample.p, sample.across, tube * s));
-            let facing = dot(normal, view).max(0.0);
+        let center_px = project(sample.p);
+        nearby.clear();
+        for caster in &casters {
+            let (distance_sq, z) = caster.closest(center_px);
+            if z > sample.p[2] && distance_sq < ((GAP + 1.2) * max_pixel_radius).powi(2) {
+                nearby.push(caster);
+            }
+        }
+        for &(sin, cos) in &circle {
+            let normal = add_scaled(sample.side.map(|v| v * cos), sample.radial, sin);
+            let surface = add_scaled(sample.p, normal, tube);
+            let position = project(surface);
+            let eye = normalized(sub([0.0, 0.0, FOCAL], surface)).unwrap_or(view);
+            let facing = dot(normal, eye).clamp(0.0, 1.0);
+            let crown = facing;
             let fresnel = (1.0 - facing).powi(2);
             let lambert = dot(normal, key).max(0.0);
             let backlit = dot(normal, back).max(0.0).powi(2);
@@ -534,54 +537,46 @@ fn draw_base(
                         + glass[i] * crown.powi(8) * 0.10
                 })
             };
-            mesh.push((position, rgb(color, 255)));
-        }
-        if !emission {
-            let shade = Color::new(3, 4, 14, 0);
-            let dark = Color::new(2, 3, 12, 235);
-            shadow.push([
-                (
-                    project(add_scaled(sample.p, sample.across, -tube * sample.reach)),
-                    shade,
-                ),
-                (project(add_scaled(sample.p, sample.across, -tube)), dark),
-                (project(add_scaled(sample.p, sample.across, tube)), dark),
-                (
-                    project(add_scaled(sample.p, sample.across, tube * sample.reach)),
-                    shade,
-                ),
-            ]);
-        }
-    }
-    // Painter's order over the true depth. Each segment is a body and, a
-    // little deeper, the shadow it lays on whatever passes beneath it.
-    let mut order: Vec<(f32, usize, bool)> = Vec::with_capacity(2 * n);
-    for j in 0..n {
-        let z = 0.5 * (samples[j].p[2] + samples[(j + 1) % n].p[2]);
-        order.push((z, j, true));
-        if !emission {
-            order.push((z - SHADOW_SINK * tube, j, false));
-        }
-    }
-    order.sort_by(|a, b| a.0.total_cmp(&b.0));
-    for (_, j, body) in order {
-        let next = (j + 1) % n;
-        if body {
-            let vertex = |i: usize, k: usize| mesh[i * stride + k];
-            for k in 0..cross_steps {
-                quad(
-                    out,
-                    vertex(j, k),
-                    vertex(next, k),
-                    vertex(next, k + 1),
-                    vertex(j, k + 1),
-                );
+            let mut shade = 0.0_f32;
+            for caster in &nearby {
+                let (dist_sq, z) = caster.closest(position);
+                // Fade in across a tube diameter to avoid self-shadowing and
+                // a hard pop as two passes separate during a form change.
+                let separation = ((z - surface[2]) / tube - 1.0).clamp(0.0, 1.0);
+                if separation > 0.0 {
+                    let radius_px = scale * tube * FOCAL / (FOCAL - z);
+                    let edge = ((GAP - dist_sq.sqrt() / radius_px) / (GAP - 1.0)).clamp(0.0, 1.0);
+                    shade = shade.max(separation * edge * edge * (3.0 - 2.0 * edge));
+                }
             }
-        } else {
-            let (a, b) = (shadow[j], shadow[next]);
-            quad(out, a[0], b[0], b[1], a[1]);
-            quad(out, a[2], b[2], b[3], a[3]);
+            mesh.push((
+                (position, rgb(color.map(|v| v * (1.0 - 0.72 * shade)), 255)),
+                surface[2],
+            ));
         }
+    }
+    // Sort visible surface triangles, including the curved ends of passes
+    // seen nearly head-on. The bloom pass uses the same visibility rule.
+    let mut faces = Vec::with_capacity(n * cross_steps);
+    for j in 0..n {
+        let next = (j + 1) % n;
+        for k in 0..cross_steps {
+            let l = (k + 1) % cross_steps;
+            let a = j * cross_steps + k;
+            let b = next * cross_steps + k;
+            let c = next * cross_steps + l;
+            let d = j * cross_steps + l;
+            for indices in [[a, b, c], [a, c, d]] {
+                let [((p, _), z0), ((q, _), z1), ((r, _), z2)] = indices.map(|i| mesh[i]);
+                if (q.x - p.x) * (r.y - p.y) < (q.y - p.y) * (r.x - p.x) {
+                    faces.push((z0 + z1 + z2, indices));
+                }
+            }
+        }
+    }
+    faces.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
+    for (_, indices) in faces {
+        out.extend(indices.map(|i| mesh[i].0));
     }
     let triangles = out.len() / 3;
     draw::shaded_triangles(d, out);

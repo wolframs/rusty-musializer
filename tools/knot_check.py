@@ -7,12 +7,10 @@ from pathlib import Path
 from PIL import Image, ImageStat, ImageChops
 
 root = Path(sys.argv[1])
-# The drawn knot: form, its petals, the fixed mesh size, the depth-sorted
-# weave, then the audio state. 960 segments x (10 tube steps + 2 shadow
-# sides) x 2 triangles is 23040 whatever the form.
+# The visible subset of the 960 x 32 circular mesh varies with the pose.
 REPORT = re.compile(
     r'^lumen knot:\s+form=(?P<form>\d) petals=(?P<petals>\d+) winds=\d+ swing=(?P<swing>[\d.]+)'
-    r' morph=(?P<morph>[\d.]+) segments=960 triangles=23040 weave=sorted comets=(?P<comets>\d+)'
+    r' morph=(?P<morph>[\d.]+) segments=960 triangles=(?P<visible>\d+) weave=sorted comets=(?P<comets>\d+)'
     r' energy=(?P<energy>[\d.]+).*bands=(?P<bands>[\d.,]+)', re.M)
 def report(log):
     return REPORT.search(log)
@@ -24,6 +22,7 @@ for name in ('preview', 'idle', 'reopen', 'minimum'):
     assert 'finish=ready' in log, f'{name}: grain shader unavailable'
     assert 'mismatched-frames=0' in log, f'{name}: framebuffer not restored'
     assert 'output underruns: 0' in log, f'{name}: audio output underrun'
+    assert 960 * 32 * 0.85 < int(match["visible"]) < 960 * 32 * 1.15, f"{name}: unexpected visible tube surface"
     bands = [float(x) for x in match['bands'].split(',')]
     assert len(bands) == 6
     if name == 'preview':
@@ -62,6 +61,11 @@ strong = Image.open(root/'strong.png').convert('RGB')
 assert max(ImageStat.Stat(strong.crop((w//2-12,h//2-12,w//2+12,h//2+12))).mean) < 110, 'peak response filled the hole'
 for strip in [(0,0,5,h),(w-5,0,w,h),(0,0,w,5),(0,h-5,w,h)]:
     assert max(channel[1] for channel in strong.crop(strip).getextrema()) < 120, 'peak response clipped a lobe'
+# Neighbouring patches of haze just outside the inner bend. Old minus
+# neighbour averaged -46 blue levels on both renderers; fixed is +5.
+bend = Image.open(root / 'seven-bend.png').convert('RGB')
+near, beside = [ImageStat.Stat(bend.crop((x, 574, x+8, 580))).mean[2] for x in (416, 434)]
+assert abs(near - beside) < 15, f'shadow cuts across empty haze: {near - beside:.1f}'
 # A fresh state opens tied, on the six-petal rosette, with light moving.
 first = report((root/'preview.log').read_text())
 assert first['form'] == '1' and first['petals'] == '6' and first['morph'] == '1.000', 'did not open on the six-petal rosette'

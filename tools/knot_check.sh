@@ -101,6 +101,10 @@ launch "$OUT/phrase.wav" --scene knot --render-window 1 1 \
     --route knot.fringe:rms:0:0:1:-1:0 \
     --route knot.grain:rms:0:0:1:-1:0 \
     --resolution 360x640 --fps 30 --render "$OUT/finish-off.mp4" > "$OUT/finish-off.log" 2>&1
+# Naked bend facing the centre of the seven-petal rosette. Its old shadow
+# strip ended in a dark wedge on the haze at this time and camera pose.
+launch "$OUT/phrase.wav" --scene knot --route knot.form:rms:0:0:1:1.999:2 \
+    --resolution 1080x1080 --still 2 "$OUT/seven-bend.png" > "$OUT/seven-bend.log" 2>&1
 # A named form: the eight-petal rosette, by a constant route on `form`.
 launch "$OUT/phrase.wav" --scene knot --render-window 1 1 \
     --route knot.form:rms:0:0:1:3.999:4 \
