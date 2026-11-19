@@ -20,6 +20,7 @@ pub mod clip;
 pub mod clipboard;
 pub mod decode;
 pub mod deep_target;
+pub mod desktop_scale;
 pub mod draw;
 pub mod feedback;
 pub mod font;

@@ -325,12 +325,74 @@ fn run(
         return Err(refusal);
     }
 
+    // Read before the window exists: a saved scale decides how large the first
+    // window is, and the resize below has to land before anything slow runs.
+    let ui_preferences_path = ui::preferences::default_path();
+    let (ui_preferences, mut ui_preferences_editable, ui_preferences_warning) =
+        match ui_preferences_path.as_deref() {
+            None => (
+                ui::preferences::UiPreferences::default(),
+                false,
+                Some("No per-user configuration directory could be derived.".to_string()),
+            ),
+            Some(path) => match ui::preferences::load(path) {
+                Ok(preferences) => (preferences.unwrap_or_default(), true, None),
+                Err(error) => (
+                    ui::preferences::UiPreferences::default(),
+                    false,
+                    Some(format!(
+                        "{}: {error}. UI changes remain session-only so the file is not overwritten.",
+                        path.display()
+                    )),
+                ),
+            },
+        };
+
     let (mut rl, thread) = raylib::init()
         .size(width, height)
         .title("Musializer (Rust)")
         .msaa_4x()
         .resizable()
         .build();
+    // DS (2026-11-19): the default window is in the desktop's units, not raw
+    // pixels. On a 125 % desktop 1280x720 cannot hold the 960x640 logical
+    // minimum at 125 %, so Auto was clamped to 100 % until the window was
+    // enlarged by hand. GLFW only knows the desktop's scale once it is
+    // initialized, so the window is resized here, before audio, fonts and the
+    // first frame, rather than created at the right size.
+    //
+    // The saved preference, not `--ui-scale`: that flag, `--size` and
+    // `--ui-probe size=` are the capture seams and stay raw pixels.
+    // Asked of GLFW, not of raylib: `get_window_scale_dpi` answers 1.0 on a
+    // window without `FLAG_WINDOW_HIGHDPI` (`runtime::desktop_scale`). On X11
+    // the answer is fixed when GLFW starts, so once is enough.
+    let desktop_scale = musializer_runtime::desktop_scale::content_scale(&rl)
+        .map_or(Vector2::one(), |(x, y)| Vector2::new(x, y));
+    let startup_monitor = current_monitor();
+    let window_startup = if options.window_explicit {
+        WindowStartup::Explicit
+    } else {
+        let wanted = ui::scale::wanted_scale(ui_preferences.scale, desktop_scale);
+        let size = ui::scale::startup_window(
+            cli::DEFAULT_WINDOW,
+            wanted,
+            startup_monitor.map(|monitor| monitor.size),
+        );
+        if size == (width, height) {
+            WindowStartup::Default
+        } else {
+            rl.set_window_size(size.0, size.1);
+            if let Some(monitor) = startup_monitor {
+                // raylib centred the window it created; keep the larger one
+                // centred on the same monitor instead of hanging off it.
+                rl.set_window_position(
+                    monitor.position.0 + (monitor.size.0 - size.0) / 2,
+                    monitor.position.1 + (monitor.size.1 - size.1) / 2,
+                );
+            }
+            WindowStartup::Scaled(size)
+        }
+    };
     // Escape belongs to focused editors and fullscreen navigation. Raylib's
     // default would request application exit before those handlers can see it.
     rl.set_exit_key(None);
@@ -365,31 +427,11 @@ fn run(
         audio.set_master_volume(if muted { 0.0 } else { volume.clamp(0.0, 1.0) });
     };
 
-    let ui_preferences_path = ui::preferences::default_path();
-    let (ui_preferences, mut ui_preferences_editable, ui_preferences_warning) =
-        match ui_preferences_path.as_deref() {
-            None => (
-                ui::preferences::UiPreferences::default(),
-                false,
-                Some("No per-user configuration directory could be derived.".to_string()),
-            ),
-            Some(path) => match ui::preferences::load(path) {
-                Ok(preferences) => (preferences.unwrap_or_default(), true, None),
-                Err(error) => (
-                    ui::preferences::UiPreferences::default(),
-                    false,
-                    Some(format!(
-                        "{}: {error}. UI changes remain session-only so the file is not overwritten.",
-                        path.display()
-                    )),
-                ),
-            },
-        };
     let physical_window = (rl.get_screen_width() as f32, rl.get_screen_height() as f32);
     let mut ui_scale = ui::scale::effective_scale(
         options.ui_scale.unwrap_or(ui_preferences.scale),
         physical_window,
-        rl.get_window_scale_dpi(),
+        desktop_scale,
     );
 
     // After the window, because the atlas is a GPU upload. Never fails: a face
@@ -1115,6 +1157,7 @@ fn run(
             };
             app.shell.probe_digit = probe.key_digit.map(|digit| (digit, digit_frames));
             app.shell.probe_nudge = probe.key_right.then_some(digit_frames);
+            app.shell.probe_scale_up = probe.key_scale_up.then_some(digit_frames);
             app.shell.render_view.probe_replay_cancel = probe.replay_cancel;
             app.shell.render_view.probe_replay_shot =
                 options.probe_shot.as_deref().map(progress_shot_path);
@@ -1455,6 +1498,10 @@ fn run(
     // Set once the close guard has warned with no dialog available; see
     // `confirm_close`.
     let mut close_warned = false;
+    // DS: the preference the window floor was last derived from (`None`: not
+    // yet), and that floor.
+    let mut window_floor_preference: Option<Option<ui::scale::UiScalePreference>> = None;
+    let mut window_floor = cli::MIN_WINDOW;
     while running {
         // Service the decoder before any potentially expensive UI work. A
         // second refill remains below, after window/asset maintenance, matching
@@ -1462,11 +1509,39 @@ fn run(
         if let Some(music) = music.as_ref() {
             music.update_stream();
         }
+        // DS: the smallest window follows the scale the saved preference
+        // wants, so the shell cannot be dragged below the desktop's scale, and
+        // Ctrl+plus in a window too small for the next rung grows the window
+        // instead of doing nothing. Re-derived only when the preference
+        // changes; a desktop that ignores the limit still gets the fit clamp
+        // in `effective_scale`. `--ui-scale` keeps the application's own
+        // minimum: a capture names its window in raw pixels.
+        let floor_preference =
+            (!app.shell.ui_scale_overridden()).then_some(app.shell.ui_preferences.scale);
+        if window_floor_preference != Some(floor_preference) {
+            window_floor_preference = Some(floor_preference);
+            window_floor = floor_preference.map_or(cli::MIN_WINDOW, |preference| {
+                ui::scale::window_floor(
+                    ui::scale::wanted_scale(preference, desktop_scale),
+                    current_monitor().map(|monitor| monitor.size),
+                )
+            });
+            rl.set_window_min_size(window_floor.0, window_floor.1);
+            let window = (rl.get_screen_width(), rl.get_screen_height());
+            // GLFW's limit stops a drag; it does not move a window already
+            // under it. A maximized or fullscreen window is the desktop's.
+            if (window.0 < window_floor.0 || window.1 < window_floor.1)
+                && !rl.is_window_maximized()
+                && !rl.is_window_fullscreen()
+            {
+                rl.set_window_size(window.0.max(window_floor.0), window.1.max(window_floor.1));
+            }
+        }
         let physical_window = (rl.get_screen_width() as f32, rl.get_screen_height() as f32);
         let resolved_scale = ui::scale::effective_scale(
             app.shell.ui_scale_preference(),
             physical_window,
-            rl.get_window_scale_dpi(),
+            desktop_scale,
         );
         if resolved_scale != ui_scale {
             with_preview_paused(music.as_ref(), || {
@@ -3275,6 +3350,19 @@ fn run(
         },
     );
     report.posters = posters.describe();
+    report.window = format!(
+        "{}x{} desktop-scale={:.2} startup={} floor={}x{} monitor={}",
+        rl.get_screen_width(),
+        rl.get_screen_height(),
+        desktop_scale.x.max(desktop_scale.y),
+        window_startup.describe(),
+        window_floor.0,
+        window_floor.1,
+        startup_monitor.map_or_else(
+            || "unknown".to_string(),
+            |monitor| format!("{}x{}", monitor.size.0, monitor.size.1)
+        ),
+    );
     report.follow = follow.as_ref().map(TreatmentFollow::describe);
     dock.shutdown();
 
@@ -3293,6 +3381,49 @@ fn run(
         std::process::ExitCode::SUCCESS
     } else {
         std::process::ExitCode::FAILURE
+    })
+}
+
+/// How the first window got its size (DS), for the `window:` report line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WindowStartup {
+    /// `--size` named it, in raw pixels.
+    Explicit,
+    /// The default, untouched: the wanted scale is 100 %.
+    Default,
+    /// The default in the desktop's units.
+    Scaled((i32, i32)),
+}
+
+impl WindowStartup {
+    fn describe(self) -> String {
+        match self {
+            Self::Explicit => "explicit".to_string(),
+            Self::Default => "default".to_string(),
+            Self::Scaled((width, height)) => format!("scaled:{width}x{height}"),
+        }
+    }
+}
+
+/// The monitor the window is on, in the desktop's pixels.
+#[derive(Clone, Copy, Debug)]
+struct Monitor {
+    position: (i32, i32),
+    size: (i32, i32),
+}
+
+/// `None` when the desktop names no monitor or no video mode for it (raylib
+/// answers 0 then); a window size is not capped against a guess.
+fn current_monitor() -> Option<Monitor> {
+    let index = get_current_monitor();
+    if index < 0 || index >= get_monitor_count() {
+        return None;
+    }
+    let size = (get_monitor_width(index), get_monitor_height(index));
+    let position = get_monitor_position(index);
+    (size.0 > 0 && size.1 > 0).then_some(Monitor {
+        position: (position.x as i32, position.y as i32),
+        size,
     })
 }
 
@@ -6666,6 +6797,9 @@ struct Report {
     /// `scene runs:` and `posters:` (WX-5b), taken at shutdown like `dock:`.
     scene_runs: String,
     posters: String,
+    /// `window:` (DS): the final size, the desktop's scale, how the first
+    /// window was sized and the floor it ended with.
+    window: String,
     /// `top bar:` and `rail:` (WX-5c), what the last frame drew.
     top_bar: String,
     notices: String,
@@ -6754,6 +6888,7 @@ impl Default for Report {
             dock: String::new(),
             scene_runs: String::new(),
             posters: String::new(),
+            window: String::new(),
             top_bar: String::new(),
             notices: String::new(),
             rail: String::new(),
@@ -6962,6 +7097,10 @@ impl Report {
                 p.ui_warning >> 8,
             );
         }
+        // DS: whether the first window followed the desktop's scale. `ui
+        // layout: scale=` below says what the shell then drew at; a default
+        // window on a scaled desktop is the defect this line exists to show.
+        println!("window:          {}", self.window);
         println!(
             "ui layout:       scale={} sidebar={} inspector={} timeline={}",
             (fonts.ui().scale() * 100.0).round() as u16,

@@ -577,6 +577,8 @@ pub struct Shell {
     /// `--ui-probe key=right` (D2): the frames left before one Right arrow,
     /// a nudge forward through the same keyboard path.
     pub probe_nudge: Option<u32>,
+    /// `--ui-probe key=scale-up` (DS): frames until one Ctrl+plus.
+    pub probe_scale_up: Option<u32>,
     pub widgets: Widgets,
     /// The right-hand tuning inspector.
     pub inspector_open: bool,
@@ -1400,6 +1402,7 @@ impl Shell {
             probe_escape: false,
             probe_digit: None,
             probe_nudge: None,
+            probe_scale_up: None,
             widgets: Widgets::new(),
             notices: NoticeQueue::default(),
             inspector_open: false,
@@ -1510,6 +1513,13 @@ impl Shell {
     #[must_use]
     pub fn ui_scale_preference(&self) -> UiScalePreference {
         self.ui_scale_override.unwrap_or(self.ui_preferences.scale)
+    }
+
+    /// Whether `--ui-scale` still speaks for the scale. A scale shortcut
+    /// clears it; until then window sizes stay the raw pixels a capture named.
+    #[must_use]
+    pub fn ui_scale_overridden(&self) -> bool {
+        self.ui_scale_override.is_some()
     }
 
     /// Pushes a notice, dropping the result: the overflow policy in
@@ -2116,6 +2126,11 @@ impl Shell {
             );
         } else {
             self.dropped_files(d, &mut commands);
+            // The scale shortcuts and nothing else: the welcome screen has no
+            // transport, scene or column for the other keys to mean anything.
+            let mut keys = KeyboardFrame::read(d);
+            self.probe_scale_key(&mut keys);
+            self.scale_shortcuts(keys, input.ui_scale, &mut commands);
         }
 
         let (w, h) = input.window;
@@ -2662,6 +2677,7 @@ impl Shell {
             self.probe_nudge = frames.checked_sub(1);
             keys.nudge_forward |= frames == 0;
         }
+        self.probe_scale_key(&mut keys);
         if self.artist_editing() && keys.escape {
             self.top_bar_state.artist_probe = Some((None, super::top_bar::ArtistAction::Cancel));
         }
@@ -2676,6 +2692,61 @@ impl Shell {
             }
         }
         self.keyboard_actions(keys, KeyboardContext::of(input), commands);
+    }
+
+    /// `--ui-probe key=scale-up` (DS): one Ctrl+plus, a few frames in, laid
+    /// over the device's keys so the shortcut's own path takes it.
+    fn probe_scale_key(&mut self, keys: &mut KeyboardFrame) {
+        if let Some(frames) = self.probe_scale_up {
+            self.probe_scale_up = frames.checked_sub(1);
+            if frames == 0 {
+                keys.control = true;
+                keys.scale_up = true;
+            }
+        }
+    }
+
+    /// Ctrl+plus, Ctrl+minus and Ctrl+0: the shell's scale, on the workspace
+    /// and on the welcome screen alike.
+    ///
+    /// Its own function since DS (2026-11-19): the welcome screen read no
+    /// keys at all, so the one screen every session starts on was the one
+    /// where the scale could not be changed.
+    fn scale_shortcuts(
+        &mut self,
+        keys: KeyboardFrame,
+        ui_scale: UiScale,
+        commands: &mut Vec<ShellCommand>,
+    ) {
+        if !keys.control {
+            return;
+        }
+        let plus = keys.scale_up;
+        let minus = keys.scale_down;
+        if keys.scale_auto {
+            self.ui_scale_override = None;
+            self.ui_preferences.scale = UiScalePreference::Auto;
+            self.notify(
+                Severity::Success,
+                "UI scale: Auto",
+                "The desktop scale and window size now choose the shell scale.",
+            );
+            commands.push(ShellCommand::SaveUiPreferences(self.ui_preferences));
+        } else if plus != minus {
+            let scale = if plus {
+                ui_scale.next()
+            } else {
+                ui_scale.previous()
+            };
+            self.ui_scale_override = None;
+            self.ui_preferences.scale = UiScalePreference::Fixed(scale);
+            self.notify(
+                Severity::Success,
+                &format!("UI scale: {}%", scale.percent()),
+                "The scene and exported video resolution are unchanged.",
+            );
+            commands.push(ShellCommand::SaveUiPreferences(self.ui_preferences));
+        }
     }
 
     /// [`Shell::keyboard`] without raylib.
@@ -2695,34 +2766,7 @@ impl Shell {
         if self.artist_editing() {
             return;
         }
-        if keys.control {
-            let plus = keys.scale_up;
-            let minus = keys.scale_down;
-            if keys.scale_auto {
-                self.ui_scale_override = None;
-                self.ui_preferences.scale = UiScalePreference::Auto;
-                self.notify(
-                    Severity::Success,
-                    "UI scale: Auto",
-                    "The desktop scale and window size now choose the shell scale.",
-                );
-                commands.push(ShellCommand::SaveUiPreferences(self.ui_preferences));
-            } else if plus != minus {
-                let scale = if plus {
-                    context.ui_scale.next()
-                } else {
-                    context.ui_scale.previous()
-                };
-                self.ui_scale_override = None;
-                self.ui_preferences.scale = UiScalePreference::Fixed(scale);
-                self.notify(
-                    Severity::Success,
-                    &format!("UI scale: {}%", scale.percent()),
-                    "The scene and exported video resolution are unchanged.",
-                );
-                commands.push(ShellCommand::SaveUiPreferences(self.ui_preferences));
-            }
-        }
+        self.scale_shortcuts(keys, context.ui_scale, commands);
 
         // A text field takes every key, including Space and the arrows. Without
         // this, typing a lyric line would scrub the track and toggle playback

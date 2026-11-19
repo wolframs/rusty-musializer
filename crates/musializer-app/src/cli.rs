@@ -425,6 +425,10 @@ pub struct UiProbe {
     /// `key=right` (D2): one Right arrow (a nudge forward, the user's own
     /// seek) through the shell's keyboard path, on `key=DIGIT`'s frame.
     pub key_right: bool,
+    /// `key=scale-up` (DS): one Ctrl+plus through the shell's keyboard path,
+    /// on `key=DIGIT`'s frame. The shortcut's effect on the window (it grows
+    /// to hold the next rung) is the thing no report could show otherwise.
+    pub key_scale_up: bool,
     /// Artist draft input at frame 12; requires click= to focus the real slot.
     pub artist_text: Option<String>,
     pub artist_action: Option<crate::ui::top_bar::ArtistAction>,
@@ -796,6 +800,11 @@ pub struct Cli {
     /// `--size WxH`, the slice's own geometry flag. `--ui-probe size=` is the
     /// oracle's spelling; both are honoured.
     pub window: (i32, i32),
+    /// Whether `--size` named [`Self::window`]. A named size is raw pixels and
+    /// opens as given; only the default follows the desktop's scale
+    /// (`ui::scale::startup_window`), and `--size 1280x720` has to stay
+    /// distinguishable from saying nothing.
+    pub window_explicit: bool,
 }
 
 impl Cli {
@@ -1125,7 +1134,10 @@ where
                 None => cli.warn("--probe-reopen needs a path"),
             },
             "--size" => match value_of(&argv, i).and_then(parse_resolution) {
-                Some((width, height)) => cli.window = (width as i32, height as i32),
+                Some((width, height)) => {
+                    cli.window = (width as i32, height as i32);
+                    cli.window_explicit = true;
+                }
                 None => cli.warn("--size wants WIDTHxHEIGHT"),
             },
 
@@ -1679,6 +1691,7 @@ fn apply_probe_key(probe: &mut UiProbe, key: &str, value: &str) -> Option<()> {
         "key" => match value {
             "escape" => probe.key_escape = true,
             "right" => probe.key_right = true,
+            "scale-up" => probe.key_scale_up = true,
             digit if digit.len() == 1 && digit.as_bytes()[0].is_ascii_digit() => {
                 let n = digit.as_bytes()[0] - b'0';
                 probe.key_digit = Some(if n == 0 { 10 } else { n });
@@ -1919,6 +1932,7 @@ Diagnostics:
                           types into the artist slot at frame 12 (requires click=),
                           key=escape presses Escape once, key=0..9 one
                           number-row key (D7), key=right one Right arrow,
+                          key=scale-up one Ctrl+plus,
                           notices=all|info+done+warning+error posts one
                           sample notice of each severity,
                           fullscreen=0|1, time=SECONDS, size=WIDTHxHEIGHT,
@@ -2111,6 +2125,8 @@ mod tests {
         assert_eq!(parse_ui_probe("time=1").unwrap().flyout, None);
         assert!(parse_ui_probe("flyout=sidebar").is_none());
         assert!(parse_ui_probe("key=escape").unwrap().key_escape);
+        assert!(parse_ui_probe("key=scale-up").unwrap().key_scale_up);
+        assert!(!parse_ui_probe("key=escape").unwrap().key_scale_up);
         assert_eq!(parse_ui_probe("key=3").unwrap().key_digit, Some(3));
         assert_eq!(parse_ui_probe("key=0").unwrap().key_digit, Some(10));
         assert_eq!(parse_ui_probe("key=escape").unwrap().key_digit, None);
@@ -2975,6 +2991,8 @@ mod tests {
         let cli = parsed(&[]);
         assert!(!cli.error);
         assert_eq!(cli.window, DEFAULT_WINDOW);
+        assert!(!cli.window_explicit);
+        assert!(parsed(&["--size", "1280x720"]).window_explicit);
         assert!(cli.actions.is_empty());
         assert!(cli.routes.is_empty());
         assert_eq!(cli.exit_status(), 0);
