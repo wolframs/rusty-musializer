@@ -6,7 +6,7 @@
 //! the shell's own logical units and native font atlases. So on every desktop
 //! the shell's Auto scale was handed 1.0 and never knew the desktop had one.
 
-use raylib::prelude::RaylibHandle;
+use raylib::prelude::{RaylibHandle, RaylibThread};
 
 /// GLFW's opaque monitor.
 #[repr(C)]
@@ -25,11 +25,17 @@ extern "C" {
 /// `Xft.dpi` resource when GLFW starts, so the primary monitor answers for
 /// all of them. `None` when there is no monitor or the answer is not a usable
 /// scale; the caller treats that as a desktop with none.
+///
+/// Both GLFW calls are main-thread only, and the monitor array they read is
+/// reallocated on hotplug. `RaylibHandle` is `Sync`, so it proves the window
+/// and nothing about the thread; `RaylibThread` is neither `Send` nor `Sync`
+/// and exists only on the thread that created the window.
 #[must_use]
-pub fn content_scale(_window: &RaylibHandle) -> Option<(f32, f32)> {
+pub fn content_scale(_window: &RaylibHandle, _thread: &RaylibThread) -> Option<(f32, f32)> {
     let (mut x, mut y) = (0.0f32, 0.0f32);
     // SAFETY: the caller borrows the live window handle, so GLFW is
-    // initialized and this is its thread. `glfwGetPrimaryMonitor` takes
+    // initialized, and the thread token, so this is GLFW's main thread and
+    // no monitor callback runs beside it. `glfwGetPrimaryMonitor` takes
     // nothing and returns null when no monitor is connected, which is checked
     // before the handle is used. `glfwGetMonitorContentScale` writes one
     // float through each pointer, both to locals that outlive the call, and

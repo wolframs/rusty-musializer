@@ -579,6 +579,10 @@ pub struct Shell {
     pub probe_nudge: Option<u32>,
     /// `--ui-probe key=scale-up` (DS): frames until one Ctrl+plus.
     pub probe_scale_up: Option<u32>,
+    /// Which keys are plus and minus on this keyboard (`scale::scale_keys`),
+    /// asked when Ctrl goes down; `None` until it first does.
+    scale_keys: Option<super::scale::ScaleKeys>,
+    control_was_down: bool,
     pub widgets: Widgets,
     /// The right-hand tuning inspector.
     pub inspector_open: bool,
@@ -678,6 +682,9 @@ pub struct Shell {
     pub recent_unavailable: bool,
     /// Whether the app-owned state directory contains a recovery generation.
     pub recovery_available: bool,
+    /// Where the welcome screen's Theme picker was last drawn (egui's area),
+    /// for the `welcome:` report line.
+    pub welcome_theme_rect: Option<UiRect>,
     /// One frame of `--ui-probe middle-drag=`, set by the composition root.
     ///
     /// `None` on every other frame, so the real device drives the pan whenever
@@ -1403,6 +1410,8 @@ impl Shell {
             probe_digit: None,
             probe_nudge: None,
             probe_scale_up: None,
+            scale_keys: None,
+            control_was_down: false,
             widgets: Widgets::new(),
             notices: NoticeQueue::default(),
             inspector_open: false,
@@ -1434,6 +1443,7 @@ impl Shell {
             recent_now_unix: None,
             recent_unavailable: false,
             recovery_available: false,
+            welcome_theme_rect: None,
             transport_scrub: None,
             track_scroll: ScrollState::new(),
             route_editor: super::panels::tune::EditorHost::default(),
@@ -2126,9 +2136,14 @@ impl Shell {
             );
         } else {
             self.dropped_files(d, &mut commands);
-            // The scale shortcuts and nothing else: the welcome screen has no
-            // transport, scene or column for the other keys to mean anything.
-            let mut keys = KeyboardFrame::read(d);
+        }
+        // The scale shortcuts and nothing else: the welcome screen has no
+        // transport, scene or column for the other keys to mean anything.
+        // Under About they wait, as every key does under a modal; over the
+        // Theme picker they do not: a pointer resting on it owns the mouse,
+        // and a Ctrl chord is nothing the picker could want.
+        if !self.about.open {
+            let mut keys = self.read_keys(d);
             self.probe_scale_key(&mut keys);
             self.scale_shortcuts(keys, input.ui_scale, &mut commands);
         }
@@ -2661,7 +2676,7 @@ impl Shell {
         input: &ShellInput<'_>,
         commands: &mut Vec<ShellCommand>,
     ) {
-        let mut keys = KeyboardFrame::read(d);
+        let mut keys = self.read_keys(d);
         keys.escape |= std::mem::take(&mut self.probe_escape);
         // `--ui-probe key=DIGIT` (D7): one number-row press, a few frames in,
         // through this same path, so every guard below is the real one.
@@ -2692,6 +2707,49 @@ impl Shell {
             }
         }
         self.keyboard_actions(keys, KeyboardContext::of(input), commands);
+    }
+
+    /// The frame's keys, with plus and minus where this keyboard has them.
+    ///
+    /// [`KeyboardFrame::read`] knows raylib's US positions only. The layout
+    /// is asked again each time Ctrl goes down: it can change while the
+    /// application runs, and asking is a dozen lookups.
+    fn read_keys(&mut self, d: &RaylibDrawHandle<'_>) -> KeyboardFrame {
+        use raylib::consts::KeyboardKey as Key;
+
+        let mut keys = KeyboardFrame::read(d);
+        if keys.control {
+            if !self.control_was_down || self.scale_keys.is_none() {
+                let names: Vec<_> = super::scale::SCALE_KEY_CANDIDATES
+                    .iter()
+                    .map(|key| (*key, d.get_key_name(*key)))
+                    .collect();
+                self.scale_keys = Some(super::scale::scale_keys(&names));
+            }
+            if let Some(roles) = self.scale_keys.as_ref() {
+                let pressed = |keys: &[Key]| keys.iter().any(|key| d.is_key_pressed(*key));
+                keys.scale_up = pressed(&roles.up) || d.is_key_pressed(Key::KEY_KP_ADD);
+                keys.scale_down = pressed(&roles.down) || d.is_key_pressed(Key::KEY_KP_SUBTRACT);
+            }
+        }
+        self.control_was_down = keys.control;
+        keys
+    }
+
+    /// `plus=` and `minus=` for the `window:` report line: the keys the
+    /// layout named, or `unread` when Ctrl was never down to ask.
+    #[must_use]
+    pub fn describe_scale_keys(&self) -> String {
+        let list = |keys: &[raylib::consts::KeyboardKey]| {
+            keys.iter()
+                .map(|key| format!("{key:?}"))
+                .collect::<Vec<_>>()
+                .join("+")
+        };
+        self.scale_keys.as_ref().map_or_else(
+            || "plus=unread minus=unread".to_string(),
+            |roles| format!("plus={} minus={}", list(&roles.up), list(&roles.down)),
+        )
     }
 
     /// `--ui-probe key=scale-up` (DS): one Ctrl+plus, a few frames in, laid

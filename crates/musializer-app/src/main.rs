@@ -361,16 +361,19 @@ fn run(
     // initialized, so the window is resized here, before audio, fonts and the
     // first frame, rather than created at the right size.
     //
-    // The saved preference, not `--ui-scale`: that flag, `--size` and
-    // `--ui-probe size=` are the capture seams and stay raw pixels.
     // Asked of GLFW, not of raylib: `get_window_scale_dpi` answers 1.0 on a
     // window without `FLAG_WINDOW_HIGHDPI` (`runtime::desktop_scale`). On X11
     // the answer is fixed when GLFW starts, so once is enough.
-    let desktop_scale = musializer_runtime::desktop_scale::content_scale(&rl)
+    let desktop_scale = musializer_runtime::desktop_scale::content_scale(&rl, &thread)
         .map_or(Vector2::one(), |(x, y)| Vector2::new(x, y));
     let startup_monitor = current_monitor();
+    // `--size`, `--ui-scale` and `--ui-probe size=` are the capture seams: a
+    // run that names its window or its scale gets raw pixels, on whatever
+    // desktop and with whatever preference is saved.
     let window_startup = if options.window_explicit {
         WindowStartup::Explicit
+    } else if options.ui_scale.is_some() {
+        WindowStartup::Default
     } else {
         let wanted = ui::scale::wanted_scale(ui_preferences.scale, desktop_scale);
         let size = ui::scale::startup_window(
@@ -381,15 +384,20 @@ fn run(
         if size == (width, height) {
             WindowStartup::Default
         } else {
+            // raylib centred the window it created on the monitor's work
+            // area, which it can ask for and this code cannot. Keep that
+            // centre; do not leave the monitor by its top or left edge.
+            let created = rl.get_window_position();
+            let origin = startup_monitor.map_or((i32::MIN, i32::MIN), |monitor| monitor.position);
             rl.set_window_size(size.0, size.1);
-            if let Some(monitor) = startup_monitor {
-                // raylib centred the window it created; keep the larger one
-                // centred on the same monitor instead of hanging off it.
-                rl.set_window_position(
-                    monitor.position.0 + (monitor.size.0 - size.0) / 2,
-                    monitor.position.1 + (monitor.size.1 - size.1) / 2,
-                );
-            }
+            rl.set_window_position(
+                (created.x as i32)
+                    .saturating_sub((size.0 - width) / 2)
+                    .max(origin.0),
+                (created.y as i32)
+                    .saturating_sub((size.1 - height) / 2)
+                    .max(origin.1),
+            );
             WindowStartup::Scaled(size)
         }
     };
@@ -1498,10 +1506,16 @@ fn run(
     // Set once the close guard has warned with no dialog available; see
     // `confirm_close`.
     let mut close_warned = false;
-    // DS: the preference the window floor was last derived from (`None`: not
-    // yet), and that floor.
-    let mut window_floor_preference: Option<Option<ui::scale::UiScalePreference>> = None;
-    let mut window_floor = cli::MIN_WINDOW;
+    // DS: the window floor and what it was last derived from.
+    let mut window_policy = WindowPolicy {
+        raw: options
+            .ui_probe
+            .as_ref()
+            .is_some_and(|probe| probe.size.is_some()),
+        // A first window resized above is checked like any later resize.
+        settle: matches!(window_startup, WindowStartup::Scaled(_)).then_some(WINDOW_SETTLE_FRAMES),
+        ..WindowPolicy::new(startup_monitor)
+    };
     while running {
         // Service the decoder before any potentially expensive UI work. A
         // second refill remains below, after window/asset maintenance, matching
@@ -1509,34 +1523,11 @@ fn run(
         if let Some(music) = music.as_ref() {
             music.update_stream();
         }
-        // DS: the smallest window follows the scale the saved preference
-        // wants, so the shell cannot be dragged below the desktop's scale, and
-        // Ctrl+plus in a window too small for the next rung grows the window
-        // instead of doing nothing. Re-derived only when the preference
-        // changes; a desktop that ignores the limit still gets the fit clamp
-        // in `effective_scale`. `--ui-scale` keeps the application's own
-        // minimum: a capture names its window in raw pixels.
-        let floor_preference =
-            (!app.shell.ui_scale_overridden()).then_some(app.shell.ui_preferences.scale);
-        if window_floor_preference != Some(floor_preference) {
-            window_floor_preference = Some(floor_preference);
-            window_floor = floor_preference.map_or(cli::MIN_WINDOW, |preference| {
-                ui::scale::window_floor(
-                    ui::scale::wanted_scale(preference, desktop_scale),
-                    current_monitor().map(|monitor| monitor.size),
-                )
-            });
-            rl.set_window_min_size(window_floor.0, window_floor.1);
-            let window = (rl.get_screen_width(), rl.get_screen_height());
-            // GLFW's limit stops a drag; it does not move a window already
-            // under it. A maximized or fullscreen window is the desktop's.
-            if (window.0 < window_floor.0 || window.1 < window_floor.1)
-                && !rl.is_window_maximized()
-                && !rl.is_window_fullscreen()
-            {
-                rl.set_window_size(window.0.max(window_floor.0), window.1.max(window_floor.1));
-            }
-        }
+        window_policy.tend(
+            &mut rl,
+            (!app.shell.ui_scale_overridden()).then_some(app.shell.ui_preferences.scale),
+            desktop_scale,
+        );
         let physical_window = (rl.get_screen_width() as f32, rl.get_screen_height() as f32);
         let resolved_scale = ui::scale::effective_scale(
             app.shell.ui_scale_preference(),
@@ -2107,6 +2098,15 @@ fn run(
                     appearance_commands.push(app.shell.set_appearance(theme));
                 }
                 welcome_input_blocked = owns_input;
+                app.shell.welcome_theme_rect =
+                    ui::egui_theme::welcome_theme_rect(egui_backend.ctx()).map(|rect| {
+                        musializer_core::ui::workspace_layout::UiRect::new(
+                            rect.min.x,
+                            rect.min.y,
+                            rect.width(),
+                            rect.height(),
+                        )
+                    });
             }
             egui_backend.end_frame(&mut rl)
         } else {
@@ -3356,12 +3356,19 @@ fn run(
         rl.get_screen_height(),
         desktop_scale.x.max(desktop_scale.y),
         window_startup.describe(),
-        window_floor.0,
-        window_floor.1,
+        window_policy.floor.0,
+        window_policy.floor.1,
         startup_monitor.map_or_else(
             || "unknown".to_string(),
             |monitor| format!("{}x{}", monitor.size.0, monitor.size.1)
         ),
+    ) + &format!(
+        " adopted={} {}",
+        window_policy.adopted.map_or_else(
+            || "none".to_string(),
+            |(width, height)| format!("{width}x{height}")
+        ),
+        app.shell.describe_scale_keys(),
     );
     report.follow = follow.as_ref().map(TreatmentFollow::describe);
     dock.shutdown();
@@ -3401,6 +3408,130 @@ impl WindowStartup {
             Self::Explicit => "explicit".to_string(),
             Self::Default => "default".to_string(),
             Self::Scaled((width, height)) => format!("scaled:{width}x{height}"),
+        }
+    }
+}
+
+/// Frames a resize this code asked for is given before its result is read.
+/// Half a second: a window manager answers within a frame or two.
+const WINDOW_SETTLE_FRAMES: u32 = 30;
+
+/// The window floor (DS): the smallest window follows the scale the saved
+/// preference wants, so the shell cannot be dragged below the desktop's
+/// scale, and Ctrl+plus in a window too small for the next rung grows the
+/// window instead of doing nothing.
+///
+/// A desktop that ignores the limit still gets the fit clamp in
+/// `effective_scale`; this only keeps it from being reached by accident.
+struct WindowPolicy {
+    /// `--ui-probe size=` named the window: raw pixels, the application's own
+    /// minimum, for the whole run. (`--ui-scale` does the same until a scale
+    /// shortcut clears it; `tend` is told that each frame.)
+    raw: bool,
+    /// The preference and monitor the floor was last derived from.
+    derived: Option<FloorInputs>,
+    floor: (i32, i32),
+    /// Where the window was when its monitor was last asked for.
+    position: Option<(i32, i32)>,
+    monitor: Option<Monitor>,
+    /// The preference changed and the window has not been brought up to it
+    /// yet: it was maximized or fullscreen, where its size is the desktop's.
+    grow_pending: bool,
+    /// Frames until a resize asked for here is compared with what was given.
+    settle: Option<u32>,
+    /// The size taken over from the framebuffer after a refused resize.
+    adopted: Option<(i32, i32)>,
+}
+
+/// What a window floor is derived from: the saved preference (`None` while a
+/// capture seam speaks) and the size of the monitor the window is on.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FloorInputs {
+    preference: Option<ui::scale::UiScalePreference>,
+    monitor: Option<(i32, i32)>,
+}
+
+impl WindowPolicy {
+    fn new(monitor: Option<Monitor>) -> Self {
+        Self {
+            raw: false,
+            derived: None,
+            floor: cli::MIN_WINDOW,
+            position: None,
+            monitor,
+            grow_pending: false,
+            settle: None,
+            adopted: None,
+        }
+    }
+
+    /// Once a frame, before the window's size is read for layout.
+    /// `preference` is `None` while `--ui-scale` speaks.
+    fn tend(
+        &mut self,
+        rl: &mut RaylibHandle,
+        preference: Option<ui::scale::UiScalePreference>,
+        desktop_scale: Vector2,
+    ) {
+        let preference = preference.filter(|_| !self.raw);
+        // The monitor is asked for only when the window has moved: the
+        // question is a round trip to the X server, the position is cached.
+        let position = rl.get_window_position();
+        let position = (position.x as i32, position.y as i32);
+        if self.position != Some(position) {
+            self.position = Some(position);
+            self.monitor = current_monitor();
+        }
+        let monitor = self.monitor.map(|monitor| monitor.size);
+        let wanted =
+            preference.map(|preference| ui::scale::wanted_scale(preference, desktop_scale));
+        let inputs = FloorInputs {
+            preference,
+            monitor,
+        };
+        if self.derived != Some(inputs) {
+            // Only a changed preference brings the window up to it. A window
+            // carried to a larger monitor gets the new limit and keeps its
+            // size: growing under the pointer mid-drag is worse than a rung.
+            let preference_changed =
+                self.derived.map(|derived| derived.preference) != Some(preference);
+            self.derived = Some(inputs);
+            self.floor = wanted.map_or(cli::MIN_WINDOW, |wanted| {
+                ui::scale::window_floor(wanted, monitor)
+            });
+            rl.set_window_min_size(self.floor.0, self.floor.1);
+            self.grow_pending |= preference_changed;
+        }
+        let windowed = !rl.is_window_maximized() && !rl.is_window_fullscreen();
+        if self.grow_pending && windowed {
+            self.grow_pending = false;
+            let target = wanted.map_or(cli::MIN_WINDOW, |wanted| {
+                ui::scale::window_to_hold(wanted, monitor)
+            });
+            let window = (rl.get_screen_width(), rl.get_screen_height());
+            // GLFW's limit stops a drag; it does not move a window already
+            // under it. At the application's own minimum the limit is all
+            // there ever was, and a capture that asks for less keeps it.
+            if target != cli::MIN_WINDOW && (window.0 < target.0 || window.1 < target.1) {
+                rl.set_window_size(window.0.max(target.0), window.1.max(target.1));
+                self.settle = Some(WINDOW_SETTLE_FRAMES);
+            }
+        }
+        // raylib records the size it asked for at once and corrects it only
+        // when the framebuffer changes. A desktop that refuses the size (a
+        // tiling window manager) sends no such change, and the shell would
+        // lay out for a window that does not exist for as long as it runs.
+        // The framebuffer is what was given: take its size.
+        if let Some(frames) = self.settle {
+            self.settle = frames.checked_sub(1);
+            if frames == 0 && windowed {
+                let asked = (rl.get_screen_width(), rl.get_screen_height());
+                let given = (rl.get_render_width(), rl.get_render_height());
+                if given != asked && given.0 > 0 && given.1 > 0 {
+                    rl.set_window_size(given.0, given.1);
+                    self.adopted = Some(given);
+                }
+            }
         }
     }
 }
@@ -7380,11 +7511,14 @@ impl Report {
                 format!("{:.0},{:.0},{:.0},{:.0}", r.x, r.y, r.width, r.height)
             };
             println!(
-                "welcome:         open-audio@{} open-project@{} recent@{} tray@{}",
+                "welcome:         open-audio@{} open-project@{} recent@{} tray@{} theme@{}",
                 rect(frame.open_audio),
                 rect(frame.open_project),
                 rect(frame.recent_rows[0]),
-                rect(frame.notice_region())
+                rect(frame.notice_region()),
+                app.shell
+                    .welcome_theme_rect
+                    .map_or_else(|| "none".to_string(), rect)
             );
         }
         // The welcome screen's recent list (UX0-C06). `store=` distinguishes the

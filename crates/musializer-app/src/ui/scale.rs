@@ -7,7 +7,7 @@
 //! was given.
 
 use musializer_core::ui::workspace_layout::UiRect;
-use raylib::prelude::{RaylibDrawHandle, Vector2};
+use raylib::prelude::{KeyboardKey, RaylibDrawHandle, Vector2};
 use raylib_sys::Camera2D;
 
 /// Supported scale rungs. Stepped values keep font atlases and pixel snapping
@@ -254,6 +254,86 @@ pub fn window_floor(wanted: UiScale, monitor: Option<(i32, i32)>) -> (i32, i32) 
         .unwrap_or_else(|| size(1.0))
 }
 
+/// The window a wanted scale is given when one has to be made or grown for
+/// it: the logical minimum at exactly that rung when nine tenths of the
+/// monitor has room, the floor otherwise.
+///
+/// Larger than [`window_floor`] where the two caps differ. On a 1080p monitor
+/// the floor for 150 % stops at 1200x800 (a 1440x960 minimum would be nearly
+/// the screen), but Ctrl+plus asking for 150 % in that window should get it:
+/// the window grows to 1440x960 and may be dragged smaller again.
+#[must_use]
+pub fn window_to_hold(wanted: UiScale, monitor: Option<(i32, i32)>) -> (i32, i32) {
+    let exact = (
+        (LOGICAL_MINIMUM.0 * wanted.value()).ceil() as i32,
+        (LOGICAL_MINIMUM.1 * wanted.value()).ceil() as i32,
+    );
+    let fits = monitor.is_none_or(|(monitor_width, monitor_height)| {
+        exact.0 as f32 <= monitor_width as f32 * STARTUP_MONITOR_SHARE
+            && exact.1 as f32 <= monitor_height as f32 * STARTUP_MONITOR_SHARE
+    });
+    if fits {
+        exact
+    } else {
+        window_floor(wanted, monitor)
+    }
+}
+
+/// Which keys are plus and which are minus on this keyboard.
+///
+/// raylib's key codes are positions on a US keyboard, and the scale shortcuts
+/// were written against them: `KEY_EQUAL` and `KEY_MINUS`. On a German
+/// keyboard the key labelled `+` is `KEY_RIGHT_BRACKET` and `-` is
+/// `KEY_SLASH`, so Ctrl+plus and Ctrl+minus did nothing there (the US
+/// positions are `´` and `ß`). `names` is each punctuation key with the
+/// character the layout gives it, unshifted (`RaylibHandle::get_key_name`).
+///
+/// A key named `+` or `=` is plus (US plus is Shift+`=`), a key named `-` is
+/// minus. A role no key is named for keeps its US position, so a layout
+/// GLFW cannot name still has the shortcuts it had.
+#[must_use]
+pub fn scale_keys(names: &[(KeyboardKey, Option<String>)]) -> ScaleKeys {
+    let named = |wanted: &[&str]| -> Vec<KeyboardKey> {
+        names
+            .iter()
+            .filter(|(_, name)| name.as_deref().is_some_and(|name| wanted.contains(&name)))
+            .map(|(key, _)| *key)
+            .collect()
+    };
+    let mut up = named(&["+", "="]);
+    if up.is_empty() {
+        up.push(KeyboardKey::KEY_EQUAL);
+    }
+    let mut down = named(&["-"]);
+    if down.is_empty() {
+        down.push(KeyboardKey::KEY_MINUS);
+    }
+    ScaleKeys { up, down }
+}
+
+/// The punctuation positions a layout can put `+`, `=` or `-` on.
+pub const SCALE_KEY_CANDIDATES: [KeyboardKey; 11] = [
+    KeyboardKey::KEY_APOSTROPHE,
+    KeyboardKey::KEY_COMMA,
+    KeyboardKey::KEY_MINUS,
+    KeyboardKey::KEY_PERIOD,
+    KeyboardKey::KEY_SLASH,
+    KeyboardKey::KEY_SEMICOLON,
+    KeyboardKey::KEY_EQUAL,
+    KeyboardKey::KEY_LEFT_BRACKET,
+    KeyboardKey::KEY_BACKSLASH,
+    KeyboardKey::KEY_RIGHT_BRACKET,
+    KeyboardKey::KEY_GRAVE,
+];
+
+/// The main-block keys the scale shortcuts answer to; the numpad's plus and
+/// minus always do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScaleKeys {
+    pub up: Vec<KeyboardKey>,
+    pub down: Vec<KeyboardKey>,
+}
+
 /// The window to open when the command line named no size: the default in
 /// the desktop's units, kept on the monitor and never under the floor.
 ///
@@ -276,10 +356,10 @@ pub fn startup_window(
         });
         capped as i32
     };
-    let floor = window_floor(wanted, monitor);
+    let hold = window_to_hold(wanted, monitor);
     (
-        scaled(default.0, monitor.map(|size| size.0)).max(floor.0),
-        scaled(default.1, monitor.map(|size| size.1)).max(floor.1),
+        scaled(default.0, monitor.map(|size| size.0)).max(hold.0),
+        scaled(default.1, monitor.map(|size| size.1)).max(hold.1),
     )
 }
 
@@ -533,5 +613,76 @@ mod tests {
             wanted_scale(UiScalePreference::Auto, Vector2::new(1.0, 1.0)).percent(),
             100
         );
+    }
+
+    #[test]
+    fn a_window_grown_for_a_scale_holds_it_where_the_monitor_has_room() {
+        let scale = |percent| UiScale::from_percent(percent).unwrap();
+        // 1080p, 150 %: the floor stops a rung short, the grow does not.
+        assert_eq!(window_floor(scale(150), Some((1920, 1080))), (1200, 800));
+        assert_eq!(window_to_hold(scale(150), Some((1920, 1080))), (1440, 960));
+        // 175 % needs 1120 of 1080: no room, so the floor's answer.
+        assert_eq!(window_to_hold(scale(175), Some((1920, 1080))), (1200, 800));
+        // 1440p, 200 %: 1280 fits nine tenths (1296) though not four fifths.
+        assert_eq!(window_to_hold(scale(200), Some((2560, 1440))), (1920, 1280));
+        assert_eq!(window_to_hold(scale(100), Some((800, 600))), (960, 640));
+        assert_eq!(window_to_hold(scale(125), None), (1200, 800));
+        // Never under the floor, and a window of that size resolves to the
+        // rung wherever it is the exact one.
+        for percent in [100, 125, 150, 175, 200] {
+            for monitor in [
+                None,
+                Some((1366, 768)),
+                Some((1920, 1080)),
+                Some((3840, 2160)),
+            ] {
+                let floor = window_floor(scale(percent), monitor);
+                let hold = window_to_hold(scale(percent), monitor);
+                assert!(hold.0 >= floor.0 && hold.1 >= floor.1);
+            }
+        }
+    }
+
+    #[test]
+    fn plus_and_minus_are_the_keys_the_layout_names_so() {
+        use KeyboardKey as Key;
+        let named = |pairs: &[(Key, &str)]| -> Vec<(Key, Option<String>)> {
+            SCALE_KEY_CANDIDATES
+                .iter()
+                .map(|key| {
+                    (
+                        *key,
+                        pairs
+                            .iter()
+                            .find(|(named, _)| named == key)
+                            .map(|(_, name)| (*name).to_string()),
+                    )
+                })
+                .collect()
+        };
+        // US: `=` and `-` where raylib's names say.
+        let us = scale_keys(&named(&[
+            (Key::KEY_MINUS, "-"),
+            (Key::KEY_EQUAL, "="),
+            (Key::KEY_LEFT_BRACKET, "["),
+            (Key::KEY_RIGHT_BRACKET, "]"),
+            (Key::KEY_SLASH, "/"),
+        ]));
+        assert_eq!(us.up, vec![Key::KEY_EQUAL]);
+        assert_eq!(us.down, vec![Key::KEY_MINUS]);
+        // German: `+` right of `ü`, `-` right of `.`; the US positions are
+        // `ß` and a dead accent, which GLFW does not name.
+        let german = scale_keys(&named(&[
+            (Key::KEY_MINUS, "ß"),
+            (Key::KEY_RIGHT_BRACKET, "+"),
+            (Key::KEY_SLASH, "-"),
+            (Key::KEY_BACKSLASH, "#"),
+        ]));
+        assert_eq!(german.up, vec![Key::KEY_RIGHT_BRACKET]);
+        assert_eq!(german.down, vec![Key::KEY_SLASH]);
+        // Nothing named: the positions the shortcuts always had.
+        let unnamed = scale_keys(&named(&[]));
+        assert_eq!(unnamed.up, vec![Key::KEY_EQUAL]);
+        assert_eq!(unnamed.down, vec![Key::KEY_MINUS]);
     }
 }

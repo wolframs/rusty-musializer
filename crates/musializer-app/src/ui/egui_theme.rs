@@ -162,6 +162,14 @@ fn theme_picker(ui: &mut egui::Ui, id: &str, theme: &mut UiTheme) -> bool {
     *theme != previous
 }
 
+/// Where the welcome screen's Theme picker was last drawn, in logical units,
+/// for the `welcome:` report line: a pointer resting there owns the mouse, and
+/// a check that it does not also own the scale shortcuts has to find it.
+#[must_use]
+pub fn welcome_theme_rect(ctx: &Context) -> Option<egui::Rect> {
+    ctx.memory(|memory| memory.area_rect(egui::Id::new("welcome_appearance")))
+}
+
 /// The same appearance control is available before any project is opened.
 pub fn welcome_theme(
     ctx: &Context,
