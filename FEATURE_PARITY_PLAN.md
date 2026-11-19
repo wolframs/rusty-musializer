@@ -61,8 +61,28 @@ desktop until the window is enlarged (and reads 150 % once maximized at 1440p).
 - [x] DS-4a records: `docs/DIVERGENCES.md` (DS), `docs/TRAPS.md` and its
       one-liner, `docs/UNSAFE.md`, the Commands list, `tools/verify.sh`. Five
       negative controls caught on the GPU path, three of them also on the CPU.
-- [ ] DS-4b the outside review's findings, one full verify, the release
-      build; then this entry moves to the archive with what it left open.
+- [ ] DS-5 from the outside review (2026-11-19, eight findings), in order:
+  - [ ] a. gate: never `rm -rf` an OUT it did not make; prove the Xvfb on the
+        display is the one it started (lock pid) before `xrdb` touches it.
+  - [ ] b. `content_scale` takes the `RaylibThread` token (GLFW: main thread).
+  - [ ] c. seams: `--ui-scale` keeps the default first window; `--ui-scale`
+        and `--ui-probe size=` keep the 960x640 floor; a window grows only
+        to a raised floor (at 960x640 the hint alone, as before).
+  - [ ] d. keep the centre raylib chose (work area), not the monitor's.
+  - [ ] e. floor: re-derived when the window moves (another monitor); the
+        grow skipped while fullscreen or maximized is retried after; Ctrl+plus
+        grows to the size that holds the rung when nine tenths of the monitor
+        has room, not only to the capped floor.
+  - [ ] f. a size the desktop refused: adopt the framebuffer's size after a
+        settle instead of laying out for a window that does not exist.
+  - [ ] g. welcome: the scale keys while the pointer rests on the Theme picker.
+  - [ ] h. plus and minus by the layout's key names: on a German keyboard the
+        `+` key is GLFW's right bracket and `-` its slash, so Ctrl+plus and
+        Ctrl+minus never worked on the operator's keyboard except the numpad.
+  - [ ] i. gate: `FALLBACK` in `fonts:` fails; real key events (XTest) under
+        a German layout for plus, minus and 0; seeded seams.
+- [ ] DS-4b one full verify, the release build; then this entry moves to the
+      archive with what it left open.
 
 **Left by HY (2026-11-17; the round's record is in the archive).**
 - `main.rs`'s `run()` is one function of about 3,050 lines, and several panels
