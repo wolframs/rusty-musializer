@@ -11,6 +11,7 @@
 mod input;
 #[path = "egui_backend/output.rs"]
 mod output;
+pub(crate) use output::WindowCursor;
 #[path = "egui_backend/renderer.rs"]
 mod renderer;
 #[path = "egui_backend/textures.rs"]
@@ -94,14 +95,17 @@ impl EguiBackend {
         self.ctx.begin_pass(input);
     }
 
-    pub fn end_frame(&mut self, rl: &mut RaylibHandle) {
+    pub fn end_frame(&mut self, rl: &mut RaylibHandle) -> Option<egui::CursorIcon> {
         let output = self.ctx.end_pass();
-        if self.wants_pointer_input() || self.wants_keyboard_input() {
+        let pointer = !self.input_suspended && self.wants_pointer_input();
+        let cursor = pointer.then_some(output.platform_output.cursor_icon);
+        if pointer || self.wants_keyboard_input() {
             output::handle_platform_output(rl, output.platform_output);
         }
         self.pixels_per_point = output.pixels_per_point;
         self.primitives = self.ctx.tessellate(output.shapes, output.pixels_per_point);
         self.textures_delta.append(output.textures_delta);
+        cursor
     }
 
     pub fn wants_pointer_input(&self) -> bool {

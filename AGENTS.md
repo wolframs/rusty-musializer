@@ -269,6 +269,7 @@ number disagrees, grep it there before debugging from scratch.
 - **`os.write` may write less than it was given**: write until every byte is out, then sync, then remove what the lines replace. See `docs/TRAPS.md`.
 - **Acknowledging "what is there now" acknowledges what nobody was shown**: carry the ids, or the key, the card drew into the run and act on those only. See `docs/TRAPS.md`.
 - **A child's pipe read only after it exits holds 64 KiB**: read while it runs, with a cap, and bound the join. See `docs/TRAPS.md`.
+- **The native cursor is outside the framebuffer**: check the cursor image and XFixes events on a private display when testing hover flicker. See `docs/TRAPS.md`.
 
 ## Judge by what a user or a file can observe
 

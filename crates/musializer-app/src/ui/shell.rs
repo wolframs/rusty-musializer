@@ -786,18 +786,14 @@ pub struct Shell {
     pub protocol: Option<super::protocol::ProtocolSession>,
     /// A mouse cursor a panel asked for this frame, via [`Shell::request_cursor`].
     ///
-    /// It exists because [`Shell::splitters`] sets the cursor unconditionally and
-    /// runs *after* every panel, so a panel calling `set_mouse_cursor` itself had
-    /// its choice overwritten one call later — silently, and only on the frames
-    /// where the pointer was over a panel affordance, which is every frame that
-    /// matters. Routing the request through one field makes the splitters the one
-    /// owner of the cursor rather than the accidental last writer.
+    /// The window resolves this after both the shell and egui have drawn.
+    /// A workspace splitter can override an earlier panel request.
     ///
     /// Reset to `None` in [`Shell::begin_frame`]. A cursor is a statement about
     /// where the pointer is *now*, and the pointer moves between frames, so
     /// anything sticky here would keep a resize arrow on screen after the hand
     /// had left the handle.
-    pointer_cursor: Option<raylib::consts::MouseCursor>,
+    pub(crate) pointer_cursor: Option<raylib::consts::MouseCursor>,
     /// First frame on which fullscreen gained an attention state. The expanded
     /// label lives for 2.5 seconds, then the same state collapses to its dot.
     fullscreen_attention_since: Option<f64>,
@@ -1772,8 +1768,7 @@ impl Shell {
             .unwrap_or_else(|| d.get_mouse_wheel_move())
     }
 
-    /// Asks for a mouse cursor over whatever the caller is drawing, honoured by
-    /// [`Self::splitters`] once every panel has had its turn.
+    /// Requests a cursor for the window to apply after the panels have drawn.
     ///
     /// **Last request of the frame wins**, and the reasoning is worth writing
     /// down because the obvious argument for the opposite rule does not hold
@@ -1959,21 +1954,6 @@ impl Shell {
                 .set_job_running(input.workspace.assist.is_active());
             self.assist_settings
                 .draw(d, input.fonts, input.window, input.ui_scale);
-        }
-
-        // Fullscreen sheds the splitters along with the panels, so the one place
-        // that answers a cursor request is not running. This is the substitute,
-        // and it is at the *end* of the frame rather than the start on purpose:
-        // the toolbar is still drawn in fullscreen, so a request from it would be
-        // made after a cursor set up here and lost. Nothing in the fullscreen
-        // composition asks for a cursor today, which makes this a no-op that
-        // resolves to `MOUSE_CURSOR_DEFAULT` — the same thing it did before — but
-        // one that will not need finding again when something does.
-        if self.fullscreen {
-            d.set_mouse_cursor(
-                self.pointer_cursor
-                    .unwrap_or(raylib::consts::MouseCursor::MOUSE_CURSOR_DEFAULT),
-            );
         }
 
         // After every command of the frame: a look card's play-the-cut keeps
@@ -3929,14 +3909,6 @@ impl Shell {
         use raylib::consts::{MouseButton, MouseCursor};
 
         if input.workspace.current().is_none() {
-            // No track means no boundaries to drag, but this is still the only
-            // call that answers a cursor request, so it has to answer before
-            // leaving. Previously nothing set the cursor at all on these frames,
-            // which left whatever the last frame chose on screen.
-            d.set_mouse_cursor(
-                self.pointer_cursor
-                    .unwrap_or(MouseCursor::MOUSE_CURSOR_DEFAULT),
-            );
             return;
         }
         const HIT: f32 = 8.0;
@@ -4005,19 +3977,14 @@ impl Shell {
             }
         }
 
-        // The splitters own the cursor for the frame, and they run last, which is
-        // why a panel cannot simply set it for itself (see [`Shell::request_cursor`]).
-        // An active or hovered splitter outranks any request: its hit strip is
-        // drawn over the panels, and a drag in flight must keep its own arrow even
-        // as the pointer travels across a panel that would like a different one.
+        // A splitter takes precedence over the panel beneath its hit strip.
+        // Keep the resize cursor throughout a drag across another panel.
         let active = self.split_drag.or(hovered);
-        d.set_mouse_cursor(match active {
-            Some(SplitKind::Timeline) => MouseCursor::MOUSE_CURSOR_RESIZE_NS,
-            Some(SplitKind::Column) => MouseCursor::MOUSE_CURSOR_RESIZE_EW,
-            None => self
-                .pointer_cursor
-                .unwrap_or(MouseCursor::MOUSE_CURSOR_DEFAULT),
-        });
+        match active {
+            Some(SplitKind::Timeline) => self.request_cursor(MouseCursor::MOUSE_CURSOR_RESIZE_NS),
+            Some(SplitKind::Column) => self.request_cursor(MouseCursor::MOUSE_CURSOR_RESIZE_EW),
+            None => {}
+        }
 
         draw_splitter(d, timeline, SplitKind::Timeline, active);
         if let Some(rect) = column {

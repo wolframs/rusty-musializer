@@ -433,6 +433,7 @@ fn run(
     app.shell.set_ui_scale_override(options.ui_scale);
     // WX-5d: the column opens where `ui.json` left it (absent: on Direct).
     app.shell.seed_column_from_preferences();
+    let mut window_cursor = ui::egui_backend::WindowCursor::default();
     let mut egui_backend = ui::egui_backend::EguiBackend::default();
     let mut welcome_theme = options.ui_theme.unwrap_or(app.shell.appearance());
     // WX-1/2: terminals and agents beside the workspace. Declared after the
@@ -1992,7 +1993,7 @@ fn run(
         }
         let egui_active = welcome_theme_active || dock_rect.is_some();
         egui_backend.input_suspended = app.shell.about.open;
-        if egui_active {
+        let egui_cursor = if egui_active {
             egui_backend.begin_frame(
                 &mut rl,
                 ui_scale.value(),
@@ -2032,8 +2033,10 @@ fn run(
                 }
                 welcome_input_blocked = owns_input;
             }
-            egui_backend.end_frame(&mut rl);
-        }
+            egui_backend.end_frame(&mut rl)
+        } else {
+            None
+        };
         // Past the block: with Direct gone there is no egui pass to clear it.
         app.shell.dock_picture_open = dock.picture_open();
 
@@ -2265,6 +2268,7 @@ fn run(
                 playing,
             );
         }
+        window_cursor.apply(&mut rl, app.shell.pointer_cursor, egui_cursor);
         posters.enqueue(app.shell.take_poster_requests());
         commands.append(&mut appearance_commands);
         commands.append(&mut dock_commands);

@@ -1022,3 +1022,15 @@ than the pipe's buffer blocks the child on its write, and the wait ends at the
 timeout, as no answer. Read while the child runs, with a cap, and bound the
 join after the exit. Found 2026-11-16 (J4), when the status began naming every
 pending charge.
+
+## The pointer is outside the captured framebuffer
+
+The chat composer set the native I-beam during egui output and the workspace
+reset it to the default later in the same frame. A still of the panel cannot
+capture either change. On a private Xvfb, move the pointer to the reported
+chat entry, wait for it to settle, and count XFixes display-cursor events.
+The old build produced 78 in 650 ms while paused and 76 during playback. The repaired run
+produced zero there and on the column grip, with distinct cursor images at
+the entry, grip and preview. The window applies the resolved shape only on
+change. Repeated non-default requests also call glfwCreateStandardCursor in
+the vendored GLFW backend of raylib.

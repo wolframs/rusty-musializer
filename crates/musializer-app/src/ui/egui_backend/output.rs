@@ -57,14 +57,40 @@ pub(crate) fn handle_platform_output(rl: &mut RaylibHandle, output: PlatformOutp
             OutputCommand::OpenUrl(_open_url) => (),
         }
     }
+}
 
-    match map_cursor(output.cursor_icon) {
-        Some(cursor) => {
-            rl.set_mouse_cursor(cursor);
-            rl.show_cursor();
+/// The window starts with the system pointer visible. raylib's GLFW backend
+/// creates a native cursor each time a non-default shape is set.
+pub(crate) struct WindowCursor(Option<MouseCursor>);
+
+impl Default for WindowCursor {
+    fn default() -> Self {
+        Self(Some(MouseCursor::MOUSE_CURSOR_DEFAULT))
+    }
+}
+
+impl WindowCursor {
+    pub(crate) fn apply(
+        &mut self,
+        rl: &mut RaylibHandle,
+        shell: Option<MouseCursor>,
+        egui: Option<CursorIcon>,
+    ) {
+        let desired = match shell {
+            Some(cursor) => Some(cursor),
+            None => map_cursor(egui.unwrap_or(CursorIcon::Default)),
+        };
+        if desired == self.0 {
+            return;
         }
-        None => {
+        if let Some(cursor) = desired {
+            rl.set_mouse_cursor(cursor);
+            if self.0.is_none() {
+                rl.show_cursor();
+            }
+        } else {
             rl.hide_cursor();
         }
-    };
+        self.0 = desired;
+    }
 }
