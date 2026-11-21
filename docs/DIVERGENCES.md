@@ -655,3 +655,16 @@ The name and construction are the design agent's choice. Details:
 | `openai knot:` report line | `lumen knot:` with `form`, `petals`, `winds`, `swing`, `morph`, `comets` | Renamed with the gate that parses it (`tools/knot_check.py`) |
 | In-app credit "Six-ribbon geometry study (visual reference)" | Removed | The construction is no longer drawn after that reference |
 | The automatic cycle's quiet, first written on the instantaneous level | On a loudness follower that falls over about 0.7 s | The dips between the kicks of a loud loop summed to "quiet" and fired a false drop every few seconds; pinned by `a_loud_loop_with_dips_between_kicks_is_not_a_drop` |
+
+## Reopening timed projects and retrying autosave (2026-11-20)
+
+A reopened project and a restored recovery use the saved audio duration for the
+authored timeline after verifying the audio digest and opening the stream. The
+same MP3 reported 94.176 s when saved and 94.120 s on reopening. Using the
+second length for the track left lyrics and section endpoints on the first,
+so even a treatment that preserved the lyrics could make saving fail.
+
+Every save error records its reason on the track and suspends autosave until
+the next edit. Previously only a final file-write failure did so. A validation
+failure retried each frame and replaced dismissed cards while the project
+remained dirty.

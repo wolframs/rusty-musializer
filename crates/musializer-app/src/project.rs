@@ -358,6 +358,15 @@ pub fn save_to_path(
     path: &Path,
     reuse_published: bool,
 ) -> Result<(), ProjectError> {
+    save_to_path_inner(track, path, reuse_published)
+        .inspect_err(|error| track.mark_save_failed(error.to_string()))
+}
+
+fn save_to_path_inner(
+    track: &mut Track,
+    path: &Path,
+    reuse_published: bool,
+) -> Result<(), ProjectError> {
     // C4: the format comes off the track, not off a bound `Music` handle. That
     // change is what lets autosave write a background track at all — see
     // `Track::audio_sample_rate`.
@@ -500,14 +509,7 @@ pub fn save_to_path(
     )?;
     let json = io::serialize(&project)?;
 
-    publish::atomic_write(path, json.as_bytes()).map_err(|error| {
-        // The C sets this here rather than at the call site, so a failed autosave
-        // stops retrying until the next edit clears it (`plug.c:4580`). The
-        // reason travels with the latch so the panel can name it (UX0-B01).
-        let failure = ProjectError::Write(error);
-        track.mark_save_failed(failure.to_string());
-        failure
-    })?;
+    publish::atomic_write(path, json.as_bytes()).map_err(ProjectError::Write)?;
 
     track.file_path = audio.runtime;
     if let (Some(image), Some(published)) = (&mut track.ascii, &ascii) {
@@ -868,9 +870,17 @@ fn hydrate_track(
     render_config.set_quality(output_to_quality(project.output.quality));
     render_config.validate().map_err(|_| ProjectError::Output)?;
 
+    if !duration.is_finite() || duration <= 0.0 {
+        return Err(ProjectError::Build(
+            "decoded audio has no valid duration".into(),
+        ));
+    }
+    // Both open paths verified the audio digest. Keep the timeline on which
+    // every authored lane was validated, even if this decoder counts MP3
+    // padding differently from the decoder that created the project.
     let mut track = Track::new(
         audio_path.clone(),
-        duration,
+        project.audio.duration_seconds,
         base_scene,
         project.deterministic_seed,
     )
@@ -1161,7 +1171,32 @@ mod tests {
             error.to_string().contains("audio format"),
             "the refusal must name the reason, got {error}"
         );
+        track.project_path = Some(directory.join("x.musi"));
+        track.project_dirty = true;
+        assert_eq!(
+            track.project_save_error.as_deref(),
+            Some(error.to_string().as_str())
+        );
+        assert!(!autosave_is_due(&track, 2.0, false));
+        track.mark_dirty(3.0);
+        assert!(autosave_is_due(&track, 5.0, false));
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn reopened_timeline_survives_decoder_duration_drift() {
+        let (_dir, path, _) = clip_project("duration-drift");
+        let mut track = open_path(&path, |_| Ok(119.944)).unwrap().track;
+        assert_eq!(track.duration_seconds, 120.0);
+        save_to_path(&mut track, &path, true).unwrap();
+        assert_eq!(
+            open_path(&path, |_| Ok(119.944))
+                .unwrap()
+                .track
+                .lyrics
+                .duration_seconds(),
+            120.0
+        );
     }
 
     /// PXF-7: a save records the track's playhead, clamped onto the track, and
